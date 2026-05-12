@@ -3,8 +3,79 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../theme/app_theme.dart';
 import '../widgets/clickable.dart';
+
+// ─────────────────────────────────────────────
+//  STRIPE PLAN CONFIG
+// ─────────────────────────────────────────────
+
+class _StripePlan {
+  final String name;
+  final String price;
+  final String priceId;
+  final String paymentLink;
+  final List<String> features;
+  final Color color;
+  final bool isPopular;
+
+  const _StripePlan({
+    required this.name,
+    required this.price,
+    required this.priceId,
+    required this.paymentLink,
+    required this.features,
+    required this.color,
+    this.isPopular = false,
+  });
+}
+
+const _kPlans = [
+  _StripePlan(
+    name: 'Starter',
+    price: '\$97',
+    priceId: 'price_1TJJoyGpSG6sxQ0SW1kd9uoW',
+    paymentLink: 'https://buy.stripe.com/dRm7sLcnqdsrfTZ3eM8og08',
+    features: [
+      '500 AI messages/mo',
+      'SMS & Email conversations',
+      'Contacts & Pipeline CRM',
+      'Basic Reporting',
+      'Email support',
+    ],
+    color: Color(0xFF3B82F6),
+  ),
+  _StripePlan(
+    name: 'Growth',
+    price: '\$197',
+    priceId: 'price_1TJJvYGpSG6sxQ0SlTuyLur8',
+    paymentLink: 'https://buy.stripe.com/5kQ5kDdru4VVgY37v28og09',
+    features: [
+      '2,000 AI messages/mo',
+      'Everything in Starter',
+      'Campaign automation',
+      'Advanced Reporting',
+      'Priority support',
+    ],
+    color: Color(0xFF6366F1),
+    isPopular: true,
+  ),
+  _StripePlan(
+    name: 'Pro',
+    price: '\$397',
+    priceId: 'price_1TJJy9GpSG6sxQ0SDBgCgpgH',
+    paymentLink: 'https://buy.stripe.com/8x214n4UY0FF6jp9Da8og0a',
+    features: [
+      'Unlimited AI messages',
+      'Everything in Growth',
+      'White-label options',
+      'Custom integrations',
+      'Dedicated support',
+    ],
+    color: Color(0xFF8B5CF6),
+  ),
+];
 
 // ─────────────────────────────────────────────
 //  HELPERS
@@ -98,7 +169,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _updateBusiness(Map<String, dynamic> updates) async {
     if (_businessId == null) return;
-    await _supabase.from('businesses').update(updates).eq('id', _businessId!);
+    await _supabase
+        .from('businesses')
+        .update(updates)
+        .eq('id', _businessId!);
     await _loadBusiness();
   }
 
@@ -128,7 +202,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 doLogout = true;
                 Navigator.of(dialogContext).pop();
               },
-              style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+              style:
+                  ElevatedButton.styleFrom(backgroundColor: Colors.red),
               child: const Text('Log out'),
             ),
           ),
@@ -171,7 +246,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       padding: const EdgeInsets.symmetric(horizontal: 24),
       decoration: const BoxDecoration(
         color: AppTheme.cardBg,
-        border: Border(bottom: BorderSide(color: AppTheme.borderColor)),
+        border:
+            Border(bottom: BorderSide(color: AppTheme.borderColor)),
       ),
       child: Row(
         children: [
@@ -181,14 +257,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   fontWeight: FontWeight.w600,
                   color: AppTheme.textPrimary)),
           const Spacer(),
-          // ── Log out button with pointer cursor ──
           MouseRegion(
             cursor: SystemMouseCursors.click,
             child: TextButton.icon(
               onPressed: _logout,
-              icon: const Icon(Icons.logout, size: 16, color: Colors.red),
+              icon: const Icon(Icons.logout,
+                  size: 16, color: Colors.red),
               label: const Text('Log out',
-                  style: TextStyle(color: Colors.red, fontSize: 13)),
+                  style:
+                      TextStyle(color: Colors.red, fontSize: 13)),
             ),
           ),
         ],
@@ -201,11 +278,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
       width: 220,
       decoration: const BoxDecoration(
         color: AppTheme.cardBg,
-        border: Border(right: BorderSide(color: AppTheme.borderColor)),
+        border:
+            Border(right: BorderSide(color: AppTheme.borderColor)),
       ),
       child: Column(
         children: [
-          // User info (not clickable — just display)
           Container(
             padding: const EdgeInsets.all(20),
             child: Column(
@@ -231,7 +308,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
                 const SizedBox(height: 10),
                 Text(
-                  _business['business_name'] as String? ?? 'My Business',
+                  _business['business_name'] as String? ??
+                      'My Business',
                   style: const TextStyle(
                       fontSize: 13,
                       fontWeight: FontWeight.w700,
@@ -254,7 +332,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           const Divider(height: 1, color: AppTheme.borderColor),
           const SizedBox(height: 8),
-          // ── Nav items with pointer cursor ──
           ..._sections.asMap().entries.map((e) {
             final i = e.key;
             final s = e.value;
@@ -263,8 +340,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
               onTap: () => setState(() => _selectedSection = i),
               child: AnimatedContainer(
                 duration: const Duration(milliseconds: 150),
-                margin:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+                margin: const EdgeInsets.symmetric(
+                    horizontal: 12, vertical: 2),
                 padding: const EdgeInsets.symmetric(
                     horizontal: 12, vertical: 10),
                 decoration: BoxDecoration(
@@ -317,7 +394,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         return _NotificationsSection(
             business: _business, onSave: _updateBusiness);
       case 5:
-        return _BillingSection(business: _business);
+        return _BillingSection(
+            business: _business, onRefresh: _loadBusiness);
       default:
         return const SizedBox();
     }
@@ -337,7 +415,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           MouseRegion(
             cursor: SystemMouseCursors.click,
             child: ElevatedButton(
-                onPressed: _loadBusiness, child: const Text('Retry')),
+                onPressed: _loadBusiness,
+                child: const Text('Retry')),
           ),
         ],
       ),
@@ -352,7 +431,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
 class _BusinessProfileSection extends StatefulWidget {
   final Map<String, dynamic> business;
   final Future<void> Function(Map<String, dynamic>) onSave;
-
   const _BusinessProfileSection(
       {required this.business, required this.onSave});
 
@@ -361,7 +439,8 @@ class _BusinessProfileSection extends StatefulWidget {
       _BusinessProfileSectionState();
 }
 
-class _BusinessProfileSectionState extends State<_BusinessProfileSection> {
+class _BusinessProfileSectionState
+    extends State<_BusinessProfileSection> {
   late final TextEditingController _nameCtrl;
   late final TextEditingController _phoneCtrl;
   late final TextEditingController _emailCtrl;
@@ -371,7 +450,6 @@ class _BusinessProfileSectionState extends State<_BusinessProfileSection> {
   late final TextEditingController _ownerEmailCtrl;
   late final TextEditingController _logoCtrl;
   late final TextEditingController _bookingCtrl;
-
   bool _saving = false;
   String? _successMsg;
   String? _error;
@@ -380,15 +458,24 @@ class _BusinessProfileSectionState extends State<_BusinessProfileSection> {
   void initState() {
     super.initState();
     final b = widget.business;
-    _nameCtrl = TextEditingController(text: b['business_name'] ?? '');
-    _phoneCtrl = TextEditingController(text: b['business_phone'] ?? '');
-    _emailCtrl = TextEditingController(text: b['business_email'] ?? '');
-    _websiteCtrl = TextEditingController(text: b['company_website'] ?? '');
-    _ownerNameCtrl = TextEditingController(text: b['owner_name'] ?? '');
-    _ownerPhoneCtrl = TextEditingController(text: b['owner_phone'] ?? '');
-    _ownerEmailCtrl = TextEditingController(text: b['owner_email'] ?? '');
-    _logoCtrl = TextEditingController(text: b['company_logo_url'] ?? '');
-    _bookingCtrl = TextEditingController(text: b['booking_link'] ?? '');
+    _nameCtrl =
+        TextEditingController(text: b['business_name'] ?? '');
+    _phoneCtrl =
+        TextEditingController(text: b['business_phone'] ?? '');
+    _emailCtrl =
+        TextEditingController(text: b['business_email'] ?? '');
+    _websiteCtrl =
+        TextEditingController(text: b['company_website'] ?? '');
+    _ownerNameCtrl =
+        TextEditingController(text: b['owner_name'] ?? '');
+    _ownerPhoneCtrl =
+        TextEditingController(text: b['owner_phone'] ?? '');
+    _ownerEmailCtrl =
+        TextEditingController(text: b['owner_email'] ?? '');
+    _logoCtrl =
+        TextEditingController(text: b['company_logo_url'] ?? '');
+    _bookingCtrl =
+        TextEditingController(text: b['booking_link'] ?? '');
   }
 
   @override
@@ -447,18 +534,26 @@ class _BusinessProfileSectionState extends State<_BusinessProfileSection> {
       child: Column(
         children: [
           _SettingsGroup(title: 'Business Info', children: [
-            _SettingsField(label: 'Business Name', controller: _nameCtrl),
-            _SettingsField(label: 'Business Phone', controller: _phoneCtrl),
-            _SettingsField(label: 'Business Email', controller: _emailCtrl),
-            _SettingsField(label: 'Website', controller: _websiteCtrl),
+            _SettingsField(
+                label: 'Business Name', controller: _nameCtrl),
+            _SettingsField(
+                label: 'Business Phone', controller: _phoneCtrl),
+            _SettingsField(
+                label: 'Business Email', controller: _emailCtrl),
+            _SettingsField(
+                label: 'Website', controller: _websiteCtrl),
             _SettingsField(label: 'Logo URL', controller: _logoCtrl),
-            _SettingsField(label: 'Booking Link', controller: _bookingCtrl),
+            _SettingsField(
+                label: 'Booking Link', controller: _bookingCtrl),
           ]),
           const SizedBox(height: 24),
           _SettingsGroup(title: 'Owner Info', children: [
-            _SettingsField(label: 'Owner Name', controller: _ownerNameCtrl),
-            _SettingsField(label: 'Owner Phone', controller: _ownerPhoneCtrl),
-            _SettingsField(label: 'Owner Email', controller: _ownerEmailCtrl),
+            _SettingsField(
+                label: 'Owner Name', controller: _ownerNameCtrl),
+            _SettingsField(
+                label: 'Owner Phone', controller: _ownerPhoneCtrl),
+            _SettingsField(
+                label: 'Owner Email', controller: _ownerEmailCtrl),
           ]),
         ],
       ),
@@ -467,14 +562,14 @@ class _BusinessProfileSectionState extends State<_BusinessProfileSection> {
 }
 
 // ─────────────────────────────────────────────
-//  AI PHONE NUMBER SECTION
+//  AI PHONE SECTION
 // ─────────────────────────────────────────────
 
 class _AIPhoneSection extends StatefulWidget {
   final Map<String, dynamic> business;
   final Future<void> Function(Map<String, dynamic>) onSave;
-
-  const _AIPhoneSection({required this.business, required this.onSave});
+  const _AIPhoneSection(
+      {required this.business, required this.onSave});
 
   @override
   State<_AIPhoneSection> createState() => _AIPhoneSectionState();
@@ -506,7 +601,8 @@ class _AIPhoneSectionState extends State<_AIPhoneSection> {
       _successMsg = null;
     });
     try {
-      await widget.onSave({'ai_phone_number': _phoneCtrl.text.trim()});
+      await widget.onSave(
+          {'ai_phone_number': _phoneCtrl.text.trim()});
       setState(() {
         _successMsg = 'AI Phone Number saved.';
         _saving = false;
@@ -524,7 +620,7 @@ class _AIPhoneSectionState extends State<_AIPhoneSection> {
     return _SectionShell(
       title: 'AI Phone Number',
       subtitle:
-          'A dedicated number used by NexaFlow to send and receive SMS on your behalf.',
+          'A dedicated number used by NexaFlow to send and receive SMS.',
       onSave: _save,
       saving: _saving,
       successMsg: _successMsg,
@@ -545,7 +641,8 @@ class _AIPhoneSectionState extends State<_AIPhoneSection> {
             decoration: BoxDecoration(
               color: AppTheme.brand.withOpacity(0.06),
               borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: AppTheme.brand.withOpacity(0.2)),
+              border:
+                  Border.all(color: AppTheme.brand.withOpacity(0.2)),
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -564,9 +661,7 @@ class _AIPhoneSectionState extends State<_AIPhoneSection> {
                 ),
                 const SizedBox(height: 8),
                 const Text(
-                  "Don't have a number yet? No problem — we'll take care of everything. "
-                  'Reach out to us and we\'ll get a dedicated number set up for your business, '
-                  'fully configured and ready to go.',
+                  "Don't have a number yet? No problem — we'll take care of everything.",
                   style: TextStyle(
                       fontSize: 12,
                       color: AppTheme.textSecondary,
@@ -582,9 +677,7 @@ class _AIPhoneSectionState extends State<_AIPhoneSection> {
                         'A client is requesting a dedicated AI phone number.\n\n'
                         'Business: ${widget.business['business_name'] ?? 'Unknown'}\n'
                         'Owner: ${widget.business['owner_name'] ?? 'Unknown'}\n'
-                        'Email: ${widget.business['owner_email'] ?? 'Unknown'}\n'
-                        'Phone: ${widget.business['owner_phone'] ?? 'Unknown'}\n\n'
-                        'Please follow up to get their number configured.',
+                        'Email: ${widget.business['owner_email'] ?? 'Unknown'}',
                       );
                       if (context.mounted) {
                         ScaffoldMessenger.of(context).showSnackBar(
@@ -622,11 +715,12 @@ class _AIPhoneSectionState extends State<_AIPhoneSection> {
 class _EmailConfigSection extends StatefulWidget {
   final Map<String, dynamic> business;
   final Future<void> Function(Map<String, dynamic>) onSave;
-
-  const _EmailConfigSection({required this.business, required this.onSave});
+  const _EmailConfigSection(
+      {required this.business, required this.onSave});
 
   @override
-  State<_EmailConfigSection> createState() => _EmailConfigSectionState();
+  State<_EmailConfigSection> createState() =>
+      _EmailConfigSectionState();
 }
 
 class _EmailConfigSectionState extends State<_EmailConfigSection> {
@@ -639,8 +733,8 @@ class _EmailConfigSectionState extends State<_EmailConfigSection> {
   @override
   void initState() {
     super.initState();
-    _emailCtrl =
-        TextEditingController(text: widget.business['admin_email'] ?? '');
+    _emailCtrl = TextEditingController(
+        text: widget.business['admin_email'] ?? '');
     _forwardingCtrl = TextEditingController(
         text: widget.business['clean_forwarding_email'] ?? '');
   }
@@ -679,7 +773,8 @@ class _EmailConfigSectionState extends State<_EmailConfigSection> {
   Widget build(BuildContext context) {
     return _SectionShell(
       title: 'Email Configuration',
-      subtitle: 'Configure the email addresses used for sending and receiving.',
+      subtitle:
+          'Configure the email addresses used for sending and receiving.',
       onSave: _save,
       saving: _saving,
       successMsg: _successMsg,
@@ -709,7 +804,8 @@ class _TeamMembersSection extends StatefulWidget {
   const _TeamMembersSection({required this.businessId});
 
   @override
-  State<_TeamMembersSection> createState() => _TeamMembersSectionState();
+  State<_TeamMembersSection> createState() =>
+      _TeamMembersSectionState();
 }
 
 class _TeamMembersSectionState extends State<_TeamMembersSection> {
@@ -731,7 +827,8 @@ class _TeamMembersSectionState extends State<_TeamMembersSection> {
           .select()
           .eq('business_id', widget.businessId);
       setState(() {
-        _members = List<Map<String, dynamic>>.from(res as List);
+        _members =
+            List<Map<String, dynamic>>.from(res as List);
         _loading = false;
       });
     } catch (_) {
@@ -743,13 +840,15 @@ class _TeamMembersSectionState extends State<_TeamMembersSection> {
   Widget build(BuildContext context) {
     return _SectionShell(
       title: 'Team Members',
-      subtitle: 'People who have access to this business account.',
+      subtitle:
+          'People who have access to this business account.',
       child: _loading
           ? const Center(child: CircularProgressIndicator())
           : _members.isEmpty
               ? const Center(
                   child: Text('No team members found.',
-                      style: TextStyle(color: AppTheme.textSecondary)))
+                      style: TextStyle(
+                          color: AppTheme.textSecondary)))
               : Column(
                   children: _members.map((m) {
                     final name =
@@ -763,7 +862,8 @@ class _TeamMembersSectionState extends State<_TeamMembersSection> {
                       decoration: BoxDecoration(
                         color: AppTheme.pageBg,
                         borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: AppTheme.borderColor),
+                        border:
+                            Border.all(color: AppTheme.borderColor),
                       ),
                       child: Row(
                         children: [
@@ -771,7 +871,8 @@ class _TeamMembersSectionState extends State<_TeamMembersSection> {
                             width: 36,
                             height: 36,
                             decoration: BoxDecoration(
-                              color: AppTheme.brand.withOpacity(0.15),
+                              color:
+                                  AppTheme.brand.withOpacity(0.15),
                               shape: BoxShape.circle,
                             ),
                             child: Center(
@@ -789,10 +890,13 @@ class _TeamMembersSectionState extends State<_TeamMembersSection> {
                           const SizedBox(width: 12),
                           Expanded(
                             child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
+                              crossAxisAlignment:
+                                  CrossAxisAlignment.start,
                               children: [
                                 Text(
-                                  name.isNotEmpty ? name : 'Unnamed',
+                                  name.isNotEmpty
+                                      ? name
+                                      : 'Unnamed',
                                   style: const TextStyle(
                                       fontSize: 13,
                                       fontWeight: FontWeight.w600,
@@ -801,7 +905,8 @@ class _TeamMembersSectionState extends State<_TeamMembersSection> {
                                 Text(email,
                                     style: const TextStyle(
                                         fontSize: 12,
-                                        color: AppTheme.textSecondary)),
+                                        color:
+                                            AppTheme.textSecondary)),
                               ],
                             ),
                           ),
@@ -809,11 +914,14 @@ class _TeamMembersSectionState extends State<_TeamMembersSection> {
                             padding: const EdgeInsets.symmetric(
                                 horizontal: 10, vertical: 4),
                             decoration: BoxDecoration(
-                              color: AppTheme.brand.withOpacity(0.1),
-                              borderRadius: BorderRadius.circular(20),
+                              color:
+                                  AppTheme.brand.withOpacity(0.1),
+                              borderRadius:
+                                  BorderRadius.circular(20),
                             ),
                             child: Text(
-                              role[0].toUpperCase() + role.substring(1),
+                              role[0].toUpperCase() +
+                                  role.substring(1),
                               style: TextStyle(
                                   fontSize: 11,
                                   fontWeight: FontWeight.w600,
@@ -836,7 +944,6 @@ class _TeamMembersSectionState extends State<_TeamMembersSection> {
 class _NotificationsSection extends StatefulWidget {
   final Map<String, dynamic> business;
   final Future<void> Function(Map<String, dynamic>) onSave;
-
   const _NotificationsSection(
       {required this.business, required this.onSave});
 
@@ -845,7 +952,8 @@ class _NotificationsSection extends StatefulWidget {
       _NotificationsSectionState();
 }
 
-class _NotificationsSectionState extends State<_NotificationsSection> {
+class _NotificationsSectionState
+    extends State<_NotificationsSection> {
   late bool _smsConsent;
   bool _saving = false;
   String? _successMsg;
@@ -854,7 +962,8 @@ class _NotificationsSectionState extends State<_NotificationsSection> {
   @override
   void initState() {
     super.initState();
-    _smsConsent = widget.business['sms_consent'] as bool? ?? false;
+    _smsConsent =
+        widget.business['sms_consent'] as bool? ?? false;
   }
 
   Future<void> _save() async {
@@ -881,19 +990,23 @@ class _NotificationsSectionState extends State<_NotificationsSection> {
   Widget build(BuildContext context) {
     return _SectionShell(
       title: 'Notifications',
-      subtitle: 'Control how and when you receive notifications.',
+      subtitle:
+          'Control how and when you receive notifications.',
       onSave: _save,
       saving: _saving,
       successMsg: _successMsg,
       error: _error,
-      child: _SettingsGroup(title: 'Notification Preferences', children: [
-        _ToggleRow(
-          label: 'SMS Consent',
-          subtitle: 'Allow the system to send SMS notifications.',
-          value: _smsConsent,
-          onChanged: (v) => setState(() => _smsConsent = v),
-        ),
-      ]),
+      child: _SettingsGroup(
+          title: 'Notification Preferences',
+          children: [
+            _ToggleRow(
+              label: 'SMS Consent',
+              subtitle:
+                  'Allow the system to send SMS notifications.',
+              value: _smsConsent,
+              onChanged: (v) => setState(() => _smsConsent = v),
+            ),
+          ]),
     );
   }
 }
@@ -902,18 +1015,181 @@ class _NotificationsSectionState extends State<_NotificationsSection> {
 //  BILLING SECTION
 // ─────────────────────────────────────────────
 
-class _BillingSection extends StatelessWidget {
+class _BillingSection extends StatefulWidget {
   final Map<String, dynamic> business;
-  const _BillingSection({required this.business});
+  final Future<void> Function() onRefresh;
+
+  const _BillingSection({
+    required this.business,
+    required this.onRefresh,
+  });
+
+  @override
+  State<_BillingSection> createState() => _BillingSectionState();
+}
+
+class _BillingSectionState extends State<_BillingSection> {
+  bool _cancelling = false;
+
+  String get _currentPlan =>
+      widget.business['subscription_status'] as String? ?? '';
+  bool get _isPaid => widget.business['is_paid'] as bool? ?? false;
+  String get _subscriptionId =>
+      widget.business['subscription_id'] as String? ?? '';
+
+  // Map plan name to the _StripePlan
+  _StripePlan? get _currentStripePlan {
+    try {
+      return _kPlans.firstWhere(
+        (p) => p.name.toLowerCase() == _currentPlan.toLowerCase(),
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _selectPlan(_StripePlan plan) async {
+    // Don't show if already on this plan
+    if (_isPaid &&
+        _currentPlan.toLowerCase() == plan.name.toLowerCase()) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('You are already on the ${plan.name} plan.'),
+          backgroundColor: AppTheme.brand,
+        ),
+      );
+      return;
+    }
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (_) => _PlanConfirmModal(
+        plan: plan,
+        currentPlan: _isPaid ? _currentStripePlan : null,
+        isUpgrade: !_isPaid ||
+            _kPlans.indexOf(plan) >
+                (_currentStripePlan != null
+                    ? _kPlans.indexOf(_currentStripePlan!)
+                    : -1),
+      ),
+    );
+
+    if (confirmed == true) {
+      // Open Stripe payment link in new tab
+      final uri = Uri.parse(plan.paymentLink);
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      }
+
+      // Show a snackbar telling them to come back after payment
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text(
+                'Complete your payment in Stripe — your plan will update automatically once done.'),
+            backgroundColor: AppTheme.brand,
+            duration: const Duration(seconds: 6),
+            action: SnackBarAction(
+              label: 'Refresh',
+              textColor: Colors.white,
+              onPressed: widget.onRefresh,
+            ),
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _cancelSubscription() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: AppTheme.cardBg,
+        title: const Text('Cancel Subscription?',
+            style: TextStyle(color: AppTheme.textPrimary)),
+        content: const Text(
+          'Your subscription will remain active until the end of the current billing period, then will not renew. You can resubscribe at any time.',
+          style: TextStyle(
+              color: AppTheme.textSecondary, height: 1.5),
+        ),
+        actions: [
+          MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Keep Subscription'),
+            ),
+          ),
+          MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: ElevatedButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.red),
+              child: const Text('Yes, Cancel'),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    setState(() => _cancelling = true);
+    try {
+      // Call Supabase Edge Function to cancel via Stripe API
+      final supabase = Supabase.instance.client;
+      await supabase.functions.invoke(
+        'stripe-webhook',
+        body: {
+          'action': 'cancel',
+          'subscription_id': _subscriptionId,
+        },
+      );
+      await widget.onRefresh();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+                'Subscription cancelled. Access continues until end of billing period.'),
+            backgroundColor: Color(0xFF10B981),
+          ),
+        );
+      }
+    } catch (e) {
+      // If edge function cancel fails, send notification email as fallback
+      await _sendNotificationEmail(
+        'Cancellation Request',
+        'A client has requested to cancel their subscription.\n\n'
+        'Business: ${widget.business['business_name'] ?? 'Unknown'}\n'
+        'Current Plan: $_currentPlan\n'
+        'Subscription ID: $_subscriptionId\n\n'
+        'Please process this cancellation in Stripe.',
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+                'Cancellation request sent. We\'ll process it within 24 hours.'),
+            backgroundColor: Color(0xFF10B981),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _cancelling = false);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    final status = business['subscription_status'] as String? ?? 'unknown';
-    final isPaid = business['is_paid'] as bool? ?? false;
-    final minutesUsed = business['minutes_used_this_month'] as int? ?? 0;
-    final includedMinutes = business['included_minutes'] as int? ?? 0;
-    final clientId = business['client_id'] as String? ?? '—';
-    final subId = business['subscription_id'] as String? ?? '—';
+    final minutesUsed =
+        widget.business['minutes_used_this_month'] as int? ?? 0;
+    final includedMinutes =
+        widget.business['included_minutes'] as int? ?? 0;
+    final clientId =
+        widget.business['client_id'] as String? ?? '—';
+    final subId =
+        widget.business['subscription_id'] as String? ?? '—';
 
     return _SectionShell(
       title: 'Billing',
@@ -921,16 +1197,16 @@ class _BillingSection extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Status card
+          // ── Current plan status card ──
           Container(
             padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(
-              color: isPaid
+              color: _isPaid
                   ? const Color(0xFF10B981).withOpacity(0.08)
                   : Colors.red.withOpacity(0.08),
               borderRadius: BorderRadius.circular(10),
               border: Border.all(
-                color: isPaid
+                color: _isPaid
                     ? const Color(0xFF10B981).withOpacity(0.3)
                     : Colors.red.withOpacity(0.3),
               ),
@@ -938,10 +1214,12 @@ class _BillingSection extends StatelessWidget {
             child: Row(
               children: [
                 Icon(
-                  isPaid
+                  _isPaid
                       ? Icons.check_circle_outline
                       : Icons.warning_amber_outlined,
-                  color: isPaid ? const Color(0xFF10B981) : Colors.red,
+                  color: _isPaid
+                      ? const Color(0xFF10B981)
+                      : Colors.red,
                   size: 28,
                 ),
                 const SizedBox(width: 16),
@@ -950,24 +1228,35 @@ class _BillingSection extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        isPaid
+                        _isPaid
                             ? 'Active Subscription'
                             : 'No Active Subscription',
                         style: TextStyle(
                             fontSize: 15,
                             fontWeight: FontWeight.w700,
-                            color: isPaid
+                            color: _isPaid
                                 ? const Color(0xFF10B981)
                                 : Colors.red),
                       ),
                       Text(
-                        status.isNotEmpty
-                            ? status[0].toUpperCase() + status.substring(1)
-                            : 'Unknown',
+                        _isPaid && _currentPlan.isNotEmpty
+                            ? '${_currentPlan[0].toUpperCase()}${_currentPlan.substring(1)} Plan'
+                            : 'Subscribe below to get started',
                         style: const TextStyle(
-                            fontSize: 13, color: AppTheme.textSecondary),
+                            fontSize: 13,
+                            color: AppTheme.textSecondary),
                       ),
                     ],
+                  ),
+                ),
+                // Refresh button to check if payment completed
+                MouseRegion(
+                  cursor: SystemMouseCursors.click,
+                  child: IconButton(
+                    onPressed: widget.onRefresh,
+                    icon: const Icon(Icons.refresh_rounded,
+                        size: 18, color: AppTheme.textSecondary),
+                    tooltip: 'Refresh plan status',
                   ),
                 ),
               ],
@@ -975,7 +1264,7 @@ class _BillingSection extends StatelessWidget {
           ),
           const SizedBox(height: 24),
 
-          // Plans
+          // ── Plan cards ──
           const Text('Available Plans',
               style: TextStyle(
                   fontSize: 13,
@@ -983,115 +1272,104 @@ class _BillingSection extends StatelessWidget {
                   color: AppTheme.textSecondary)),
           const SizedBox(height: 12),
           Row(
-            children: [
-              Expanded(
-                child: _PlanCard(
-                  name: 'Starter',
-                  price: '\$97',
-                  period: '/mo',
-                  features: [
-                    '500 AI messages/mo',
-                    'SMS & Email conversations',
-                    'Contacts & Pipeline CRM',
-                    'Basic Reporting',
-                    'Email support',
-                  ],
-                  color: const Color(0xFF3B82F6),
-                  isCurrent: isPaid && status == 'starter',
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: _kPlans.map((plan) {
+              final isCurrent = _isPaid &&
+                  _currentPlan.toLowerCase() ==
+                      plan.name.toLowerCase();
+              return Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.only(right: 12),
+                  child: _PlanCard(
+                    plan: plan,
+                    isCurrent: isCurrent,
+                    onSelect: () => _selectPlan(plan),
+                  ),
                 ),
-              ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: _PlanCard(
-                  name: 'Growth',
-                  price: '\$197',
-                  period: '/mo',
-                  features: [
-                    '2,000 AI messages/mo',
-                    'Everything in Starter',
-                    'Campaign automation',
-                    'Advanced Reporting',
-                    'Priority support',
-                  ],
-                  color: AppTheme.brand,
-                  isCurrent: isPaid && status == 'growth',
-                  isPopular: true,
-                ),
-              ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: _PlanCard(
-                  name: 'Pro',
-                  price: '\$397',
-                  period: '/mo',
-                  features: [
-                    'Unlimited AI messages',
-                    'Everything in Growth',
-                    'White-label options',
-                    'Custom integrations',
-                    'Dedicated support',
-                  ],
-                  color: const Color(0xFF8B5CF6),
-                  isCurrent: isPaid && status == 'pro',
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Center(
-            child: MouseRegion(
-              cursor: SystemMouseCursors.click,
-              child: OutlinedButton.icon(
-                onPressed: () async {
-                  final businessName =
-                      business['business_name'] as String? ?? 'Unknown';
-                  final ownerEmail =
-                      business['owner_email'] as String? ?? 'Unknown';
-                  await _sendNotificationEmail(
-                    'Plan Change Request',
-                    'A client wants to change their subscription plan.\n\n'
-                    'Business: $businessName\n'
-                    'Current Plan: $status\n'
-                    'Owner Email: $ownerEmail\n\n'
-                    'Please follow up to process their plan change.',
-                  );
-                  if (context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text(
-                            'Request sent! We\'ll be in touch shortly.'),
-                        backgroundColor: Color(0xFF10B981),
-                      ),
-                    );
-                  }
-                },
-                icon: const Icon(Icons.mail_outline, size: 14),
-                label: const Text('Contact Us to Change Your Plan',
-                    style: TextStyle(fontSize: 12)),
-                style: OutlinedButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 16, vertical: 8),
-                  minimumSize: Size.zero,
-                ),
-              ),
-            ),
+              );
+            }).toList(),
           ),
           const SizedBox(height: 24),
 
-          // Usage
+          // ── Cancel subscription (only shown if active) ──
+          if (_isPaid && _subscriptionId.isNotEmpty) ...[
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: AppTheme.pageBg,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: AppTheme.borderColor),
+              ),
+              child: Row(
+                children: [
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Cancel Subscription',
+                            style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                                color: AppTheme.textPrimary)),
+                        SizedBox(height: 2),
+                        Text(
+                          'Your access continues until the end of your current billing period.',
+                          style: TextStyle(
+                              fontSize: 12,
+                              color: AppTheme.textSecondary),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    child: OutlinedButton(
+                      onPressed:
+                          _cancelling ? null : _cancelSubscription,
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.red,
+                        side: const BorderSide(color: Colors.red),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 10),
+                      ),
+                      child: _cancelling
+                          ? const SizedBox(
+                              width: 14,
+                              height: 14,
+                              child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: Colors.red))
+                          : const Text('Cancel Plan',
+                              style: TextStyle(fontSize: 13)),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 24),
+          ],
+
+          // ── Usage ──
           _SettingsGroup(title: 'Usage This Month', children: [
-            _InfoRow(label: 'Minutes Used', value: '$minutesUsed'),
-            _InfoRow(label: 'Included Minutes', value: '$includedMinutes'),
+            _InfoRow(
+                label: 'Minutes Used',
+                value: '$minutesUsed'),
+            _InfoRow(
+                label: 'Included Minutes',
+                value: '$includedMinutes'),
             if (includedMinutes > 0) ...[
               const SizedBox(height: 8),
               ClipRRect(
                 borderRadius: BorderRadius.circular(4),
                 child: LinearProgressIndicator(
                   value: includedMinutes > 0
-                      ? (minutesUsed / includedMinutes).clamp(0.0, 1.0)
+                      ? (minutesUsed / includedMinutes)
+                          .clamp(0.0, 1.0)
                       : 0,
                   backgroundColor: AppTheme.borderColor,
-                  valueColor: AlwaysStoppedAnimation(AppTheme.brand),
+                  valueColor:
+                      AlwaysStoppedAnimation(AppTheme.brand),
                   minHeight: 8,
                 ),
               ),
@@ -1099,7 +1377,7 @@ class _BillingSection extends StatelessWidget {
           ]),
           const SizedBox(height: 20),
 
-          // IDs
+          // ── Subscription details ──
           _SettingsGroup(title: 'Subscription Details', children: [
             _InfoRow(label: 'Client ID', value: clientId),
             _InfoRow(label: 'Subscription ID', value: subId),
@@ -1110,23 +1388,19 @@ class _BillingSection extends StatelessWidget {
   }
 }
 
+// ─────────────────────────────────────────────
+//  PLAN CARD
+// ─────────────────────────────────────────────
+
 class _PlanCard extends StatelessWidget {
-  final String name;
-  final String price;
-  final String period;
-  final List<String> features;
-  final Color color;
+  final _StripePlan plan;
   final bool isCurrent;
-  final bool isPopular;
+  final VoidCallback onSelect;
 
   const _PlanCard({
-    required this.name,
-    required this.price,
-    required this.period,
-    required this.features,
-    required this.color,
-    this.isCurrent = false,
-    this.isPopular = false,
+    required this.plan,
+    required this.isCurrent,
+    required this.onSelect,
   });
 
   @override
@@ -1134,10 +1408,12 @@ class _PlanCard extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: isCurrent ? color.withOpacity(0.06) : AppTheme.cardBg,
+        color: isCurrent
+            ? plan.color.withOpacity(0.06)
+            : AppTheme.cardBg,
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
-          color: isCurrent ? color : AppTheme.borderColor,
+          color: isCurrent ? plan.color : AppTheme.borderColor,
           width: isCurrent ? 2 : 1,
         ),
       ),
@@ -1146,39 +1422,39 @@ class _PlanCard extends StatelessWidget {
         children: [
           Row(
             children: [
-              Text(name,
+              Text(plan.name,
                   style: TextStyle(
                       fontSize: 14,
                       fontWeight: FontWeight.w700,
-                      color: color)),
+                      color: plan.color)),
               const Spacer(),
-              if (isPopular)
+              if (plan.isPopular)
                 Container(
                   padding: const EdgeInsets.symmetric(
                       horizontal: 8, vertical: 3),
                   decoration: BoxDecoration(
-                    color: color.withOpacity(0.12),
+                    color: plan.color.withOpacity(0.12),
                     borderRadius: BorderRadius.circular(20),
                   ),
                   child: Text('Popular',
                       style: TextStyle(
                           fontSize: 10,
                           fontWeight: FontWeight.w700,
-                          color: color)),
+                          color: plan.color)),
                 ),
               if (isCurrent)
                 Container(
                   padding: const EdgeInsets.symmetric(
                       horizontal: 8, vertical: 3),
                   decoration: BoxDecoration(
-                    color: color.withOpacity(0.12),
+                    color: plan.color.withOpacity(0.12),
                     borderRadius: BorderRadius.circular(20),
                   ),
                   child: Text('Current',
                       style: TextStyle(
                           fontSize: 10,
                           fontWeight: FontWeight.w700,
-                          color: color)),
+                          color: plan.color)),
                 ),
             ],
           ),
@@ -1186,23 +1462,24 @@ class _PlanCard extends StatelessWidget {
           Row(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
-              Text(price,
+              Text(plan.price,
                   style: const TextStyle(
                       fontSize: 28,
                       fontWeight: FontWeight.w800,
                       color: AppTheme.textPrimary)),
-              Text(period,
-                  style: const TextStyle(
-                      fontSize: 13, color: AppTheme.textSecondary)),
+              const Text('/mo',
+                  style: TextStyle(
+                      fontSize: 13,
+                      color: AppTheme.textSecondary)),
             ],
           ),
           const SizedBox(height: 16),
-          ...features.map((f) => Padding(
+          ...plan.features.map((f) => Padding(
                 padding: const EdgeInsets.only(bottom: 8),
                 child: Row(
                   children: [
                     Icon(Icons.check_circle_outline,
-                        size: 14, color: color),
+                        size: 14, color: plan.color),
                     const SizedBox(width: 6),
                     Expanded(
                       child: Text(f,
@@ -1213,8 +1490,217 @@ class _PlanCard extends StatelessWidget {
                   ],
                 ),
               )),
+          const SizedBox(height: 16),
+          // ── Select Plan button ──
+          MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: onSelect,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor:
+                      isCurrent ? AppTheme.pageBg : plan.color,
+                  foregroundColor:
+                      isCurrent ? plan.color : Colors.white,
+                  elevation: 0,
+                  side: isCurrent
+                      ? BorderSide(color: plan.color)
+                      : null,
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8)),
+                ),
+                child: Text(
+                  isCurrent ? 'Current Plan' : 'Select Plan',
+                  style: const TextStyle(
+                      fontSize: 13, fontWeight: FontWeight.w600),
+                ),
+              ),
+            ),
+          ),
         ],
       ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+//  PLAN CONFIRM MODAL
+// ─────────────────────────────────────────────
+
+class _PlanConfirmModal extends StatelessWidget {
+  final _StripePlan plan;
+  final _StripePlan? currentPlan;
+  final bool isUpgrade;
+
+  const _PlanConfirmModal({
+    required this.plan,
+    this.currentPlan,
+    required this.isUpgrade,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: AppTheme.cardBg,
+      shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16)),
+      title: Row(
+        children: [
+          Icon(
+            isUpgrade
+                ? Icons.arrow_upward_rounded
+                : Icons.arrow_downward_rounded,
+            color: plan.color,
+            size: 20,
+          ),
+          const SizedBox(width: 8),
+          Text(
+            currentPlan == null
+                ? 'Subscribe to ${plan.name}'
+                : '${isUpgrade ? 'Upgrade' : 'Downgrade'} to ${plan.name}',
+            style: const TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w700,
+                color: AppTheme.textPrimary),
+          ),
+        ],
+      ),
+      content: SizedBox(
+        width: 400,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (currentPlan != null) ...[
+              Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: AppTheme.pageBg,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppTheme.borderColor),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        children: [
+                          Text('Current',
+                              style: const TextStyle(
+                                  fontSize: 11,
+                                  color: AppTheme.textSecondary)),
+                          const SizedBox(height: 4),
+                          Text(currentPlan!.name,
+                              style: TextStyle(
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.w700,
+                                  color: currentPlan!.color)),
+                          Text(currentPlan!.price + '/mo',
+                              style: const TextStyle(
+                                  fontSize: 12,
+                                  color: AppTheme.textSecondary)),
+                        ],
+                      ),
+                    ),
+                    Icon(Icons.arrow_forward_rounded,
+                        color: AppTheme.textSecondary, size: 20),
+                    Expanded(
+                      child: Column(
+                        children: [
+                          Text('New',
+                              style: const TextStyle(
+                                  fontSize: 11,
+                                  color: AppTheme.textSecondary)),
+                          const SizedBox(height: 4),
+                          Text(plan.name,
+                              style: TextStyle(
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.w700,
+                                  color: plan.color)),
+                          Text(plan.price + '/mo',
+                              style: const TextStyle(
+                                  fontSize: 12,
+                                  color: AppTheme.textSecondary)),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+            ] else ...[
+              Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: plan.color.withOpacity(0.06),
+                  borderRadius: BorderRadius.circular(8),
+                  border:
+                      Border.all(color: plan.color.withOpacity(0.2)),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.star_outline_rounded,
+                        color: plan.color, size: 20),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('${plan.name} Plan — ${plan.price}/mo',
+                              style: TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w700,
+                                  color: plan.color)),
+                          const SizedBox(height: 2),
+                          const Text(
+                              '15-day free trial · Cancel anytime',
+                              style: TextStyle(
+                                  fontSize: 12,
+                                  color: AppTheme.textSecondary)),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+            ],
+            const Text(
+              "You'll be taken to Stripe's secure checkout to complete your payment. Your plan will update automatically once payment is confirmed.",
+              style: TextStyle(
+                  fontSize: 13,
+                  color: AppTheme.textSecondary,
+                  height: 1.5),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        MouseRegion(
+          cursor: SystemMouseCursors.click,
+          child: TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+        ),
+        MouseRegion(
+          cursor: SystemMouseCursors.click,
+          child: ElevatedButton.icon(
+            onPressed: () => Navigator.of(context).pop(true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: plan.color,
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 20, vertical: 10),
+            ),
+            icon: const Icon(Icons.open_in_new_rounded, size: 14),
+            label: const Text('Confirm & Pay',
+                style: TextStyle(
+                    fontSize: 13, fontWeight: FontWeight.w600)),
+          ),
+        ),
+      ],
     );
   }
 }
@@ -1266,7 +1752,6 @@ class _SectionShell extends StatelessWidget {
             const SizedBox(height: 28),
             Row(
               children: [
-                // ── Save button with pointer cursor ──
                 MouseRegion(
                   cursor: SystemMouseCursors.click,
                   child: ElevatedButton(
@@ -1276,7 +1761,8 @@ class _SectionShell extends StatelessWidget {
                             width: 16,
                             height: 16,
                             child: CircularProgressIndicator(
-                                strokeWidth: 2, color: Colors.white))
+                                strokeWidth: 2,
+                                color: Colors.white))
                         : const Text('Save Changes'),
                   ),
                 ),
@@ -1292,8 +1778,8 @@ class _SectionShell extends StatelessWidget {
                 if (error != null) ...[
                   const SizedBox(width: 12),
                   Text(error!,
-                      style:
-                          const TextStyle(color: Colors.red, fontSize: 13)),
+                      style: const TextStyle(
+                          color: Colors.red, fontSize: 13)),
                 ],
               ],
             ),
@@ -1307,8 +1793,8 @@ class _SectionShell extends StatelessWidget {
 class _SettingsGroup extends StatelessWidget {
   final String title;
   final List<Widget> children;
-
-  const _SettingsGroup({required this.title, required this.children});
+  const _SettingsGroup(
+      {required this.title, required this.children});
 
   @override
   Widget build(BuildContext context) {
@@ -1338,18 +1824,17 @@ class _SettingsGroup extends StatelessWidget {
   }
 }
 
-// FIX: enabled is now in the constructor with a default of true
 class _SettingsField extends StatelessWidget {
   final String label;
   final TextEditingController controller;
   final String? hint;
-  final bool enabled; // ← FIX: field now initialized via constructor
+  final bool enabled;
 
   const _SettingsField({
     required this.label,
     required this.controller,
     this.hint,
-    this.enabled = true, // defaults to true so existing call sites need no changes
+    this.enabled = true,
   });
 
   @override
@@ -1432,11 +1917,11 @@ class _ToggleRow extends StatelessWidget {
                 if (subtitle != null)
                   Text(subtitle!,
                       style: const TextStyle(
-                          fontSize: 12, color: AppTheme.textSecondary)),
+                          fontSize: 12,
+                          color: AppTheme.textSecondary)),
               ],
             ),
           ),
-          // Switch already shows a hand cursor natively on web
           Switch(
             value: value,
             onChanged: onChanged,
@@ -1451,7 +1936,6 @@ class _ToggleRow extends StatelessWidget {
 class _InfoRow extends StatelessWidget {
   final String label;
   final String value;
-
   const _InfoRow({required this.label, required this.value});
 
   @override
