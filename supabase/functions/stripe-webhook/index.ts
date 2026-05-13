@@ -47,11 +47,12 @@ serve(async (req) => {
       .maybeSingle()
 
     if (business) {
+      // Only set is_paid and IDs here — plan name set by customer.subscription.updated
+      // which fires immediately after and has the correct price ID
       await supabase
         .from('businesses')
         .update({
           is_paid: true,
-          subscription_status: 'starter',
           client_id: customerId,
           subscription_id: subscriptionId,
         })
