@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme/app_theme.dart';
 import '../widgets/clickable.dart';
@@ -87,18 +88,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
   }
 
   void _showContactDetail(Map<String, dynamic> lead) {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (_) => _ContactDetailSheet(
-        lead: lead,
-        onUpdated: () {
-          Navigator.pop(context);
-          _loadLeads();
-        },
-      ),
-    );
+    context.go('/contacts/${lead['id']}');
   }
 
   @override
@@ -147,7 +137,6 @@ class _ContactsScreenState extends State<ContactsScreen> {
               style: const TextStyle(
                   fontSize: 12, color: AppTheme.textSecondary)),
           const SizedBox(width: 16),
-          // ── Add Contact button with pointer cursor ──
           MouseRegion(
             cursor: SystemMouseCursors.click,
             child: ElevatedButton.icon(
@@ -182,25 +171,21 @@ class _ContactsScreenState extends State<ContactsScreen> {
               fillColor: AppTheme.cardBg,
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(8),
-                borderSide:
-                    const BorderSide(color: AppTheme.borderColor),
+                borderSide: const BorderSide(color: AppTheme.borderColor),
               ),
               enabledBorder: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(8),
-                borderSide:
-                    const BorderSide(color: AppTheme.borderColor),
+                borderSide: const BorderSide(color: AppTheme.borderColor),
               ),
               focusedBorder: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(8),
-                borderSide:
-                    const BorderSide(color: AppTheme.brand, width: 2),
+                borderSide: const BorderSide(color: AppTheme.brand, width: 2),
               ),
               contentPadding: const EdgeInsets.symmetric(vertical: 10),
             ),
           ),
         ),
         const SizedBox(width: 12),
-        // ── Status dropdown with pointer cursor ──
         MouseRegion(
           cursor: SystemMouseCursors.click,
           child: Container(
@@ -231,7 +216,6 @@ class _ContactsScreenState extends State<ContactsScreen> {
           ),
         ),
         const SizedBox(width: 12),
-        // ── Refresh button with pointer cursor ──
         MouseRegion(
           cursor: SystemMouseCursors.click,
           child: IconButton(
@@ -249,29 +233,19 @@ class _ContactsScreenState extends State<ContactsScreen> {
     final total = _allLeads.length;
     final newCount =
         _allLeads.where((l) => l['lead_status'] == 'New').length;
-    final inConvo = _allLeads
-        .where((l) => l['lead_status'] == 'In Conversation')
-        .length;
-    final won =
-        _allLeads.where((l) => l['lead_status'] == 'Won').length;
+    final inConvo =
+        _allLeads.where((l) => l['lead_status'] == 'In Conversation').length;
+    final won = _allLeads.where((l) => l['lead_status'] == 'Won').length;
 
     return Row(
       children: [
-        _MiniStat(
-            label: 'Total', value: '$total', color: AppTheme.brand),
+        _MiniStat(label: 'Total', value: '$total', color: AppTheme.brand),
         const SizedBox(width: 8),
-        _MiniStat(
-            label: 'New',
-            value: '$newCount',
-            color: const Color(0xFF6366f1)),
+        _MiniStat(label: 'New', value: '$newCount', color: const Color(0xFF6366f1)),
         const SizedBox(width: 8),
-        _MiniStat(
-            label: 'In Conversation',
-            value: '$inConvo',
-            color: const Color(0xFFf59e0b)),
+        _MiniStat(label: 'In Conversation', value: '$inConvo', color: const Color(0xFFf59e0b)),
         const SizedBox(width: 8),
-        _MiniStat(
-            label: 'Won', value: '$won', color: AppTheme.success),
+        _MiniStat(label: 'Won', value: '$won', color: AppTheme.success),
       ],
     );
   }
@@ -285,12 +259,10 @@ class _ContactsScreenState extends State<ContactsScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.people_outline,
-                size: 48, color: AppTheme.textMuted),
+            const Icon(Icons.people_outline, size: 48, color: AppTheme.textMuted),
             const SizedBox(height: 12),
             const Text('No contacts found',
-                style: TextStyle(
-                    fontSize: 15, color: AppTheme.textSecondary)),
+                style: TextStyle(fontSize: 15, color: AppTheme.textSecondary)),
             const SizedBox(height: 8),
             MouseRegion(
               cursor: SystemMouseCursors.click,
@@ -328,54 +300,17 @@ class _ContactsScreenState extends State<ContactsScreen> {
 
   Widget _buildTableHeader() {
     return Container(
-      padding:
-          const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       decoration: const BoxDecoration(
-        border:
-            Border(bottom: BorderSide(color: AppTheme.borderColor)),
+        border: Border(bottom: BorderSide(color: AppTheme.borderColor)),
       ),
       child: const Row(
         children: [
-          Expanded(
-              flex: 3,
-              child: Text('NAME',
-                  style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w700,
-                      color: AppTheme.textSecondary,
-                      letterSpacing: 1))),
-          Expanded(
-              flex: 3,
-              child: Text('EMAIL',
-                  style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w700,
-                      color: AppTheme.textSecondary,
-                      letterSpacing: 1))),
-          Expanded(
-              flex: 2,
-              child: Text('PHONE',
-                  style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w700,
-                      color: AppTheme.textSecondary,
-                      letterSpacing: 1))),
-          Expanded(
-              flex: 2,
-              child: Text('SOURCE',
-                  style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w700,
-                      color: AppTheme.textSecondary,
-                      letterSpacing: 1))),
-          Expanded(
-              flex: 2,
-              child: Text('STATUS',
-                  style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w700,
-                      color: AppTheme.textSecondary,
-                      letterSpacing: 1))),
+          Expanded(flex: 3, child: Text('NAME', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
+          Expanded(flex: 3, child: Text('EMAIL', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
+          Expanded(flex: 2, child: Text('PHONE', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
+          Expanded(flex: 2, child: Text('SOURCE', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
+          Expanded(flex: 2, child: Text('STATUS', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
           SizedBox(width: 40),
         ],
       ),
@@ -394,8 +329,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
       child: InkWell(
         onTap: () => _showContactDetail(lead),
         child: Padding(
-          padding:
-              const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           child: Row(
             children: [
               Expanded(
@@ -429,39 +363,16 @@ class _ContactsScreenState extends State<ContactsScreen> {
                   ],
                 ),
               ),
-              Expanded(
-                flex: 3,
-                child: Text(email,
-                    style: const TextStyle(
-                        fontSize: 13,
-                        color: AppTheme.textSecondary)),
-              ),
-              Expanded(
-                flex: 2,
-                child: Text(phone,
-                    style: const TextStyle(
-                        fontSize: 13,
-                        color: AppTheme.textSecondary)),
-              ),
-              Expanded(
-                flex: 2,
-                child: Text(source,
-                    style: const TextStyle(
-                        fontSize: 13,
-                        color: AppTheme.textSecondary)),
-              ),
-              Expanded(
-                flex: 2,
-                child: _StatusBadge(status: status),
-              ),
-              // ── More options button with pointer cursor ──
+              Expanded(flex: 3, child: Text(email, style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary))),
+              Expanded(flex: 2, child: Text(phone, style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary))),
+              Expanded(flex: 2, child: Text(source, style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary))),
+              Expanded(flex: 2, child: _StatusBadge(status: status)),
               SizedBox(
                 width: 40,
                 child: MouseRegion(
                   cursor: SystemMouseCursors.click,
                   child: IconButton(
-                    icon: const Icon(Icons.more_vert,
-                        size: 16, color: AppTheme.textMuted),
+                    icon: const Icon(Icons.arrow_forward_ios, size: 14, color: AppTheme.textMuted),
                     onPressed: () => _showContactDetail(lead),
                   ),
                 ),
@@ -474,23 +385,19 @@ class _ContactsScreenState extends State<ContactsScreen> {
   }
 }
 
-// ── MINI STAT ──────────────────────────────────────────────────────────────────
+// ── MINI STAT ─────────────────────────────────────────────────────────────────
 
 class _MiniStat extends StatelessWidget {
   final String label;
   final String value;
   final Color color;
-  const _MiniStat(
-      {required this.label,
-      required this.value,
-      required this.color});
+  const _MiniStat({required this.label, required this.value, required this.color});
 
   @override
   Widget build(BuildContext context) {
     return Expanded(
       child: Container(
-        padding:
-            const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         decoration: BoxDecoration(
           color: color.withValues(alpha: 0.08),
           borderRadius: BorderRadius.circular(8),
@@ -498,15 +405,9 @@ class _MiniStat extends StatelessWidget {
         ),
         child: Row(
           children: [
-            Text(value,
-                style: TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w700,
-                    color: color)),
+            Text(value, style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: color)),
             const SizedBox(width: 6),
-            Text(label,
-                style: const TextStyle(
-                    fontSize: 11, color: AppTheme.textSecondary)),
+            Text(label, style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
           ],
         ),
       ),
@@ -514,7 +415,7 @@ class _MiniStat extends StatelessWidget {
   }
 }
 
-// ── STATUS BADGE ───────────────────────────────────────────────────────────────
+// ── STATUS BADGE ──────────────────────────────────────────────────────────────
 
 class _StatusBadge extends StatelessWidget {
   final String status;
@@ -524,42 +425,26 @@ class _StatusBadge extends StatelessWidget {
   Widget build(BuildContext context) {
     Color color;
     switch (status.toLowerCase()) {
-      case 'new':
-        color = AppTheme.brand;
-        break;
-      case 'in conversation':
-        color = const Color(0xFFf59e0b);
-        break;
-      case 'qualified':
-        color = const Color(0xFF8b5cf6);
-        break;
-      case 'won':
-        color = AppTheme.success;
-        break;
-      case 'lost':
-        color = AppTheme.error;
-        break;
-      default:
-        color = AppTheme.textSecondary;
+      case 'new': color = AppTheme.brand; break;
+      case 'in conversation': color = const Color(0xFFf59e0b); break;
+      case 'qualified': color = const Color(0xFF8b5cf6); break;
+      case 'won': color = AppTheme.success; break;
+      case 'lost': color = AppTheme.error; break;
+      default: color = AppTheme.textSecondary;
     }
     return Container(
-      padding:
-          const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(
         color: color.withValues(alpha: 0.1),
         borderRadius: BorderRadius.circular(99),
         border: Border.all(color: color.withValues(alpha: 0.3)),
       ),
-      child: Text(status,
-          style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w500,
-              color: color)),
+      child: Text(status, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w500, color: color)),
     );
   }
 }
 
-// ── ADD CONTACT SHEET ──────────────────────────────────────────────────────────
+// ── ADD CONTACT SHEET ─────────────────────────────────────────────────────────
 
 class _AddContactSheet extends StatefulWidget {
   final VoidCallback onSaved;
@@ -580,12 +465,8 @@ class _AddContactSheetState extends State<_AddContactSheet> {
   bool _saving = false;
   String? _error;
 
-  final _statuses = [
-    'New', 'In Conversation', 'Qualified', 'Won', 'Lost'
-  ];
-  final _sources = [
-    'Direct', 'Google', 'Facebook', 'Referral', 'Website', 'Other'
-  ];
+  final _statuses = ['New', 'In Conversation', 'Qualified', 'Won', 'Lost'];
+  final _sources = ['Direct', 'Google', 'Facebook', 'Referral', 'Website', 'Other'];
 
   @override
   void dispose() {
@@ -601,10 +482,7 @@ class _AddContactSheetState extends State<_AddContactSheet> {
       setState(() => _error = 'Name is required');
       return;
     }
-    setState(() {
-      _saving = true;
-      _error = null;
-    });
+    setState(() { _saving = true; _error = null; });
     try {
       await _db.from('leads').insert({
         'lead_name': _nameController.text.trim(),
@@ -627,13 +505,11 @@ class _AddContactSheetState extends State<_AddContactSheet> {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: EdgeInsets.only(
-          bottom: MediaQuery.of(context).viewInsets.bottom),
+      padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
       child: Container(
         decoration: BoxDecoration(
           color: AppTheme.cardBg,
-          borderRadius:
-              const BorderRadius.vertical(top: Radius.circular(24)),
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
           border: Border.all(color: AppTheme.borderColor),
         ),
         padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
@@ -642,57 +518,29 @@ class _AddContactSheetState extends State<_AddContactSheet> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Center(
-                child: Container(
-                  width: 40,
-                  height: 4,
-                  decoration: BoxDecoration(
-                    color: AppTheme.borderColor,
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                ),
-              ),
+              Center(child: Container(width: 40, height: 4,
+                  decoration: BoxDecoration(color: AppTheme.borderColor, borderRadius: BorderRadius.circular(2)))),
               const SizedBox(height: 20),
-              const Text('Add Contact',
-                  style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                      color: AppTheme.textPrimary)),
+              const Text('Add Contact', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: AppTheme.textPrimary)),
               const SizedBox(height: 20),
-              _field('Full Name', _nameController,
-                  hint: 'John Smith'),
+              _field('Full Name', _nameController, hint: 'John Smith'),
               const SizedBox(height: 12),
-              _field('Email', _emailController,
-                  hint: 'john@example.com',
-                  keyboard: TextInputType.emailAddress),
+              _field('Email', _emailController, hint: 'john@example.com', keyboard: TextInputType.emailAddress),
               const SizedBox(height: 12),
-              _field('Phone', _phoneController,
-                  hint: '555-0100',
-                  keyboard: TextInputType.phone),
+              _field('Phone', _phoneController, hint: '555-0100', keyboard: TextInputType.phone),
               const SizedBox(height: 12),
-              Row(
-                children: [
-                  Expanded(
-                      child: _dropdown('Status', _statuses, _status,
-                          (v) => setState(() => _status = v!))),
-                  const SizedBox(width: 12),
-                  Expanded(
-                      child: _dropdown('Source', _sources, _source,
-                          (v) => setState(() => _source = v!))),
-                ],
-              ),
+              Row(children: [
+                Expanded(child: _dropdown('Status', _statuses, _status, (v) => setState(() => _status = v!))),
+                const SizedBox(width: 12),
+                Expanded(child: _dropdown('Source', _sources, _source, (v) => setState(() => _source = v!))),
+              ]),
               const SizedBox(height: 12),
-              _field('Notes', _notesController,
-                  hint: 'Any notes about this contact...',
-                  maxLines: 3),
+              _field('Notes', _notesController, hint: 'Any notes...', maxLines: 3),
               if (_error != null) ...[
                 const SizedBox(height: 12),
-                Text(_error!,
-                    style: const TextStyle(
-                        fontSize: 13, color: AppTheme.error)),
+                Text(_error!, style: const TextStyle(fontSize: 13, color: AppTheme.error)),
               ],
               const SizedBox(height: 20),
-              // ── Save Contact button with pointer cursor ──
               MouseRegion(
                 cursor: SystemMouseCursors.click,
                 child: SizedBox(
@@ -701,23 +549,12 @@ class _AddContactSheetState extends State<_AddContactSheet> {
                   child: ElevatedButton(
                     onPressed: _saving ? null : _save,
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: AppTheme.brand,
-                      foregroundColor: Colors.white,
-                      elevation: 0,
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8)),
+                      backgroundColor: AppTheme.brand, foregroundColor: Colors.white,
+                      elevation: 0, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                     ),
                     child: _saving
-                        ? const SizedBox(
-                            width: 20,
-                            height: 20,
-                            child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                color: Colors.white))
-                        : const Text('Save Contact',
-                            style: TextStyle(
-                                fontSize: 15,
-                                fontWeight: FontWeight.w600)),
+                        ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                        : const Text('Save Contact', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
                   ),
                 ),
               ),
@@ -733,296 +570,42 @@ class _AddContactSheetState extends State<_AddContactSheet> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label,
-            style: const TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w500,
-                color: AppTheme.textPrimary)),
+        Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: AppTheme.textPrimary)),
         const SizedBox(height: 4),
         TextField(
-          controller: controller,
-          keyboardType: keyboard,
-          maxLines: maxLines,
+          controller: controller, keyboardType: keyboard, maxLines: maxLines,
           decoration: InputDecoration(
-            hintText: hint,
-            filled: true,
-            fillColor: AppTheme.pageBg,
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(8),
-              borderSide:
-                  const BorderSide(color: AppTheme.borderColor),
-            ),
-            enabledBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(8),
-              borderSide:
-                  const BorderSide(color: AppTheme.borderColor),
-            ),
-            focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(8),
-              borderSide:
-                  const BorderSide(color: AppTheme.brand, width: 2),
-            ),
-            contentPadding: const EdgeInsets.symmetric(
-                horizontal: 12, vertical: 10),
+            hintText: hint, filled: true, fillColor: AppTheme.pageBg,
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
+            enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
+            focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.brand, width: 2)),
+            contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
           ),
         ),
       ],
     );
   }
 
-  Widget _dropdown(String label, List<String> items, String value,
-      ValueChanged<String?> onChanged) {
+  Widget _dropdown(String label, List<String> items, String value, ValueChanged<String?> onChanged) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label,
-            style: const TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w500,
-                color: AppTheme.textPrimary)),
+        Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: AppTheme.textPrimary)),
         const SizedBox(height: 4),
         MouseRegion(
           cursor: SystemMouseCursors.click,
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 12),
-            decoration: BoxDecoration(
-              color: AppTheme.pageBg,
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: AppTheme.borderColor),
-            ),
+            decoration: BoxDecoration(color: AppTheme.pageBg, borderRadius: BorderRadius.circular(8), border: Border.all(color: AppTheme.borderColor)),
             child: DropdownButtonHideUnderline(
               child: DropdownButton<String>(
-                value: value,
-                isExpanded: true,
-                dropdownColor: AppTheme.cardBg,
-                style: const TextStyle(
-                    fontSize: 13, color: AppTheme.textPrimary),
-                items: items
-                    .map((s) =>
-                        DropdownMenuItem(value: s, child: Text(s)))
-                    .toList(),
+                value: value, isExpanded: true, dropdownColor: AppTheme.cardBg,
+                style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                items: items.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
                 onChanged: onChanged,
               ),
             ),
           ),
-        ),
-      ],
-    );
-  }
-}
-
-// ── CONTACT DETAIL SHEET ───────────────────────────────────────────────────────
-
-class _ContactDetailSheet extends StatefulWidget {
-  final Map<String, dynamic> lead;
-  final VoidCallback onUpdated;
-  const _ContactDetailSheet(
-      {required this.lead, required this.onUpdated});
-
-  @override
-  State<_ContactDetailSheet> createState() =>
-      _ContactDetailSheetState();
-}
-
-class _ContactDetailSheetState extends State<_ContactDetailSheet> {
-  final _db = Supabase.instance.client;
-  late String _status;
-  bool _saving = false;
-
-  final _statuses = [
-    'New', 'In Conversation', 'Qualified', 'Won', 'Lost'
-  ];
-
-  @override
-  void initState() {
-    super.initState();
-    _status = widget.lead['lead_status'] ?? 'New';
-  }
-
-  Future<void> _updateStatus(String newStatus) async {
-    setState(() {
-      _saving = true;
-      _status = newStatus;
-    });
-    try {
-      await _db
-          .from('leads')
-          .update({'lead_status': newStatus}).eq(
-              'id', widget.lead['id']);
-    } catch (e) {
-      debugPrint('Update error: $e');
-    } finally {
-      if (mounted) setState(() => _saving = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final lead = widget.lead;
-    final name = lead['lead_name'] ?? 'Unknown';
-    final email = lead['lead_email'] ?? '—';
-    final phone = lead['lead_phone'] ?? '—';
-    final source = lead['source'] ?? '—';
-    final notes = lead['notes'] ?? '';
-    final value = lead['estimated_value'];
-
-    return Container(
-      decoration: BoxDecoration(
-        color: AppTheme.cardBg,
-        borderRadius:
-            const BorderRadius.vertical(top: Radius.circular(24)),
-        border: Border.all(color: AppTheme.borderColor),
-      ),
-      padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Center(
-            child: Container(
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(
-                color: AppTheme.borderColor,
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-          ),
-          const SizedBox(height: 20),
-          Row(
-            children: [
-              Container(
-                width: 48,
-                height: 48,
-                decoration: BoxDecoration(
-                  color: AppTheme.brand.withValues(alpha: 0.1),
-                  shape: BoxShape.circle,
-                ),
-                alignment: Alignment.center,
-                child: Text(
-                  name.isNotEmpty ? name[0].toUpperCase() : '?',
-                  style: const TextStyle(
-                      color: AppTheme.brand,
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold),
-                ),
-              ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(name,
-                        style: const TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                            color: AppTheme.textPrimary)),
-                    Text(source,
-                        style: const TextStyle(
-                            fontSize: 13,
-                            color: AppTheme.textSecondary)),
-                  ],
-                ),
-              ),
-              if (value != null)
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: AppTheme.success.withValues(alpha: 0.1),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Text('\$$value',
-                      style: const TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
-                          color: AppTheme.success)),
-                ),
-            ],
-          ),
-          const SizedBox(height: 20),
-          _detailRow(Icons.email_outlined, email),
-          const SizedBox(height: 8),
-          _detailRow(Icons.phone_outlined, phone),
-          if (notes.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            _detailRow(Icons.notes_outlined, notes),
-          ],
-          const SizedBox(height: 20),
-          const Text('Update Status',
-              style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                  color: AppTheme.textPrimary)),
-          const SizedBox(height: 10),
-          // ── Status chips with pointer cursor ──
-          Wrap(
-            spacing: 8,
-            children: _statuses.map((s) {
-              final isSelected = s == _status;
-              return Clickable(
-                onTap: () => _updateStatus(s),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 12, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: isSelected
-                        ? AppTheme.brand
-                        : AppTheme.pageBg,
-                    borderRadius: BorderRadius.circular(99),
-                    border: Border.all(
-                      color: isSelected
-                          ? AppTheme.brand
-                          : AppTheme.borderColor,
-                    ),
-                  ),
-                  child: Text(s,
-                      style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w500,
-                          color: isSelected
-                              ? Colors.white
-                              : AppTheme.textNormal)),
-                ),
-              );
-            }).toList(),
-          ),
-          const SizedBox(height: 20),
-          // ── Done button with pointer cursor ──
-          MouseRegion(
-            cursor: SystemMouseCursors.click,
-            child: SizedBox(
-              width: double.infinity,
-              height: 44,
-              child: ElevatedButton(
-                onPressed: widget.onUpdated,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppTheme.brand,
-                  foregroundColor: Colors.white,
-                  elevation: 0,
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8)),
-                ),
-                child: const Text('Done',
-                    style: TextStyle(
-                        fontSize: 15, fontWeight: FontWeight.w600)),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _detailRow(IconData icon, String text) {
-    return Row(
-      children: [
-        Icon(icon, size: 16, color: AppTheme.textSecondary),
-        const SizedBox(width: 10),
-        Expanded(
-          child: Text(text,
-              style: const TextStyle(
-                  fontSize: 13, color: AppTheme.textPrimary)),
         ),
       ],
     );

@@ -19,10 +19,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
   int _totalLeads = 0;
   int _newLeads = 0;
   int _openDeals = 0;
+  double _pipelineValue = 0;
+  double _wonValue = 0;
   int _appointmentsToday = 0;
+  int _confirmedAppointments = 0;
+  int _noShowAppointments = 0;
   int _unreadConversations = 0;
+  int _totalConversations = 0;
   List<Map<String, dynamic>> _recentLeads = [];
   List<Map<String, dynamic>> _pipelineSnapshot = [];
+  List<Map<String, dynamic>> _todayAppointments = [];
+  Map<String, int> _leadsBySource = {};
+  Map<String, int> _leadsByStatus = {};
 
   @override
   void initState() {
@@ -41,6 +49,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         _loadConversations(),
         _loadRecentLeads(),
         _loadPipelineSnapshot(),
+        _loadTodayAppointments(),
       ]);
     } catch (e) {
       debugPrint('Dashboard error: $e');
@@ -61,45 +70,74 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Future<void> _loadLeadStats() async {
-    final all = await _db.from('leads').select('id, lead_status');
+    final all = await _db.from('leads').select('id, lead_status, source');
     _totalLeads = all.length;
     _newLeads = all.where((l) => l['lead_status'] == 'New').length;
+    final bySource = <String, int>{};
+    final byStatus = <String, int>{};
+    for (final l in all) {
+      final src = l['source'] ?? 'Direct';
+      final st = l['lead_status'] ?? 'New';
+      bySource[src] = (bySource[src] ?? 0) + 1;
+      byStatus[st] = (byStatus[st] ?? 0) + 1;
+    }
+    _leadsBySource = bySource;
+    _leadsByStatus = byStatus;
   }
 
   Future<void> _loadDeals() async {
-    final deals = await _db.from('deals').select('id').eq('status', 'Open');
-    _openDeals = deals.length;
+    final deals = await _db.from('deals').select('id, value, status');
+    _openDeals = deals.where((d) => d['status'] == 'open').length;
+    _pipelineValue = deals
+        .where((d) => d['status'] == 'open')
+        .fold(0.0, (s, d) => s + ((d['value'] ?? 0) as num).toDouble());
+    _wonValue = deals
+        .where((d) => d['status'] == 'won')
+        .fold(0.0, (s, d) => s + ((d['value'] ?? 0) as num).toDouble());
   }
 
   Future<void> _loadAppointments() async {
     final now = DateTime.now();
-    final startOfDay =
-        DateTime(now.year, now.month, now.day).toUtc();
+    final startOfDay = DateTime(now.year, now.month, now.day).toUtc();
     final endOfDay = startOfDay.add(const Duration(days: 1));
     final appts = await _db
         .from('appointments')
-        .select('id')
+        .select('id, status')
         .gte('start_date_time', startOfDay.toIso8601String())
         .lt('start_date_time', endOfDay.toIso8601String());
     _appointmentsToday = appts.length;
+    _confirmedAppointments =
+        appts.where((a) => a['status'] == 'Scheduled').length;
+    _noShowAppointments =
+        appts.where((a) => a['status'] == 'No Show').length;
+  }
+
+  Future<void> _loadTodayAppointments() async {
+    final now = DateTime.now();
+    final startOfDay = DateTime(now.year, now.month, now.day).toUtc();
+    final endOfDay = startOfDay.add(const Duration(days: 1));
+    final appts = await _db
+        .from('appointments')
+        .select('id, appointment_name, start_date_time, lead_name, status, appointment_type')
+        .gte('start_date_time', startOfDay.toIso8601String())
+        .lt('start_date_time', endOfDay.toIso8601String())
+        .order('start_date_time');
+    _todayAppointments = List<Map<String, dynamic>>.from(appts);
   }
 
   Future<void> _loadConversations() async {
-    final convos = await _db
-        .from('conversations')
-        .select('id')
-        .eq('status', 'open')
-        .gt('unread_count', 0);
-    _unreadConversations = convos.length;
+    final convos = await _db.from('conversations').select('id, unread_count');
+    _totalConversations = convos.length;
+    _unreadConversations =
+        convos.where((c) => (c['unread_count'] ?? 0) > 0).length;
   }
 
   Future<void> _loadRecentLeads() async {
     final leads = await _db
         .from('leads')
-        .select(
-            'id, lead_name, lead_status, lead_email, created_at, source')
+        .select('id, lead_name, lead_status, lead_email, created_at, source, lead_phone')
         .order('created_at', ascending: false)
-        .limit(5);
+        .limit(6);
     _recentLeads = List<Map<String, dynamic>>.from(leads);
   }
 
@@ -109,8 +147,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
         .select('id, stage_name, color')
         .eq('is_active', true)
         .order('sort_order');
-    final deals =
-        await _db.from('deals').select('stage_id, value').eq('status', 'Open');
+    final deals = await _db
+        .from('deals')
+        .select('stage_id, value')
+        .eq('status', 'open');
     _pipelineSnapshot = stages.map<Map<String, dynamic>>((stage) {
       final stageDeals =
           deals.where((d) => d['stage_id'] == stage['id']).toList();
@@ -125,14 +165,30 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }).toList();
   }
 
-  String _timeAgo(String? isoString) {
-    if (isoString == null) return '';
-    final dt = DateTime.tryParse(isoString);
+  String _timeAgo(String? iso) {
+    if (iso == null) return '';
+    final dt = DateTime.tryParse(iso);
     if (dt == null) return '';
     final diff = DateTime.now().difference(dt.toLocal());
     if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
     if (diff.inHours < 24) return '${diff.inHours}h ago';
     return '${diff.inDays}d ago';
+  }
+
+  String _formatTime(String? iso) {
+    if (iso == null) return '';
+    final dt = DateTime.tryParse(iso)?.toLocal();
+    if (dt == null) return '';
+    final hour = dt.hour == 0 ? 12 : dt.hour > 12 ? dt.hour - 12 : dt.hour;
+    final min = dt.minute.toString().padLeft(2, '0');
+    final period = dt.hour < 12 ? 'AM' : 'PM';
+    return '$hour:$min $period';
+  }
+
+  String _fmtMoney(double v) {
+    if (v >= 1000000) return '\$${(v / 1000000).toStringAsFixed(1)}M';
+    if (v >= 1000) return '\$${(v / 1000).toStringAsFixed(1)}K';
+    return '\$${v.toStringAsFixed(0)}';
   }
 
   Color _hexColor(String? hex) {
@@ -144,12 +200,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
+  double get _conversionRate {
+    if (_totalLeads == 0) return 0;
+    return ((_leadsByStatus['Won'] ?? 0) / _totalLeads) * 100;
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppTheme.pageBg,
       body: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _buildTopBar(),
           Expanded(
@@ -164,21 +224,28 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           _buildStatRow(),
-                          const SizedBox(height: 24),
+                          const SizedBox(height: 20),
                           Row(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Expanded(
-                                  flex: 3,
-                                  child: _buildRecentLeads()),
+                              Expanded(flex: 2, child: _buildContactsBySource()),
                               const SizedBox(width: 16),
-                              Expanded(
-                                  flex: 2,
-                                  child: _buildPipelineSnapshot()),
+                              Expanded(flex: 2, child: _buildLeadsByStatus()),
+                              const SizedBox(width: 16),
+                              Expanded(flex: 1, child: _buildConversionCard()),
                             ],
                           ),
-                          const SizedBox(height: 24),
-                          _buildQuickActions(),
+                          const SizedBox(height: 20),
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Expanded(flex: 3, child: _buildPipelineFunnel()),
+                              const SizedBox(width: 16),
+                              Expanded(flex: 2, child: _buildTodayAppointments()),
+                            ],
+                          ),
+                          const SizedBox(height: 20),
+                          _buildRecentLeads(),
                         ],
                       ),
                     ),
@@ -200,41 +267,27 @@ class _DashboardScreenState extends State<DashboardScreen> {
       child: Row(
         children: [
           const Text('Dashboard',
-              style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                  color: AppTheme.textPrimary)),
-          const Spacer(),
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+          const SizedBox(width: 16),
           Container(
-            padding: const EdgeInsets.symmetric(
-                horizontal: 10, vertical: 4),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
             decoration: BoxDecoration(
               color: AppTheme.success.withValues(alpha: 0.1),
               borderRadius: BorderRadius.circular(99),
             ),
-            child: Row(
-              children: const [
-                Icon(Icons.circle, size: 8, color: AppTheme.success),
-                SizedBox(width: 6),
-                Text('Live',
-                    style: TextStyle(
-                        fontSize: 12,
-                        color: AppTheme.success,
-                        fontWeight: FontWeight.w500)),
-              ],
-            ),
+            child: Row(children: const [
+              Icon(Icons.circle, size: 8, color: AppTheme.success),
+              SizedBox(width: 6),
+              Text('Live', style: TextStyle(fontSize: 12, color: AppTheme.success, fontWeight: FontWeight.w500)),
+            ]),
           ),
+          const Spacer(),
+          Text(_businessName, style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
           const SizedBox(width: 16),
-          Text(_businessName,
-              style: const TextStyle(
-                  fontSize: 12, color: AppTheme.textSecondary)),
-          const SizedBox(width: 16),
-          // ── Refresh button with pointer cursor ──
           MouseRegion(
             cursor: SystemMouseCursors.click,
             child: IconButton(
-              icon: const Icon(Icons.refresh,
-                  size: 18, color: AppTheme.textSecondary),
+              icon: const Icon(Icons.refresh, size: 18, color: AppTheme.textSecondary),
               onPressed: _loadDashboard,
               tooltip: 'Refresh',
             ),
@@ -247,430 +300,380 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget _buildStatRow() {
     return Row(
       children: [
-        _StatCard(
-          label: 'Total Leads',
-          value: '$_totalLeads',
-          sub: '$_newLeads new',
-          icon: Icons.people_alt_outlined,
-          color: AppTheme.brand,
-        ),
+        _StatCard(label: 'Total Contacts', value: '$_totalLeads',
+            sub: '$_newLeads new', icon: Icons.people_alt_outlined,
+            color: AppTheme.brand, onTap: () => context.go('/contacts')),
         const SizedBox(width: 12),
-        _StatCard(
-          label: 'Open Deals',
-          value: '$_openDeals',
-          sub: 'In pipeline',
-          icon: Icons.bar_chart_rounded,
-          color: const Color(0xFF8b5cf6),
-        ),
+        _StatCard(label: 'Pipeline Value', value: _fmtMoney(_pipelineValue),
+            sub: '$_openDeals open deals', icon: Icons.bar_chart_rounded,
+            color: const Color(0xFF8b5cf6), onTap: () => context.go('/pipelines')),
         const SizedBox(width: 12),
-        _StatCard(
-          label: 'Appointments Today',
-          value: '$_appointmentsToday',
-          sub: 'Scheduled',
-          icon: Icons.calendar_today_outlined,
-          color: const Color(0xFFf59e0b),
-        ),
+        _StatCard(label: 'Won Revenue', value: _fmtMoney(_wonValue),
+            sub: '${_leadsByStatus['Won'] ?? 0} won leads', icon: Icons.emoji_events_outlined,
+            color: AppTheme.success, onTap: () => context.go('/pipelines')),
         const SizedBox(width: 12),
-        _StatCard(
-          label: 'Unread Messages',
-          value: '$_unreadConversations',
-          sub: 'Open conversations',
-          icon: Icons.chat_bubble_outline_rounded,
-          color: const Color(0xFF10b981),
-        ),
+        _StatCard(label: 'Appts Today', value: '$_appointmentsToday',
+            sub: '$_confirmedAppointments confirmed', icon: Icons.calendar_today_outlined,
+            color: const Color(0xFFf59e0b), onTap: () => context.go('/appointments')),
+        const SizedBox(width: 12),
+        _StatCard(label: 'Unread Messages', value: '$_unreadConversations',
+            sub: '$_totalConversations conversations', icon: Icons.chat_bubble_outline_rounded,
+            color: const Color(0xFF10b981), onTap: () => context.go('/conversations')),
       ],
     );
   }
 
+  Widget _buildContactsBySource() {
+    if (_leadsBySource.isEmpty) {
+      return _card('Contacts by Source',
+          const Center(child: Padding(padding: EdgeInsets.all(24),
+              child: Text('No data', style: TextStyle(color: AppTheme.textSecondary)))));
+    }
+    final total = _leadsBySource.values.fold(0, (a, b) => a + b);
+    final colors = [AppTheme.brand, const Color(0xFF6366f1), const Color(0xFFf59e0b),
+      const Color(0xFF10b981), const Color(0xFF8b5cf6), AppTheme.error];
+    return _card('Contacts by Source', Column(
+      children: _leadsBySource.entries.toList().asMap().entries.map((e) {
+        final color = colors[e.key % colors.length];
+        final entry = e.value;
+        final pct = total > 0 ? entry.value / total : 0.0;
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 10),
+          child: Column(children: [
+            Row(children: [
+              Container(width: 8, height: 8, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+              const SizedBox(width: 8),
+              Expanded(child: Text(entry.key, style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary))),
+              Text('${entry.value}', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+              const SizedBox(width: 8),
+              Text('${(pct * 100).toStringAsFixed(0)}%', style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+            ]),
+            const SizedBox(height: 4),
+            ClipRRect(borderRadius: BorderRadius.circular(4),
+                child: LinearProgressIndicator(value: pct,
+                    backgroundColor: color.withValues(alpha: 0.1),
+                    valueColor: AlwaysStoppedAnimation<Color>(color), minHeight: 6)),
+          ]),
+        );
+      }).toList(),
+    ));
+  }
+
+  Widget _buildLeadsByStatus() {
+    final statusColors = {
+      'New': AppTheme.brand, 'In Conversation': const Color(0xFFf59e0b),
+      'Qualified': const Color(0xFF8b5cf6), 'Won': AppTheme.success, 'Lost': AppTheme.error,
+    };
+    return _card('Leads by Status', Column(
+      children: statusColors.entries.map((e) {
+        final count = _leadsByStatus[e.key] ?? 0;
+        final pct = _totalLeads > 0 ? count / _totalLeads : 0.0;
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 10),
+          child: Column(children: [
+            Row(children: [
+              Container(width: 8, height: 8, decoration: BoxDecoration(color: e.value, shape: BoxShape.circle)),
+              const SizedBox(width: 8),
+              Expanded(child: Text(e.key, style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary))),
+              Text('$count', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+              const SizedBox(width: 8),
+              Text('${(pct * 100).toStringAsFixed(0)}%', style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+            ]),
+            const SizedBox(height: 4),
+            ClipRRect(borderRadius: BorderRadius.circular(4),
+                child: LinearProgressIndicator(value: pct,
+                    backgroundColor: e.value.withValues(alpha: 0.1),
+                    valueColor: AlwaysStoppedAnimation<Color>(e.value), minHeight: 6)),
+          ]),
+        );
+      }).toList(),
+    ));
+  }
+
+  Widget _buildConversionCard() {
+    final rate = _conversionRate;
+    return _card('Conversion', Column(children: [
+      const SizedBox(height: 8),
+      Center(child: SizedBox(width: 90, height: 90,
+        child: Stack(alignment: Alignment.center, children: [
+          SizedBox(width: 90, height: 90,
+              child: CircularProgressIndicator(value: rate / 100, strokeWidth: 10,
+                  backgroundColor: AppTheme.brand.withValues(alpha: 0.1),
+                  valueColor: const AlwaysStoppedAnimation<Color>(AppTheme.brand))),
+          Text('${rate.toStringAsFixed(1)}%',
+              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+        ]),
+      )),
+      const SizedBox(height: 16),
+      _convRow('Won', '${_leadsByStatus['Won'] ?? 0}', AppTheme.success),
+      _convRow('Lost', '${_leadsByStatus['Lost'] ?? 0}', AppTheme.error),
+      _convRow('Total', '$_totalLeads', AppTheme.brand),
+      const SizedBox(height: 8),
+      Container(
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(color: AppTheme.success.withValues(alpha: 0.08), borderRadius: BorderRadius.circular(8)),
+        child: Row(children: [
+          const Icon(Icons.trending_up, size: 14, color: AppTheme.success),
+          const SizedBox(width: 6),
+          Expanded(child: Text('Won: ${_fmtMoney(_wonValue)}',
+              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppTheme.success))),
+        ]),
+      ),
+    ]));
+  }
+
+  Widget _convRow(String label, String value, Color color) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(children: [
+        Container(width: 8, height: 8, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+        const SizedBox(width: 8),
+        Expanded(child: Text(label, style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary))),
+        Text(value, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: color)),
+      ]),
+    );
+  }
+
+  Widget _buildPipelineFunnel() {
+    final total = _pipelineSnapshot.fold<int>(0, (s, e) => s + (e['count'] as int));
+    return _card('Pipeline Funnel', Column(children: [
+      Row(children: const [
+        Expanded(flex: 3, child: Text('STAGE', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 0.5))),
+        SizedBox(width: 8),
+        SizedBox(width: 50, child: Text('DEALS', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 0.5), textAlign: TextAlign.center)),
+        SizedBox(width: 8),
+        SizedBox(width: 70, child: Text('VALUE', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 0.5), textAlign: TextAlign.right)),
+        SizedBox(width: 8),
+        SizedBox(width: 40, child: Text('%', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 0.5), textAlign: TextAlign.right)),
+      ]),
+      const SizedBox(height: 8),
+      const Divider(color: AppTheme.borderColor, height: 1),
+      const SizedBox(height: 8),
+      if (_pipelineSnapshot.isEmpty)
+        const Padding(padding: EdgeInsets.symmetric(vertical: 16),
+            child: Center(child: Text('No pipeline data', style: TextStyle(color: AppTheme.textSecondary))))
+      else
+        ..._pipelineSnapshot.map((stage) {
+          final color = _hexColor(stage['color']);
+          final count = stage['count'] as int;
+          final value = stage['value'] as double;
+          final pct = total > 0 ? count / total : 0.0;
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: Column(children: [
+              Row(children: [
+                Expanded(flex: 3, child: Row(children: [
+                  Container(width: 8, height: 8, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+                  const SizedBox(width: 8),
+                  Expanded(child: Text(stage['stage_name'], style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary))),
+                ])),
+                const SizedBox(width: 8),
+                SizedBox(width: 50, child: Text('$count', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textPrimary), textAlign: TextAlign.center)),
+                const SizedBox(width: 8),
+                SizedBox(width: 70, child: Text(_fmtMoney(value), style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: color), textAlign: TextAlign.right)),
+                const SizedBox(width: 8),
+                SizedBox(width: 40, child: Text('${(pct * 100).toStringAsFixed(0)}%', style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary), textAlign: TextAlign.right)),
+              ]),
+              const SizedBox(height: 4),
+              ClipRRect(borderRadius: BorderRadius.circular(4),
+                  child: LinearProgressIndicator(value: pct, backgroundColor: color.withValues(alpha: 0.1),
+                      valueColor: AlwaysStoppedAnimation<Color>(color), minHeight: 6)),
+            ]),
+          );
+        }),
+    ]),
+    trailing: MouseRegion(cursor: SystemMouseCursors.click,
+        child: TextButton(onPressed: () => context.go('/pipelines'),
+            child: const Text('View Pipeline', style: TextStyle(fontSize: 12, color: AppTheme.brand)))));
+  }
+
+  Widget _buildTodayAppointments() {
+    return _card('Today\'s Schedule', Column(children: [
+      Row(children: [
+        _apptStat('Total', '$_appointmentsToday', AppTheme.brand),
+        const SizedBox(width: 8),
+        _apptStat('Confirmed', '$_confirmedAppointments', AppTheme.success),
+        const SizedBox(width: 8),
+        _apptStat('No Show', '$_noShowAppointments', AppTheme.error),
+      ]),
+      const SizedBox(height: 12),
+      const Divider(color: AppTheme.borderColor, height: 1),
+      const SizedBox(height: 12),
+      if (_todayAppointments.isEmpty)
+        const Padding(padding: EdgeInsets.symmetric(vertical: 16),
+            child: Center(child: Column(children: [
+              Icon(Icons.calendar_today_outlined, size: 32, color: AppTheme.textMuted),
+              SizedBox(height: 8),
+              Text('No appointments today', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+            ])))
+      else
+        ..._todayAppointments.map((a) {
+          final status = a['status'] ?? '';
+          Color sc;
+          switch (status.toLowerCase()) {
+            case 'scheduled': sc = const Color(0xFF6366f1); break;
+            case 'completed': sc = AppTheme.success; break;
+            case 'cancelled': sc = AppTheme.error; break;
+            case 'no show': sc = const Color(0xFFf59e0b); break;
+            default: sc = AppTheme.textSecondary;
+          }
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: Row(children: [
+              Container(width: 4, height: 36, decoration: BoxDecoration(color: sc, borderRadius: BorderRadius.circular(2))),
+              const SizedBox(width: 10),
+              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(a['appointment_name'] ?? '', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textPrimary), overflow: TextOverflow.ellipsis),
+                Text('${_formatTime(a['start_date_time'])} · ${a['lead_name'] ?? ''}', style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+              ])),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(color: sc.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(4)),
+                child: Text(status, style: TextStyle(fontSize: 9, fontWeight: FontWeight.w600, color: sc)),
+              ),
+            ]),
+          );
+        }),
+    ]),
+    trailing: MouseRegion(cursor: SystemMouseCursors.click,
+        child: TextButton(onPressed: () => context.go('/appointments'),
+            child: const Text('View All', style: TextStyle(fontSize: 12, color: AppTheme.brand)))));
+  }
+
+  Widget _apptStat(String label, String value, Color color) {
+    return Expanded(child: Container(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      decoration: BoxDecoration(color: color.withValues(alpha: 0.07), borderRadius: BorderRadius.circular(8)),
+      child: Column(children: [
+        Text(value, style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: color)),
+        Text(label, style: const TextStyle(fontSize: 10, color: AppTheme.textSecondary)),
+      ]),
+    ));
+  }
+
   Widget _buildRecentLeads() {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: AppTheme.cardBg,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppTheme.borderColor),
+    return _card('Recent Contacts', Column(children: [
+      Padding(
+        padding: const EdgeInsets.only(bottom: 8),
+        child: Row(children: const [
+          Expanded(flex: 3, child: Text('NAME', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
+          Expanded(flex: 3, child: Text('EMAIL', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
+          Expanded(flex: 2, child: Text('PHONE', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
+          Expanded(flex: 2, child: Text('SOURCE', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
+          Expanded(flex: 2, child: Text('STATUS', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
+          SizedBox(width: 60, child: Text('ADDED', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1), textAlign: TextAlign.right)),
+        ]),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Text('Recent Leads',
-                  style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600,
-                      color: AppTheme.textPrimary)),
-              const Spacer(),
-              // ── View all link with pointer cursor ──
-              MouseRegion(
-                cursor: SystemMouseCursors.click,
-                child: TextButton(
-                  onPressed: () => context.go('/contacts'),
-                  child: const Text('View all',
-                      style: TextStyle(
-                          fontSize: 12, color: AppTheme.brand)),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          if (_recentLeads.isEmpty)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 24),
-              child: Center(
-                child: Text('No leads yet',
-                    style: TextStyle(
-                        fontSize: 13,
-                        color: AppTheme.textSecondary)),
-              ),
-            )
-          else
-            ..._recentLeads.map((lead) {
-              final name = lead['lead_name'] ?? 'Unknown';
-              final status = lead['lead_status'] ?? 'New';
-              final time = _timeAgo(lead['created_at']);
-              final source = lead['source'] ?? '';
-              return Padding(
-                padding: const EdgeInsets.symmetric(vertical: 8),
-                child: Row(
-                  children: [
-                    Container(
-                      width: 34,
-                      height: 34,
-                      decoration: BoxDecoration(
-                        color:
-                            AppTheme.brand.withValues(alpha: 0.1),
-                        shape: BoxShape.circle,
-                      ),
+      const Divider(color: AppTheme.borderColor, height: 1),
+      if (_recentLeads.isEmpty)
+        const Padding(padding: EdgeInsets.symmetric(vertical: 24),
+            child: Center(child: Text('No contacts yet', style: TextStyle(color: AppTheme.textSecondary))))
+      else
+        ..._recentLeads.map((lead) {
+          final name = lead['lead_name'] ?? 'Unknown';
+          return Clickable(
+            onTap: () => context.go('/contacts/${lead['id']}'),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 10),
+              child: Row(children: [
+                Expanded(flex: 3, child: Row(children: [
+                  Container(width: 28, height: 28,
+                      decoration: BoxDecoration(color: AppTheme.brand.withValues(alpha: 0.1), shape: BoxShape.circle),
                       alignment: Alignment.center,
-                      child: Text(
-                        name.isNotEmpty
-                            ? name[0].toUpperCase()
-                            : '?',
-                        style: const TextStyle(
-                            color: AppTheme.brand,
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(name,
-                              style: const TextStyle(
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w500,
-                                  color: AppTheme.textPrimary)),
-                          Text(
-                            source.isNotEmpty ? source : 'Direct',
-                            style: const TextStyle(
-                                fontSize: 11,
-                                color: AppTheme.textSecondary),
-                          ),
-                        ],
-                      ),
-                    ),
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: [
-                        _StatusBadge(status: status),
-                        const SizedBox(height: 2),
-                        Text(time,
-                            style: const TextStyle(
-                                fontSize: 10,
-                                color: AppTheme.textMuted)),
-                      ],
-                    ),
-                  ],
-                ),
-              );
-            }),
-        ],
-      ),
-    );
+                      child: Text(name.isNotEmpty ? name[0].toUpperCase() : '?',
+                          style: const TextStyle(color: AppTheme.brand, fontSize: 11, fontWeight: FontWeight.w600))),
+                  const SizedBox(width: 8),
+                  Expanded(child: Text(name, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: AppTheme.textPrimary), overflow: TextOverflow.ellipsis)),
+                ])),
+                Expanded(flex: 3, child: Text(lead['lead_email'] ?? '—', style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary), overflow: TextOverflow.ellipsis)),
+                Expanded(flex: 2, child: Text(lead['lead_phone'] ?? '—', style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary))),
+                Expanded(flex: 2, child: Text(lead['source'] ?? '—', style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary))),
+                Expanded(flex: 2, child: _DashStatusBadge(status: lead['lead_status'] ?? 'New')),
+                SizedBox(width: 60, child: Text(_timeAgo(lead['created_at']), style: const TextStyle(fontSize: 11, color: AppTheme.textMuted), textAlign: TextAlign.right)),
+              ]),
+            ),
+          );
+        }),
+    ]),
+    trailing: MouseRegion(cursor: SystemMouseCursors.click,
+        child: TextButton(onPressed: () => context.go('/contacts'),
+            child: const Text('View all', style: TextStyle(fontSize: 12, color: AppTheme.brand)))));
   }
 
-  Widget _buildPipelineSnapshot() {
+  Widget _card(String title, Widget content, {Widget? trailing}) {
     return Container(
+      width: double.infinity,
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         color: AppTheme.cardBg,
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: AppTheme.borderColor),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text('Pipeline',
-              style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  color: AppTheme.textPrimary)),
-          const SizedBox(height: 16),
-          if (_pipelineSnapshot.isEmpty)
-            const Center(
-              child: Padding(
-                padding: EdgeInsets.symmetric(vertical: 24),
-                child: Text('No pipeline data',
-                    style: TextStyle(
-                        fontSize: 13,
-                        color: AppTheme.textSecondary)),
-              ),
-            )
-          else
-            ..._pipelineSnapshot.map((stage) {
-              final color = _hexColor(stage['color']);
-              final count = stage['count'] as int;
-              final value = stage['value'] as double;
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 12),
-                child: Row(
-                  children: [
-                    Container(
-                      width: 10,
-                      height: 10,
-                      decoration: BoxDecoration(
-                        color: color,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Text(stage['stage_name'],
-                          style: const TextStyle(
-                              fontSize: 12,
-                              color: AppTheme.textNormal)),
-                    ),
-                    Text('$count deals',
-                        style: const TextStyle(
-                            fontSize: 11,
-                            color: AppTheme.textSecondary)),
-                    const SizedBox(width: 8),
-                    Text(
-                      value > 0
-                          ? '\$${value.toStringAsFixed(0)}'
-                          : '\$0',
-                      style: const TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w600,
-                          color: AppTheme.textPrimary),
-                    ),
-                  ],
-                ),
-              );
-            }),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildQuickActions() {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: AppTheme.cardBg,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppTheme.borderColor),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text('Quick Actions',
-              style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  color: AppTheme.textPrimary)),
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              _QuickAction(
-                icon: Icons.person_add_outlined,
-                label: 'Add Contact',
-                color: AppTheme.brand,
-                onTap: () => context.go('/contacts'),
-              ),
-              const SizedBox(width: 12),
-              _QuickAction(
-                icon: Icons.campaign_outlined,
-                label: 'New Campaign',
-                color: const Color(0xFF8b5cf6),
-                onTap: () => context.go('/campaigns'),
-              ),
-              const SizedBox(width: 12),
-              _QuickAction(
-                icon: Icons.chat_bubble_outline_rounded,
-                label: 'Conversations',
-                color: const Color(0xFF10b981),
-                onTap: () => context.go('/conversations'),
-              ),
-              const SizedBox(width: 12),
-              _QuickAction(
-                icon: Icons.calendar_today_outlined,
-                label: 'Appointments',
-                color: const Color(0xFFf59e0b),
-                onTap: () => context.go('/reporting'),
-              ),
-            ],
-          ),
-        ],
-      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Text(title, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+          const Spacer(),
+          if (trailing != null) trailing,
+        ]),
+        const SizedBox(height: 16),
+        content,
+      ]),
     );
   }
 }
 
-// ── STAT CARD ──────────────────────────────────────────────────────────────────
-
 class _StatCard extends StatelessWidget {
-  final String label;
-  final String value;
-  final String sub;
+  final String label, value, sub;
   final IconData icon;
   final Color color;
-  const _StatCard({
-    required this.label,
-    required this.value,
-    required this.sub,
-    required this.icon,
-    required this.color,
-  });
+  final VoidCallback? onTap;
+  const _StatCard({required this.label, required this.value, required this.sub,
+      required this.icon, required this.color, this.onTap});
 
   @override
   Widget build(BuildContext context) {
-    return Expanded(
+    return Expanded(child: Clickable(onTap: onTap,
       child: Container(
         padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: AppTheme.cardBg,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: AppTheme.borderColor),
-        ),
-        child: Row(
-          children: [
-            Container(
-              width: 40,
-              height: 40,
-              decoration: BoxDecoration(
-                color: color.withValues(alpha: 0.1),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Icon(icon, size: 20, color: color),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(label,
-                      style: const TextStyle(
-                          fontSize: 11,
-                          color: AppTheme.textSecondary)),
-                  const SizedBox(height: 2),
-                  Text(value,
-                      style: const TextStyle(
-                          fontSize: 22,
-                          fontWeight: FontWeight.w600,
-                          color: AppTheme.textPrimary)),
-                  Text(sub,
-                      style: const TextStyle(
-                          fontSize: 11, color: AppTheme.textMuted)),
-                ],
-              ),
-            ),
-          ],
-        ),
+        decoration: BoxDecoration(color: AppTheme.cardBg, borderRadius: BorderRadius.circular(12), border: Border.all(color: AppTheme.borderColor)),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            Container(width: 36, height: 36, decoration: BoxDecoration(color: color.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8)),
+                child: Icon(icon, size: 18, color: color)),
+            const Spacer(),
+            Icon(Icons.arrow_forward_ios, size: 10, color: AppTheme.textMuted),
+          ]),
+          const SizedBox(height: 12),
+          Text(value, style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+          const SizedBox(height: 2),
+          Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: AppTheme.textPrimary)),
+          const SizedBox(height: 2),
+          Text(sub, style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+        ]),
       ),
-    );
+    ));
   }
 }
 
-// ── STATUS BADGE ───────────────────────────────────────────────────────────────
-
-class _StatusBadge extends StatelessWidget {
+class _DashStatusBadge extends StatelessWidget {
   final String status;
-  const _StatusBadge({required this.status});
+  const _DashStatusBadge({required this.status});
 
   @override
   Widget build(BuildContext context) {
     Color color;
     switch (status.toLowerCase()) {
-      case 'new':
-        color = AppTheme.brand;
-        break;
-      case 'in conversation':
-        color = const Color(0xFFf59e0b);
-        break;
-      case 'qualified':
-        color = const Color(0xFF8b5cf6);
-        break;
-      case 'won':
-        color = AppTheme.success;
-        break;
-      case 'lost':
-        color = AppTheme.error;
-        break;
-      default:
-        color = AppTheme.textSecondary;
+      case 'new': color = AppTheme.brand; break;
+      case 'in conversation': color = const Color(0xFFf59e0b); break;
+      case 'qualified': color = const Color(0xFF8b5cf6); break;
+      case 'won': color = AppTheme.success; break;
+      case 'lost': color = AppTheme.error; break;
+      default: color = AppTheme.textSecondary;
     }
     return Container(
-      padding:
-          const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(99),
-        border: Border.all(color: color.withValues(alpha: 0.3)),
-      ),
-      child: Text(status,
-          style: TextStyle(
-              fontSize: 10,
-              fontWeight: FontWeight.w500,
-              color: color)),
-    );
-  }
-}
-
-// ── QUICK ACTION ───────────────────────────────────────────────────────────────
-
-class _QuickAction extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final Color color;
-  final VoidCallback onTap;
-  const _QuickAction({
-    required this.icon,
-    required this.label,
-    required this.color,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Expanded(
-      // ── Clickable handles both pointer cursor and tap ──
-      child: Clickable(
-        onTap: onTap,
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 16),
-          decoration: BoxDecoration(
-            color: color.withValues(alpha: 0.06),
-            borderRadius: BorderRadius.circular(12),
-            border:
-                Border.all(color: color.withValues(alpha: 0.2)),
-          ),
-          child: Column(
-            children: [
-              Icon(icon, size: 22, color: color),
-              const SizedBox(height: 8),
-              Text(label,
-                  style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w500,
-                      color: color)),
-            ],
-          ),
-        ),
-      ),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(color: color.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(99), border: Border.all(color: color.withValues(alpha: 0.3))),
+      child: Text(status, style: TextStyle(fontSize: 10, fontWeight: FontWeight.w500, color: color)),
     );
   }
 }

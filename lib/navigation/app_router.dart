@@ -3,11 +3,13 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../screens/login_screen.dart';
 import '../screens/dashboard_screen.dart';
 import '../screens/contacts_screen.dart';
+import '../screens/contact_detail_screen.dart';
 import '../screens/pipelines_screen.dart';
 import '../screens/campaigns_screen.dart';
 import '../screens/conversations_screen.dart';
 import '../screens/reporting_screen.dart';
 import '../screens/settings_screen.dart';
+import '../screens/appointments_screen.dart';
 import '../widgets/main_layout.dart';
 
 class AppRouter {
@@ -44,6 +46,13 @@ class AppRouter {
             builder: (context, state) => const ContactsScreen(),
           ),
           GoRoute(
+            path: '/contacts/:id',
+            name: 'contact-detail',
+            builder: (context, state) => ContactDetailScreen(
+              leadId: state.pathParameters['id']!,
+            ),
+          ),
+          GoRoute(
             path: '/pipelines',
             name: 'pipelines',
             builder: (context, state) => const PipelinesScreen(),
@@ -67,6 +76,11 @@ class AppRouter {
             path: '/settings',
             name: 'settings',
             builder: (context, state) => const SettingsScreen(),
+          ),
+          GoRoute(
+            path: '/appointments',
+            name: 'appointments',
+            builder: (context, state) => const AppointmentsScreen(),
           ),
         ],
       ),

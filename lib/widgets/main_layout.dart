@@ -197,6 +197,12 @@ class _AppNavBarState extends State<AppNavBar> {
                     route: '/pipelines',
                     active: location.startsWith('/pipelines'),
                   ),
+                  _NavItem(
+                    icon: Icons.calendar_today_outlined,
+                    label: 'Appointments',
+                    route: '/appointments',
+                    active: location.startsWith('/appointments'),
+                  ),
                   _SectionLabel('Marketing'),
                   _NavItem(
                     icon: Icons.campaign_outlined,
@@ -466,8 +472,7 @@ class _UserRowState extends State<_UserRow> {
       decoration: const BoxDecoration(
         border: Border(top: BorderSide(color: AppTheme.divider)),
       ),
-      padding:
-          const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       child: Row(
         children: [
           Clickable(
