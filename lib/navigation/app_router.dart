@@ -12,6 +12,7 @@ import '../screens/settings_screen.dart';
 import '../screens/appointments_screen.dart';
 import '../widgets/main_layout.dart';
 import '../screens/forms_screen.dart';
+import '../screens/ai_chat_screen.dart';
 
 class AppRouter {
   static final GoRouter router = GoRouter(
@@ -77,6 +78,11 @@ class AppRouter {
             path: '/settings',
             name: 'settings',
             builder: (context, state) => const SettingsScreen(),
+          ),
+          GoRoute(
+             path: '/ai-chat',
+             name: 'ai-chat',
+              builder: (context, state) => const AiChatScreen(),
           ),
           GoRoute(
              path: '/forms',
