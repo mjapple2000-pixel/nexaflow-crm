@@ -227,6 +227,12 @@ class _AppNavBarState extends State<AppNavBar> {
                   ),
                   _SectionLabel('Account'),
                   _NavItem(
+                    icon: Icons.dynamic_form_outlined,
+                    label: 'Forms',
+                    route: '/forms',
+                    active: location.startsWith('/forms'),
+                  ),
+                  _NavItem(
                     icon: Icons.settings_outlined,
                     label: 'Settings',
                     route: '/settings',
