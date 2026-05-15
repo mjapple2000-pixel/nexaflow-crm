@@ -3,6 +3,8 @@ import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme/app_theme.dart';
 import '../widgets/clickable.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
 
 class ContactDetailScreen extends StatefulWidget {
   final String leadId;
@@ -97,6 +99,30 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
     try {
       await _db.from('leads').update({'lead_status': newStatus}).eq('id', int.parse(widget.leadId));
       setState(() => _lead = {...?_lead, 'lead_status': newStatus});
+
+      // Fire status_changed automation trigger
+      final profileRes = await _db
+          .from('profiles')
+          .select('business_id')
+          .eq('user_id', _db.auth.currentUser!.id)
+          .maybeSingle();
+      final businessId = profileRes?['business_id'];
+
+      await http.post(
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/run-automation'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'trigger_type': 'status_changed',
+          'business_id': businessId,
+          'payload': {
+            'lead_id': int.parse(widget.leadId),
+            'lead_name': _lead?['lead_name'] ?? '',
+            'new_status': newStatus,
+            'email': _lead?['lead_email'],
+            'phone': _lead?['lead_phone'],
+          },
+        }),
+      );
     } catch (e) {
       debugPrint('Update status error: $e');
     } finally {

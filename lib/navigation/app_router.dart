@@ -13,6 +13,7 @@ import '../screens/appointments_screen.dart';
 import '../widgets/main_layout.dart';
 import '../screens/forms_screen.dart';
 import '../screens/ai_chat_screen.dart';
+import '../screens/automations_screen.dart';
 
 class AppRouter {
   static final GoRouter router = GoRouter(
@@ -83,6 +84,11 @@ class AppRouter {
              path: '/ai-chat',
              name: 'ai-chat',
               builder: (context, state) => const AiChatScreen(),
+          ),
+          GoRoute(
+            path: '/automations',
+            name: 'automations',
+            builder: (context, state) => const AutomationsScreen(),
           ),
           GoRoute(
              path: '/forms',

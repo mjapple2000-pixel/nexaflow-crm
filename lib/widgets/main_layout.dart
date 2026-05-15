@@ -239,6 +239,12 @@ class _AppNavBarState extends State<AppNavBar> {
                     active: location.startsWith('/ai-chat'),
                   ),
                   _NavItem(
+                    icon: Icons.bolt_outlined,
+                    label: 'Automations',
+                    route: '/automations',
+                    active: location.startsWith('/automations'),
+                  ),
+                  _NavItem(
                     icon: Icons.settings_outlined,
                     label: 'Settings',
                     route: '/settings',

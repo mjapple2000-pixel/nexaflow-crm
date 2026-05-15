@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme/app_theme.dart';
 import '../widgets/clickable.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
 
 class AppointmentsScreen extends StatefulWidget {
   const AppointmentsScreen({super.key});
@@ -17,7 +19,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
   List<Map<String, dynamic>> _allAppointments = [];
   List<Map<String, dynamic>> _filtered = [];
   String _statusFilter = 'All';
-  String _viewMode = 'list'; // 'list' or 'calendar'
+  String _viewMode = 'list';
   DateTime _calendarMonth = DateTime.now();
 
   final _statuses = ['All', 'Scheduled', 'Completed', 'Cancelled', 'No Show'];
@@ -140,7 +142,6 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
                   fontWeight: FontWeight.w600,
                   color: AppTheme.textPrimary)),
           const Spacer(),
-          // View toggle
           Container(
             decoration: BoxDecoration(
               color: AppTheme.pageBg,
@@ -198,14 +199,15 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
                 _applyFilter();
               },
               child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 14, vertical: 7),
                 decoration: BoxDecoration(
                   color: selected ? AppTheme.brand : AppTheme.cardBg,
                   borderRadius: BorderRadius.circular(99),
                   border: Border.all(
-                    color:
-                        selected ? AppTheme.brand : AppTheme.borderColor,
+                    color: selected
+                        ? AppTheme.brand
+                        : AppTheme.borderColor,
                   ),
                 ),
                 child: Text(s,
@@ -264,7 +266,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
     );
   }
 
-  // ── LIST VIEW ────────────────────────────────────────────────────────────────
+  // ── LIST VIEW ──────────────────────────────────────────────────────────────
 
   Widget _buildListView() {
     if (_loading) {
@@ -279,8 +281,8 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
                 size: 48, color: AppTheme.textMuted),
             const SizedBox(height: 12),
             const Text('No appointments found',
-                style:
-                    TextStyle(fontSize: 15, color: AppTheme.textSecondary)),
+                style: TextStyle(
+                    fontSize: 15, color: AppTheme.textSecondary)),
             const SizedBox(height: 8),
             MouseRegion(
               cursor: SystemMouseCursors.click,
@@ -294,7 +296,6 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
       );
     }
 
-    // Group by date
     final grouped = <String, List<Map<String, dynamic>>>{};
     for (final appt in _filtered) {
       final dt = DateTime.tryParse(appt['start_date_time'] ?? '') ??
@@ -336,7 +337,8 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
                           children: [
                             _buildAppointmentRow(a),
                             const Divider(
-                                height: 1, color: AppTheme.borderColor),
+                                height: 1,
+                                color: AppTheme.borderColor),
                           ],
                         )),
                   ],
@@ -353,50 +355,16 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       decoration: const BoxDecoration(
-        border: Border(bottom: BorderSide(color: AppTheme.borderColor)),
+        border:
+            Border(bottom: BorderSide(color: AppTheme.borderColor)),
       ),
       child: const Row(
         children: [
-          Expanded(
-              flex: 3,
-              child: Text('APPOINTMENT',
-                  style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w700,
-                      color: AppTheme.textSecondary,
-                      letterSpacing: 1))),
-          Expanded(
-              flex: 2,
-              child: Text('CONTACT',
-                  style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w700,
-                      color: AppTheme.textSecondary,
-                      letterSpacing: 1))),
-          Expanded(
-              flex: 2,
-              child: Text('TIME',
-                  style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w700,
-                      color: AppTheme.textSecondary,
-                      letterSpacing: 1))),
-          Expanded(
-              flex: 2,
-              child: Text('TYPE',
-                  style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w700,
-                      color: AppTheme.textSecondary,
-                      letterSpacing: 1))),
-          Expanded(
-              flex: 2,
-              child: Text('STATUS',
-                  style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w700,
-                      color: AppTheme.textSecondary,
-                      letterSpacing: 1))),
+          Expanded(flex: 3, child: Text('APPOINTMENT', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
+          Expanded(flex: 2, child: Text('CONTACT', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
+          Expanded(flex: 2, child: Text('TIME', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
+          Expanded(flex: 2, child: Text('TYPE', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
+          Expanded(flex: 2, child: Text('STATUS', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
           SizedBox(width: 40),
         ],
       ),
@@ -412,15 +380,15 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
         DateTime.tryParse(appt['start_date_time'] ?? '') ?? DateTime.now();
     final endDt =
         DateTime.tryParse(appt['end_date_time'] ?? '') ?? DateTime.now();
-    final timeStr =
-        '${_formatTime(startDt)} – ${_formatTime(endDt)}';
+    final timeStr = '${_formatTime(startDt)} – ${_formatTime(endDt)}';
 
     return MouseRegion(
       cursor: SystemMouseCursors.click,
       child: InkWell(
         onTap: () => _showAppointmentDetail(appt),
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          padding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           child: Row(
             children: [
               Expanded(
@@ -461,7 +429,8 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
                         appt['lead_phone'].toString().isNotEmpty)
                       Text(appt['lead_phone'],
                           style: const TextStyle(
-                              fontSize: 11, color: AppTheme.textSecondary)),
+                              fontSize: 11,
+                              color: AppTheme.textSecondary)),
                   ],
                 ),
               ),
@@ -499,20 +468,20 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
     );
   }
 
-  // ── CALENDAR VIEW ────────────────────────────────────────────────────────────
+  // ── CALENDAR VIEW ──────────────────────────────────────────────────────────
 
   Widget _buildCalendarView() {
-    final daysInMonth =
-        DateUtils.getDaysInMonth(_calendarMonth.year, _calendarMonth.month);
+    final daysInMonth = DateUtils.getDaysInMonth(
+        _calendarMonth.year, _calendarMonth.month);
     final firstDay =
         DateTime(_calendarMonth.year, _calendarMonth.month, 1);
-    final startWeekday = firstDay.weekday % 7; // 0=Sun
+    final startWeekday = firstDay.weekday % 7;
 
     return Column(
       children: [
-        // Month navigation
         Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          padding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           decoration: BoxDecoration(
             color: AppTheme.cardBg,
             borderRadius:
@@ -563,7 +532,6 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
             ],
           ),
         ),
-        // Day headers
         Container(
           color: AppTheme.cardBg,
           padding: const EdgeInsets.symmetric(vertical: 8),
@@ -581,13 +549,12 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
                 .toList(),
           ),
         ),
-        // Grid
         Expanded(
           child: Container(
             decoration: BoxDecoration(
               color: AppTheme.cardBg,
-              borderRadius:
-                  const BorderRadius.vertical(bottom: Radius.circular(12)),
+              borderRadius: const BorderRadius.vertical(
+                  bottom: Radius.circular(12)),
               border: Border.all(color: AppTheme.borderColor),
             ),
             child: GridView.builder(
@@ -599,9 +566,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
               ),
               itemCount: startWeekday + daysInMonth,
               itemBuilder: (context, index) {
-                if (index < startWeekday) {
-                  return const SizedBox();
-                }
+                if (index < startWeekday) return const SizedBox();
                 final day = index - startWeekday + 1;
                 final date = DateTime(
                     _calendarMonth.year, _calendarMonth.month, day);
@@ -613,7 +578,8 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
                       dt.month == date.month &&
                       dt.day == date.day;
                 }).toList();
-                final isToday = DateUtils.isSameDay(date, DateTime.now());
+                final isToday =
+                    DateUtils.isSameDay(date, DateTime.now());
 
                 return Clickable(
                   onTap: dayAppts.isNotEmpty
@@ -628,8 +594,8 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
                       borderRadius: BorderRadius.circular(6),
                       border: isToday
                           ? Border.all(
-                              color:
-                                  AppTheme.brand.withValues(alpha: 0.3))
+                              color: AppTheme.brand
+                                  .withValues(alpha: 0.3))
                           : null,
                     ),
                     padding: const EdgeInsets.all(4),
@@ -650,10 +616,10 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
                               padding: const EdgeInsets.symmetric(
                                   horizontal: 4, vertical: 1),
                               decoration: BoxDecoration(
-                                color:
-                                    _statusColor(a['status'] ?? '')
-                                        .withValues(alpha: 0.15),
-                                borderRadius: BorderRadius.circular(3),
+                                color: _statusColor(a['status'] ?? '')
+                                    .withValues(alpha: 0.15),
+                                borderRadius:
+                                    BorderRadius.circular(3),
                               ),
                               child: Text(
                                 a['appointment_name'] ?? '',
@@ -690,7 +656,8 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
       builder: (_) => Container(
         decoration: const BoxDecoration(
           color: AppTheme.cardBg,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          borderRadius:
+              BorderRadius.vertical(top: Radius.circular(24)),
         ),
         padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
         child: Column(
@@ -725,7 +692,8 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
                     decoration: BoxDecoration(
                       color: AppTheme.pageBg,
                       borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: AppTheme.borderColor),
+                      border:
+                          Border.all(color: AppTheme.borderColor),
                     ),
                     child: Row(
                       children: [
@@ -733,7 +701,8 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
                         const SizedBox(width: 10),
                         Expanded(
                           child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
+                            crossAxisAlignment:
+                                CrossAxisAlignment.start,
                             children: [
                               Text(a['appointment_name'] ?? '',
                                   style: const TextStyle(
@@ -744,7 +713,8 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
                                   '${_formatTime(DateTime.tryParse(a['start_date_time'] ?? '') ?? DateTime.now())} · ${a['lead_name'] ?? ''}',
                                   style: const TextStyle(
                                       fontSize: 11,
-                                      color: AppTheme.textSecondary)),
+                                      color:
+                                          AppTheme.textSecondary)),
                             ],
                           ),
                         ),
@@ -760,34 +730,21 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
     );
   }
 
-  // ── HELPERS ──────────────────────────────────────────────────────────────────
+  // ── HELPERS ────────────────────────────────────────────────────────────────
 
   String _formatDateKey(DateTime dt) {
-    const months = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
-    ];
-    const days = [
-      'Monday', 'Tuesday', 'Wednesday', 'Thursday',
-      'Friday', 'Saturday', 'Sunday'
-    ];
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
     return '${days[dt.weekday - 1]}, ${months[dt.month - 1]} ${dt.day}, ${dt.year}';
   }
 
   String _formatMonthYear(DateTime dt) {
-    const months = [
-      'January', 'February', 'March', 'April', 'May', 'June',
-      'July', 'August', 'September', 'October', 'November', 'December'
-    ];
+    const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
     return '${months[dt.month - 1]} ${dt.year}';
   }
 
   String _formatTime(DateTime dt) {
-    final hour = dt.hour == 0
-        ? 12
-        : dt.hour > 12
-            ? dt.hour - 12
-            : dt.hour;
+    final hour = dt.hour == 0 ? 12 : dt.hour > 12 ? dt.hour - 12 : dt.hour;
     final min = dt.minute.toString().padLeft(2, '0');
     final period = dt.hour < 12 ? 'AM' : 'PM';
     return '$hour:$min $period';
@@ -795,16 +752,11 @@ class _AppointmentsScreenState extends State<AppointmentsScreen> {
 
   Color _statusColor(String status) {
     switch (status.toLowerCase()) {
-      case 'scheduled':
-        return const Color(0xFF6366f1);
-      case 'completed':
-        return AppTheme.success;
-      case 'cancelled':
-        return AppTheme.error;
-      case 'no show':
-        return const Color(0xFFf59e0b);
-      default:
-        return AppTheme.textSecondary;
+      case 'scheduled': return const Color(0xFF6366f1);
+      case 'completed': return AppTheme.success;
+      case 'cancelled': return AppTheme.error;
+      case 'no show': return const Color(0xFFf59e0b);
+      default: return AppTheme.textSecondary;
     }
   }
 }
@@ -829,7 +781,8 @@ class _ViewToggleBtn extends StatelessWidget {
     return Clickable(
       onTap: onTap,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        padding:
+            const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
         decoration: BoxDecoration(
           color: selected ? AppTheme.brand : Colors.transparent,
           borderRadius: BorderRadius.circular(6),
@@ -838,13 +791,17 @@ class _ViewToggleBtn extends StatelessWidget {
           children: [
             Icon(icon,
                 size: 14,
-                color: selected ? Colors.white : AppTheme.textSecondary),
+                color: selected
+                    ? Colors.white
+                    : AppTheme.textSecondary),
             const SizedBox(width: 4),
             Text(label,
                 style: TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.w500,
-                    color: selected ? Colors.white : AppTheme.textSecondary)),
+                    color: selected
+                        ? Colors.white
+                        : AppTheme.textSecondary)),
           ],
         ),
       ),
@@ -865,7 +822,8 @@ class _MiniStat extends StatelessWidget {
   Widget build(BuildContext context) {
     return Expanded(
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        padding:
+            const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         decoration: BoxDecoration(
           color: color.withValues(alpha: 0.08),
           borderRadius: BorderRadius.circular(8),
@@ -899,20 +857,11 @@ class _StatusBadge extends StatelessWidget {
   Widget build(BuildContext context) {
     Color color;
     switch (status.toLowerCase()) {
-      case 'scheduled':
-        color = const Color(0xFF6366f1);
-        break;
-      case 'completed':
-        color = AppTheme.success;
-        break;
-      case 'cancelled':
-        color = AppTheme.error;
-        break;
-      case 'no show':
-        color = const Color(0xFFf59e0b);
-        break;
-      default:
-        color = AppTheme.textSecondary;
+      case 'scheduled': color = const Color(0xFF6366f1); break;
+      case 'completed': color = AppTheme.success; break;
+      case 'cancelled': color = AppTheme.error; break;
+      case 'no show': color = const Color(0xFFf59e0b); break;
+      default: color = AppTheme.textSecondary;
     }
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
@@ -923,7 +872,9 @@ class _StatusBadge extends StatelessWidget {
       ),
       child: Text(status,
           style: TextStyle(
-              fontSize: 11, fontWeight: FontWeight.w500, color: color)),
+              fontSize: 11,
+              fontWeight: FontWeight.w500,
+              color: color)),
     );
   }
 }
@@ -956,12 +907,8 @@ class _AppointmentFormSheetState extends State<_AppointmentFormSheet> {
   bool _saving = false;
   String? _error;
 
-  final _types = [
-    'Consultation', 'Follow-up', 'Demo', 'Check-in', 'Service', 'Other'
-  ];
-  final _statuses = [
-    'Scheduled', 'Completed', 'Cancelled', 'No Show'
-  ];
+  final _types = ['Consultation', 'Follow-up', 'Demo', 'Check-in', 'Service', 'Other'];
+  final _statuses = ['Scheduled', 'Completed', 'Cancelled', 'No Show'];
 
   @override
   void initState() {
@@ -976,8 +923,7 @@ class _AppointmentFormSheetState extends State<_AppointmentFormSheet> {
       _notesController.text = e['notes'] ?? '';
       _type = e['appointment_type'] ?? 'Consultation';
       _status = e['status'] ?? 'Scheduled';
-      _startDt =
-          DateTime.tryParse(e['start_date_time'] ?? '') ?? _startDt;
+      _startDt = DateTime.tryParse(e['start_date_time'] ?? '') ?? _startDt;
       _endDt = DateTime.tryParse(e['end_date_time'] ?? '') ?? _endDt;
     }
   }
@@ -1003,12 +949,11 @@ class _AppointmentFormSheetState extends State<_AppointmentFormSheet> {
     if (date == null || !mounted) return;
     final time = await showTimePicker(
       context: context,
-      initialTime:
-          TimeOfDay.fromDateTime(isStart ? _startDt : _endDt),
+      initialTime: TimeOfDay.fromDateTime(isStart ? _startDt : _endDt),
     );
     if (time == null || !mounted) return;
-    final result =
-        DateTime(date.year, date.month, date.day, time.hour, time.minute);
+    final result = DateTime(
+        date.year, date.month, date.day, time.hour, time.minute);
     setState(() {
       if (isStart) {
         _startDt = result;
@@ -1065,8 +1010,35 @@ class _AppointmentFormSheetState extends State<_AppointmentFormSheet> {
             .update(payload)
             .eq('id', widget.existing!['id']);
       } else {
-        await _db.from('appointments').insert(payload);
+        final newAppt = await _db
+            .from('appointments')
+            .insert(payload)
+            .select()
+            .maybeSingle();
+
+        try {
+          await http.post(
+            Uri.parse(
+                'https://rllriopqojaraceytdno.supabase.co/functions/v1/run-automation'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'trigger_type': 'appointment_booked',
+              'business_id': businessId,
+              'payload': {
+                'appointment_id': newAppt?['id'],
+                'appointment_name': _nameController.text.trim(),
+                'lead_name': _leadNameController.text.trim(),
+                'lead_id': null,
+                'phone': _leadPhoneController.text.trim(),
+                'email': _leadEmailController.text.trim(),
+              },
+            }),
+          );
+        } catch (e) {
+          debugPrint('Automation trigger error: $e');
+        }
       }
+
       widget.onSaved();
     } catch (e) {
       setState(() => _error = 'Failed to save: $e');
@@ -1078,12 +1050,13 @@ class _AppointmentFormSheetState extends State<_AppointmentFormSheet> {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding:
-          EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+      padding: EdgeInsets.only(
+          bottom: MediaQuery.of(context).viewInsets.bottom),
       child: Container(
         decoration: const BoxDecoration(
           color: AppTheme.cardBg,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          borderRadius:
+              BorderRadius.vertical(top: Radius.circular(24)),
         ),
         padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
         child: SingleChildScrollView(
@@ -1126,7 +1099,6 @@ class _AppointmentFormSheetState extends State<_AppointmentFormSheet> {
                 ],
               ),
               const SizedBox(height: 12),
-              // Date/time pickers
               Row(
                 children: [
                   Expanded(
@@ -1201,7 +1173,8 @@ class _AppointmentFormSheetState extends State<_AppointmentFormSheet> {
                             width: 20,
                             height: 20,
                             child: CircularProgressIndicator(
-                                strokeWidth: 2, color: Colors.white))
+                                strokeWidth: 2,
+                                color: Colors.white))
                         : Text(
                             widget.existing != null
                                 ? 'Save Changes'
@@ -1240,18 +1213,21 @@ class _AppointmentFormSheetState extends State<_AppointmentFormSheet> {
             fillColor: AppTheme.pageBg,
             border: OutlineInputBorder(
               borderRadius: BorderRadius.circular(8),
-              borderSide: const BorderSide(color: AppTheme.borderColor),
+              borderSide:
+                  const BorderSide(color: AppTheme.borderColor),
             ),
             enabledBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(8),
-              borderSide: const BorderSide(color: AppTheme.borderColor),
+              borderSide:
+                  const BorderSide(color: AppTheme.borderColor),
             ),
             focusedBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(8),
-              borderSide: const BorderSide(color: AppTheme.brand, width: 2),
+              borderSide:
+                  const BorderSide(color: AppTheme.brand, width: 2),
             ),
-            contentPadding:
-                const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            contentPadding: const EdgeInsets.symmetric(
+                horizontal: 12, vertical: 10),
           ),
         ),
       ],
@@ -1313,15 +1289,8 @@ class _DateTimePickerField extends StatelessWidget {
   });
 
   String _format(DateTime dt) {
-    const months = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
-    ];
-    final hour = dt.hour == 0
-        ? 12
-        : dt.hour > 12
-            ? dt.hour - 12
-            : dt.hour;
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    final hour = dt.hour == 0 ? 12 : dt.hour > 12 ? dt.hour - 12 : dt.hour;
     final min = dt.minute.toString().padLeft(2, '0');
     final period = dt.hour < 12 ? 'AM' : 'PM';
     return '${months[dt.month - 1]} ${dt.day} · $hour:$min $period';
@@ -1341,8 +1310,8 @@ class _DateTimePickerField extends StatelessWidget {
         Clickable(
           onTap: onTap,
           child: Container(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+            padding: const EdgeInsets.symmetric(
+                horizontal: 12, vertical: 11),
             decoration: BoxDecoration(
               color: AppTheme.pageBg,
               borderRadius: BorderRadius.circular(8),
@@ -1356,7 +1325,8 @@ class _DateTimePickerField extends StatelessWidget {
                 Expanded(
                   child: Text(_format(value),
                       style: const TextStyle(
-                          fontSize: 13, color: AppTheme.textPrimary)),
+                          fontSize: 13,
+                          color: AppTheme.textPrimary)),
                 ),
               ],
             ),
@@ -1402,7 +1372,8 @@ class _AppointmentDetailSheetState
     try {
       await _db
           .from('appointments')
-          .update({'status': newStatus}).eq('id', widget.appointment['id']);
+          .update({'status': newStatus})
+          .eq('id', widget.appointment['id']);
     } catch (e) {
       debugPrint('Update error: $e');
     } finally {
@@ -1467,7 +1438,8 @@ class _AppointmentDetailSheetState
     return Container(
       decoration: const BoxDecoration(
         color: AppTheme.cardBg,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        borderRadius:
+            BorderRadius.vertical(top: Radius.circular(24)),
       ),
       padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
       child: SingleChildScrollView(
@@ -1537,7 +1509,6 @@ class _AppointmentDetailSheetState
               ],
             ),
             const SizedBox(height: 20),
-            // Time block
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
@@ -1642,7 +1613,8 @@ class _AppointmentDetailSheetState
                   ),
                   child: const Text('Done',
                       style: TextStyle(
-                          fontSize: 15, fontWeight: FontWeight.w600)),
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600)),
                 ),
               ),
             ),
@@ -1668,24 +1640,15 @@ class _AppointmentDetailSheetState
   }
 
   String _formatTime(DateTime dt) {
-    final hour = dt.hour == 0
-        ? 12
-        : dt.hour > 12
-            ? dt.hour - 12
-            : dt.hour;
+    final hour = dt.hour == 0 ? 12 : dt.hour > 12 ? dt.hour - 12 : dt.hour;
     final min = dt.minute.toString().padLeft(2, '0');
     final period = dt.hour < 12 ? 'AM' : 'PM';
     return '$hour:$min $period';
   }
 
   String _formatFullDate(DateTime dt) {
-    const months = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
-    ];
-    const days = [
-      'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'
-    ];
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
     return '${days[dt.weekday - 1]}, ${months[dt.month - 1]} ${dt.day}, ${dt.year}';
   }
 }
