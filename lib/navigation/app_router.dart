@@ -14,6 +14,7 @@ import '../widgets/main_layout.dart';
 import '../screens/forms_screen.dart';
 import '../screens/ai_chat_screen.dart';
 import '../screens/automations_screen.dart';
+import '../screens/launchpad_screen.dart';
 
 class AppRouter {
   static final GoRouter router = GoRouter(
@@ -90,6 +91,7 @@ class AppRouter {
             name: 'automations',
             builder: (context, state) => const AutomationsScreen(),
           ),
+          GoRoute(path: '/launchpad', builder: (_, __) => const LaunchpadScreen()),
           GoRoute(
              path: '/forms',
              name: 'forms',

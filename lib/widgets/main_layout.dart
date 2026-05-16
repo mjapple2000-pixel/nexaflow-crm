@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../theme/app_theme.dart';
 import '../widgets/clickable.dart';
+import '../screens/launchpad_screen.dart';
 
 // Below this width, show the "please use desktop" screen
 const double _kMinDesktopWidth = 800;
@@ -178,6 +179,12 @@ class _AppNavBarState extends State<AppNavBar> {
                 physics: const ClampingScrollPhysics(),
                 children: [
                   _SectionLabel('Main'),
+                  _NavItem(
+                    icon: Icons.rocket_launch_rounded,
+                    label: 'Launchpad',
+                    route: '/launchpad',
+                    active: location.startsWith('/launchpad'),
+),
                   _NavItem(
                     icon: Icons.grid_view_rounded,
                     label: 'Dashboard',
