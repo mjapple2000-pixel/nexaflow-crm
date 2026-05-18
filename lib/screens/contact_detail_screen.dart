@@ -158,24 +158,35 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
   }
 
   Future<void> _deleteLead() async {
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        backgroundColor: AppTheme.cardBg,
-        title: const Text('Delete Contact', style: TextStyle(color: AppTheme.textPrimary)),
-        content: const Text('This cannot be undone.', style: TextStyle(color: AppTheme.textSecondary)),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-          TextButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Delete', style: TextStyle(color: AppTheme.error))),
-        ],
-      ),
-    );
-    if (confirm != true || !mounted) return;
+  final confirm = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      backgroundColor: AppTheme.cardBg,
+      title: const Text('Delete Contact', style: TextStyle(color: AppTheme.textPrimary)),
+      content: const Text('This cannot be undone.', style: TextStyle(color: AppTheme.textSecondary)),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+        TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Delete', style: TextStyle(color: AppTheme.error))),
+      ],
+    ),
+  );
+  if (confirm != true || !mounted) return;
+  try {
+    debugPrint('Deleting lead id: ${widget.leadId}');
     await _db.from('leads').delete().eq('id', int.parse(widget.leadId));
+    debugPrint('Delete successful');
     if (mounted) context.go('/contacts');
+  } catch (e) {
+    debugPrint('Delete error: $e');
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Delete failed: $e'), backgroundColor: Colors.red),
+      );
+    }
   }
+}
 
   Color _statusColor(String s) {
     switch (s.toLowerCase()) {
