@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../screens/login_screen.dart';
@@ -19,13 +20,44 @@ import '../screens/launchpad_screen.dart';
 class AppRouter {
   static final GoRouter router = GoRouter(
     initialLocation: '/login',
-    redirect: (context, state) {
+    redirect: (context, state) async {
       final session = Supabase.instance.client.auth.currentSession;
       final isLoggedIn = session != null;
       final isLoginPage = state.matchedLocation == '/login';
 
       if (!isLoggedIn && !isLoginPage) return '/login';
-      if (isLoggedIn && isLoginPage) return '/dashboard';
+      if (isLoggedIn && isLoginPage) {
+        // Check if beta user — beta users go straight to dashboard
+        // with full access regardless of subscription status
+        try {
+          final userId = Supabase.instance.client.auth.currentUser?.id;
+          if (userId != null) {
+            final profileRes = await Supabase.instance.client
+                .from('profiles')
+                .select('business_id')
+                .eq('user_id', userId)
+                .maybeSingle();
+            final businessId = profileRes?['business_id'];
+            if (businessId != null) {
+              final bizRes = await Supabase.instance.client
+                  .from('businesses')
+                  .select('is_beta, is_paid')
+                  .eq('id', businessId)
+                  .maybeSingle();
+              final isBeta = bizRes?['is_beta'] as bool? ?? false;
+              final isPaid = bizRes?['is_paid'] as bool? ?? false;
+              // Beta users and paid users go to dashboard
+              if (isBeta || isPaid) return '/dashboard';
+              // Unpaid non-beta users still go to dashboard
+              // (subscription gate handled inside the app)
+              return '/dashboard';
+            }
+          }
+        } catch (e) {
+          debugPrint('Router redirect error: $e');
+        }
+        return '/dashboard';
+      }
       return null;
     },
     routes: [
@@ -82,20 +114,23 @@ class AppRouter {
             builder: (context, state) => const SettingsScreen(),
           ),
           GoRoute(
-             path: '/ai-chat',
-             name: 'ai-chat',
-              builder: (context, state) => const AiChatScreen(),
+            path: '/ai-chat',
+            name: 'ai-chat',
+            builder: (context, state) => const AiChatScreen(),
           ),
           GoRoute(
             path: '/automations',
             name: 'automations',
             builder: (context, state) => const AutomationsScreen(),
           ),
-          GoRoute(path: '/launchpad', builder: (_, __) => const LaunchpadScreen()),
           GoRoute(
-             path: '/forms',
-             name: 'forms',
-             builder: (context, state) => const FormsScreen(),
+            path: '/launchpad',
+            builder: (_, __) => const LaunchpadScreen(),
+          ),
+          GoRoute(
+            path: '/forms',
+            name: 'forms',
+            builder: (context, state) => const FormsScreen(),
           ),
           GoRoute(
             path: '/appointments',

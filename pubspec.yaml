@@ -34,3 +34,5 @@ flutter:
     - assets/icons/WhatsApp_icon.png
     - assets/icons/stripe_icon.png
     - assets/icons/add-member-icon-vector.png
+    - assets/icons/paypal_icon.png
+    - assets/icons/venmo_icon.png
