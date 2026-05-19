@@ -1,9 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:go_router/go_router.dart';
-import 'package:url_launcher/url_launcher.dart';
 import '../theme/app_theme.dart';
-import '../widgets/clickable.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -18,6 +16,10 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _loading = false;
   bool _obscurePassword = true;
   String? _errorMessage;
+
+  // Show a success banner if coming back from signup flow
+  bool get _showSignupSuccess =>
+      GoRouterState.of(context).uri.queryParameters['signup'] == 'complete';
 
   @override
   void dispose() {
@@ -37,7 +39,44 @@ class _LoginScreenState extends State<LoginScreen> {
         email: _emailController.text.trim(),
         password: _passwordController.text.trim(),
       );
+
+      if (!mounted) return;
+
+      // Check if this is their first login
+      final userId = Supabase.instance.client.auth.currentUser?.id;
+      if (userId != null) {
+        final profileRes = await Supabase.instance.client
+            .from('profiles')
+            .select('business_id')
+            .eq('user_id', userId)
+            .maybeSingle();
+        final businessId = profileRes?['business_id'] as int?;
+
+        if (businessId != null) {
+          final bizRes = await Supabase.instance.client
+              .from('businesses')
+              .select('has_logged_in_before')
+              .eq('id', businessId)
+              .maybeSingle();
+
+          final hasLoggedInBefore =
+              bizRes?['has_logged_in_before'] as bool? ?? false;
+
+          if (!hasLoggedInBefore) {
+            // First login — mark it and go to Launchpad
+            await Supabase.instance.client
+                .from('businesses')
+                .update({'has_logged_in_before': true})
+                .eq('id', businessId);
+            if (mounted) context.go('/launchpad');
+            return;
+          }
+        }
+      }
+
+      // Every login after the first → Dashboard
       if (mounted) context.go('/dashboard');
+
     } on AuthException catch (e) {
       setState(() => _errorMessage = e.message);
     } catch (e) {
@@ -45,15 +84,6 @@ class _LoginScreenState extends State<LoginScreen> {
     } finally {
       if (mounted) setState(() => _loading = false);
     }
-  }
-
-  void _showPricingSheet() {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (_) => const _PricingBottomSheet(),
-    );
   }
 
   void _showForgotPassword() {
@@ -71,7 +101,7 @@ class _LoginScreenState extends State<LoginScreen> {
       backgroundColor: AppTheme.pageBg,
       body: Row(
         children: [
-          // ── LEFT BRAND PANEL ──────────────────
+          // ── LEFT BRAND PANEL ──────────────────────────────────────
           Expanded(
             child: Container(
               color: AppTheme.sidebarBg,
@@ -123,7 +153,7 @@ class _LoginScreenState extends State<LoginScreen> {
             ),
           ),
 
-          // ── RIGHT LOGIN PANEL ─────────────────
+          // ── RIGHT LOGIN PANEL ─────────────────────────────────────
           Expanded(
             child: Center(
               child: Container(
@@ -155,7 +185,38 @@ class _LoginScreenState extends State<LoginScreen> {
                         style: TextStyle(
                             fontSize: 14,
                             color: AppTheme.textSecondary)),
-                    const SizedBox(height: 32),
+
+                    // ── Signup success banner ──────────────────────
+                    if (_showSignupSuccess) ...[
+                      const SizedBox(height: 16),
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: AppTheme.success.withValues(alpha: 0.1),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                              color: AppTheme.success
+                                  .withValues(alpha: 0.3)),
+                        ),
+                        child: const Row(
+                          children: [
+                            Icon(Icons.check_circle_outline,
+                                size: 16, color: AppTheme.success),
+                            SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'Account setup complete! Your login credentials will be activated once your trial begins.',
+                                style: TextStyle(
+                                    fontSize: 12,
+                                    color: AppTheme.success),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+
+                    const SizedBox(height: 24),
 
                     // EMAIL
                     const Text('Email',
@@ -206,7 +267,6 @@ class _LoginScreenState extends State<LoginScreen> {
                         hintText: '••••••••',
                         prefixIcon: const Icon(Icons.lock_outline,
                             size: 18, color: AppTheme.textSecondary),
-                        // ── Show/hide password icon with pointer cursor ──
                         suffixIcon: MouseRegion(
                           cursor: SystemMouseCursors.click,
                           child: IconButton(
@@ -248,8 +308,7 @@ class _LoginScreenState extends State<LoginScreen> {
                       Container(
                         padding: const EdgeInsets.all(12),
                         decoration: BoxDecoration(
-                          color:
-                              AppTheme.error.withValues(alpha: 0.1),
+                          color: AppTheme.error.withValues(alpha: 0.1),
                           borderRadius: BorderRadius.circular(8),
                           border: Border.all(
                               color: AppTheme.error
@@ -273,7 +332,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
                     const SizedBox(height: 24),
 
-                    // ── Sign In button with pointer cursor ──
+                    // Sign In button
                     MouseRegion(
                       cursor: SystemMouseCursors.click,
                       child: SizedBox(
@@ -305,7 +364,6 @@ class _LoginScreenState extends State<LoginScreen> {
                     ),
 
                     const SizedBox(height: 12),
-                    // ── Forgot password link with pointer cursor ──
                     Center(
                       child: MouseRegion(
                         cursor: SystemMouseCursors.click,
@@ -340,14 +398,14 @@ class _LoginScreenState extends State<LoginScreen> {
                     ),
                     const SizedBox(height: 16),
 
-                    // ── Start Free Trial button with pointer cursor ──
+                    // Start Free Trial → signup page
                     MouseRegion(
                       cursor: SystemMouseCursors.click,
                       child: SizedBox(
                         width: double.infinity,
                         height: 44,
                         child: OutlinedButton(
-                          onPressed: _showPricingSheet,
+                          onPressed: () => context.go('/signup'),
                           style: OutlinedButton.styleFrom(
                             foregroundColor: AppTheme.brand,
                             side: const BorderSide(
@@ -447,7 +505,6 @@ class _ForgotPasswordSheetState extends State<_ForgotPasswordSheet> {
               ),
             ),
             const SizedBox(height: 24),
-
             if (_sent) ...[
               const Icon(Icons.mark_email_read_outlined,
                   size: 48, color: AppTheme.brand),
@@ -512,13 +569,13 @@ class _ForgotPasswordSheetState extends State<_ForgotPasswordSheet> {
                   fillColor: AppTheme.pageBg,
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(8),
-                    borderSide:
-                        const BorderSide(color: AppTheme.borderColor),
+                    borderSide: const BorderSide(
+                        color: AppTheme.borderColor),
                   ),
                   enabledBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(8),
-                    borderSide:
-                        const BorderSide(color: AppTheme.borderColor),
+                    borderSide: const BorderSide(
+                        color: AppTheme.borderColor),
                   ),
                   focusedBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(8),
@@ -555,7 +612,6 @@ class _ForgotPasswordSheetState extends State<_ForgotPasswordSheet> {
                 ),
               ],
               const SizedBox(height: 24),
-              // ── Send Reset Link button with pointer cursor ──
               MouseRegion(
                 cursor: SystemMouseCursors.click,
                 child: SizedBox(
@@ -590,236 +646,6 @@ class _ForgotPasswordSheetState extends State<_ForgotPasswordSheet> {
       ),
     );
   }
-}
-
-// ── PRICING BOTTOM SHEET ───────────────────────────────────────────────────────
-
-class _PricingBottomSheet extends StatelessWidget {
-  const _PricingBottomSheet();
-
-  static const _plans = [
-    _Plan(
-      name: 'Starter',
-      price: '\$97',
-      description: 'Perfect for small businesses getting started.',
-      stripeUrl: 'https://buy.stripe.com/dRm7sLcnqdsrfTZ3eM8og08',
-      isPopular: false,
-    ),
-    _Plan(
-      name: 'Growth',
-      price: '\$297',
-      description: 'For growing teams ready to scale their marketing.',
-      stripeUrl: 'https://buy.stripe.com/5kQ5kDdru4VVgY37v28og09',
-      isPopular: true,
-    ),
-    _Plan(
-      name: 'Pro',
-      price: '\$497',
-      description:
-          'Full power for agencies and high-volume businesses.',
-      stripeUrl: 'https://buy.stripe.com/8x214n4UY0FF6jp9Da8og0a',
-      isPopular: false,
-    ),
-  ];
-
-  Future<void> _openStripe(BuildContext context, String url) async {
-    final uri = Uri.parse(url);
-    if (await canLaunchUrl(uri)) {
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      decoration: BoxDecoration(
-        color: AppTheme.cardBg,
-        borderRadius:
-            const BorderRadius.vertical(top: Radius.circular(24)),
-        border: Border.all(color: AppTheme.borderColor),
-      ),
-      padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            width: 40,
-            height: 4,
-            decoration: BoxDecoration(
-              color: AppTheme.borderColor,
-              borderRadius: BorderRadius.circular(2),
-            ),
-          ),
-          const SizedBox(height: 24),
-          const Text('Choose Your Plan',
-              style: TextStyle(
-                  fontSize: 22,
-                  fontWeight: FontWeight.bold,
-                  color: AppTheme.textPrimary)),
-          const SizedBox(height: 6),
-          const Text('15-day free trial on all plans · Cancel anytime',
-              style: TextStyle(
-                  fontSize: 13, color: AppTheme.textSecondary)),
-          const SizedBox(height: 24),
-
-          // Plan cards
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: _plans
-                .map((plan) => Expanded(
-                      child: Padding(
-                        padding:
-                            const EdgeInsets.symmetric(horizontal: 6),
-                        child: _PlanCard(
-                          plan: plan,
-                          onTap: () =>
-                              _openStripe(context, plan.stripeUrl),
-                        ),
-                      ),
-                    ))
-                .toList(),
-          ),
-
-          const SizedBox(height: 20),
-          Text(
-            'After payment you\'ll receive your login credentials via email within 24 hours.',
-            textAlign: TextAlign.center,
-            style:
-                TextStyle(fontSize: 12, color: AppTheme.textMuted),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// ── PLAN CARD ──────────────────────────────────────────────────────────────────
-
-class _PlanCard extends StatelessWidget {
-  final _Plan plan;
-  final VoidCallback onTap;
-  const _PlanCard({required this.plan, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      decoration: BoxDecoration(
-        color: plan.isPopular
-            ? AppTheme.brand.withValues(alpha: 0.06)
-            : AppTheme.pageBg,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color:
-              plan.isPopular ? AppTheme.brand : AppTheme.borderColor,
-          width: plan.isPopular ? 2 : 1,
-        ),
-      ),
-      child: Column(
-        children: [
-          if (plan.isPopular)
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(vertical: 6),
-              decoration: BoxDecoration(
-                color: AppTheme.brand,
-                borderRadius: const BorderRadius.vertical(
-                    top: Radius.circular(10)),
-              ),
-              child: const Text('MOST POPULAR',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white,
-                      letterSpacing: 1)),
-            ),
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(plan.name,
-                    style: const TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                        color: AppTheme.textPrimary)),
-                const SizedBox(height: 4),
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    Text(plan.price,
-                        style: const TextStyle(
-                            fontSize: 24,
-                            fontWeight: FontWeight.bold,
-                            color: AppTheme.textPrimary)),
-                    const Text('/mo',
-                        style: TextStyle(
-                            fontSize: 12,
-                            color: AppTheme.textSecondary)),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                Text(plan.description,
-                    style: const TextStyle(
-                        fontSize: 12,
-                        color: AppTheme.textSecondary)),
-                const SizedBox(height: 16),
-                // ── Start Free Trial button with pointer cursor ──
-                MouseRegion(
-                  cursor: SystemMouseCursors.click,
-                  child: SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton(
-                      onPressed: onTap,
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: plan.isPopular
-                            ? AppTheme.brand
-                            : AppTheme.cardBg,
-                        foregroundColor: plan.isPopular
-                            ? Colors.white
-                            : AppTheme.brand,
-                        elevation: 0,
-                        side: plan.isPopular
-                            ? null
-                            : const BorderSide(
-                                color: AppTheme.brand),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        padding: const EdgeInsets.symmetric(
-                            vertical: 10),
-                      ),
-                      child: const Text('Start Free Trial',
-                          style: TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600)),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// ── PLAN DATA ──────────────────────────────────────────────────────────────────
-
-class _Plan {
-  final String name;
-  final String price;
-  final String description;
-  final String stripeUrl;
-  final bool isPopular;
-  const _Plan({
-    required this.name,
-    required this.price,
-    required this.description,
-    required this.stripeUrl,
-    required this.isPopular,
-  });
 }
 
 // ── FEATURE ITEM ───────────────────────────────────────────────────────────────

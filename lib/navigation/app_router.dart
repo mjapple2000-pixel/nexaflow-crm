@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../screens/login_screen.dart';
+import '../screens/signup_screen.dart';
 import '../screens/dashboard_screen.dart';
 import '../screens/contacts_screen.dart';
 import '../screens/contact_detail_screen.dart';
@@ -23,41 +24,55 @@ class AppRouter {
     redirect: (context, state) async {
       final session = Supabase.instance.client.auth.currentSession;
       final isLoggedIn = session != null;
-      final isLoginPage = state.matchedLocation == '/login';
+      final loc = state.matchedLocation;
+      final isLoginPage = loc == '/login';
+      final isSignupPage = loc == '/signup';
 
-      if (!isLoggedIn && !isLoginPage) return '/login';
-      if (isLoggedIn && isLoginPage) {
-        // Check if beta user — beta users go straight to dashboard
-        // with full access regardless of subscription status
-        try {
-          final userId = Supabase.instance.client.auth.currentUser?.id;
-          if (userId != null) {
-            final profileRes = await Supabase.instance.client
-                .from('profiles')
-                .select('business_id')
-                .eq('user_id', userId)
-                .maybeSingle();
-            final businessId = profileRes?['business_id'];
-            if (businessId != null) {
-              final bizRes = await Supabase.instance.client
-                  .from('businesses')
-                  .select('is_beta, is_paid')
-                  .eq('id', businessId)
+      if (isLoginPage || isSignupPage) {
+        if (isLoggedIn && isLoginPage) {
+          try {
+            final userId =
+                Supabase.instance.client.auth.currentUser?.id;
+            if (userId != null) {
+              // Get business_id from profile
+              final profileRes = await Supabase.instance.client
+                  .from('profiles')
+                  .select('business_id')
+                  .eq('user_id', userId)
                   .maybeSingle();
-              final isBeta = bizRes?['is_beta'] as bool? ?? false;
-              final isPaid = bizRes?['is_paid'] as bool? ?? false;
-              // Beta users and paid users go to dashboard
-              if (isBeta || isPaid) return '/dashboard';
-              // Unpaid non-beta users still go to dashboard
-              // (subscription gate handled inside the app)
-              return '/dashboard';
+              final businessId = profileRes?['business_id'] as int?;
+
+              if (businessId != null) {
+                // Check if this is their first login
+                final bizRes = await Supabase.instance.client
+                    .from('businesses')
+                    .select('has_logged_in_before')
+                    .eq('id', businessId)
+                    .maybeSingle();
+
+                final hasLoggedInBefore =
+                    bizRes?['has_logged_in_before'] as bool? ?? false;
+
+                if (!hasLoggedInBefore) {
+                  // First login — mark it and send to Launchpad
+                  await Supabase.instance.client
+                      .from('businesses')
+                      .update({'has_logged_in_before': true})
+                      .eq('id', businessId);
+                  return '/launchpad';
+                }
+              }
             }
+          } catch (e) {
+            debugPrint('Router redirect error: $e');
           }
-        } catch (e) {
-          debugPrint('Router redirect error: $e');
+          // Every login after the first goes to Dashboard
+          return '/dashboard';
         }
-        return '/dashboard';
+        return null;
       }
+
+      if (!isLoggedIn) return '/login';
       return null;
     },
     routes: [
@@ -66,11 +81,19 @@ class AppRouter {
         name: 'login',
         builder: (context, state) => const LoginScreen(),
       ),
+      GoRoute(
+        path: '/signup',
+        name: 'signup',
+        builder: (context, state) => const SignupScreen(),
+      ),
       ShellRoute(
-        builder: (context, state, child) {
-          return MainLayout(child: child);
-        },
+        builder: (context, state, child) => MainLayout(child: child),
         routes: [
+          GoRoute(
+            path: '/launchpad',
+            name: 'launchpad',
+            builder: (_, __) => const LaunchpadScreen(),
+          ),
           GoRoute(
             path: '/dashboard',
             name: 'dashboard',
@@ -122,10 +145,6 @@ class AppRouter {
             path: '/automations',
             name: 'automations',
             builder: (context, state) => const AutomationsScreen(),
-          ),
-          GoRoute(
-            path: '/launchpad',
-            builder: (_, __) => const LaunchpadScreen(),
           ),
           GoRoute(
             path: '/forms',

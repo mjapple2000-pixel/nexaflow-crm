@@ -6,7 +6,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../theme/app_theme.dart';
 import '../widgets/clickable.dart';
-import '../widgets/invite_member_dialog.dart'; // ← shared widget
+import '../widgets/invite_member_dialog.dart';
 
 // ─────────────────────────────────────────────
 //  STRIPE PLAN CONFIG
@@ -111,6 +111,64 @@ Map<String, bool> _defaultPermissions() => {
 };
 
 // ─────────────────────────────────────────────
+//  TIMEZONE OPTIONS
+// ─────────────────────────────────────────────
+
+const _kTimezones = [
+  'America/New_York',
+  'America/Chicago',
+  'America/Denver',
+  'America/Phoenix',
+  'America/Los_Angeles',
+  'America/Anchorage',
+  'Pacific/Honolulu',
+  'America/Puerto_Rico',
+  'Europe/London',
+  'Europe/Paris',
+  'Europe/Berlin',
+  'Asia/Tokyo',
+  'Asia/Shanghai',
+  'Asia/Kolkata',
+  'Australia/Sydney',
+  'Pacific/Auckland',
+];
+
+// ─────────────────────────────────────────────
+//  INDUSTRY OPTIONS
+// ─────────────────────────────────────────────
+
+const _kIndustries = [
+  'Roofing',
+  'HVAC',
+  'Plumbing',
+  'Electrical',
+  'Landscaping',
+  'Pest Control',
+  'Painting',
+  'Flooring',
+  'Solar',
+  'Home Remodeling',
+  'General Contracting',
+  'Cleaning Services',
+  'Pool & Spa',
+  'Garage Doors',
+  'Windows & Doors',
+  'Insulation',
+  'Foundation Repair',
+  'Water Damage / Restoration',
+  'Real Estate',
+  'Insurance',
+  'Legal Services',
+  'Healthcare',
+  'Dental',
+  'Chiropractic',
+  'Fitness / Personal Training',
+  'Salon / Beauty',
+  'Auto Repair',
+  'Other',
+];
+
+// ─────────────────────────────────────────────
 //  HELPERS
 // ─────────────────────────────────────────────
 
@@ -122,7 +180,8 @@ Future<void> _sendNotificationEmail(String subject, String body) async {
     await http.post(
       Uri.parse(_makeEmailWebhook),
       headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'to': 'vantagecaretech@gmail.com', 'subject': subject, 'body': body}),
+      body: jsonEncode(
+          {'to': 'vantagecaretech@gmail.com', 'subject': subject, 'body': body}),
     );
   } catch (e) {
     debugPrint('Email send error: $e');
@@ -201,7 +260,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       barrierDismissible: true,
       builder: (dialogContext) => AlertDialog(
         backgroundColor: AppTheme.cardBg,
-        title: const Text('Log out?', style: TextStyle(color: AppTheme.textPrimary)),
+        title: const Text('Log out?',
+            style: TextStyle(color: AppTheme.textPrimary)),
         content: const Text('Are you sure you want to log out?',
             style: TextStyle(color: AppTheme.textSecondary)),
         actions: [
@@ -214,8 +274,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
           MouseRegion(
             cursor: SystemMouseCursors.click,
             child: ElevatedButton(
-              onPressed: () { doLogout = true; Navigator.of(dialogContext).pop(); },
-              style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+              onPressed: () {
+                doLogout = true;
+                Navigator.of(dialogContext).pop();
+              },
+              style:
+                  ElevatedButton.styleFrom(backgroundColor: Colors.red),
               child: const Text('Log out'),
             ),
           ),
@@ -344,9 +408,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
               onTap: () => setState(() => _selectedSection = i),
               child: AnimatedContainer(
                 duration: const Duration(milliseconds: 150),
-                margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                margin:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 12, vertical: 10),
                 decoration: BoxDecoration(
                   color: isSelected
                       ? AppTheme.brand.withValues(alpha: 0.1)
@@ -399,7 +464,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       case 5:
         return _TeamMembersSection(
           businessId: _businessId!,
-          businessName: _business['business_name'] as String? ?? 'NexaFlow',
+          businessName:
+              _business['business_name'] as String? ?? 'NexaFlow',
         );
       case 6:
         return _NotificationsSection(
@@ -432,16 +498,500 @@ class _SettingsScreenState extends State<SettingsScreen> {
 }
 
 // ─────────────────────────────────────────────
+//  BUSINESS PROFILE SECTION  (fully expanded)
+// ─────────────────────────────────────────────
+
+class _BusinessProfileSection extends StatefulWidget {
+  final Map<String, dynamic> business;
+  final Future<void> Function(Map<String, dynamic>) onSave;
+  const _BusinessProfileSection(
+      {required this.business, required this.onSave});
+
+  @override
+  State<_BusinessProfileSection> createState() =>
+      _BusinessProfileSectionState();
+}
+
+class _BusinessProfileSectionState
+    extends State<_BusinessProfileSection> {
+  // Business info
+  late final TextEditingController _nameCtrl;
+  late final TextEditingController _phoneCtrl;
+  late final TextEditingController _emailCtrl;
+  late final TextEditingController _websiteCtrl;
+  late final TextEditingController _logoCtrl;
+  late final TextEditingController _bookingCtrl;
+  // Address
+  late final TextEditingController _address1Ctrl;
+  late final TextEditingController _address2Ctrl;
+  late final TextEditingController _cityCtrl;
+  late final TextEditingController _stateCtrl;
+  late final TextEditingController _zipCtrl;
+  late final TextEditingController _countryCtrl;
+  // Owner info
+  late final TextEditingController _ownerNameCtrl;
+  late final TextEditingController _ownerPhoneCtrl;
+  late final TextEditingController _ownerEmailCtrl;
+  // Extra
+  late final TextEditingController _licenseCtrl;
+  late final TextEditingController _taxIdCtrl;
+  // Dropdowns
+  String? _selectedTimezone;
+  String? _selectedIndustry;
+  // SMS consent
+  bool _smsConsent = false;
+
+  bool _saving = false;
+  String? _successMsg;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    final b = widget.business;
+    _nameCtrl    = TextEditingController(text: b['business_name'] ?? '');
+    _phoneCtrl   = TextEditingController(text: b['business_phone'] ?? '');
+    _emailCtrl   = TextEditingController(text: b['business_email'] ?? '');
+    _websiteCtrl = TextEditingController(text: b['company_website'] ?? '');
+    _logoCtrl    = TextEditingController(text: b['company_logo_url'] ?? '');
+    _bookingCtrl = TextEditingController(text: b['booking_link'] ?? '');
+
+    _address1Ctrl = TextEditingController(text: b['address_line1'] ?? '');
+    _address2Ctrl = TextEditingController(text: b['address_line2'] ?? '');
+    _cityCtrl     = TextEditingController(text: b['city'] ?? '');
+    _stateCtrl    = TextEditingController(text: b['state'] ?? '');
+    _zipCtrl      = TextEditingController(text: b['zip_code'] ?? '');
+    _countryCtrl  = TextEditingController(text: b['country'] ?? 'United States');
+
+    _ownerNameCtrl  = TextEditingController(text: b['owner_name'] ?? '');
+    _ownerPhoneCtrl = TextEditingController(text: b['owner_phone'] ?? '');
+    _ownerEmailCtrl = TextEditingController(text: b['owner_email'] ?? '');
+
+    _licenseCtrl = TextEditingController(text: b['license_number'] ?? '');
+    _taxIdCtrl   = TextEditingController(text: b['tax_id'] ?? '');
+
+    _selectedTimezone = b['timezone'] as String?;
+    if (_selectedTimezone != null &&
+        !_kTimezones.contains(_selectedTimezone)) {
+      _selectedTimezone = null;
+    }
+
+    _selectedIndustry = b['industry'] as String?;
+    if (_selectedIndustry != null &&
+        !_kIndustries.contains(_selectedIndustry)) {
+      _selectedIndustry = null;
+    }
+
+    _smsConsent = b['sms_consent'] as bool? ?? false;
+  }
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    _phoneCtrl.dispose();
+    _emailCtrl.dispose();
+    _websiteCtrl.dispose();
+    _logoCtrl.dispose();
+    _bookingCtrl.dispose();
+    _address1Ctrl.dispose();
+    _address2Ctrl.dispose();
+    _cityCtrl.dispose();
+    _stateCtrl.dispose();
+    _zipCtrl.dispose();
+    _countryCtrl.dispose();
+    _ownerNameCtrl.dispose();
+    _ownerPhoneCtrl.dispose();
+    _ownerEmailCtrl.dispose();
+    _licenseCtrl.dispose();
+    _taxIdCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    setState(
+        () { _saving = true; _error = null; _successMsg = null; });
+    try {
+      await widget.onSave({
+        'business_name':    _nameCtrl.text.trim(),
+        'business_phone':   _phoneCtrl.text.trim(),
+        'business_email':   _emailCtrl.text.trim(),
+        'company_website':  _websiteCtrl.text.trim(),
+        'company_logo_url': _logoCtrl.text.trim(),
+        'booking_link':     _bookingCtrl.text.trim(),
+        'address_line1':    _address1Ctrl.text.trim(),
+        'address_line2':    _address2Ctrl.text.trim(),
+        'city':             _cityCtrl.text.trim(),
+        'state':            _stateCtrl.text.trim(),
+        'zip_code':         _zipCtrl.text.trim(),
+        'country':          _countryCtrl.text.trim(),
+        'owner_name':       _ownerNameCtrl.text.trim(),
+        'owner_phone':      _ownerPhoneCtrl.text.trim(),
+        'owner_email':      _ownerEmailCtrl.text.trim(),
+        'license_number':   _licenseCtrl.text.trim(),
+        'tax_id':           _taxIdCtrl.text.trim(),
+        'timezone':         _selectedTimezone,
+        'industry':         _selectedIndustry,
+        'sms_consent':      _smsConsent,
+      });
+      setState(
+          () { _successMsg = 'Profile saved.'; _saving = false; });
+    } catch (e) {
+      setState(() { _error = e.toString(); _saving = false; });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return _SectionShell(
+      title: 'Business Profile',
+      subtitle:
+          'Your business information used across emails, documents, and client-facing tools.',
+      onSave: _save,
+      saving: _saving,
+      successMsg: _successMsg,
+      error: _error,
+      child: Column(children: [
+
+        // ── Business Info ──────────────────────────────────────────
+        _SettingsGroup(title: 'Business Information', children: [
+          _TwoCol(
+            left: _SettingsField(
+                label: 'Business Name *', controller: _nameCtrl),
+            right: _SettingsField(
+                label: 'Industry / Niche',
+                controller: TextEditingController(),
+                customWidget: _DropdownField(
+                  label: 'Industry / Niche',
+                  value: _selectedIndustry,
+                  items: _kIndustries,
+                  hint: 'Select your industry',
+                  onChanged: (v) =>
+                      setState(() => _selectedIndustry = v),
+                )),
+          ),
+          _TwoCol(
+            left: _SettingsField(
+                label: 'Business Phone',
+                controller: _phoneCtrl,
+                hint: '(555) 555-5555'),
+            right: _SettingsField(
+                label: 'Business Email',
+                controller: _emailCtrl,
+                hint: 'info@yourbusiness.com'),
+          ),
+          _TwoCol(
+            left: _SettingsField(
+                label: 'Website',
+                controller: _websiteCtrl,
+                hint: 'https://yourbusiness.com'),
+            right: _SettingsField(
+                label: 'Booking Link',
+                controller: _bookingCtrl,
+                hint: 'https://calendly.com/...'),
+          ),
+          _TwoCol(
+            left: _SettingsField(
+                label: 'Logo URL',
+                controller: _logoCtrl,
+                hint: 'https://yourcdn.com/logo.png'),
+            right: _SettingsField(
+                label: 'Timezone',
+                controller: TextEditingController(),
+                customWidget: _DropdownField(
+                  label: 'Timezone',
+                  value: _selectedTimezone,
+                  items: _kTimezones,
+                  hint: 'Select timezone',
+                  onChanged: (v) =>
+                      setState(() => _selectedTimezone = v),
+                )),
+          ),
+        ]),
+        const SizedBox(height: 24),
+
+        // ── Business Address ───────────────────────────────────────
+        _SettingsGroup(title: 'Business Address', children: [
+          _SettingsField(
+              label: 'Address Line 1',
+              controller: _address1Ctrl,
+              hint: '123 Main Street'),
+          _SettingsField(
+              label: 'Address Line 2 (Suite, Unit, etc.)',
+              controller: _address2Ctrl,
+              hint: 'Suite 100'),
+          _TwoCol(
+            left: _SettingsField(
+                label: 'City', controller: _cityCtrl, hint: 'Tampa'),
+            right: _SettingsField(
+                label: 'State / Province',
+                controller: _stateCtrl,
+                hint: 'FL'),
+          ),
+          _TwoCol(
+            left: _SettingsField(
+                label: 'ZIP / Postal Code',
+                controller: _zipCtrl,
+                hint: '33601'),
+            right: _SettingsField(
+                label: 'Country',
+                controller: _countryCtrl,
+                hint: 'United States'),
+          ),
+        ]),
+        const SizedBox(height: 24),
+
+        // ── Owner Info ─────────────────────────────────────────────
+        _SettingsGroup(title: 'Business Owner', children: [
+          _TwoCol(
+            left: _SettingsField(
+                label: 'Owner Full Name',
+                controller: _ownerNameCtrl,
+                hint: 'John Smith'),
+            right: _SettingsField(
+                label: 'Owner Email',
+                controller: _ownerEmailCtrl,
+                hint: 'john@yourbusiness.com'),
+          ),
+          _SettingsField(
+              label: 'Owner Phone',
+              controller: _ownerPhoneCtrl,
+              hint: '(555) 555-5555'),
+        ]),
+        const SizedBox(height: 24),
+
+        // ── Legal & Branding ───────────────────────────────────────
+        _SettingsGroup(title: 'Legal & Branding (Optional)', children: [
+          _TwoCol(
+            left: _SettingsField(
+                label: 'License Number',
+                controller: _licenseCtrl,
+                hint: 'e.g. CGC1234567'),
+            right: _SettingsField(
+                label: 'Tax ID / EIN',
+                controller: _taxIdCtrl,
+                hint: 'e.g. 12-3456789'),
+          ),
+        ]),
+        const SizedBox(height: 24),
+
+        // ── SMS Consent ────────────────────────────────────────────
+        _SmsConsentCard(
+          value: _smsConsent,
+          onChanged: (v) => setState(() => _smsConsent = v),
+        ),
+      ]),
+    );
+  }
+}
+
+// ── SMS CONSENT CARD ──────────────────────────────────────────────────────────
+
+class _SmsConsentCard extends StatelessWidget {
+  final bool value;
+  final ValueChanged<bool> onChanged;
+  const _SmsConsentCard(
+      {required this.value, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: AppTheme.cardBg,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: value
+              ? AppTheme.brand.withValues(alpha: 0.4)
+              : AppTheme.borderColor,
+          width: value ? 1.5 : 1,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Header
+          Row(
+            children: [
+              Icon(Icons.sms_outlined,
+                  size: 16,
+                  color:
+                      value ? AppTheme.brand : AppTheme.textSecondary),
+              const SizedBox(width: 8),
+              Text(
+                'SMS Consent',
+                style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: value
+                        ? AppTheme.textPrimary
+                        : AppTheme.textSecondary),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+
+          // Legal text
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: AppTheme.pageBg,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: AppTheme.borderColor),
+            ),
+            child: const Text(
+              'By checking this box, I agree to receive recurring automated text messages '
+              'from VantageCareTech at the number provided. Consent is not a condition of '
+              'purchase. Msg & data rates may apply. Msg frequency varies. Reply HELP for '
+              'help and STOP to cancel. View our Privacy Policy - '
+              'https://vantagecaretech.com/page-2 and Terms of Service - '
+              'https://vantagecaretech.com/page-3.',
+              style: TextStyle(
+                  fontSize: 12,
+                  color: AppTheme.textSecondary,
+                  height: 1.6),
+            ),
+          ),
+          const SizedBox(height: 14),
+
+          // Checkbox row
+          MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: GestureDetector(
+              onTap: () => onChanged(!value),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: Checkbox(
+                      value: value,
+                      onChanged: (v) => onChanged(v ?? false),
+                      activeColor: AppTheme.brand,
+                      materialTapTargetSize:
+                          MaterialTapTargetSize.shrinkWrap,
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(4)),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  const Expanded(
+                    child: Text(
+                      'I agree to receive SMS messages from VantageCareTech',
+                      style: TextStyle(
+                          fontSize: 13,
+                          color: AppTheme.textPrimary,
+                          height: 1.4),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+//  TWO-COLUMN LAYOUT HELPER
+// ─────────────────────────────────────────────
+
+class _TwoCol extends StatelessWidget {
+  final Widget left;
+  final Widget right;
+  const _TwoCol({required this.left, required this.right});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(child: left),
+        const SizedBox(width: 16),
+        Expanded(child: right),
+      ],
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+//  DROPDOWN FIELD HELPER
+// ─────────────────────────────────────────────
+
+class _DropdownField extends StatelessWidget {
+  final String label;
+  final String? value;
+  final List<String> items;
+  final String hint;
+  final ValueChanged<String?> onChanged;
+  const _DropdownField({
+    required this.label,
+    required this.value,
+    required this.items,
+    required this.hint,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label,
+              style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: AppTheme.textSecondary)),
+          const SizedBox(height: 6),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14),
+            decoration: BoxDecoration(
+              color: AppTheme.pageBg,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: AppTheme.borderColor),
+            ),
+            child: DropdownButtonHideUnderline(
+              child: DropdownButton<String>(
+                value: value,
+                hint: Text(hint,
+                    style: const TextStyle(
+                        fontSize: 13,
+                        color: AppTheme.textSecondary)),
+                isExpanded: true,
+                dropdownColor: AppTheme.cardBg,
+                style: const TextStyle(
+                    fontSize: 13, color: AppTheme.textPrimary),
+                items: items
+                    .map((item) =>
+                        DropdownMenuItem(value: item, child: Text(item)))
+                    .toList(),
+                onChanged: onChanged,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
 //  TEAM MEMBERS SECTION
 // ─────────────────────────────────────────────
 
 class _TeamMembersSection extends StatefulWidget {
   final int businessId;
   final String businessName;
-  const _TeamMembersSection({required this.businessId, this.businessName = 'NexaFlow'});
+  const _TeamMembersSection(
+      {required this.businessId, this.businessName = 'NexaFlow'});
 
   @override
-  State<_TeamMembersSection> createState() => _TeamMembersSectionState();
+  State<_TeamMembersSection> createState() =>
+      _TeamMembersSectionState();
 }
 
 class _TeamMembersSectionState extends State<_TeamMembersSection> {
@@ -475,12 +1025,13 @@ class _TeamMembersSectionState extends State<_TeamMembersSection> {
     }
   }
 
-  // ── Opens the shared InviteMemberDialog ──────────────────────────────────
   void _showInviteDialog() {
     showDialog<bool>(
       context: context,
       barrierDismissible: false,
-      builder: (_) => InviteMemberDialog(businessId: widget.businessId, businessName: widget.businessName),
+      builder: (_) => InviteMemberDialog(
+          businessId: widget.businessId,
+          businessName: widget.businessName),
     ).then((success) {
       if (success == true) _loadMembers();
     });
@@ -492,7 +1043,10 @@ class _TeamMembersSectionState extends State<_TeamMembersSection> {
       barrierDismissible: false,
       builder: (_) => _PermissionsDialog(
         member: member,
-        onSaved: () { Navigator.pop(context); _loadMembers(); },
+        onSaved: () {
+          Navigator.pop(context);
+          _loadMembers();
+        },
       ),
     );
   }
@@ -539,7 +1093,10 @@ class _TeamMembersSectionState extends State<_TeamMembersSection> {
               onPressed: () => Navigator.pop(ctx),
               child: const Text('Cancel')),
           ElevatedButton(
-            onPressed: () { confirmed = true; Navigator.pop(ctx); },
+            onPressed: () {
+              confirmed = true;
+              Navigator.pop(ctx);
+            },
             style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.red,
                 foregroundColor: Colors.white,
@@ -563,8 +1120,7 @@ class _TeamMembersSectionState extends State<_TeamMembersSection> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-              content: Text('Error: $e'),
+          SnackBar(content: Text('Error: $e'),
               behavior: SnackBarBehavior.floating),
         );
       }
@@ -575,11 +1131,11 @@ class _TeamMembersSectionState extends State<_TeamMembersSection> {
   Widget build(BuildContext context) {
     return _SectionShell(
       title: 'Team Members',
-      subtitle: 'Invite team members and control what they can access.',
+      subtitle:
+          'Invite team members and control what they can access.',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // ── Invite button ──────────────────────────────────────────────
           Row(
             children: [
               const Spacer(),
@@ -603,29 +1159,28 @@ class _TeamMembersSectionState extends State<_TeamMembersSection> {
             ],
           ),
           const SizedBox(height: 20),
-
-          // ── Member list ────────────────────────────────────────────────
           if (_loading)
             const Center(child: CircularProgressIndicator())
           else if (_members.isEmpty)
             _emptyState()
           else
             Column(
-              children: _members.map((member) => _MemberCard(
-                member: member,
-                isCurrentUser: (member['user_id'] as String?) == _currentUserId,
-                onEditPermissions: () => _showPermissionsDialog(member),
-                onRemove: () => _removeMember(member),
-                onResendInvite:
-                    (member['status'] as String?) == 'pending'
-                        ? () => _resendInvite(member)
-                        : null,
-              )).toList(),
+              children: _members
+                  .map((member) => _MemberCard(
+                        member: member,
+                        isCurrentUser: (member['user_id'] as String?) ==
+                            _currentUserId,
+                        onEditPermissions: () =>
+                            _showPermissionsDialog(member),
+                        onRemove: () => _removeMember(member),
+                        onResendInvite:
+                            (member['status'] as String?) == 'pending'
+                                ? () => _resendInvite(member)
+                                : null,
+                      ))
+                  .toList(),
             ),
-
           const SizedBox(height: 24),
-
-          // ── Info box ───────────────────────────────────────────────────
           Container(
             padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(
@@ -673,8 +1228,8 @@ class _TeamMembersSectionState extends State<_TeamMembersSection> {
         const SizedBox(height: 8),
         const Text(
             'Invite team members to give them access to this account.',
-            style: TextStyle(
-                fontSize: 13, color: AppTheme.textSecondary),
+            style:
+                TextStyle(fontSize: 13, color: AppTheme.textSecondary),
             textAlign: TextAlign.center),
         const SizedBox(height: 20),
         MouseRegion(
@@ -736,9 +1291,10 @@ class _MemberCard extends StatelessWidget {
             .toUpperCase()
         : (email.isNotEmpty ? email[0].toUpperCase() : '?');
 
-    final perms =
-        member['permissions'] as Map<String, dynamic>? ?? _defaultPermissions();
-    final enabledCount = perms.values.where((v) => v == true).length;
+    final perms = member['permissions'] as Map<String, dynamic>? ??
+        _defaultPermissions();
+    final enabledCount =
+        perms.values.where((v) => v == true).length;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
@@ -750,10 +1306,8 @@ class _MemberCard extends StatelessWidget {
       ),
       child: Column(
         children: [
-          // ── Top row: avatar + name + badges + actions ──────────────────
           Row(
             children: [
-              // Avatar
               Container(
                 width: 40,
                 height: 40,
@@ -774,27 +1328,24 @@ class _MemberCard extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 14),
-
-              // Name + email
               Expanded(
                 child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Row(children: [
-                        Text(
-                          displayName,
-                          style: const TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600,
-                              color: AppTheme.textPrimary),
-                        ),
+                        Text(displayName,
+                            style: const TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                                color: AppTheme.textPrimary)),
                         if (isCurrentUser) ...[
                           const SizedBox(width: 8),
                           Container(
                             padding: const EdgeInsets.symmetric(
                                 horizontal: 7, vertical: 2),
                             decoration: BoxDecoration(
-                              color: AppTheme.brand.withValues(alpha: 0.1),
+                              color:
+                                  AppTheme.brand.withValues(alpha: 0.1),
                               borderRadius: BorderRadius.circular(20),
                             ),
                             child: const Text('You',
@@ -812,20 +1363,12 @@ class _MemberCard extends StatelessWidget {
                                 color: AppTheme.textSecondary)),
                     ]),
               ),
-
-              // Role badge
               _Badge(
-                label: role[0].toUpperCase() + role.substring(1),
-                color: isOwner
-                    ? AppTheme.brand
-                    : const Color(0xFF6366F1),
-              ),
+                  label: role[0].toUpperCase() + role.substring(1),
+                  color:
+                      isOwner ? AppTheme.brand : const Color(0xFF6366F1)),
               const SizedBox(width: 8),
-
-              // Status badge
               _StatusBadge(isPending: isPending),
-
-              // Actions
               if (!isOwner && !isCurrentUser) ...[
                 const SizedBox(width: 8),
                 Clickable(
@@ -837,7 +1380,8 @@ class _MemberCard extends StatelessWidget {
                       decoration: BoxDecoration(
                         color: AppTheme.pageBg,
                         borderRadius: BorderRadius.circular(6),
-                        border: Border.all(color: AppTheme.borderColor),
+                        border:
+                            Border.all(color: AppTheme.borderColor),
                       ),
                       child: const Icon(Icons.tune_rounded,
                           size: 15,
@@ -857,8 +1401,8 @@ class _MemberCard extends StatelessWidget {
                           color: AppTheme.brand.withValues(alpha: 0.06),
                           borderRadius: BorderRadius.circular(6),
                           border: Border.all(
-                              color:
-                                  AppTheme.brand.withValues(alpha: 0.2)),
+                              color: AppTheme.brand
+                                  .withValues(alpha: 0.2)),
                         ),
                         child: const Icon(Icons.send_outlined,
                             size: 15, color: AppTheme.brand),
@@ -887,13 +1431,11 @@ class _MemberCard extends StatelessWidget {
               ],
             ],
           ),
-
-          // ── Permissions summary bar ────────────────────────────────────
           if (!isOwner) ...[
             const SizedBox(height: 12),
             Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 12, vertical: 8),
               decoration: BoxDecoration(
                 color: AppTheme.pageBg,
                 borderRadius: BorderRadius.circular(8),
@@ -929,7 +1471,8 @@ class _MemberCard extends StatelessWidget {
                                     style: const TextStyle(
                                         fontSize: 10,
                                         color: AppTheme.brand,
-                                        fontWeight: FontWeight.w500)),
+                                        fontWeight:
+                                            FontWeight.w500)),
                               ))
                           .toList(),
                     ),
@@ -952,7 +1495,8 @@ class _Badge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      padding:
+          const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
       decoration: BoxDecoration(
         color: color.withValues(alpha: 0.1),
         borderRadius: BorderRadius.circular(20),
@@ -973,7 +1517,8 @@ class _StatusBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      padding:
+          const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
         color: isPending
             ? Colors.orange.withValues(alpha: 0.1)
@@ -985,9 +1530,8 @@ class _StatusBadge extends StatelessWidget {
         style: TextStyle(
             fontSize: 11,
             fontWeight: FontWeight.w600,
-            color: isPending
-                ? Colors.orange
-                : const Color(0xFF10B981)),
+            color:
+                isPending ? Colors.orange : const Color(0xFF10B981)),
       ),
     );
   }
@@ -1004,7 +1548,8 @@ class _PermissionsDialog extends StatefulWidget {
       {required this.member, required this.onSaved});
 
   @override
-  State<_PermissionsDialog> createState() => _PermissionsDialogState();
+  State<_PermissionsDialog> createState() =>
+      _PermissionsDialogState();
 }
 
 class _PermissionsDialogState extends State<_PermissionsDialog> {
@@ -1042,153 +1587,141 @@ class _PermissionsDialogState extends State<_PermissionsDialog> {
 
     return Dialog(
       backgroundColor: AppTheme.cardBg,
-      shape:
-          RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16)),
       child: SizedBox(
         width: 480,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // Header
-            Container(
-              padding: const EdgeInsets.fromLTRB(24, 20, 16, 20),
-              decoration: const BoxDecoration(
-                  border: Border(
-                      bottom:
-                          BorderSide(color: AppTheme.borderColor))),
-              child: Row(children: [
-                const Icon(Icons.tune_rounded,
-                    size: 20, color: AppTheme.brand),
-                const SizedBox(width: 10),
-                Expanded(
-                    child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                      const Text('Edit Permissions',
-                          style: TextStyle(
-                              fontSize: 15,
-                              fontWeight: FontWeight.w700,
-                              color: AppTheme.textPrimary)),
-                      Text(name,
-                          style: const TextStyle(
-                              fontSize: 12,
-                              color: AppTheme.textSecondary)),
-                    ])),
-                MouseRegion(
-                    cursor: SystemMouseCursors.click,
-                    child: TextButton(
-                        onPressed: () => Navigator.pop(context),
-                        child: const Text('Cancel'))),
-                const SizedBox(width: 8),
-                MouseRegion(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Container(
+            padding: const EdgeInsets.fromLTRB(24, 20, 16, 20),
+            decoration: const BoxDecoration(
+                border: Border(
+                    bottom: BorderSide(color: AppTheme.borderColor))),
+            child: Row(children: [
+              const Icon(Icons.tune_rounded,
+                  size: 20, color: AppTheme.brand),
+              const SizedBox(width: 10),
+              Expanded(
+                  child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                    const Text('Edit Permissions',
+                        style: TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w700,
+                            color: AppTheme.textPrimary)),
+                    Text(name,
+                        style: const TextStyle(
+                            fontSize: 12,
+                            color: AppTheme.textSecondary)),
+                  ])),
+              MouseRegion(
                   cursor: SystemMouseCursors.click,
-                  child: ElevatedButton(
-                    onPressed: _saving ? null : _save,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: AppTheme.brand,
-                      foregroundColor: Colors.white,
-                      elevation: 0,
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8)),
-                    ),
-                    child: _saving
-                        ? const SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                color: Colors.white))
-                        : const Text('Save'),
+                  child: TextButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: const Text('Cancel'))),
+              const SizedBox(width: 8),
+              MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: ElevatedButton(
+                  onPressed: _saving ? null : _save,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppTheme.brand,
+                    foregroundColor: Colors.white,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8)),
                   ),
+                  child: _saving
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: Colors.white))
+                      : const Text('Save'),
                 ),
-              ]),
-            ),
-
-            // Body
-            Padding(
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(children: [
-                      Clickable(
-                        onTap: () => setState(() =>
-                            _permissions.updateAll((k, v) => true)),
-                        child: const Text('Select All',
-                            style: TextStyle(
-                                fontSize: 12,
-                                color: AppTheme.brand,
-                                fontWeight: FontWeight.w600)),
-                      ),
-                      const SizedBox(width: 16),
-                      Clickable(
-                        onTap: () => setState(() =>
-                            _permissions.updateAll((k, v) => false)),
-                        child: const Text('Clear All',
-                            style: TextStyle(
-                                fontSize: 12,
-                                color: AppTheme.textSecondary,
-                                fontWeight: FontWeight.w600)),
-                      ),
-                    ]),
-                    const SizedBox(height: 12),
-                    Container(
-                      decoration: BoxDecoration(
-                        color: AppTheme.pageBg,
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(color: AppTheme.borderColor),
-                      ),
-                      child: Column(
-                        children:
-                            _kPermissions.asMap().entries.map((e) {
-                          final i = e.key;
-                          final p = e.value;
-                          final isLast =
-                              i == _kPermissions.length - 1;
-                          return Container(
-                            decoration: BoxDecoration(
-                              border: isLast
-                                  ? null
-                                  : const Border(
-                                      bottom: BorderSide(
-                                          color:
-                                              AppTheme.borderColor)),
-                            ),
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 16, vertical: 10),
-                            child: Row(children: [
-                              Icon(p.$3,
-                                  size: 16,
-                                  color: _permissions[p.$1] == true
-                                      ? AppTheme.brand
-                                      : AppTheme.textMuted),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                  child: Text(p.$2,
-                                      style: TextStyle(
-                                          fontSize: 13,
-                                          color:
-                                              _permissions[p.$1] == true
-                                                  ? AppTheme.textPrimary
-                                                  : AppTheme
-                                                      .textSecondary))),
-                              Switch(
-                                value: _permissions[p.$1] ?? false,
-                                onChanged: (v) => setState(
-                                    () => _permissions[p.$1] = v),
-                                activeColor: AppTheme.brand,
-                                materialTapTargetSize:
-                                    MaterialTapTargetSize.shrinkWrap,
-                              ),
-                            ]),
-                          );
-                        }).toList(),
-                      ),
+              ),
+            ]),
+          ),
+          Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(children: [
+                    Clickable(
+                      onTap: () => setState(
+                          () => _permissions.updateAll((k, v) => true)),
+                      child: const Text('Select All',
+                          style: TextStyle(
+                              fontSize: 12,
+                              color: AppTheme.brand,
+                              fontWeight: FontWeight.w600)),
+                    ),
+                    const SizedBox(width: 16),
+                    Clickable(
+                      onTap: () => setState(
+                          () => _permissions.updateAll((k, v) => false)),
+                      child: const Text('Clear All',
+                          style: TextStyle(
+                              fontSize: 12,
+                              color: AppTheme.textSecondary,
+                              fontWeight: FontWeight.w600)),
                     ),
                   ]),
-            ),
-          ],
-        ),
+                  const SizedBox(height: 12),
+                  Container(
+                    decoration: BoxDecoration(
+                      color: AppTheme.pageBg,
+                      borderRadius: BorderRadius.circular(10),
+                      border:
+                          Border.all(color: AppTheme.borderColor),
+                    ),
+                    child: Column(
+                        children:
+                            _kPermissions.asMap().entries.map((e) {
+                      final i = e.key;
+                      final p = e.value;
+                      final isLast = i == _kPermissions.length - 1;
+                      return Container(
+                        decoration: BoxDecoration(
+                          border: isLast
+                              ? null
+                              : const Border(
+                                  bottom: BorderSide(
+                                      color: AppTheme.borderColor)),
+                        ),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 10),
+                        child: Row(children: [
+                          Icon(p.$3,
+                              size: 16,
+                              color: _permissions[p.$1] == true
+                                  ? AppTheme.brand
+                                  : AppTheme.textMuted),
+                          const SizedBox(width: 12),
+                          Expanded(
+                              child: Text(p.$2,
+                                  style: TextStyle(
+                                      fontSize: 13,
+                                      color: _permissions[p.$1] == true
+                                          ? AppTheme.textPrimary
+                                          : AppTheme.textSecondary))),
+                          Switch(
+                            value: _permissions[p.$1] ?? false,
+                            onChanged: (v) => setState(
+                                () => _permissions[p.$1] = v),
+                            activeColor: AppTheme.brand,
+                            materialTapTargetSize:
+                                MaterialTapTargetSize.shrinkWrap,
+                          ),
+                        ]),
+                      );
+                    }).toList()),
+                  ),
+                ]),
+          ),
+        ]),
       ),
     );
   }
@@ -1205,7 +1738,8 @@ class _AISettingsSection extends StatefulWidget {
       {required this.business, required this.onSave});
 
   @override
-  State<_AISettingsSection> createState() => _AISettingsSectionState();
+  State<_AISettingsSection> createState() =>
+      _AISettingsSectionState();
 }
 
 class _AISettingsSectionState extends State<_AISettingsSection> {
@@ -1222,11 +1756,13 @@ class _AISettingsSectionState extends State<_AISettingsSection> {
   void initState() {
     super.initState();
     final b = widget.business;
-    _personaCtrl = TextEditingController(text: b['ai_persona'] ?? '');
+    _personaCtrl =
+        TextEditingController(text: b['ai_persona'] ?? '');
     _goalCtrl = TextEditingController(text: b['primary_goal'] ?? '');
     _servicesCtrl =
         TextEditingController(text: b['services_and_pricing'] ?? '');
-    _faqsCtrl = TextEditingController(text: b['company_faqs'] ?? '');
+    _faqsCtrl =
+        TextEditingController(text: b['company_faqs'] ?? '');
     _forbiddenCtrl =
         TextEditingController(text: b['forbidden_words'] ?? '');
   }
@@ -1263,7 +1799,8 @@ class _AISettingsSectionState extends State<_AISettingsSection> {
   Widget build(BuildContext context) {
     return _SectionShell(
       title: 'AI Settings',
-      subtitle: 'Configure how your AI assistant behaves and responds.',
+      subtitle:
+          'Configure how your AI assistant behaves and responds.',
       onSave: _save,
       saving: _saving,
       successMsg: _successMsg,
@@ -1278,7 +1815,8 @@ class _AISettingsSectionState extends State<_AISettingsSection> {
           _SettingsField(
               label: 'Primary Goal (CTA)',
               controller: _goalCtrl,
-              hint: 'e.g. book a free inspection appointment'),
+              hint:
+                  'e.g. book a free inspection appointment'),
         ]),
         const SizedBox(height: 24),
         _SettingsGroup(title: 'Business Knowledge', children: [
@@ -1340,7 +1878,8 @@ class _KnowledgeBaseSection extends StatefulWidget {
       _KnowledgeBaseSectionState();
 }
 
-class _KnowledgeBaseSectionState extends State<_KnowledgeBaseSection> {
+class _KnowledgeBaseSectionState
+    extends State<_KnowledgeBaseSection> {
   final _db = Supabase.instance.client;
   bool _loading = true;
   List<Map<String, dynamic>> _entries = [];
@@ -1375,7 +1914,10 @@ class _KnowledgeBaseSectionState extends State<_KnowledgeBaseSection> {
       builder: (_) => _KBEntryDialog(
           businessId: widget.businessId,
           existing: existing,
-          onSaved: () { Navigator.pop(context); _load(); }),
+          onSaved: () {
+            Navigator.pop(context);
+            _load();
+          }),
     );
   }
 
@@ -1388,14 +1930,16 @@ class _KnowledgeBaseSectionState extends State<_KnowledgeBaseSection> {
         title: const Text('Delete Entry',
             style: TextStyle(color: AppTheme.textPrimary)),
         content: Text('Delete "${entry['title']}"?',
-            style:
-                const TextStyle(color: AppTheme.textSecondary)),
+            style: const TextStyle(color: AppTheme.textSecondary)),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(ctx),
               child: const Text('Cancel')),
           ElevatedButton(
-            onPressed: () { confirmed = true; Navigator.pop(ctx); },
+            onPressed: () {
+              confirmed = true;
+              Navigator.pop(ctx);
+            },
             style: ElevatedButton.styleFrom(
                 backgroundColor: AppTheme.error,
                 foregroundColor: Colors.white,
@@ -1425,52 +1969,17 @@ class _KnowledgeBaseSectionState extends State<_KnowledgeBaseSection> {
       title: 'Knowledge Base',
       subtitle:
           'Add information your AI uses to answer customer questions.',
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Row(children: [
-          const Spacer(),
-          MouseRegion(
-            cursor: SystemMouseCursors.click,
-            child: ElevatedButton.icon(
-              onPressed: () => _showEditor(),
-              icon: const Icon(Icons.add, size: 16),
-              label: const Text('Add Entry'),
-              style: ElevatedButton.styleFrom(
-                  backgroundColor: AppTheme.brand,
-                  foregroundColor: Colors.white,
-                  elevation: 0,
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8))),
-            ),
-          ),
-        ]),
-        const SizedBox(height: 16),
-        if (_loading)
-          const Center(child: CircularProgressIndicator())
-        else if (_entries.isEmpty)
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(40),
-            decoration: BoxDecoration(
-              color: AppTheme.cardBg,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: AppTheme.borderColor),
-            ),
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              const Icon(Icons.menu_book_outlined,
-                  size: 48, color: AppTheme.textMuted),
-              const SizedBox(height: 12),
-              const Text('No knowledge base entries yet',
-                  style: TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w600,
-                      color: AppTheme.textPrimary)),
-              const SizedBox(height: 20),
+      child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(children: [
+              const Spacer(),
               MouseRegion(
                 cursor: SystemMouseCursors.click,
                 child: ElevatedButton.icon(
                   onPressed: () => _showEditor(),
                   icon: const Icon(Icons.add, size: 16),
-                  label: const Text('Add your first entry'),
+                  label: const Text('Add Entry'),
                   style: ElevatedButton.styleFrom(
                       backgroundColor: AppTheme.brand,
                       foregroundColor: Colors.white,
@@ -1480,118 +1989,170 @@ class _KnowledgeBaseSectionState extends State<_KnowledgeBaseSection> {
                 ),
               ),
             ]),
-          )
-        else
-          Column(
-            children: _entries.map((entry) {
-              final isActive =
-                  entry['is_active'] as bool? ?? true;
-              final category =
-                  entry['category'] as String? ?? 'General';
-              final title =
-                  entry['title'] as String? ?? 'Untitled';
-              final shortAnswer =
-                  entry['short_answer'] as String? ?? '';
-              final content = entry['content'] as String? ?? '';
-              return Container(
-                margin: const EdgeInsets.only(bottom: 10),
+            const SizedBox(height: 16),
+            if (_loading)
+              const Center(child: CircularProgressIndicator())
+            else if (_entries.isEmpty)
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(40),
                 decoration: BoxDecoration(
-                    color: AppTheme.cardBg,
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(
-                        color: isActive
-                            ? AppTheme.borderColor
-                            : AppTheme.borderColor
-                                .withValues(alpha: 0.5))),
-                child: Column(children: [
-                  Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Row(children: [
-                      Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 8, vertical: 3),
-                          decoration: BoxDecoration(
-                              color: AppTheme.brand
-                                  .withValues(alpha: 0.1),
-                              borderRadius:
-                                  BorderRadius.circular(4)),
-                          child: Text(category,
-                              style: const TextStyle(
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.w700,
-                                  color: AppTheme.brand,
-                                  letterSpacing: 0.5))),
-                      const SizedBox(width: 10),
-                      Expanded(
-                          child: Text(title,
-                              style: TextStyle(
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w600,
-                                  color: isActive
-                                      ? AppTheme.textPrimary
-                                      : AppTheme
-                                          .textSecondary))),
-                      Clickable(
-                          onTap: () => _toggleActive(entry),
-                          child: Container(
+                  color: AppTheme.cardBg,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: AppTheme.borderColor),
+                ),
+                child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.menu_book_outlined,
+                          size: 48, color: AppTheme.textMuted),
+                      const SizedBox(height: 12),
+                      const Text('No knowledge base entries yet',
+                          style: TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w600,
+                              color: AppTheme.textPrimary)),
+                      const SizedBox(height: 20),
+                      MouseRegion(
+                        cursor: SystemMouseCursors.click,
+                        child: ElevatedButton.icon(
+                          onPressed: () => _showEditor(),
+                          icon: const Icon(Icons.add, size: 16),
+                          label: const Text('Add your first entry'),
+                          style: ElevatedButton.styleFrom(
+                              backgroundColor: AppTheme.brand,
+                              foregroundColor: Colors.white,
+                              elevation: 0,
+                              shape: RoundedRectangleBorder(
+                                  borderRadius:
+                                      BorderRadius.circular(8))),
+                        ),
+                      ),
+                    ]),
+              )
+            else
+              Column(
+                children: _entries.map((entry) {
+                  final isActive =
+                      entry['is_active'] as bool? ?? true;
+                  final category =
+                      entry['category'] as String? ?? 'General';
+                  final title =
+                      entry['title'] as String? ?? 'Untitled';
+                  final shortAnswer =
+                      entry['short_answer'] as String? ?? '';
+                  final content =
+                      entry['content'] as String? ?? '';
+                  return Container(
+                    margin: const EdgeInsets.only(bottom: 10),
+                    decoration: BoxDecoration(
+                        color: AppTheme.cardBg,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                            color: isActive
+                                ? AppTheme.borderColor
+                                : AppTheme.borderColor
+                                    .withValues(alpha: 0.5))),
+                    child: Column(children: [
+                      Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Row(children: [
+                          Container(
                               padding: const EdgeInsets.symmetric(
                                   horizontal: 8, vertical: 3),
                               decoration: BoxDecoration(
-                                  color: isActive
-                                      ? AppTheme.success
-                                          .withValues(alpha: 0.1)
-                                      : AppTheme.textMuted
-                                          .withValues(alpha: 0.1),
+                                  color: AppTheme.brand
+                                      .withValues(alpha: 0.1),
                                   borderRadius:
-                                      BorderRadius.circular(99)),
-                              child: Text(
-                                  isActive ? 'Active' : 'Inactive',
-                                  style: TextStyle(
+                                      BorderRadius.circular(4)),
+                              child: Text(category,
+                                  style: const TextStyle(
                                       fontSize: 10,
+                                      fontWeight: FontWeight.w700,
+                                      color: AppTheme.brand,
+                                      letterSpacing: 0.5))),
+                          const SizedBox(width: 10),
+                          Expanded(
+                              child: Text(title,
+                                  style: TextStyle(
+                                      fontSize: 13,
                                       fontWeight: FontWeight.w600,
                                       color: isActive
-                                          ? AppTheme.success
+                                          ? AppTheme.textPrimary
                                           : AppTheme
-                                              .textSecondary)))),
-                      const SizedBox(width: 8),
-                      Clickable(
-                          onTap: () =>
-                              _showEditor(existing: entry),
-                          child: const Padding(
-                              padding: EdgeInsets.all(4),
-                              child: Icon(Icons.edit_outlined,
-                                  size: 15,
-                                  color: AppTheme.textSecondary))),
-                      const SizedBox(width: 4),
-                      Clickable(
-                          onTap: () => _delete(entry),
-                          child: const Padding(
-                              padding: EdgeInsets.all(4),
-                              child: Icon(Icons.delete_outline,
-                                  size: 15,
-                                  color: AppTheme.error))),
+                                              .textSecondary))),
+                          Clickable(
+                              onTap: () =>
+                                  _toggleActive(entry),
+                              child: Container(
+                                  padding:
+                                      const EdgeInsets.symmetric(
+                                          horizontal: 8,
+                                          vertical: 3),
+                                  decoration: BoxDecoration(
+                                      color: isActive
+                                          ? AppTheme.success
+                                              .withValues(alpha: 0.1)
+                                          : AppTheme.textMuted
+                                              .withValues(alpha: 0.1),
+                                      borderRadius:
+                                          BorderRadius.circular(99)),
+                                  child: Text(
+                                      isActive
+                                          ? 'Active'
+                                          : 'Inactive',
+                                      style: TextStyle(
+                                          fontSize: 10,
+                                          fontWeight:
+                                              FontWeight.w600,
+                                          color: isActive
+                                              ? AppTheme.success
+                                              : AppTheme
+                                                  .textSecondary)))),
+                          const SizedBox(width: 8),
+                          Clickable(
+                              onTap: () =>
+                                  _showEditor(existing: entry),
+                              child: const Padding(
+                                  padding: EdgeInsets.all(4),
+                                  child: Icon(
+                                      Icons.edit_outlined,
+                                      size: 15,
+                                      color: AppTheme
+                                          .textSecondary))),
+                          const SizedBox(width: 4),
+                          Clickable(
+                              onTap: () => _delete(entry),
+                              child: const Padding(
+                                  padding: EdgeInsets.all(4),
+                                  child: Icon(
+                                      Icons.delete_outline,
+                                      size: 15,
+                                      color: AppTheme.error))),
+                        ]),
+                      ),
+                      if (shortAnswer.isNotEmpty ||
+                          content.isNotEmpty)
+                        Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.fromLTRB(
+                                16, 0, 16, 14),
+                            child: Text(
+                                shortAnswer.isNotEmpty
+                                    ? shortAnswer
+                                    : content,
+                                style: const TextStyle(
+                                    fontSize: 12,
+                                    color: AppTheme.textSecondary,
+                                    height: 1.4),
+                                maxLines: 2,
+                                overflow:
+                                    TextOverflow.ellipsis)),
                     ]),
-                  ),
-                  if (shortAnswer.isNotEmpty || content.isNotEmpty)
-                    Container(
-                        width: double.infinity,
-                        padding:
-                            const EdgeInsets.fromLTRB(16, 0, 16, 14),
-                        child: Text(
-                            shortAnswer.isNotEmpty
-                                ? shortAnswer
-                                : content,
-                            style: const TextStyle(
-                                fontSize: 12,
-                                color: AppTheme.textSecondary,
-                                height: 1.4),
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis)),
-                ]),
-              );
-            }).toList(),
-          ),
-      ]),
+                  );
+                }).toList(),
+              ),
+          ]),
     );
   }
 }
@@ -1746,8 +2307,8 @@ class _KBEntryDialogState extends State<_KBEntryDialog> {
                           color: AppTheme.textSecondary)),
                   const SizedBox(height: 4),
                   Container(
-                      padding:
-                          const EdgeInsets.symmetric(horizontal: 12),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12),
                       decoration: BoxDecoration(
                           color: AppTheme.pageBg,
                           borderRadius: BorderRadius.circular(8),
@@ -1755,7 +2316,8 @@ class _KBEntryDialogState extends State<_KBEntryDialog> {
                               color: AppTheme.borderColor)),
                       child: DropdownButtonHideUnderline(
                           child: DropdownButton<String>(
-                        value: _categories.contains(_categoryCtrl.text)
+                        value: _categories
+                                .contains(_categoryCtrl.text)
                             ? _categoryCtrl.text
                             : 'General',
                         isExpanded: true,
@@ -1768,8 +2330,9 @@ class _KBEntryDialogState extends State<_KBEntryDialog> {
                                 value: c, child: Text(c)))
                             .toList(),
                         onChanged: (v) {
-                          if (v != null)
+                          if (v != null) {
                             setState(() => _categoryCtrl.text = v);
+                          }
                         },
                       ))),
                   const SizedBox(height: 14),
@@ -1782,7 +2345,8 @@ class _KBEntryDialogState extends State<_KBEntryDialog> {
                       maxLines: 2),
                   const SizedBox(height: 14),
                   _dlgField('Full Content', _contentCtrl,
-                      hint: 'Detailed information about this topic.',
+                      hint:
+                          'Detailed information about this topic.',
                       maxLines: 5),
                   const SizedBox(height: 14),
                   _dlgField('Keywords', _keywordsCtrl,
@@ -1797,161 +2361,39 @@ class _KBEntryDialogState extends State<_KBEntryDialog> {
 
   Widget _dlgField(String label, TextEditingController ctrl,
       {String? hint, int maxLines = 1}) {
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Text(label,
-          style: const TextStyle(
-              fontSize: 12,
-              fontWeight: FontWeight.w500,
-              color: AppTheme.textSecondary)),
-      const SizedBox(height: 4),
-      TextField(
-        controller: ctrl,
-        maxLines: maxLines,
-        decoration: InputDecoration(
-          hintText: hint,
-          filled: true,
-          fillColor: AppTheme.pageBg,
-          contentPadding:
-              const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-          border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(8),
-              borderSide:
-                  const BorderSide(color: AppTheme.borderColor)),
-          enabledBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(8),
-              borderSide:
-                  const BorderSide(color: AppTheme.borderColor)),
-          focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(8),
-              borderSide:
-                  const BorderSide(color: AppTheme.brand, width: 2)),
-        ),
-      ),
-    ]);
-  }
-}
-
-// ─────────────────────────────────────────────
-//  BUSINESS PROFILE SECTION
-// ─────────────────────────────────────────────
-
-class _BusinessProfileSection extends StatefulWidget {
-  final Map<String, dynamic> business;
-  final Future<void> Function(Map<String, dynamic>) onSave;
-  const _BusinessProfileSection(
-      {required this.business, required this.onSave});
-
-  @override
-  State<_BusinessProfileSection> createState() =>
-      _BusinessProfileSectionState();
-}
-
-class _BusinessProfileSectionState
-    extends State<_BusinessProfileSection> {
-  late final TextEditingController _nameCtrl,
-      _phoneCtrl,
-      _emailCtrl,
-      _websiteCtrl;
-  late final TextEditingController _ownerNameCtrl,
-      _ownerPhoneCtrl,
-      _ownerEmailCtrl;
-  late final TextEditingController _logoCtrl, _bookingCtrl;
-  bool _saving = false;
-  String? _successMsg, _error;
-
-  @override
-  void initState() {
-    super.initState();
-    final b = widget.business;
-    _nameCtrl =
-        TextEditingController(text: b['business_name'] ?? '');
-    _phoneCtrl =
-        TextEditingController(text: b['business_phone'] ?? '');
-    _emailCtrl =
-        TextEditingController(text: b['business_email'] ?? '');
-    _websiteCtrl =
-        TextEditingController(text: b['company_website'] ?? '');
-    _ownerNameCtrl =
-        TextEditingController(text: b['owner_name'] ?? '');
-    _ownerPhoneCtrl =
-        TextEditingController(text: b['owner_phone'] ?? '');
-    _ownerEmailCtrl =
-        TextEditingController(text: b['owner_email'] ?? '');
-    _logoCtrl =
-        TextEditingController(text: b['company_logo_url'] ?? '');
-    _bookingCtrl =
-        TextEditingController(text: b['booking_link'] ?? '');
-  }
-
-  @override
-  void dispose() {
-    _nameCtrl.dispose();
-    _phoneCtrl.dispose();
-    _emailCtrl.dispose();
-    _websiteCtrl.dispose();
-    _ownerNameCtrl.dispose();
-    _ownerPhoneCtrl.dispose();
-    _ownerEmailCtrl.dispose();
-    _logoCtrl.dispose();
-    _bookingCtrl.dispose();
-    super.dispose();
-  }
-
-  Future<void> _save() async {
-    setState(
-        () { _saving = true; _error = null; _successMsg = null; });
-    try {
-      await widget.onSave({
-        'business_name': _nameCtrl.text.trim(),
-        'business_phone': _phoneCtrl.text.trim(),
-        'business_email': _emailCtrl.text.trim(),
-        'company_website': _websiteCtrl.text.trim(),
-        'owner_name': _ownerNameCtrl.text.trim(),
-        'owner_phone': _ownerPhoneCtrl.text.trim(),
-        'owner_email': _ownerEmailCtrl.text.trim(),
-        'company_logo_url': _logoCtrl.text.trim(),
-        'booking_link': _bookingCtrl.text.trim(),
-      });
-      setState(
-          () { _successMsg = 'Profile saved.'; _saving = false; });
-    } catch (e) {
-      setState(() { _error = e.toString(); _saving = false; });
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return _SectionShell(
-      title: 'Business Profile',
-      subtitle: 'Your business information shown to contacts.',
-      onSave: _save,
-      saving: _saving,
-      successMsg: _successMsg,
-      error: _error,
-      child: Column(children: [
-        _SettingsGroup(title: 'Business Info', children: [
-          _SettingsField(
-              label: 'Business Name', controller: _nameCtrl),
-          _SettingsField(
-              label: 'Business Phone', controller: _phoneCtrl),
-          _SettingsField(
-              label: 'Business Email', controller: _emailCtrl),
-          _SettingsField(label: 'Website', controller: _websiteCtrl),
-          _SettingsField(label: 'Logo URL', controller: _logoCtrl),
-          _SettingsField(
-              label: 'Booking Link', controller: _bookingCtrl),
-        ]),
-        const SizedBox(height: 24),
-        _SettingsGroup(title: 'Owner Info', children: [
-          _SettingsField(
-              label: 'Owner Name', controller: _ownerNameCtrl),
-          _SettingsField(
-              label: 'Owner Phone', controller: _ownerPhoneCtrl),
-          _SettingsField(
-              label: 'Owner Email', controller: _ownerEmailCtrl),
-        ]),
-      ]),
-    );
+    return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label,
+              style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                  color: AppTheme.textSecondary)),
+          const SizedBox(height: 4),
+          TextField(
+            controller: ctrl,
+            maxLines: maxLines,
+            decoration: InputDecoration(
+              hintText: hint,
+              filled: true,
+              fillColor: AppTheme.pageBg,
+              contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 12, vertical: 10),
+              border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  borderSide:
+                      const BorderSide(color: AppTheme.borderColor)),
+              enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  borderSide:
+                      const BorderSide(color: AppTheme.borderColor)),
+              focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  borderSide: const BorderSide(
+                      color: AppTheme.brand, width: 2)),
+            ),
+          ),
+        ]);
   }
 }
 
@@ -2012,71 +2454,74 @@ class _AIPhoneSectionState extends State<_AIPhoneSection> {
       saving: _saving,
       successMsg: _successMsg,
       error: _error,
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        _SettingsGroup(title: 'Your AI Number', children: [
-          _SettingsField(
-              label: 'AI Phone Number',
-              controller: _phoneCtrl,
-              hint: '+12345678900'),
-        ]),
-        const SizedBox(height: 16),
-        Container(
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: AppTheme.brand.withValues(alpha: 0.06),
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(
-                color: AppTheme.brand.withValues(alpha: 0.2)),
-          ),
-          child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(children: [
-                  Icon(Icons.phone_in_talk_outlined,
-                      size: 18, color: AppTheme.brand),
-                  const SizedBox(width: 8),
-                  Text('Need an AI Phone Number?',
-                      style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w700,
-                          color: AppTheme.brand)),
-                ]),
-                const SizedBox(height: 8),
-                const Text(
-                    "Don't have a number yet? We'll take care of everything.",
-                    style: TextStyle(
-                        fontSize: 12,
-                        color: AppTheme.textSecondary,
-                        height: 1.5)),
-                const SizedBox(height: 12),
-                MouseRegion(
-                  cursor: SystemMouseCursors.click,
-                  child: OutlinedButton.icon(
-                    onPressed: () async {
-                      await _sendNotificationEmail(
-                          'AI Phone Number Request',
-                          'Business: ${widget.business['business_name'] ?? 'Unknown'}\nOwner: ${widget.business['owner_name'] ?? 'Unknown'}\nEmail: ${widget.business['owner_email'] ?? 'Unknown'}');
-                      if (context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                                content: Text("Request sent!"),
-                                backgroundColor:
-                                    Color(0xFF10B981)));
-                      }
-                    },
-                    icon: const Icon(Icons.mail_outline, size: 14),
-                    label: const Text(
-                        'Contact Us to Get a Number',
-                        style: TextStyle(fontSize: 12)),
-                    style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 14, vertical: 8),
-                        minimumSize: Size.zero),
-                  ),
-                ),
-              ]),
-        ),
-      ]),
+      child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _SettingsGroup(title: 'Your AI Number', children: [
+              _SettingsField(
+                  label: 'AI Phone Number',
+                  controller: _phoneCtrl,
+                  hint: '+12345678900'),
+            ]),
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: AppTheme.brand.withValues(alpha: 0.06),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                    color: AppTheme.brand.withValues(alpha: 0.2)),
+              ),
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(children: [
+                      Icon(Icons.phone_in_talk_outlined,
+                          size: 18, color: AppTheme.brand),
+                      const SizedBox(width: 8),
+                      Text('Need an AI Phone Number?',
+                          style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700,
+                              color: AppTheme.brand)),
+                    ]),
+                    const SizedBox(height: 8),
+                    const Text(
+                        "Don't have a number yet? We'll take care of everything.",
+                        style: TextStyle(
+                            fontSize: 12,
+                            color: AppTheme.textSecondary,
+                            height: 1.5)),
+                    const SizedBox(height: 12),
+                    MouseRegion(
+                      cursor: SystemMouseCursors.click,
+                      child: OutlinedButton.icon(
+                        onPressed: () async {
+                          await _sendNotificationEmail(
+                              'AI Phone Number Request',
+                              'Business: ${widget.business['business_name'] ?? 'Unknown'}\nOwner: ${widget.business['owner_name'] ?? 'Unknown'}\nEmail: ${widget.business['owner_email'] ?? 'Unknown'}');
+                          if (context.mounted) {
+                            ScaffoldMessenger.of(context)
+                                .showSnackBar(const SnackBar(
+                                    content: Text("Request sent!"),
+                                    backgroundColor:
+                                        Color(0xFF10B981)));
+                          }
+                        },
+                        icon: const Icon(Icons.mail_outline,
+                            size: 14),
+                        label: const Text(
+                            'Contact Us to Get a Number',
+                            style: TextStyle(fontSize: 12)),
+                        style: OutlinedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 14, vertical: 8),
+                            minimumSize: Size.zero),
+                      ),
+                    ),
+                  ]),
+            ),
+          ]),
     );
   }
 }
@@ -2096,7 +2541,8 @@ class _EmailConfigSection extends StatefulWidget {
       _EmailConfigSectionState();
 }
 
-class _EmailConfigSectionState extends State<_EmailConfigSection> {
+class _EmailConfigSectionState
+    extends State<_EmailConfigSection> {
   late final TextEditingController _emailCtrl, _forwardingCtrl;
   bool _saving = false;
   String? _successMsg, _error;
@@ -2123,7 +2569,7 @@ class _EmailConfigSectionState extends State<_EmailConfigSection> {
     try {
       await widget.onSave({
         'admin_email': _emailCtrl.text.trim(),
-        'clean_forwarding_email': _forwardingCtrl.text.trim()
+        'clean_forwarding_email': _forwardingCtrl.text.trim(),
       });
       setState(() {
         _successMsg = 'Email config saved.';
@@ -2175,21 +2621,27 @@ class _NotificationsSection extends StatefulWidget {
 
 class _NotificationsSectionState
     extends State<_NotificationsSection> {
-  late bool _smsConsent;
+  late bool _emailNotifications;
+  late bool _smsAlerts;
   bool _saving = false;
   String? _successMsg, _error;
 
   @override
   void initState() {
     super.initState();
-    _smsConsent = widget.business['sms_consent'] as bool? ?? false;
+    _emailNotifications =
+        widget.business['email_notifications'] as bool? ?? true;
+    _smsAlerts = widget.business['sms_alerts'] as bool? ?? false;
   }
 
   Future<void> _save() async {
     setState(
         () { _saving = true; _error = null; _successMsg = null; });
     try {
-      await widget.onSave({'sms_consent': _smsConsent});
+      await widget.onSave({
+        'email_notifications': _emailNotifications,
+        'sms_alerts': _smsAlerts,
+      });
       setState(() {
         _successMsg = 'Notification settings saved.';
         _saving = false;
@@ -2203,20 +2655,30 @@ class _NotificationsSectionState
   Widget build(BuildContext context) {
     return _SectionShell(
       title: 'Notifications',
-      subtitle: 'Control how and when you receive notifications.',
+      subtitle:
+          'Control how and when you receive notifications.',
       onSave: _save,
       saving: _saving,
       successMsg: _successMsg,
       error: _error,
-      child:
-          _SettingsGroup(title: 'Notification Preferences', children: [
-        _ToggleRow(
-            label: 'SMS Consent',
-            subtitle:
-                'Allow the system to send SMS notifications.',
-            value: _smsConsent,
-            onChanged: (v) => setState(() => _smsConsent = v)),
-      ]),
+      child: _SettingsGroup(
+          title: 'Notification Preferences',
+          children: [
+            _ToggleRow(
+                label: 'Email Notifications',
+                subtitle:
+                    'Receive email alerts for new leads, appointments, and messages.',
+                value: _emailNotifications,
+                onChanged: (v) =>
+                    setState(() => _emailNotifications = v)),
+            _ToggleRow(
+                label: 'SMS Alerts',
+                subtitle:
+                    'Receive text alerts for urgent activity.',
+                value: _smsAlerts,
+                onChanged: (v) =>
+                    setState(() => _smsAlerts = v)),
+          ]),
     );
   }
 }
@@ -2258,8 +2720,7 @@ class _BillingSectionState extends State<_BillingSection> {
     if (_isPaid &&
         _currentPlan.toLowerCase() == plan.name.toLowerCase()) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content:
-              Text('You are already on the ${plan.name} plan.'),
+          content: Text('You are already on the ${plan.name} plan.'),
           backgroundColor: AppTheme.brand));
       return;
     }
@@ -2365,8 +2826,7 @@ class _BillingSectionState extends State<_BillingSection> {
 
     return _SectionShell(
       title: 'Billing',
-      subtitle:
-          'Manage your subscription plan and view usage.',
+      subtitle: 'Manage your subscription plan and view usage.',
       child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -2454,8 +2914,8 @@ class _BillingSectionState extends State<_BillingSection> {
                 decoration: BoxDecoration(
                     color: AppTheme.pageBg,
                     borderRadius: BorderRadius.circular(10),
-                    border:
-                        Border.all(color: AppTheme.borderColor)),
+                    border: Border.all(
+                        color: AppTheme.borderColor)),
                 child: Row(children: [
                   const Expanded(
                       child: Column(
@@ -2472,7 +2932,8 @@ class _BillingSectionState extends State<_BillingSection> {
                             'Your access continues until the end of your current billing period.',
                             style: TextStyle(
                                 fontSize: 12,
-                                color: AppTheme.textSecondary)),
+                                color:
+                                    AppTheme.textSecondary)),
                       ])),
                   const SizedBox(width: 16),
                   MouseRegion(
@@ -2519,8 +2980,8 @@ class _BillingSectionState extends State<_BillingSection> {
                             value: (minutesUsed / includedMinutes)
                                 .clamp(0.0, 1.0),
                             backgroundColor: AppTheme.borderColor,
-                            valueColor:
-                                AlwaysStoppedAnimation(AppTheme.brand),
+                            valueColor: AlwaysStoppedAnimation(
+                                AppTheme.brand),
                             minHeight: 8)),
                   ],
                 ]),
@@ -2560,7 +3021,8 @@ class _PlanCard extends StatelessWidget {
             : AppTheme.cardBg,
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
-            color: isCurrent ? plan.color : AppTheme.borderColor,
+            color:
+                isCurrent ? plan.color : AppTheme.borderColor,
             width: isCurrent ? 2 : 1),
       ),
       child: Column(
@@ -2578,8 +3040,10 @@ class _PlanCard extends StatelessWidget {
                     padding: const EdgeInsets.symmetric(
                         horizontal: 8, vertical: 3),
                     decoration: BoxDecoration(
-                        color: plan.color.withValues(alpha: 0.12),
-                        borderRadius: BorderRadius.circular(20)),
+                        color:
+                            plan.color.withValues(alpha: 0.12),
+                        borderRadius:
+                            BorderRadius.circular(20)),
                     child: Text('Popular',
                         style: TextStyle(
                             fontSize: 10,
@@ -2590,8 +3054,10 @@ class _PlanCard extends StatelessWidget {
                     padding: const EdgeInsets.symmetric(
                         horizontal: 8, vertical: 3),
                     decoration: BoxDecoration(
-                        color: plan.color.withValues(alpha: 0.12),
-                        borderRadius: BorderRadius.circular(20)),
+                        color:
+                            plan.color.withValues(alpha: 0.12),
+                        borderRadius:
+                            BorderRadius.circular(20)),
                     child: Text('Current',
                         style: TextStyle(
                             fontSize: 10,
@@ -2599,19 +3065,17 @@ class _PlanCard extends StatelessWidget {
                             color: plan.color))),
             ]),
             const SizedBox(height: 12),
-            Row(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  Text(plan.price,
-                      style: const TextStyle(
-                          fontSize: 28,
-                          fontWeight: FontWeight.w800,
-                          color: AppTheme.textPrimary)),
-                  const Text('/mo',
-                      style: TextStyle(
-                          fontSize: 13,
-                          color: AppTheme.textSecondary)),
-                ]),
+            Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+              Text(plan.price,
+                  style: const TextStyle(
+                      fontSize: 28,
+                      fontWeight: FontWeight.w800,
+                      color: AppTheme.textPrimary)),
+              const Text('/mo',
+                  style: TextStyle(
+                      fontSize: 13,
+                      color: AppTheme.textSecondary)),
+            ]),
             const SizedBox(height: 16),
             ...plan.features.map((f) => Padding(
                 padding: const EdgeInsets.only(bottom: 8),
@@ -2707,8 +3171,8 @@ class _PlanConfirmModal extends StatelessWidget {
                     decoration: BoxDecoration(
                         color: AppTheme.pageBg,
                         borderRadius: BorderRadius.circular(8),
-                        border:
-                            Border.all(color: AppTheme.borderColor)),
+                        border: Border.all(
+                            color: AppTheme.borderColor)),
                     child: Row(children: [
                       Expanded(
                           child: Column(children: [
@@ -2728,7 +3192,8 @@ class _PlanConfirmModal extends StatelessWidget {
                                 color: AppTheme.textSecondary)),
                       ])),
                       const Icon(Icons.arrow_forward_rounded,
-                          color: AppTheme.textSecondary, size: 20),
+                          color: AppTheme.textSecondary,
+                          size: 20),
                       Expanded(
                           child: Column(children: [
                         const Text('New',
@@ -2752,11 +3217,12 @@ class _PlanConfirmModal extends StatelessWidget {
                 Container(
                     padding: const EdgeInsets.all(14),
                     decoration: BoxDecoration(
-                        color: plan.color.withValues(alpha: 0.06),
+                        color:
+                            plan.color.withValues(alpha: 0.06),
                         borderRadius: BorderRadius.circular(8),
                         border: Border.all(
-                            color:
-                                plan.color.withValues(alpha: 0.2))),
+                            color: plan.color
+                                .withValues(alpha: 0.2))),
                     child: Row(children: [
                       Icon(Icons.star_outline_rounded,
                           color: plan.color, size: 20),
@@ -2776,7 +3242,8 @@ class _PlanConfirmModal extends StatelessWidget {
                                 '15-day free trial · Cancel anytime',
                                 style: TextStyle(
                                     fontSize: 12,
-                                    color: AppTheme.textSecondary)),
+                                    color:
+                                        AppTheme.textSecondary)),
                           ])),
                     ])),
                 const SizedBox(height: 16),
@@ -2914,23 +3381,26 @@ class _SettingsGroup extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Text(title,
-          style: const TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w700,
-              color: AppTheme.textSecondary)),
-      const SizedBox(height: 12),
-      Container(
-          padding: const EdgeInsets.all(20),
-          decoration: BoxDecoration(
-              color: AppTheme.cardBg,
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: AppTheme.borderColor)),
-          child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: children)),
-    ]);
+    return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(title,
+              style: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                  color: AppTheme.textSecondary)),
+          const SizedBox(height: 12),
+          Container(
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                  color: AppTheme.cardBg,
+                  borderRadius: BorderRadius.circular(10),
+                  border:
+                      Border.all(color: AppTheme.borderColor)),
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: children)),
+        ]);
   }
 }
 
@@ -2939,14 +3409,21 @@ class _SettingsField extends StatelessWidget {
   final TextEditingController controller;
   final String? hint;
   final bool enabled;
-  const _SettingsField(
-      {required this.label,
-      required this.controller,
-      this.hint,
-      this.enabled = true});
+  final Widget? customWidget; // replaces TextField when provided
+
+  const _SettingsField({
+    required this.label,
+    required this.controller,
+    this.hint,
+    this.enabled = true,
+    this.customWidget,
+  });
 
   @override
   Widget build(BuildContext context) {
+    // If customWidget is provided (e.g. a dropdown), render it instead
+    if (customWidget != null) return customWidget!;
+
     return Padding(
       padding: const EdgeInsets.only(bottom: 16),
       child: Column(

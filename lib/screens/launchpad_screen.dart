@@ -23,6 +23,12 @@ class _LaunchpadScreenState extends State<LaunchpadScreen> {
   bool _venmoConnected = false;
   bool _stripeConnected = false;
 
+  // Profile completion banner
+  // Hidden once the user manually dismisses it via the X button.
+  // Stored in businesses.launchpad_profile_dismissed so it never reappears.
+  bool _showProfileBanner = false;
+  bool _bannerLoading = true;
+
   @override
   void initState() {
     super.initState();
@@ -32,6 +38,7 @@ class _LaunchpadScreenState extends State<LaunchpadScreen> {
   Future<void> _loadBusiness() async {
     final userId = _supabase.auth.currentUser?.id;
     if (userId == null) return;
+
     final profileRes = await _supabase
         .from('profiles')
         .select('business_id')
@@ -39,12 +46,19 @@ class _LaunchpadScreenState extends State<LaunchpadScreen> {
         .maybeSingle();
     final businessId = profileRes?['business_id'] as int?;
     if (businessId == null) return;
+
     final bizRes = await _supabase
         .from('businesses')
-        .select('business_name, connected_google, connected_facebook, connected_whatsapp, connected_paypal, connected_venmo, connected_stripe')
+        .select(
+            'business_name, connected_google, connected_facebook, '
+            'connected_whatsapp, connected_paypal, connected_venmo, '
+            'connected_stripe, launchpad_profile_dismissed')
         .eq('id', businessId)
         .maybeSingle();
+
     if (mounted && bizRes != null) {
+      final dismissed =
+          bizRes['launchpad_profile_dismissed'] as bool? ?? false;
       setState(() {
         _businessId = businessId;
         _businessName = bizRes['business_name'] as String? ?? 'NexaFlow';
@@ -54,7 +68,23 @@ class _LaunchpadScreenState extends State<LaunchpadScreen> {
         _paypalConnected   = bizRes['connected_paypal']   as bool? ?? false;
         _venmoConnected    = bizRes['connected_venmo']    as bool? ?? false;
         _stripeConnected   = bizRes['connected_stripe']   as bool? ?? false;
+        _showProfileBanner = !dismissed;
+        _bannerLoading = false;
       });
+    } else if (mounted) {
+      setState(() => _bannerLoading = false);
+    }
+  }
+
+  Future<void> _dismissBanner() async {
+    // Immediately hide in UI
+    setState(() => _showProfileBanner = false);
+    // Persist so it never reappears
+    if (_businessId != null) {
+      await _supabase
+          .from('businesses')
+          .update({'launchpad_profile_dismissed': true})
+          .eq('id', _businessId!);
     }
   }
 
@@ -112,6 +142,20 @@ class _LaunchpadScreenState extends State<LaunchpadScreen> {
                   ),
                 ),
                 const SizedBox(height: 28),
+
+                // ── Complete Your Profile Banner ────────────────────────────
+                if (!_bannerLoading && _showProfileBanner) ...[
+                  _ProfileBanner(
+                    onGoToProfile: () {
+                      // Navigate to Settings, opening on Business Profile tab (index 0)
+                      context.go('/settings');
+                    },
+                    onDismiss: _dismissBanner,
+                  ),
+                  const SizedBox(height: 20),
+                ],
+
+                // ── Integration card ───────────────────────────────────────
                 Container(
                   decoration: BoxDecoration(
                     color: Colors.white,
@@ -128,113 +172,180 @@ class _LaunchpadScreenState extends State<LaunchpadScreen> {
                     children: [
                       // Google
                       _IntegrationRow(
-                        icon: Image.asset('assets/icons/google_my_business_icon.png', width: 64, height: 64, fit: BoxFit.contain),
-                        title: 'Manage your Google Business Profile within your CRM!',
-                        subtitle: 'Monitor and reply to your Google Business Profile reviews.',
+                        icon: Image.asset(
+                            'assets/icons/google_my_business_icon.png',
+                            width: 64, height: 64, fit: BoxFit.contain),
+                        title:
+                            'Manage your Google Business Profile within your CRM!',
+                        subtitle:
+                            'Monitor and reply to your Google Business Profile reviews.',
                         buttonLabel: 'Connect',
-                        onTap: () => _showComingSoon('Google Business Profile'),
+                        onTap: () =>
+                            _showComingSoon('Google Business Profile'),
                         isConnected: _googleConnected,
-                        onMarkConnected: () => _markConnected('connected_google'),
+                        onMarkConnected: () =>
+                            _markConnected('connected_google'),
                       ),
-                      const Divider(height: 1, thickness: 1, color: Color(0xFFEEEEEE)),
+                      const Divider(
+                          height: 1,
+                          thickness: 1,
+                          color: Color(0xFFEEEEEE)),
 
-                      // AI Settings — no tracking, just navigates
+                      // AI Settings
                       _IntegrationRow(
                         icon: Container(
-                          width: 64, height: 64,
-                          decoration: const BoxDecoration(color: Color(0xFF6366F1), shape: BoxShape.circle),
-                          child: const Icon(Icons.smart_toy_outlined, color: Colors.white, size: 34),
+                          width: 64,
+                          height: 64,
+                          decoration: const BoxDecoration(
+                              color: Color(0xFF6366F1),
+                              shape: BoxShape.circle),
+                          child: const Icon(Icons.smart_toy_outlined,
+                              color: Colors.white, size: 34),
                         ),
-                        title: 'Configure your AI assistant for SMS and email conversations.',
-                        subtitle: 'Set your AI persona, goals, services, FAQs and forbidden words.',
+                        title:
+                            'Configure your AI assistant for SMS and email conversations.',
+                        subtitle:
+                            'Set your AI persona, goals, services, FAQs and forbidden words.',
                         buttonLabel: 'Set Up',
                         onTap: () => context.go('/settings'),
                         isConnected: false,
                         showConnectedState: false,
                       ),
-                      const Divider(height: 1, thickness: 1, color: Color(0xFFEEEEEE)),
+                      const Divider(
+                          height: 1,
+                          thickness: 1,
+                          color: Color(0xFFEEEEEE)),
 
                       // Facebook
                       _IntegrationRow(
-                        icon: ClipOval(child: Image.asset('assets/icons/Facebook-Logosu.png', width: 64, height: 64, fit: BoxFit.cover)),
-                        title: 'Connect directly with prospects and customers via Messenger in Conversations and sync your Facebook leads with your CRM.',
+                        icon: ClipOval(
+                          child: Image.asset(
+                              'assets/icons/Facebook-Logosu.png',
+                              width: 64, height: 64, fit: BoxFit.cover),
+                        ),
+                        title:
+                            'Connect directly with prospects and customers via Messenger in Conversations and sync your Facebook leads with your CRM.',
                         subtitle: null,
                         buttonLabel: 'Connect',
                         onTap: () => _showComingSoon('Facebook'),
                         isConnected: _facebookConnected,
-                        onMarkConnected: () => _markConnected('connected_facebook'),
+                        onMarkConnected: () =>
+                            _markConnected('connected_facebook'),
                       ),
-                      const Divider(height: 1, thickness: 1, color: Color(0xFFEEEEEE)),
+                      const Divider(
+                          height: 1,
+                          thickness: 1,
+                          color: Color(0xFFEEEEEE)),
 
-                      // Webchat — no tracking
+                      // Webchat
                       _IntegrationRow(
                         icon: Container(
-                          width: 64, height: 64,
-                          decoration: const BoxDecoration(color: Color(0xFF0084FF), shape: BoxShape.circle),
-                          child: const Icon(Icons.chat_bubble_rounded, color: Colors.white, size: 34),
+                          width: 64,
+                          height: 64,
+                          decoration: const BoxDecoration(
+                              color: Color(0xFF0084FF),
+                              shape: BoxShape.circle),
+                          child: const Icon(Icons.chat_bubble_rounded,
+                              color: Colors.white, size: 34),
                         ),
-                        title: 'Generate leads from your website by connecting webchat widget.',
-                        subtitle: '(The chat widget status check may be inaccurate, if the widget code is not directly embedded in the website)',
+                        title:
+                            'Generate leads from your website by connecting webchat widget.',
+                        subtitle:
+                            '(The chat widget status check may be inaccurate, if the widget code is not directly embedded in the website)',
                         buttonLabel: 'Connect',
                         onTap: () => context.go('/ai-chat'),
                         isConnected: false,
                         showConnectedState: false,
                       ),
-                      const Divider(height: 1, thickness: 1, color: Color(0xFFEEEEEE)),
+                      const Divider(
+                          height: 1,
+                          thickness: 1,
+                          color: Color(0xFFEEEEEE)),
 
                       // WhatsApp
                       _IntegrationRow(
-                        icon: Image.asset('assets/icons/WhatsApp_icon.png', width: 64, height: 64, fit: BoxFit.contain),
+                        icon: Image.asset(
+                            'assets/icons/WhatsApp_icon.png',
+                            width: 64, height: 64, fit: BoxFit.contain),
                         title: 'Integrate WhatsApp',
-                        subtitle: 'Connect your WhatsApp Business account for instant, real-time communication and reach out to your customers on their preferred platform.',
+                        subtitle:
+                            'Connect your WhatsApp Business account for instant, real-time communication and reach out to your customers on their preferred platform.',
                         buttonLabel: 'Connect',
                         onTap: () => _showComingSoon('WhatsApp'),
                         isConnected: _whatsappConnected,
-                        onMarkConnected: () => _markConnected('connected_whatsapp'),
+                        onMarkConnected: () =>
+                            _markConnected('connected_whatsapp'),
                       ),
-                      const Divider(height: 1, thickness: 1, color: Color(0xFFEEEEEE)),
+                      const Divider(
+                          height: 1,
+                          thickness: 1,
+                          color: Color(0xFFEEEEEE)),
 
                       // Stripe
                       _IntegrationRow(
-                        icon: Image.asset('assets/icons/stripe_icon.png', width: 64, height: 64, fit: BoxFit.contain),
-                        title: 'Connect your Stripe account to start accepting payments.',
-                        subtitle: '(Existing Stripe API integration will continue to work, but it is advised to use Stripe Connect for more security)',
+                        icon: Image.asset('assets/icons/stripe_icon.png',
+                            width: 64, height: 64, fit: BoxFit.contain),
+                        title:
+                            'Connect your Stripe account to start accepting payments.',
+                        subtitle:
+                            '(Existing Stripe API integration will continue to work, but it is advised to use Stripe Connect for more security)',
                         buttonLabel: 'Connect',
                         onTap: () => _showComingSoon('Stripe Connect'),
                         isConnected: _stripeConnected,
-                        onMarkConnected: () => _markConnected('connected_stripe'),
+                        onMarkConnected: () =>
+                            _markConnected('connected_stripe'),
                       ),
-                      const Divider(height: 1, thickness: 1, color: Color(0xFFEEEEEE)),
+                      const Divider(
+                          height: 1,
+                          thickness: 1,
+                          color: Color(0xFFEEEEEE)),
 
                       // PayPal
                       _IntegrationRow(
-                        icon: Image.asset('assets/icons/paypal_icon.png', width: 64, height: 64, fit: BoxFit.contain),
-                        title: 'Connect your PayPal account to accept payments and track transactions.',
-                        subtitle: '(PayPal integration allows you to send payment requests directly to your leads and customers)',
+                        icon: Image.asset('assets/icons/paypal_icon.png',
+                            width: 64, height: 64, fit: BoxFit.contain),
+                        title:
+                            'Connect your PayPal account to accept payments and track transactions.',
+                        subtitle:
+                            '(PayPal integration allows you to send payment requests directly to your leads and customers)',
                         buttonLabel: 'Connect',
                         onTap: () => _showComingSoon('PayPal'),
                         isConnected: _paypalConnected,
-                        onMarkConnected: () => _markConnected('connected_paypal'),
+                        onMarkConnected: () =>
+                            _markConnected('connected_paypal'),
                       ),
-                      const Divider(height: 1, thickness: 1, color: Color(0xFFEEEEEE)),
+                      const Divider(
+                          height: 1,
+                          thickness: 1,
+                          color: Color(0xFFEEEEEE)),
 
                       // Venmo
                       _IntegrationRow(
-                        icon: Image.asset('assets/icons/venmo_icon.png', width: 64, height: 64, fit: BoxFit.contain),
-                        title: 'Connect Venmo to accept instant payments from your customers.',
-                        subtitle: '(Venmo integration lets you request and receive payments quickly through your CRM)',
+                        icon: Image.asset('assets/icons/venmo_icon.png',
+                            width: 64, height: 64, fit: BoxFit.contain),
+                        title:
+                            'Connect Venmo to accept instant payments from your customers.',
+                        subtitle:
+                            '(Venmo integration lets you request and receive payments quickly through your CRM)',
                         buttonLabel: 'Connect',
                         onTap: () => _showComingSoon('Venmo'),
                         isConnected: _venmoConnected,
-                        onMarkConnected: () => _markConnected('connected_venmo'),
+                        onMarkConnected: () =>
+                            _markConnected('connected_venmo'),
                       ),
-                      const Divider(height: 1, thickness: 1, color: Color(0xFFEEEEEE)),
+                      const Divider(
+                          height: 1,
+                          thickness: 1,
+                          color: Color(0xFFEEEEEE)),
 
-                      // Team Members — no tracking
+                      // Team Members
                       _IntegrationRow(
-                        icon: Image.asset('assets/icons/add-member-icon-vector.png', width: 64, height: 64, fit: BoxFit.contain),
+                        icon: Image.asset(
+                            'assets/icons/add-member-icon-vector.png',
+                            width: 64, height: 64, fit: BoxFit.contain),
                         title: 'Quickly add one or more team members.',
-                        subtitle: '(The new user(s) will have the same permissions like yours, unless you change it here or in settings)',
+                        subtitle:
+                            '(The new user(s) will have the same permissions like yours, unless you change it here or in settings)',
                         buttonLabel: 'Add',
                         onTap: _openInviteMember,
                         isConnected: false,
@@ -251,6 +362,118 @@ class _LaunchpadScreenState extends State<LaunchpadScreen> {
     );
   }
 }
+
+// ── PROFILE COMPLETION BANNER ─────────────────────────────────────────────────
+
+class _ProfileBanner extends StatelessWidget {
+  final VoidCallback onGoToProfile;
+  final VoidCallback onDismiss;
+
+  const _ProfileBanner({
+    required this.onGoToProfile,
+    required this.onDismiss,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFFFB800).withValues(alpha: 0.6)),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFFFFB800).withValues(alpha: 0.08),
+            blurRadius: 16,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      padding: const EdgeInsets.all(20),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Icon
+          Container(
+            width: 48,
+            height: 48,
+            decoration: BoxDecoration(
+              color: const Color(0xFFFFB800).withValues(alpha: 0.12),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(Icons.assignment_outlined,
+                color: Color(0xFFFFB800), size: 24),
+          ),
+          const SizedBox(width: 16),
+
+          // Text + button
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Complete your business profile',
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF1A1A2E),
+                  ),
+                ),
+                const SizedBox(height: 4),
+                const Text(
+                  'Tell us more about your business so we can serve you better — '
+                  'your address, industry, timezone, logo, and more. '
+                  'This information powers your emails, documents, and client-facing tools.',
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: Color(0xFF666666),
+                    height: 1.5,
+                  ),
+                ),
+                const SizedBox(height: 14),
+                MouseRegion(
+                  cursor: SystemMouseCursors.click,
+                  child: ElevatedButton.icon(
+                    onPressed: onGoToProfile,
+                    icon: const Icon(Icons.edit_outlined, size: 15),
+                    label: const Text('Complete Profile'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFFFFB800),
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 18, vertical: 10),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8)),
+                      textStyle: const TextStyle(
+                          fontSize: 13, fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          // Dismiss X
+          const SizedBox(width: 8),
+          MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: GestureDetector(
+              onTap: onDismiss,
+              child: Container(
+                padding: const EdgeInsets.all(4),
+                child: const Icon(Icons.close_rounded,
+                    size: 18, color: Color(0xFFAAAAAA)),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── INTEGRATION ROW ───────────────────────────────────────────────────────────
 
 class _IntegrationRow extends StatelessWidget {
   final Widget icon;
@@ -311,7 +534,6 @@ class _IntegrationRow extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 20),
-          // Connected state or button
           if (showConnectedState && isConnected)
             Container(
               width: 110,
@@ -324,7 +546,8 @@ class _IntegrationRow extends StatelessWidget {
               child: const Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Icon(Icons.check_circle_outline, color: Color(0xFF21A366), size: 16),
+                  Icon(Icons.check_circle_outline,
+                      color: Color(0xFF21A366), size: 16),
                   SizedBox(width: 4),
                   Text('Connected',
                       style: TextStyle(
@@ -343,9 +566,11 @@ class _IntegrationRow extends StatelessWidget {
                   backgroundColor: const Color(0xFF21A366),
                   foregroundColor: Colors.white,
                   padding: const EdgeInsets.symmetric(vertical: 13),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(6)),
                   elevation: 0,
-                  textStyle: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
+                  textStyle: const TextStyle(
+                      fontWeight: FontWeight.w600, fontSize: 14),
                 ),
                 child: Text(buttonLabel),
               ),
