@@ -206,9 +206,9 @@ class _AppNavBarState extends State<AppNavBar> {
                   ),
                   _NavItem(
                     icon: Icons.calendar_today_outlined,
-                    label: 'Appointments',
+                    label: 'Calendars',
                     route: '/appointments',
-                    active: location.startsWith('/appointments'),
+                    active: location.startsWith('/appointments'), //
                   ),
                   _SectionLabel('Marketing'),
                   _NavItem(
