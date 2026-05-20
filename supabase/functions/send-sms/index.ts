@@ -4,7 +4,18 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 const TWILIO_ACCOUNT_SID = Deno.env.get('TWILIO_ACCOUNT_SID')!
 const TWILIO_AUTH_TOKEN = Deno.env.get('TWILIO_AUTH_TOKEN')!
 
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+}
+
 serve(async (req) => {
+  // Handle CORS preflight
+  if (req.method === 'OPTIONS') {
+    return new Response('ok', { headers: corsHeaders })
+  }
+
   console.log('Function called, method:', req.method)
   
   try {
@@ -14,7 +25,6 @@ serve(async (req) => {
     const payload = JSON.parse(rawBody)
     console.log('Parsed payload type:', payload.type)
 
-    // Supabase webhook sends {type, table, record, old_record}
     const record = payload.record ?? payload
     console.log('Record direction:', record?.direction)
     console.log('Record id:', record?.id)
@@ -22,7 +32,17 @@ serve(async (req) => {
     // Only process outbound messages
     if (record.direction !== 'outbound') {
       console.log('Skipping - not outbound')
-      return new Response(JSON.stringify({ skipped: true }), { status: 200 })
+      return new Response(JSON.stringify({ skipped: true }), { 
+        status: 200, headers: corsHeaders 
+      })
+    }
+
+    // Skip AI messages — already sent by receive-sms
+    if (record.sent_via_twiml === true) {
+      console.log('Skipping - already sent by receive-sms')
+      return new Response(JSON.stringify({ skipped: true }), { 
+        status: 200, headers: corsHeaders 
+      })
     }
 
     const supabase = createClient(
@@ -30,7 +50,6 @@ serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
     )
 
-    // Get conversation
     const { data: conversation, error: convError } = await supabase
       .from('conversations')
       .select('contact_phone, business_id')
@@ -43,7 +62,6 @@ serve(async (req) => {
       throw new Error(`Conversation not found: ${convError?.message}`)
     }
 
-    // Get business Twilio number
     const { data: business, error: bizError } = await supabase
       .from('businesses')
       .select('ai_phone_number')
@@ -56,7 +74,6 @@ serve(async (req) => {
       throw new Error('No Twilio number assigned to this business')
     }
 
-    // Send SMS via Twilio
     const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`
     
     const formData = new URLSearchParams()
@@ -82,7 +99,6 @@ serve(async (req) => {
       throw new Error(`Twilio error: ${twilioData.message}`)
     }
 
-    // Update message status
     await supabase
       .from('messages')
       .update({ 
@@ -95,14 +111,14 @@ serve(async (req) => {
 
     return new Response(JSON.stringify({ success: true, sid: twilioData.sid }), {
       status: 200,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     })
 
   } catch (error) {
     console.log('ERROR:', error.message)
     return new Response(JSON.stringify({ error: error.message }), {
       status: 500,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     })
   }
 })

@@ -300,6 +300,7 @@ Deno.serve(async (req) => {
       channel:         "sms",
       status:          "delivered",
       sender_name:     "AI Assistant",
+      sent_via_twiml:  true,
     });
 
     // ── 10. Update conversation last message ──────────────────────────────────

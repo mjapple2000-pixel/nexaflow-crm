@@ -190,7 +190,6 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
     super.dispose();
   }
 
-  // ── Subscribe to conversation list changes (new inbound threads) ──────────
   void _subscribeToConversations() {
     _conversationChannel = _supabase
         .channel('conversations-list')
@@ -203,8 +202,6 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
         .subscribe();
   }
 
-  // ── Data loading ──────────────────────────────────────────────────────────
-
   Future<void> _loadConversations() async {
     setState(() {
       _loadingConvos = true;
@@ -216,8 +213,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
           .select()
           .order('last_message_at', ascending: false);
 
-      var convos =
-          (res as List).map((e) => Conversation.fromJson(e)).toList();
+      var convos = (res as List).map((e) => Conversation.fromJson(e)).toList();
 
       if (_filter == 'unread') {
         convos = convos.where((c) => c.unreadCount > 0).toList();
@@ -229,10 +225,8 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
 
       setState(() => _conversations = convos);
 
-      // If selected conversation updated, refresh it
       if (_selected != null) {
-        final updated =
-            convos.where((c) => c.id == _selected!.id).toList();
+        final updated = convos.where((c) => c.id == _selected!.id).toList();
         if (updated.isNotEmpty && mounted) {
           setState(() => _selected = updated.first);
         }
@@ -296,8 +290,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
           .eq('conversation_id', convo.id)
           .order('inserted_at', ascending: true);
       if (mounted) {
-        final msgs =
-            (res as List).map((e) => Message.fromJson(e)).toList();
+        final msgs = (res as List).map((e) => Message.fromJson(e)).toList();
         _seenMessageIds.addAll(msgs.map((m) => m.id));
         setState(() => _messages = msgs);
         _scrollToBottom();
@@ -310,8 +303,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
             .eq('conversation_id', convo.id)
             .order('created_at', ascending: true);
         if (mounted) {
-          final msgs =
-              (res as List).map((e) => Message.fromJson(e)).toList();
+          final msgs = (res as List).map((e) => Message.fromJson(e)).toList();
           _seenMessageIds.addAll(msgs.map((m) => m.id));
           setState(() => _messages = msgs);
           _scrollToBottom();
@@ -333,8 +325,6 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
       }
     });
   }
-
-  // ── AI Toggle ─────────────────────────────────────────────────────────────
 
   Future<void> _toggleAi() async {
     if (_selected == null || _togglingAi) return;
@@ -404,28 +394,16 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
       final businessId = profileRes?['business_id'] as int?;
       if (businessId == null) throw Exception('No business found.');
 
-      // If sending SMS manually, use send-sms edge function
-      if (_sendChannel == 'sms') {
-        await http.post(
-          Uri.parse(
-              'https://rllriopqojaraceytdno.supabase.co/functions/v1/send-sms'),
-          headers: {'Content-Type': 'application/json'},
-          body: jsonEncode({
-            'to': _selected!.contactPhone,
-            'message': body,
-            'business_id': businessId,
-          }),
-        );
-      }
-
+      // Insert to DB — webhook fires and sends via Twilio automatically
       await _supabase.from('messages').insert({
         'conversation_id': _selected!.id,
         'business_id': businessId,
         'body': body,
         'direction': 'outbound',
         'channel': _sendChannel,
-        'status': 'delivered',
+        'status': 'sending',
         'sender_name': 'You',
+        'sent_via_twiml': false,
       });
 
       if (_sendChannel == 'email') {
@@ -498,8 +476,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
   }
 
   Widget _buildTopBar() {
-    final totalUnread =
-        _conversations.fold(0, (s, c) => s + c.unreadCount);
+    final totalUnread = _conversations.fold(0, (s, c) => s + c.unreadCount);
 
     return Container(
       height: 56,
@@ -518,8 +495,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
           const SizedBox(width: 12),
           if (totalUnread > 0)
             Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
               decoration: BoxDecoration(
                 color: AppTheme.brand,
                 borderRadius: BorderRadius.circular(12),
@@ -562,8 +538,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
       },
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 150),
-        padding:
-            const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
         decoration: BoxDecoration(
           color: active ? AppTheme.brand : AppTheme.pageBg,
           borderRadius: BorderRadius.circular(20),
@@ -574,13 +549,10 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
             style: TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
-                color:
-                    active ? Colors.white : AppTheme.textSecondary)),
+                color: active ? Colors.white : AppTheme.textSecondary)),
       ),
     );
   }
-
-  // ── Conversation list ─────────────────────────────────────────────────────
 
   Widget _buildConversationList() {
     return Container(
@@ -611,8 +583,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
       onTap: () => _selectConversation(convo),
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 150),
-        padding:
-            const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         decoration: BoxDecoration(
           color: isSelected
               ? AppTheme.brand.withValues(alpha: 0.08)
@@ -643,12 +614,10 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                         style: TextStyle(
                             fontSize: 14,
                             fontWeight: FontWeight.w700,
-                            color: isSelected
-                                ? Colors.white
-                                : AppTheme.brand)),
+                            color:
+                                isSelected ? Colors.white : AppTheme.brand)),
                   ),
                 ),
-                // AI indicator dot
                 if (convo.aiEnabled && convo.channel == 'sms')
                   Positioned(
                     right: 0,
@@ -659,8 +628,8 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                       decoration: BoxDecoration(
                         color: const Color(0xFF10B981),
                         shape: BoxShape.circle,
-                        border: Border.all(
-                            color: AppTheme.cardBg, width: 1.5),
+                        border:
+                            Border.all(color: AppTheme.cardBg, width: 1.5),
                       ),
                       child: const Icon(Icons.smart_toy,
                           size: 7, color: Colors.white),
@@ -718,8 +687,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                           width: 18,
                           height: 18,
                           decoration: BoxDecoration(
-                              color: AppTheme.brand,
-                              shape: BoxShape.circle),
+                              color: AppTheme.brand, shape: BoxShape.circle),
                           child: Center(
                             child: Text('${convo.unreadCount}',
                                 style: const TextStyle(
@@ -800,17 +768,14 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
         Container(
             width: 6,
             height: 6,
-            decoration:
-                BoxDecoration(color: color, shape: BoxShape.circle)),
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
         const SizedBox(width: 3),
         Text(status,
-            style: TextStyle(
-                fontSize: 10, color: AppTheme.textSecondary)),
+            style:
+                TextStyle(fontSize: 10, color: AppTheme.textSecondary)),
       ],
     );
   }
-
-  // ── Message panel ─────────────────────────────────────────────────────────
 
   Widget _buildMessagePanel() {
     if (_selected == null) {
@@ -819,8 +784,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Icon(Icons.chat_bubble_outline_rounded,
-                size: 48,
-                color: AppTheme.brand.withValues(alpha: 0.3)),
+                size: 48, color: AppTheme.brand.withValues(alpha: 0.3)),
             const SizedBox(height: 16),
             const Text('Select a conversation',
                 style: TextStyle(
@@ -829,8 +793,8 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                     color: AppTheme.textPrimary)),
             const SizedBox(height: 8),
             const Text('Choose from the left to view messages',
-                style: TextStyle(
-                    fontSize: 13, color: AppTheme.textSecondary)),
+                style:
+                    TextStyle(fontSize: 13, color: AppTheme.textSecondary)),
           ],
         ),
       );
@@ -839,15 +803,12 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
     return Column(
       children: [
         _buildMessageHeader(),
-        // AI status banner
         if (_selected!.channel == 'sms') _buildAiBanner(),
         Expanded(child: _buildMessageList()),
         _buildReplyBox(),
       ],
     );
   }
-
-  // ── AI status banner ──────────────────────────────────────────────────────
 
   Widget _buildAiBanner() {
     final aiOn = _selected!.aiEnabled;
@@ -896,8 +857,8 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
               onTap: _togglingAi ? null : _toggleAi,
               child: AnimatedContainer(
                 duration: const Duration(milliseconds: 150),
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 12, vertical: 5),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
                 decoration: BoxDecoration(
                   color: aiOn
                       ? const Color(0xFF6366F1)
@@ -942,12 +903,10 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
   Widget _buildMessageHeader() {
     final c = _selected!;
     return Container(
-      padding:
-          const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
       decoration: const BoxDecoration(
         color: AppTheme.cardBg,
-        border:
-            Border(bottom: BorderSide(color: AppTheme.borderColor)),
+        border: Border(bottom: BorderSide(color: AppTheme.borderColor)),
       ),
       child: Row(
         children: [
@@ -977,8 +936,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                         color: AppTheme.textPrimary)),
                 Text(c.contactPhone,
                     style: const TextStyle(
-                        fontSize: 12,
-                        color: AppTheme.textSecondary)),
+                        fontSize: 12, color: AppTheme.textSecondary)),
               ],
             ),
           ),
@@ -999,8 +957,8 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
               label: Text(c.status == 'open' ? 'Close' : 'Reopen',
                   style: const TextStyle(fontSize: 12)),
               style: OutlinedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 10, vertical: 6),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                 minimumSize: Size.zero,
               ),
             ),
@@ -1020,12 +978,11 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Icon(Icons.forum_outlined,
-                size: 40,
-                color: AppTheme.brand.withValues(alpha: 0.3)),
+                size: 40, color: AppTheme.brand.withValues(alpha: 0.3)),
             const SizedBox(height: 12),
             const Text('No messages yet',
-                style: TextStyle(
-                    fontSize: 14, color: AppTheme.textSecondary)),
+                style:
+                    TextStyle(fontSize: 14, color: AppTheme.textSecondary)),
           ],
         ),
       );
@@ -1033,8 +990,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
 
     return ListView.builder(
       controller: _scrollCtrl,
-      padding:
-          const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
       itemCount: _messages.length,
       itemBuilder: (_, i) {
         final msg = _messages[i];
@@ -1074,11 +1030,10 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
     final isAi = msg.isAi;
     final isEmail = msg.channel == 'email';
 
-    // AI messages get a slightly different bubble color
     final bubbleColor = isOut
         ? isAi
-            ? const Color(0xFF6366F1) // purple for AI
-            : AppTheme.brand // brand green for human
+            ? const Color(0xFF6366F1)
+            : AppTheme.brand
         : AppTheme.cardBg;
 
     return Padding(
@@ -1110,22 +1065,18 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
           ],
           Flexible(
             child: Column(
-              crossAxisAlignment: isOut
-                  ? CrossAxisAlignment.end
-                  : CrossAxisAlignment.start,
+              crossAxisAlignment:
+                  isOut ? CrossAxisAlignment.end : CrossAxisAlignment.start,
               children: [
-                // Sender label
                 if (isOut)
                   Padding(
-                    padding:
-                        const EdgeInsets.only(bottom: 3, right: 2),
+                    padding: const EdgeInsets.only(bottom: 3, right: 2),
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         if (isAi) ...[
                           const Icon(Icons.smart_toy_outlined,
-                              size: 10,
-                              color: Color(0xFF6366F1)),
+                              size: 10, color: Color(0xFF6366F1)),
                           const SizedBox(width: 3),
                         ],
                         Text(
@@ -1142,16 +1093,13 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                   )
                 else if (msg.senderName != null)
                   Padding(
-                    padding:
-                        const EdgeInsets.only(bottom: 3, left: 2),
+                    padding: const EdgeInsets.only(bottom: 3, left: 2),
                     child: Text(msg.senderName!,
                         style: const TextStyle(
                             fontSize: 11,
                             color: AppTheme.textSecondary,
                             fontWeight: FontWeight.w600)),
                   ),
-
-                // Bubble
                 Container(
                   padding: const EdgeInsets.symmetric(
                       horizontal: 14, vertical: 10),
@@ -1177,9 +1125,8 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                         msg.body,
                         style: TextStyle(
                             fontSize: 13,
-                            color: isOut
-                                ? Colors.white
-                                : AppTheme.textPrimary,
+                            color:
+                                isOut ? Colors.white : AppTheme.textPrimary,
                             height: 1.4),
                       ),
                       if (msg.mediaUrl != null) ...[
@@ -1193,8 +1140,6 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                     ],
                   ),
                 ),
-
-                // Timestamp + status
                 const SizedBox(height: 3),
                 Row(
                   mainAxisSize: MainAxisSize.min,
@@ -1211,8 +1156,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                     ],
                     Text(_fmtTime(msg.createdAt),
                         style: const TextStyle(
-                            fontSize: 10,
-                            color: AppTheme.textSecondary)),
+                            fontSize: 10, color: AppTheme.textSecondary)),
                     if (isOut) ...[
                       const SizedBox(width: 4),
                       Icon(
@@ -1237,8 +1181,6 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
       ),
     );
   }
-
-  // ── Reply box ─────────────────────────────────────────────────────────────
 
   Widget _buildReplyBox() {
     final isClosed = _selected?.status == 'closed';
@@ -1271,16 +1213,14 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                       label: 'SMS',
                       icon: Icons.sms_outlined,
                       selected: _sendChannel == 'sms',
-                      onTap: () =>
-                          setState(() => _sendChannel = 'sms'),
+                      onTap: () => setState(() => _sendChannel = 'sms'),
                     ),
                     const SizedBox(width: 6),
                     _ChannelToggleButton(
                       label: 'Email',
                       icon: Icons.email_outlined,
                       selected: _sendChannel == 'email',
-                      onTap: () =>
-                          setState(() => _sendChannel = 'email'),
+                      onTap: () => setState(() => _sendChannel = 'email'),
                     ),
                     if (_sendChannel == 'email' &&
                         (_selected?.contactEmail == null ||
@@ -1291,10 +1231,8 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                       const SizedBox(width: 3),
                       const Text('No email on contact',
                           style: TextStyle(
-                              fontSize: 11,
-                              color: Color(0xFFF59E0B))),
+                              fontSize: 11, color: Color(0xFFF59E0B))),
                     ],
-                    // Note when AI is active
                     if (_selected?.aiEnabled == true &&
                         _sendChannel == 'sms') ...[
                       const Spacer(),
@@ -1303,8 +1241,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                       const SizedBox(width: 4),
                       const Text('AI is active — your reply won\'t pause it',
                           style: TextStyle(
-                              fontSize: 11,
-                              color: AppTheme.textMuted)),
+                              fontSize: 11, color: AppTheme.textMuted)),
                     ],
                   ],
                 ),
@@ -1317,38 +1254,31 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                         maxLines: null,
                         keyboardType: TextInputType.multiline,
                         style: const TextStyle(
-                            fontSize: 13,
-                            color: AppTheme.textPrimary),
+                            fontSize: 13, color: AppTheme.textPrimary),
                         decoration: InputDecoration(
                           hintText: _sendChannel == 'email'
                               ? 'Type an email message...'
                               : 'Type an SMS message...',
                           hintStyle: const TextStyle(
-                              color: AppTheme.textSecondary,
-                              fontSize: 13),
+                              color: AppTheme.textSecondary, fontSize: 13),
                           filled: true,
                           fillColor: AppTheme.pageBg,
-                          contentPadding:
-                              const EdgeInsets.symmetric(
-                                  horizontal: 14, vertical: 10),
+                          contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 14, vertical: 10),
                           border: OutlineInputBorder(
-                            borderRadius:
-                                BorderRadius.circular(24),
+                            borderRadius: BorderRadius.circular(24),
                             borderSide: const BorderSide(
                                 color: AppTheme.borderColor),
                           ),
                           enabledBorder: OutlineInputBorder(
-                            borderRadius:
-                                BorderRadius.circular(24),
+                            borderRadius: BorderRadius.circular(24),
                             borderSide: const BorderSide(
                                 color: AppTheme.borderColor),
                           ),
                           focusedBorder: OutlineInputBorder(
-                            borderRadius:
-                                BorderRadius.circular(24),
+                            borderRadius: BorderRadius.circular(24),
                             borderSide: BorderSide(
-                                color: AppTheme.brand,
-                                width: 1.5),
+                                color: AppTheme.brand, width: 1.5),
                           ),
                         ),
                         onSubmitted: (_) => _sendMessage(),
@@ -1373,10 +1303,9 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                                   ? const SizedBox(
                                       width: 18,
                                       height: 18,
-                                      child:
-                                          CircularProgressIndicator(
-                                              strokeWidth: 2,
-                                              color: Colors.white),
+                                      child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                          color: Colors.white),
                                     )
                                   : Icon(
                                       _sendChannel == 'email'
@@ -1397,8 +1326,6 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
     );
   }
 
-  // ── Helpers ───────────────────────────────────────────────────────────────
-
   Widget _errorView() {
     return Center(
       child: Column(
@@ -1417,8 +1344,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
           MouseRegion(
             cursor: SystemMouseCursors.click,
             child: ElevatedButton(
-                onPressed: _loadConversations,
-                child: const Text('Retry')),
+                onPressed: _loadConversations, child: const Text('Retry')),
           ),
         ],
       ),
@@ -1431,16 +1357,14 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Icon(Icons.inbox_outlined,
-              size: 36,
-              color: AppTheme.brand.withValues(alpha: 0.3)),
+              size: 36, color: AppTheme.brand.withValues(alpha: 0.3)),
           const SizedBox(height: 8),
           const Text('No conversations yet',
-              style: TextStyle(
-                  fontSize: 13, color: AppTheme.textSecondary)),
+              style:
+                  TextStyle(fontSize: 13, color: AppTheme.textSecondary)),
           const SizedBox(height: 4),
           const Text('Inbound SMS messages will appear here automatically',
-              style: TextStyle(
-                  fontSize: 11, color: AppTheme.textMuted)),
+              style: TextStyle(fontSize: 11, color: AppTheme.textMuted)),
         ],
       ),
     );
@@ -1508,8 +1432,7 @@ class _ChannelToggleButton extends StatelessWidget {
       onTap: onTap,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 150),
-        padding:
-            const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
         decoration: BoxDecoration(
           color: selected
               ? color.withValues(alpha: 0.12)
@@ -1525,16 +1448,13 @@ class _ChannelToggleButton extends StatelessWidget {
           children: [
             Icon(icon,
                 size: 13,
-                color:
-                    selected ? color : AppTheme.textSecondary),
+                color: selected ? color : AppTheme.textSecondary),
             const SizedBox(width: 5),
             Text(label,
                 style: TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.w600,
-                    color: selected
-                        ? color
-                        : AppTheme.textSecondary)),
+                    color: selected ? color : AppTheme.textSecondary)),
           ],
         ),
       ),
