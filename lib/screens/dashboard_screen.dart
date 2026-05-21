@@ -4,6 +4,36 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme/app_theme.dart';
 import '../widgets/clickable.dart';
 
+// ── Date range options ────────────────────────────────────────────────────────
+enum _DateRange { today, thisWeek, thisMonth, thisQuarter }
+
+extension _DateRangeLabel on _DateRange {
+  String get label {
+    switch (this) {
+      case _DateRange.today:       return 'Today';
+      case _DateRange.thisWeek:    return 'This Week';
+      case _DateRange.thisMonth:   return 'This Month';
+      case _DateRange.thisQuarter: return 'This Quarter';
+    }
+  }
+
+  DateTime get start {
+    final now = DateTime.now();
+    switch (this) {
+      case _DateRange.today:
+        return DateTime(now.year, now.month, now.day);
+      case _DateRange.thisWeek:
+        return DateTime(now.year, now.month, now.day)
+            .subtract(Duration(days: now.weekday - 1));
+      case _DateRange.thisMonth:
+        return DateTime(now.year, now.month, 1);
+      case _DateRange.thisQuarter:
+        final q = ((now.month - 1) ~/ 3) * 3 + 1;
+        return DateTime(now.year, q, 1);
+    }
+  }
+}
+
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
 
@@ -15,22 +45,28 @@ class _DashboardScreenState extends State<DashboardScreen> {
   final _db = Supabase.instance.client;
 
   bool _loading = true;
-  String _businessName = '';
-  int _totalLeads = 0;
-  int _newLeads = 0;
-  int _openDeals = 0;
-  double _pipelineValue = 0;
-  double _wonValue = 0;
-  int _appointmentsToday = 0;
-  int _confirmedAppointments = 0;
-  int _noShowAppointments = 0;
-  int _unreadConversations = 0;
-  int _totalConversations = 0;
-  List<Map<String, dynamic>> _recentLeads = [];
-  List<Map<String, dynamic>> _pipelineSnapshot = [];
+  int?    _businessId;
+  String  _businessName = '';
+
+  _DateRange _dateRange = _DateRange.thisMonth;
+
+  // Stats
+  int    _totalLeads            = 0;
+  int    _newLeads              = 0;
+  int    _openDeals             = 0;
+  double _pipelineValue         = 0;
+  double _wonValue              = 0;
+  int    _appointmentsToday     = 0;
+  int    _confirmedAppointments = 0;
+  int    _noShowAppointments    = 0;
+  int    _unreadConversations   = 0;
+  int    _totalConversations    = 0;
+
+  List<Map<String, dynamic>> _recentLeads       = [];
+  List<Map<String, dynamic>> _pipelineSnapshot  = [];
   List<Map<String, dynamic>> _todayAppointments = [];
-  Map<String, int> _leadsBySource = {};
-  Map<String, int> _leadsByStatus = {};
+  Map<String, int>           _leadsBySource     = {};
+  Map<String, int>           _leadsByStatus     = {};
 
   @override
   void initState() {
@@ -41,8 +77,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Future<void> _loadDashboard() async {
     setState(() => _loading = true);
     try {
+      await _loadBusinessInfo();
+      if (_businessId == null) return;
       await Future.wait([
-        _loadBusinessInfo(),
         _loadLeadStats(),
         _loadDeals(),
         _loadAppointments(),
@@ -58,35 +95,71 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
+  // ── Reload only stats when date range changes (not layout) ────────────────
+  Future<void> _reloadForRange() async {
+    setState(() => _loading = true);
+    try {
+      await Future.wait([
+        _loadLeadStats(),
+        _loadDeals(),
+        _loadAppointments(),
+        _loadConversations(),
+        _loadRecentLeads(),
+        _loadPipelineSnapshot(),
+        _loadTodayAppointments(),
+      ]);
+    } catch (e) {
+      debugPrint('Dashboard range reload error: $e');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
   Future<void> _loadBusinessInfo() async {
     final profile = await _db
         .from('profiles')
         .select('business_id, businesses(business_name)')
         .eq('user_id', _db.auth.currentUser!.id)
         .maybeSingle();
-    if (profile != null && profile['businesses'] != null) {
-      _businessName = profile['businesses']['business_name'] ?? '';
+    if (profile != null) {
+      _businessId   = profile['business_id'] as int?;
+      _businessName = (profile['businesses'] as Map?)?['business_name'] ?? '';
     }
   }
 
   Future<void> _loadLeadStats() async {
-    final all = await _db.from('leads').select('id, lead_status, source');
+    // FIX: always filter by business_id
+    final rangeStart = _dateRange.start.toUtc().toIso8601String();
+    final all = await _db
+        .from('leads')
+        .select('id, lead_status, source, created_at')
+        .eq('business_id', _businessId!)
+        .gte('created_at', rangeStart);
+
     _totalLeads = all.length;
-    _newLeads = all.where((l) => l['lead_status'] == 'New').length;
+    _newLeads   = all.where((l) => l['lead_status'] == 'New').length;
+
     final bySource = <String, int>{};
     final byStatus = <String, int>{};
     for (final l in all) {
-      final src = l['source'] ?? 'Direct';
-      final st = l['lead_status'] ?? 'New';
+      final src = (l['source'] as String?)?.isNotEmpty == true ? l['source'] : 'Direct';
+      final st  = l['lead_status'] ?? 'New';
       bySource[src] = (bySource[src] ?? 0) + 1;
-      byStatus[st] = (byStatus[st] ?? 0) + 1;
+      byStatus[st]  = (byStatus[st]  ?? 0) + 1;
     }
     _leadsBySource = bySource;
     _leadsByStatus = byStatus;
   }
 
   Future<void> _loadDeals() async {
-    final deals = await _db.from('deals').select('id, value, status');
+    // FIX: filter by business_id
+    final rangeStart = _dateRange.start.toUtc().toIso8601String();
+    final deals = await _db
+        .from('deals')
+        .select('id, value, status, created_at')
+        .eq('business_id', _businessId!)
+        .gte('created_at', rangeStart);
+
     _openDeals = deals.where((d) => d['status'] == 'open').length;
     _pipelineValue = deals
         .where((d) => d['status'] == 'open')
@@ -97,47 +170,64 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Future<void> _loadAppointments() async {
-    final now = DateTime.now();
+    // Today's appointments always use today's date (not the range filter)
+    final now        = DateTime.now();
     final startOfDay = DateTime(now.year, now.month, now.day).toUtc();
-    final endOfDay = startOfDay.add(const Duration(days: 1));
+    final endOfDay   = startOfDay.add(const Duration(days: 1));
+
     final appts = await _db
         .from('appointments')
         .select('id, status')
+        .eq('business_id', _businessId!)
         .gte('start_date_time', startOfDay.toIso8601String())
         .lt('start_date_time', endOfDay.toIso8601String());
+
     _appointmentsToday = appts.length;
-    _confirmedAppointments =
-        appts.where((a) => a['status'] == 'Scheduled').length;
-    _noShowAppointments =
-        appts.where((a) => a['status'] == 'No Show').length;
+    // FIX: updated to match new GHL status values
+    _confirmedAppointments = appts.where((a) =>
+        a['status'] == 'Confirmed' || a['status'] == 'New').length;
+    _noShowAppointments = appts.where((a) =>
+        a['status'] == 'No-Show').length;
   }
 
   Future<void> _loadTodayAppointments() async {
-    final now = DateTime.now();
+    final now        = DateTime.now();
     final startOfDay = DateTime(now.year, now.month, now.day).toUtc();
-    final endOfDay = startOfDay.add(const Duration(days: 1));
+    final endOfDay   = startOfDay.add(const Duration(days: 1));
+
     final appts = await _db
         .from('appointments')
         .select('id, appointment_name, start_date_time, lead_name, status, appointment_type')
+        .eq('business_id', _businessId!)
         .gte('start_date_time', startOfDay.toIso8601String())
         .lt('start_date_time', endOfDay.toIso8601String())
         .order('start_date_time');
+
     _todayAppointments = List<Map<String, dynamic>>.from(appts);
   }
 
   Future<void> _loadConversations() async {
-    final convos = await _db.from('conversations').select('id, unread_count');
-    _totalConversations = convos.length;
-    _unreadConversations =
-        convos.where((c) => (c['unread_count'] ?? 0) > 0).length;
+    // FIX: filter by business_id
+    final convos = await _db
+        .from('conversations')
+        .select('id, unread_count')
+        .eq('business_id', _businessId!);
+
+    _totalConversations  = convos.length;
+    _unreadConversations = convos
+        .where((c) => (c['unread_count'] ?? 0) > 0)
+        .length;
   }
 
   Future<void> _loadRecentLeads() async {
+    // FIX: filter by business_id
     final leads = await _db
         .from('leads')
         .select('id, lead_name, lead_status, lead_email, created_at, source, lead_phone')
+        .eq('business_id', _businessId!)
         .order('created_at', ascending: false)
         .limit(6);
+
     _recentLeads = List<Map<String, dynamic>>.from(leads);
   }
 
@@ -147,10 +237,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
         .select('id, stage_name, color')
         .eq('is_active', true)
         .order('sort_order');
+
     final deals = await _db
         .from('deals')
         .select('stage_id, value')
+        .eq('business_id', _businessId!)
         .eq('status', 'open');
+
     _pipelineSnapshot = stages.map<Map<String, dynamic>>((stage) {
       final stageDeals =
           deals.where((d) => d['stage_id'] == stage['id']).toList();
@@ -158,12 +251,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
           0, (sum, d) => sum + ((d['value'] ?? 0) as num).toDouble());
       return {
         'stage_name': stage['stage_name'],
-        'color': stage['color'],
-        'count': stageDeals.length,
-        'value': total,
+        'color':      stage['color'],
+        'count':      stageDeals.length,
+        'value':      total,
       };
     }).toList();
   }
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
 
   String _timeAgo(String? iso) {
     if (iso == null) return '';
@@ -171,7 +266,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (dt == null) return '';
     final diff = DateTime.now().difference(dt.toLocal());
     if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
-    if (diff.inHours < 24) return '${diff.inHours}h ago';
+    if (diff.inHours < 24)   return '${diff.inHours}h ago';
     return '${diff.inDays}d ago';
   }
 
@@ -179,24 +274,39 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (iso == null) return '';
     final dt = DateTime.tryParse(iso)?.toLocal();
     if (dt == null) return '';
-    final hour = dt.hour == 0 ? 12 : dt.hour > 12 ? dt.hour - 12 : dt.hour;
-    final min = dt.minute.toString().padLeft(2, '0');
+    final hour   = dt.hour == 0 ? 12 : dt.hour > 12 ? dt.hour - 12 : dt.hour;
+    final min    = dt.minute.toString().padLeft(2, '0');
     final period = dt.hour < 12 ? 'AM' : 'PM';
     return '$hour:$min $period';
   }
 
   String _fmtMoney(double v) {
     if (v >= 1000000) return '\$${(v / 1000000).toStringAsFixed(1)}M';
-    if (v >= 1000) return '\$${(v / 1000).toStringAsFixed(1)}K';
+    if (v >= 1000)    return '\$${(v / 1000).toStringAsFixed(1)}K';
     return '\$${v.toStringAsFixed(0)}';
   }
 
   Color _hexColor(String? hex) {
     if (hex == null) return AppTheme.brand;
-    try {
-      return Color(int.parse(hex.replaceFirst('#', '0xFF')));
-    } catch (_) {
-      return AppTheme.brand;
+    try { return Color(int.parse(hex.replaceFirst('#', '0xFF'))); }
+    catch (_) { return AppTheme.brand; }
+  }
+
+  // FIX: updated to match new GHL status values
+  Color _statusColor(String status) {
+    switch (status.toLowerCase()) {
+      case 'new':         return const Color(0xFF6366f1);
+      case 'confirmed':   return const Color(0xFF0EA5E9);
+      case 'showed':      return AppTheme.success;
+      case 'no-show':     return const Color(0xFFf59e0b);
+      case 'cancelled':   return AppTheme.error;
+      case 'invalid':     return const Color(0xFF94a3b8);
+      case 'rescheduled': return const Color(0xFFa855f7);
+      // legacy
+      case 'scheduled':   return const Color(0xFF6366f1);
+      case 'completed':   return AppTheme.success;
+      case 'no show':     return const Color(0xFFf59e0b);
+      default:            return AppTheme.textSecondary;
     }
   }
 
@@ -204,6 +314,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (_totalLeads == 0) return 0;
     return ((_leadsByStatus['Won'] ?? 0) / _totalLeads) * 100;
   }
+
+  // ── BUILD ─────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -245,6 +357,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             ],
                           ),
                           const SizedBox(height: 20),
+                          // Tasks + Meta Ads placeholders in a row
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Expanded(child: _buildTasksPlaceholder()),
+                              const SizedBox(width: 16),
+                              Expanded(child: _buildMetaAdsPlaceholder()),
+                            ],
+                          ),
+                          const SizedBox(height: 20),
                           _buildRecentLeads(),
                         ],
                       ),
@@ -281,8 +403,43 @@ class _DashboardScreenState extends State<DashboardScreen> {
               Text('Live', style: TextStyle(fontSize: 12, color: AppTheme.success, fontWeight: FontWeight.w500)),
             ]),
           ),
+          const SizedBox(width: 20),
+          // ── Date range filter ──────────────────────────────────────────
+          Container(
+            decoration: BoxDecoration(
+              color: AppTheme.pageBg,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: AppTheme.borderColor),
+            ),
+            child: Row(
+              children: _DateRange.values.map((r) {
+                final selected = _dateRange == r;
+                return Clickable(
+                  onTap: () {
+                    if (_dateRange == r) return;
+                    setState(() => _dateRange = r);
+                    _reloadForRange();
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: selected ? AppTheme.brand : Colors.transparent,
+                      borderRadius: BorderRadius.circular(7),
+                    ),
+                    child: Text(r.label,
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
+                          color: selected ? Colors.white : AppTheme.textSecondary,
+                        )),
+                  ),
+                );
+              }).toList(),
+            ),
+          ),
           const Spacer(),
-          Text(_businessName, style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+          Text(_businessName,
+              style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
           const SizedBox(width: 16),
           MouseRegion(
             cursor: SystemMouseCursors.click,
@@ -300,25 +457,35 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget _buildStatRow() {
     return Row(
       children: [
-        _StatCard(label: 'Total Contacts', value: '$_totalLeads',
+        _StatCard(
+            label: 'Total Contacts', value: '$_totalLeads',
             sub: '$_newLeads new', icon: Icons.people_alt_outlined,
             color: AppTheme.brand, onTap: () => context.go('/contacts')),
         const SizedBox(width: 12),
-        _StatCard(label: 'Pipeline Value', value: _fmtMoney(_pipelineValue),
+        _StatCard(
+            label: 'Pipeline Value', value: _fmtMoney(_pipelineValue),
             sub: '$_openDeals open deals', icon: Icons.bar_chart_rounded,
             color: const Color(0xFF8b5cf6), onTap: () => context.go('/pipelines')),
         const SizedBox(width: 12),
-        _StatCard(label: 'Won Revenue', value: _fmtMoney(_wonValue),
-            sub: '${_leadsByStatus['Won'] ?? 0} won leads', icon: Icons.emoji_events_outlined,
+        _StatCard(
+            label: 'Won Revenue', value: _fmtMoney(_wonValue),
+            sub: '${_leadsByStatus['Won'] ?? 0} won leads',
+            icon: Icons.emoji_events_outlined,
             color: AppTheme.success, onTap: () => context.go('/pipelines')),
         const SizedBox(width: 12),
-        _StatCard(label: 'Appts Today', value: '$_appointmentsToday',
-            sub: '$_confirmedAppointments confirmed', icon: Icons.calendar_today_outlined,
-            color: const Color(0xFFf59e0b), onTap: () => context.go('/appointments')),
+        _StatCard(
+            label: 'Appts Today', value: '$_appointmentsToday',
+            sub: '$_confirmedAppointments confirmed',
+            icon: Icons.calendar_today_outlined,
+            color: const Color(0xFFf59e0b),
+            onTap: () => context.go('/appointments')),
         const SizedBox(width: 12),
-        _StatCard(label: 'Unread Messages', value: '$_unreadConversations',
-            sub: '$_totalConversations conversations', icon: Icons.chat_bubble_outline_rounded,
-            color: const Color(0xFF10b981), onTap: () => context.go('/conversations')),
+        _StatCard(
+            label: 'Unread Messages', value: '$_unreadConversations',
+            sub: '$_totalConversations conversations',
+            icon: Icons.chat_bubble_outline_rounded,
+            color: const Color(0xFF10b981),
+            onTap: () => context.go('/conversations')),
       ],
     );
   }
@@ -329,14 +496,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
           const Center(child: Padding(padding: EdgeInsets.all(24),
               child: Text('No data', style: TextStyle(color: AppTheme.textSecondary)))));
     }
-    final total = _leadsBySource.values.fold(0, (a, b) => a + b);
-    final colors = [AppTheme.brand, const Color(0xFF6366f1), const Color(0xFFf59e0b),
-      const Color(0xFF10b981), const Color(0xFF8b5cf6), AppTheme.error];
+    final total  = _leadsBySource.values.fold(0, (a, b) => a + b);
+    final colors = [
+      AppTheme.brand, const Color(0xFF6366f1), const Color(0xFFf59e0b),
+      const Color(0xFF10b981), const Color(0xFF8b5cf6), AppTheme.error,
+    ];
     return _card('Contacts by Source', Column(
       children: _leadsBySource.entries.toList().asMap().entries.map((e) {
         final color = colors[e.key % colors.length];
         final entry = e.value;
-        final pct = total > 0 ? entry.value / total : 0.0;
+        final pct   = total > 0 ? entry.value / total : 0.0;
         return Padding(
           padding: const EdgeInsets.only(bottom: 10),
           child: Column(children: [
@@ -361,13 +530,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Widget _buildLeadsByStatus() {
     final statusColors = {
-      'New': AppTheme.brand, 'In Conversation': const Color(0xFFf59e0b),
-      'Qualified': const Color(0xFF8b5cf6), 'Won': AppTheme.success, 'Lost': AppTheme.error,
+      'New':            AppTheme.brand,
+      'In Conversation': const Color(0xFFf59e0b),
+      'Qualified':      const Color(0xFF8b5cf6),
+      'Won':            AppTheme.success,
+      'Lost':           AppTheme.error,
     };
     return _card('Leads by Status', Column(
       children: statusColors.entries.map((e) {
         final count = _leadsByStatus[e.key] ?? 0;
-        final pct = _totalLeads > 0 ? count / _totalLeads : 0.0;
+        final pct   = _totalLeads > 0 ? count / _totalLeads : 0.0;
         return Padding(
           padding: const EdgeInsets.only(bottom: 10),
           child: Column(children: [
@@ -405,13 +577,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
         ]),
       )),
       const SizedBox(height: 16),
-      _convRow('Won', '${_leadsByStatus['Won'] ?? 0}', AppTheme.success),
-      _convRow('Lost', '${_leadsByStatus['Lost'] ?? 0}', AppTheme.error),
-      _convRow('Total', '$_totalLeads', AppTheme.brand),
+      _convRow('Won',   '${_leadsByStatus['Won']  ?? 0}', AppTheme.success),
+      _convRow('Lost',  '${_leadsByStatus['Lost'] ?? 0}', AppTheme.error),
+      _convRow('Total', '$_totalLeads',                   AppTheme.brand),
       const SizedBox(height: 8),
       Container(
         padding: const EdgeInsets.all(10),
-        decoration: BoxDecoration(color: AppTheme.success.withValues(alpha: 0.08), borderRadius: BorderRadius.circular(8)),
+        decoration: BoxDecoration(
+            color: AppTheme.success.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(8)),
         child: Row(children: [
           const Icon(Icons.trending_up, size: 14, color: AppTheme.success),
           const SizedBox(width: 6),
@@ -457,7 +631,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           final color = _hexColor(stage['color']);
           final count = stage['count'] as int;
           final value = stage['value'] as double;
-          final pct = total > 0 ? count / total : 0.0;
+          final pct   = total > 0 ? count / total : 0.0;
           return Padding(
             padding: const EdgeInsets.only(bottom: 10),
             child: Column(children: [
@@ -465,18 +639,26 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 Expanded(flex: 3, child: Row(children: [
                   Container(width: 8, height: 8, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
                   const SizedBox(width: 8),
-                  Expanded(child: Text(stage['stage_name'], style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary))),
+                  Expanded(child: Text(stage['stage_name'],
+                      style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary))),
                 ])),
                 const SizedBox(width: 8),
-                SizedBox(width: 50, child: Text('$count', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textPrimary), textAlign: TextAlign.center)),
+                SizedBox(width: 50, child: Text('$count',
+                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textPrimary),
+                    textAlign: TextAlign.center)),
                 const SizedBox(width: 8),
-                SizedBox(width: 70, child: Text(_fmtMoney(value), style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: color), textAlign: TextAlign.right)),
+                SizedBox(width: 70, child: Text(_fmtMoney(value),
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: color),
+                    textAlign: TextAlign.right)),
                 const SizedBox(width: 8),
-                SizedBox(width: 40, child: Text('${(pct * 100).toStringAsFixed(0)}%', style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary), textAlign: TextAlign.right)),
+                SizedBox(width: 40, child: Text('${(pct * 100).toStringAsFixed(0)}%',
+                    style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
+                    textAlign: TextAlign.right)),
               ]),
               const SizedBox(height: 4),
               ClipRRect(borderRadius: BorderRadius.circular(4),
-                  child: LinearProgressIndicator(value: pct, backgroundColor: color.withValues(alpha: 0.1),
+                  child: LinearProgressIndicator(value: pct,
+                      backgroundColor: color.withValues(alpha: 0.1),
                       valueColor: AlwaysStoppedAnimation<Color>(color), minHeight: 6)),
             ]),
           );
@@ -484,17 +666,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
     ]),
     trailing: MouseRegion(cursor: SystemMouseCursors.click,
         child: TextButton(onPressed: () => context.go('/pipelines'),
-            child: const Text('View Pipeline', style: TextStyle(fontSize: 12, color: AppTheme.brand)))));
+            child: const Text('View Pipeline',
+                style: TextStyle(fontSize: 12, color: AppTheme.brand)))));
   }
 
   Widget _buildTodayAppointments() {
     return _card('Today\'s Schedule', Column(children: [
       Row(children: [
-        _apptStat('Total', '$_appointmentsToday', AppTheme.brand),
+        _apptStat('Total',     '$_appointmentsToday',     AppTheme.brand),
         const SizedBox(width: 8),
         _apptStat('Confirmed', '$_confirmedAppointments', AppTheme.success),
         const SizedBox(width: 8),
-        _apptStat('No Show', '$_noShowAppointments', AppTheme.error),
+        _apptStat('No Show',   '$_noShowAppointments',    AppTheme.error),
       ]),
       const SizedBox(height: 12),
       const Divider(color: AppTheme.borderColor, height: 1),
@@ -504,32 +687,32 @@ class _DashboardScreenState extends State<DashboardScreen> {
             child: Center(child: Column(children: [
               Icon(Icons.calendar_today_outlined, size: 32, color: AppTheme.textMuted),
               SizedBox(height: 8),
-              Text('No appointments today', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+              Text('No appointments today',
+                  style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
             ])))
       else
         ..._todayAppointments.map((a) {
           final status = a['status'] ?? '';
-          Color sc;
-          switch (status.toLowerCase()) {
-            case 'scheduled': sc = const Color(0xFF6366f1); break;
-            case 'completed': sc = AppTheme.success; break;
-            case 'cancelled': sc = AppTheme.error; break;
-            case 'no show': sc = const Color(0xFFf59e0b); break;
-            default: sc = AppTheme.textSecondary;
-          }
+          final sc     = _statusColor(status);
           return Padding(
             padding: const EdgeInsets.only(bottom: 10),
             child: Row(children: [
-              Container(width: 4, height: 36, decoration: BoxDecoration(color: sc, borderRadius: BorderRadius.circular(2))),
+              Container(width: 4, height: 36,
+                  decoration: BoxDecoration(color: sc, borderRadius: BorderRadius.circular(2))),
               const SizedBox(width: 10),
               Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(a['appointment_name'] ?? '', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textPrimary), overflow: TextOverflow.ellipsis),
-                Text('${_formatTime(a['start_date_time'])} · ${a['lead_name'] ?? ''}', style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                Text(a['appointment_name'] ?? '',
+                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textPrimary),
+                    overflow: TextOverflow.ellipsis),
+                Text('${_formatTime(a['start_date_time'])} · ${a['lead_name'] ?? ''}',
+                    style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
               ])),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(color: sc.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(4)),
-                child: Text(status, style: TextStyle(fontSize: 9, fontWeight: FontWeight.w600, color: sc)),
+                decoration: BoxDecoration(
+                    color: sc.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(4)),
+                child: Text(status,
+                    style: TextStyle(fontSize: 9, fontWeight: FontWeight.w600, color: sc)),
               ),
             ]),
           );
@@ -537,16 +720,110 @@ class _DashboardScreenState extends State<DashboardScreen> {
     ]),
     trailing: MouseRegion(cursor: SystemMouseCursors.click,
         child: TextButton(onPressed: () => context.go('/appointments'),
-            child: const Text('View All', style: TextStyle(fontSize: 12, color: AppTheme.brand)))));
+            child: const Text('View All',
+                style: TextStyle(fontSize: 12, color: AppTheme.brand)))));
+  }
+
+  // ── Tasks placeholder ─────────────────────────────────────────────────────
+  Widget _buildTasksPlaceholder() {
+    return _card('Tasks', Column(children: [
+      Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          color: AppTheme.pageBg,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: AppTheme.borderColor.withValues(alpha: 0.5)),
+        ),
+        child: Column(children: [
+          Container(
+            width: 44, height: 44,
+            decoration: BoxDecoration(
+              color: const Color(0xFF6366f1).withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: const Icon(Icons.task_alt_outlined, size: 22, color: Color(0xFF6366f1)),
+          ),
+          const SizedBox(height: 12),
+          const Text('Tasks Coming Soon',
+              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+          const SizedBox(height: 6),
+          const Text(
+            'Assign tasks to team members, set due dates, and track completion — all from your dashboard.',
+            style: TextStyle(fontSize: 11, color: AppTheme.textSecondary, height: 1.5),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 14),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: const Color(0xFF6366f1).withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(99),
+              border: Border.all(color: const Color(0xFF6366f1).withValues(alpha: 0.2)),
+            ),
+            child: const Text('On the Roadmap',
+                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w500, color: Color(0xFF6366f1))),
+          ),
+        ]),
+      ),
+    ]));
+  }
+
+  // ── Meta Ads placeholder ──────────────────────────────────────────────────
+  Widget _buildMetaAdsPlaceholder() {
+    return _card('Meta Ads', Column(children: [
+      Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          color: AppTheme.pageBg,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: AppTheme.borderColor.withValues(alpha: 0.5)),
+        ),
+        child: Column(children: [
+          Container(
+            width: 44, height: 44,
+            decoration: BoxDecoration(
+              color: const Color(0xFF1877F2).withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: const Icon(Icons.bar_chart_rounded, size: 22, color: Color(0xFF1877F2)),
+          ),
+          const SizedBox(height: 12),
+          const Text('Meta Ads Coming Soon',
+              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+          const SizedBox(height: 6),
+          const Text(
+            'Connect your Facebook & Instagram ad accounts to view spend, conversions, and ROAS directly on your dashboard.',
+            style: TextStyle(fontSize: 11, color: AppTheme.textSecondary, height: 1.5),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 14),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1877F2).withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(99),
+              border: Border.all(color: const Color(0xFF1877F2).withValues(alpha: 0.2)),
+            ),
+            child: const Text('On the Roadmap',
+                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w500, color: Color(0xFF1877F2))),
+          ),
+        ]),
+      ),
+    ]));
   }
 
   Widget _apptStat(String label, String value, Color color) {
     return Expanded(child: Container(
       padding: const EdgeInsets.symmetric(vertical: 8),
-      decoration: BoxDecoration(color: color.withValues(alpha: 0.07), borderRadius: BorderRadius.circular(8)),
+      decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.07), borderRadius: BorderRadius.circular(8)),
       child: Column(children: [
-        Text(value, style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: color)),
-        Text(label, style: const TextStyle(fontSize: 10, color: AppTheme.textSecondary)),
+        Text(value,
+            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: color)),
+        Text(label,
+            style: const TextStyle(fontSize: 10, color: AppTheme.textSecondary)),
       ]),
     ));
   }
@@ -556,9 +833,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
       Padding(
         padding: const EdgeInsets.only(bottom: 8),
         child: Row(children: const [
-          Expanded(flex: 3, child: Text('NAME', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
-          Expanded(flex: 3, child: Text('EMAIL', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
-          Expanded(flex: 2, child: Text('PHONE', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
+          Expanded(flex: 3, child: Text('NAME',   style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
+          Expanded(flex: 3, child: Text('EMAIL',  style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
+          Expanded(flex: 2, child: Text('PHONE',  style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
           Expanded(flex: 2, child: Text('SOURCE', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
           Expanded(flex: 2, child: Text('STATUS', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
           SizedBox(width: 60, child: Text('ADDED', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1), textAlign: TextAlign.right)),
@@ -567,7 +844,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
       const Divider(color: AppTheme.borderColor, height: 1),
       if (_recentLeads.isEmpty)
         const Padding(padding: EdgeInsets.symmetric(vertical: 24),
-            child: Center(child: Text('No contacts yet', style: TextStyle(color: AppTheme.textSecondary))))
+            child: Center(child: Text('No contacts yet',
+                style: TextStyle(color: AppTheme.textSecondary))))
       else
         ..._recentLeads.map((lead) {
           final name = lead['lead_name'] ?? 'Unknown';
@@ -578,18 +856,29 @@ class _DashboardScreenState extends State<DashboardScreen> {
               child: Row(children: [
                 Expanded(flex: 3, child: Row(children: [
                   Container(width: 28, height: 28,
-                      decoration: BoxDecoration(color: AppTheme.brand.withValues(alpha: 0.1), shape: BoxShape.circle),
+                      decoration: BoxDecoration(
+                          color: AppTheme.brand.withValues(alpha: 0.1),
+                          shape: BoxShape.circle),
                       alignment: Alignment.center,
                       child: Text(name.isNotEmpty ? name[0].toUpperCase() : '?',
-                          style: const TextStyle(color: AppTheme.brand, fontSize: 11, fontWeight: FontWeight.w600))),
+                          style: const TextStyle(
+                              color: AppTheme.brand, fontSize: 11, fontWeight: FontWeight.w600))),
                   const SizedBox(width: 8),
-                  Expanded(child: Text(name, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: AppTheme.textPrimary), overflow: TextOverflow.ellipsis)),
+                  Expanded(child: Text(name,
+                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: AppTheme.textPrimary),
+                      overflow: TextOverflow.ellipsis)),
                 ])),
-                Expanded(flex: 3, child: Text(lead['lead_email'] ?? '—', style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary), overflow: TextOverflow.ellipsis)),
-                Expanded(flex: 2, child: Text(lead['lead_phone'] ?? '—', style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary))),
-                Expanded(flex: 2, child: Text(lead['source'] ?? '—', style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary))),
+                Expanded(flex: 3, child: Text(lead['lead_email'] ?? '—',
+                    style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+                    overflow: TextOverflow.ellipsis)),
+                Expanded(flex: 2, child: Text(lead['lead_phone'] ?? '—',
+                    style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary))),
+                Expanded(flex: 2, child: Text(lead['source'] ?? '—',
+                    style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary))),
                 Expanded(flex: 2, child: _DashStatusBadge(status: lead['lead_status'] ?? 'New')),
-                SizedBox(width: 60, child: Text(_timeAgo(lead['created_at']), style: const TextStyle(fontSize: 11, color: AppTheme.textMuted), textAlign: TextAlign.right)),
+                SizedBox(width: 60, child: Text(_timeAgo(lead['created_at']),
+                    style: const TextStyle(fontSize: 11, color: AppTheme.textMuted),
+                    textAlign: TextAlign.right)),
               ]),
             ),
           );
@@ -597,7 +886,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
     ]),
     trailing: MouseRegion(cursor: SystemMouseCursors.click,
         child: TextButton(onPressed: () => context.go('/contacts'),
-            child: const Text('View all', style: TextStyle(fontSize: 12, color: AppTheme.brand)))));
+            child: const Text('View all',
+                style: TextStyle(fontSize: 12, color: AppTheme.brand)))));
   }
 
   Widget _card(String title, Widget content, {Widget? trailing}) {
@@ -611,7 +901,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(children: [
-          Text(title, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+          Text(title,
+              style: const TextStyle(
+                  fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
           const Spacer(),
           if (trailing != null) trailing,
         ]),
@@ -622,31 +914,43 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 }
 
+// ── Stat Card ─────────────────────────────────────────────────────────────────
 class _StatCard extends StatelessWidget {
   final String label, value, sub;
   final IconData icon;
   final Color color;
   final VoidCallback? onTap;
-  const _StatCard({required this.label, required this.value, required this.sub,
-      required this.icon, required this.color, this.onTap});
+  const _StatCard({
+    required this.label, required this.value, required this.sub,
+    required this.icon,  required this.color, this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
     return Expanded(child: Clickable(onTap: onTap,
       child: Container(
         padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(color: AppTheme.cardBg, borderRadius: BorderRadius.circular(12), border: Border.all(color: AppTheme.borderColor)),
+        decoration: BoxDecoration(
+            color: AppTheme.cardBg,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: AppTheme.borderColor)),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Row(children: [
-            Container(width: 36, height: 36, decoration: BoxDecoration(color: color.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8)),
-                child: Icon(icon, size: 18, color: color)),
+            Container(
+              width: 36, height: 36,
+              decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(8)),
+              child: Icon(icon, size: 18, color: color)),
             const Spacer(),
             Icon(Icons.arrow_forward_ios, size: 10, color: AppTheme.textMuted),
           ]),
           const SizedBox(height: 12),
-          Text(value, style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+          Text(value,
+              style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
           const SizedBox(height: 2),
-          Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: AppTheme.textPrimary)),
+          Text(label,
+              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: AppTheme.textPrimary)),
           const SizedBox(height: 2),
           Text(sub, style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
         ]),
@@ -655,6 +959,7 @@ class _StatCard extends StatelessWidget {
   }
 }
 
+// ── Status Badge ──────────────────────────────────────────────────────────────
 class _DashStatusBadge extends StatelessWidget {
   final String status;
   const _DashStatusBadge({required this.status});
@@ -663,17 +968,21 @@ class _DashStatusBadge extends StatelessWidget {
   Widget build(BuildContext context) {
     Color color;
     switch (status.toLowerCase()) {
-      case 'new': color = AppTheme.brand; break;
+      case 'new':             color = AppTheme.brand; break;
       case 'in conversation': color = const Color(0xFFf59e0b); break;
-      case 'qualified': color = const Color(0xFF8b5cf6); break;
-      case 'won': color = AppTheme.success; break;
-      case 'lost': color = AppTheme.error; break;
-      default: color = AppTheme.textSecondary;
+      case 'qualified':       color = const Color(0xFF8b5cf6); break;
+      case 'won':             color = AppTheme.success; break;
+      case 'lost':            color = AppTheme.error; break;
+      default:                color = AppTheme.textSecondary;
     }
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      decoration: BoxDecoration(color: color.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(99), border: Border.all(color: color.withValues(alpha: 0.3))),
-      child: Text(status, style: TextStyle(fontSize: 10, fontWeight: FontWeight.w500, color: color)),
+      decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(99),
+          border: Border.all(color: color.withValues(alpha: 0.3))),
+      child: Text(status,
+          style: TextStyle(fontSize: 10, fontWeight: FontWeight.w500, color: color)),
     );
   }
 }

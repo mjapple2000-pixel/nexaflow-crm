@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../theme/app_theme.dart';
 import '../widgets/clickable.dart';
-import '../screens/launchpad_screen.dart';
 
 // Below this width, show the "please use desktop" screen
 const double _kMinDesktopWidth = 800;
@@ -108,12 +107,19 @@ class AppNavBar extends StatefulWidget {
 
 class _AppNavBarState extends State<AppNavBar> {
   final _supabase = Supabase.instance.client;
+
   int _unreadCount = 0;
   RealtimeChannel? _unreadChannel;
+
+  // Profile state
+  String _role        = 'member';
+  Map<String, dynamic> _permissions = {};
+  bool _profileLoaded = false;
 
   @override
   void initState() {
     super.initState();
+    _loadProfile();
     _loadUnreadCount();
     _subscribeToUnread();
   }
@@ -122,6 +128,32 @@ class _AppNavBarState extends State<AppNavBar> {
   void dispose() {
     _unreadChannel?.unsubscribe();
     super.dispose();
+  }
+
+  // ── Load role + permissions + unread in one query ─────────────────────────
+  Future<void> _loadProfile() async {
+    try {
+      final userId = _supabase.auth.currentUser?.id;
+      if (userId == null) return;
+
+      final profile = await _supabase
+          .from('profiles')
+          .select('role, permissions, business_id')
+          .eq('user_id', userId)
+          .maybeSingle();
+
+      if (profile != null && mounted) {
+        setState(() {
+          _role        = profile['role'] as String? ?? 'member';
+          _permissions = Map<String, dynamic>.from(
+              (profile['permissions'] as Map?)  ?? {});
+          _profileLoaded = true;
+        });
+      }
+    } catch (e) {
+      debugPrint('Profile load error: $e');
+      if (mounted) setState(() => _profileLoaded = true);
+    }
   }
 
   Future<void> _loadUnreadCount() async {
@@ -159,9 +191,45 @@ class _AppNavBarState extends State<AppNavBar> {
         .subscribe();
   }
 
+  // ── Owners see everything. Members only see permitted pages. ──────────────
+  // Launchpad and Dashboard are always visible to everyone.
+  bool _can(String key) {
+    if (_role == 'owner' || _role == 'admin') return true;
+    return _permissions[key] == true;
+  }
+
   @override
   Widget build(BuildContext context) {
     final String location = GoRouterState.of(context).uri.toString();
+
+    // Don't render nav items until permissions are loaded —
+    // prevents a flash where member briefly sees all items
+    if (!_profileLoaded) {
+      return Material(
+        color: AppTheme.sidebarBg,
+        child: SizedBox(
+          width: 220,
+          height: double.infinity,
+          child: Column(
+            children: [
+              _LogoArea(),
+              const Expanded(
+                child: Center(
+                  child: SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: AppTheme.brand,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
 
     return Material(
       color: AppTheme.sidebarBg,
@@ -178,85 +246,111 @@ class _AppNavBarState extends State<AppNavBar> {
                 primary: false,
                 physics: const ClampingScrollPhysics(),
                 children: [
+                  // ── MAIN — always visible ──────────────────────────────
                   _SectionLabel('Main'),
                   _NavItem(
                     icon: Icons.rocket_launch_rounded,
                     label: 'Launchpad',
                     route: '/launchpad',
                     active: location.startsWith('/launchpad'),
-),
+                  ),
                   _NavItem(
                     icon: Icons.grid_view_rounded,
                     label: 'Dashboard',
                     route: '/dashboard',
                     active: location.startsWith('/dashboard'),
                   ),
-                  _SectionLabel('CRM'),
-                  _NavItem(
-                    icon: Icons.people_alt_outlined,
-                    label: 'Contacts',
-                    route: '/contacts',
-                    active: location.startsWith('/contacts'),
-                  ),
-                  _NavItem(
-                    icon: Icons.bar_chart_rounded,
-                    label: 'Pipelines',
-                    route: '/pipelines',
-                    active: location.startsWith('/pipelines'),
-                  ),
-                  _NavItem(
-                    icon: Icons.calendar_today_outlined,
-                    label: 'Calendars',
-                    route: '/appointments',
-                    active: location.startsWith('/appointments'), //
-                  ),
-                  _SectionLabel('Marketing'),
-                  _NavItem(
-                    icon: Icons.campaign_outlined,
-                    label: 'Campaigns',
-                    route: '/campaigns',
-                    active: location.startsWith('/campaigns'),
-                  ),
-                  _SectionLabel('Engage'),
-                  _NavItem(
-                    icon: Icons.chat_bubble_outline_rounded,
-                    label: 'Conversations',
-                    route: '/conversations',
-                    active: location.startsWith('/conversations'),
-                    badge: _unreadCount > 0 ? '$_unreadCount' : null,
-                  ),
-                  _SectionLabel('Analytics'),
-                  _NavItem(
-                    icon: Icons.show_chart_rounded,
-                    label: 'Reporting',
-                    route: '/reporting',
-                    active: location.startsWith('/reporting'),
-                  ),
-                  _SectionLabel('Account'),
-                  _NavItem(
-                    icon: Icons.dynamic_form_outlined,
-                    label: 'Forms',
-                    route: '/forms',
-                    active: location.startsWith('/forms'),
-                  ),
-                  _NavItem(
-                    icon: Icons.smart_toy_outlined,
-                    label: 'AI Chat Widget',
-                    route: '/ai-chat',
-                    active: location.startsWith('/ai-chat'),
-                  ),
-                  _NavItem(
-                    icon: Icons.bolt_outlined,
-                    label: 'Automations',
-                    route: '/automations',
-                    active: location.startsWith('/automations'),
-                  ),
-                  _NavItem(
-                    icon: Icons.settings_outlined,
-                    label: 'Settings',
-                    route: '/settings',
-                    active: location.startsWith('/settings'),
-                  ),
+
+                  // ── CRM ───────────────────────────────────────────────
+                  if (_can('contacts') || _can('pipelines') || _can('appointments'))
+                    _SectionLabel('CRM'),
+                  if (_can('contacts'))
+                    _NavItem(
+                      icon: Icons.people_alt_outlined,
+                      label: 'Contacts',
+                      route: '/contacts',
+                      active: location.startsWith('/contacts'),
+                    ),
+                  if (_can('pipelines'))
+                    _NavItem(
+                      icon: Icons.bar_chart_rounded,
+                      label: 'Pipelines',
+                      route: '/pipelines',
+                      active: location.startsWith('/pipelines'),
+                    ),
+                  if (_can('appointments'))
+                    _NavItem(
+                      icon: Icons.calendar_today_outlined,
+                      label: 'Calendars',
+                      route: '/appointments',
+                      active: location.startsWith('/appointments'),
+                    ),
+
+                  // ── MARKETING ─────────────────────────────────────────
+                  if (_can('campaigns'))
+                    _SectionLabel('Marketing'),
+                  if (_can('campaigns'))
+                    _NavItem(
+                      icon: Icons.campaign_outlined,
+                      label: 'Campaigns',
+                      route: '/campaigns',
+                      active: location.startsWith('/campaigns'),
+                    ),
+
+                  // ── ENGAGE ────────────────────────────────────────────
+                  if (_can('conversations') || _can('automations'))
+                    _SectionLabel('Engage'),
+                  if (_can('conversations'))
+                    _NavItem(
+                      icon: Icons.chat_bubble_outline_rounded,
+                      label: 'Conversations',
+                      route: '/conversations',
+                      active: location.startsWith('/conversations'),
+                      badge: _unreadCount > 0 ? '$_unreadCount' : null,
+                    ),
+                  if (_can('automations'))
+                    _NavItem(
+                      icon: Icons.bolt_outlined,
+                      label: 'Automations',
+                      route: '/automations',
+                      active: location.startsWith('/automations'),
+                    ),
+
+                  // ── ANALYTICS ─────────────────────────────────────────
+                  if (_can('reporting'))
+                    _SectionLabel('Analytics'),
+                  if (_can('reporting'))
+                    _NavItem(
+                      icon: Icons.show_chart_rounded,
+                      label: 'Reporting',
+                      route: '/reporting',
+                      active: location.startsWith('/reporting'),
+                    ),
+
+                  // ── ACCOUNT ───────────────────────────────────────────
+                  if (_can('forms') || _can('ai_chat') || _can('settings'))
+                    _SectionLabel('Account'),
+                  if (_can('forms'))
+                    _NavItem(
+                      icon: Icons.dynamic_form_outlined,
+                      label: 'Forms',
+                      route: '/forms',
+                      active: location.startsWith('/forms'),
+                    ),
+                  if (_can('ai_chat'))
+                    _NavItem(
+                      icon: Icons.smart_toy_outlined,
+                      label: 'AI Chat Widget',
+                      route: '/ai-chat',
+                      active: location.startsWith('/ai-chat'),
+                    ),
+                  if (_can('settings'))
+                    _NavItem(
+                      icon: Icons.settings_outlined,
+                      label: 'Settings',
+                      route: '/settings',
+                      active: location.startsWith('/settings'),
+                    ),
                 ],
               ),
             ),
@@ -376,23 +470,19 @@ class _NavItem extends StatelessWidget {
           children: [
             Icon(icon,
                 size: 16,
-                color: active
-                    ? AppTheme.textActive
-                    : AppTheme.textNormal),
+                color: active ? AppTheme.textActive : AppTheme.textNormal),
             const SizedBox(width: 9),
             Expanded(
               child: Text(label,
                   style: TextStyle(
                     fontSize: 12.5,
-                    color: active
-                        ? AppTheme.textActive
-                        : AppTheme.textNormal,
+                    color: active ? AppTheme.textActive : AppTheme.textNormal,
                   )),
             ),
             if (badge != null)
               Container(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 6, vertical: 2),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                 decoration: BoxDecoration(
                   color: AppTheme.brand,
                   borderRadius: BorderRadius.circular(99),
@@ -420,7 +510,7 @@ class _UserRow extends StatefulWidget {
 }
 
 class _UserRowState extends State<_UserRow> {
-  String _name = '';
+  String _name     = '';
   String _initials = '?';
 
   @override
@@ -430,22 +520,22 @@ class _UserRowState extends State<_UserRow> {
   }
 
   Future<void> _loadUser() async {
-    final db = Supabase.instance.client;
+    final db      = Supabase.instance.client;
     final profile = await db
         .from('profiles')
         .select('full_name')
         .eq('user_id', db.auth.currentUser!.id)
         .maybeSingle();
     if (profile != null && mounted) {
-      final name = profile['full_name'] ?? '';
-      final parts = name.split(' ');
+      final name   = profile['full_name'] ?? '';
+      final parts  = name.split(' ');
       final initials = parts.length >= 2
           ? '${parts[0][0]}${parts[1][0]}'.toUpperCase()
           : name.isNotEmpty
               ? name[0].toUpperCase()
               : '?';
       setState(() {
-        _name = name;
+        _name     = name;
         _initials = initials;
       });
     }
@@ -477,8 +567,7 @@ class _UserRowState extends State<_UserRow> {
                 doLogout = true;
                 Navigator.of(dialogContext).pop();
               },
-              style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.red),
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
               child: const Text('Log out'),
             ),
           ),
@@ -523,8 +612,8 @@ class _UserRowState extends State<_UserRow> {
               onTap: () => context.go('/settings'),
               child: Text(
                 _name.isNotEmpty ? _name : '...',
-                style: const TextStyle(
-                    color: AppTheme.textSub, fontSize: 11.5),
+                style:
+                    const TextStyle(color: AppTheme.textSub, fontSize: 11.5),
               ),
             ),
           ),
@@ -532,8 +621,8 @@ class _UserRowState extends State<_UserRow> {
             onTap: () => _logout(context),
             child: const Tooltip(
               message: 'Log out',
-              child: Icon(Icons.logout,
-                  size: 14, color: AppTheme.textMuted),
+              child:
+                  Icon(Icons.logout, size: 14, color: AppTheme.textMuted),
             ),
           ),
         ],

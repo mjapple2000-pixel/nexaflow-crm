@@ -27,23 +27,61 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
   DateTime _focusDate = DateTime.now();
 
   String _statusFilter = 'All';
-  final _statuses = ['All', 'Scheduled', 'Completed', 'Cancelled', 'No Show'];
+  final _statuses = ['All', 'New', 'Confirmed', 'Showed', 'No-Show', 'Cancelled', 'Invalid', 'Rescheduled'];
 
   bool _savingSettings = false;
-  int _slotDuration = 60;
+  int _slotDuration = 60; // -1 = custom
+  int _customDurationMinutes = 45;
   Map<String, Map<String, dynamic>> _availability = {
-    'monday':    {'enabled': true,  'start': '09:00', 'end': '17:00'},
-    'tuesday':   {'enabled': true,  'start': '09:00', 'end': '17:00'},
-    'wednesday': {'enabled': true,  'start': '09:00', 'end': '17:00'},
-    'thursday':  {'enabled': true,  'start': '09:00', 'end': '17:00'},
-    'friday':    {'enabled': true,  'start': '09:00', 'end': '17:00'},
-    'saturday':  {'enabled': false, 'start': '09:00', 'end': '17:00'},
-    'sunday':    {'enabled': false, 'start': '09:00', 'end': '17:00'},
+    'monday':    {'enabled': true,  'start': '09:00', 'end': '17:00', 'blocks': []},
+    'tuesday':   {'enabled': true,  'start': '09:00', 'end': '17:00', 'blocks': []},
+    'wednesday': {'enabled': true,  'start': '09:00', 'end': '17:00', 'blocks': []},
+    'thursday':  {'enabled': true,  'start': '09:00', 'end': '17:00', 'blocks': []},
+    'friday':    {'enabled': true,  'start': '09:00', 'end': '17:00', 'blocks': []},
+    'saturday':  {'enabled': false, 'start': '09:00', 'end': '17:00', 'blocks': []},
+    'sunday':    {'enabled': false, 'start': '09:00', 'end': '17:00', 'blocks': []},
   };
 
-  // Right panel tab: 0=Users, 1=Calendars, 2=Groups
+  // Right panel
   int _panelTab = 0;
-  final _panelSearchCtrl = TextEditingController();
+  final _usersSearchCtrl     = TextEditingController();
+  final _calendarsSearchCtrl = TextEditingController();
+  final _groupsSearchCtrl    = TextEditingController();
+
+  // GHL-style appointment types
+  static const _appointmentTypes = [
+    'Consultation',
+    'Discovery Call',
+    'Demo',
+    'Strategy Session',
+    'Follow-Up',
+    'Check-In',
+    'Onboarding',
+    'Renewal',
+    'Support Call',
+    'Sales Call',
+    'Service Appointment',
+    'In-Person Meeting',
+    'Virtual Meeting',
+    'Round Robin',
+    'Class / Event',
+    'Collective Meeting',
+    'Internal Meeting',
+    'Interview',
+    'Training',
+    'Other',
+  ];
+
+  // GHL-style statuses
+  static const _appointmentStatuses = [
+    'New',
+    'Confirmed',
+    'Showed',
+    'No-Show',
+    'Cancelled',
+    'Invalid',
+    'Rescheduled',
+  ];
 
   @override
   void initState() {
@@ -55,7 +93,9 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
   @override
   void dispose() {
     _tabController.dispose();
-    _panelSearchCtrl.dispose();
+    _usersSearchCtrl.dispose();
+    _calendarsSearchCtrl.dispose();
+    _groupsSearchCtrl.dispose();
     super.dispose();
   }
 
@@ -91,6 +131,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
                 'enabled': val['enabled'] ?? false,
                 'start':   val['start']   ?? '09:00',
                 'end':     val['end']     ?? '17:00',
+                'blocks':  (val['blocks'] as List?)?.cast<Map<String, dynamic>>() ?? [],
               };
             }
           });
@@ -112,9 +153,10 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
     if (_businessId == null) return;
     setState(() => _savingSettings = true);
     try {
+      final effectiveDuration = _slotDuration == -1 ? _customDurationMinutes : _slotDuration;
       await _db.from('businesses').update({
         'availability_hours':    _availability,
-        'slot_duration_minutes': _slotDuration,
+        'slot_duration_minutes': effectiveDuration,
       }).eq('id', _businessId!);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
@@ -129,6 +171,73 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
       if (mounted) setState(() => _savingSettings = false);
     }
   }
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
+
+  /// Returns the hour range to display (based on enabled availability hours)
+  ({int startHour, int endHour}) _visibleHourRange() {
+    // Only compute from ENABLED days. If nothing is enabled yet (first load),
+    // fall back to sensible business hours so we don't show midnight–midnight.
+    int? earliest;
+    int? latest;
+    _availability.forEach((_, v) {
+      if (v['enabled'] == true) {
+        final s = _parseHour(v['start'] as String);
+        final e = _parseHour(v['end']   as String);
+        if (earliest == null || s < earliest!) earliest = s;
+        if (latest   == null || e > latest!)   latest   = e;
+      }
+    });
+    // Fall back to 8 AM – 6 PM if no enabled days found
+    final start = earliest ?? 8;
+    final end   = latest   ?? 18;
+    // +1 on end so the final hour's full slot is rendered (e.g. 17:00 end → show 17:00–18:00 row)
+    return (startHour: start.clamp(0, 23), endHour: (end + 1).clamp(1, 24));
+  }
+
+  int _parseHour(String t) {
+    final parts = t.split(':');
+    return int.tryParse(parts[0]) ?? 9;
+  }
+
+  String _formatHour(int hour) {
+    if (hour == 0)  return '12AM';
+    if (hour == 12) return '12PM';
+    return hour < 12 ? '${hour}AM' : '${hour - 12}PM';
+  }
+
+  String _formatDateKey(DateTime dt) {
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const days   = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
+    return '${days[dt.weekday - 1]}, ${months[dt.month - 1]} ${dt.day}, ${dt.year}';
+  }
+
+  String _fmtTime(DateTime dt) {
+    final h = dt.hour == 0 ? 12 : dt.hour > 12 ? dt.hour - 12 : dt.hour;
+    final m = dt.minute.toString().padLeft(2, '0');
+    return '$h:$m ${dt.hour < 12 ? 'AM' : 'PM'}';
+  }
+
+  Color _statusColor(String status) {
+    switch (status.toLowerCase()) {
+      case 'new':         return const Color(0xFF6366f1);
+      case 'confirmed':   return const Color(0xFF0EA5E9);
+      case 'showed':      return AppTheme.success;
+      case 'no-show':     return const Color(0xFFf59e0b);
+      case 'cancelled':   return AppTheme.error;
+      case 'invalid':     return const Color(0xFF94a3b8);
+      case 'rescheduled': return const Color(0xFFa855f7);
+      // legacy compat
+      case 'scheduled':   return const Color(0xFF6366f1);
+      case 'completed':   return AppTheme.success;
+      case 'no show':     return const Color(0xFFf59e0b);
+      default:            return AppTheme.textSecondary;
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  //  BUILD
+  // ══════════════════════════════════════════════════════════════════════════
 
   @override
   Widget build(BuildContext context) {
@@ -180,9 +289,18 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
               indicatorWeight: 2,
               dividerColor: Colors.transparent,
               tabs: const [
-                Tab(text: 'Calendars'),
-                Tab(text: 'Appointments'),
-                Tab(text: 'Calendar Settings'),
+                const Tab(text: 'Calendars'),
+                const Tab(text: 'Appointments'),
+                Tab(
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: const [
+                      Icon(Icons.settings_outlined, size: 14),
+                      SizedBox(width: 6),
+                      Text('Calendar Settings'),
+                    ],
+                  ),
+                ),
               ],
             ),
           ),
@@ -195,7 +313,8 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
                 child: ElevatedButton.icon(
                   onPressed: _showAddAppointment,
                   icon: const Icon(Icons.add, size: 16),
-                  label: const Text('+ New'),
+                  // FIX: removed extra "+" prefix — GHL calls it "New Appointment"
+                  label: const Text('New Appointment'),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: AppTheme.brand,
                     foregroundColor: Colors.white,
@@ -227,8 +346,8 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
               Expanded(
                 child: LayoutBuilder(
                   builder: (context, constraints) {
-                    if (_calView == 'day')   return _buildDayView(constraints);
-                    if (_calView == 'week')  return _buildWeekView(constraints);
+                    if (_calView == 'day')  return _buildDayView(constraints);
+                    if (_calView == 'week') return _buildWeekView(constraints);
                     return _buildMonthView(constraints);
                   },
                 ),
@@ -285,13 +404,11 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
               borderRadius: BorderRadius.circular(6),
               border: Border.all(color: AppTheme.borderColor),
             ),
-            child: Row(
-              children: [
-                _calViewBtn('Day', 'day'),
-                _calViewBtn('Week', 'week'),
-                _calViewBtn('Month', 'month'),
-              ],
-            ),
+            child: Row(children: [
+              _calViewBtn('Day', 'day'),
+              _calViewBtn('Week', 'week'),
+              _calViewBtn('Month', 'month'),
+            ]),
           ),
         ],
       ),
@@ -309,9 +426,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
           borderRadius: BorderRadius.circular(5),
         ),
         child: Text(label,
-            style: TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w500,
+            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500,
                 color: sel ? Colors.white : AppTheme.textSecondary)),
       ),
     );
@@ -335,24 +450,27 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
   }
 
   void _prevPeriod() => setState(() {
-    if (_calView == 'day')        _focusDate = _focusDate.subtract(const Duration(days: 1));
-    else if (_calView == 'week')  _focusDate = _focusDate.subtract(const Duration(days: 7));
+    if (_calView == 'day')       _focusDate = _focusDate.subtract(const Duration(days: 1));
+    else if (_calView == 'week') _focusDate = _focusDate.subtract(const Duration(days: 7));
     else _focusDate = DateTime(_focusDate.year, _focusDate.month - 1);
   });
 
   void _nextPeriod() => setState(() {
-    if (_calView == 'day')        _focusDate = _focusDate.add(const Duration(days: 1));
-    else if (_calView == 'week')  _focusDate = _focusDate.add(const Duration(days: 7));
+    if (_calView == 'day')       _focusDate = _focusDate.add(const Duration(days: 1));
+    else if (_calView == 'week') _focusDate = _focusDate.add(const Duration(days: 7));
     else _focusDate = DateTime(_focusDate.year, _focusDate.month + 1);
   });
 
   // ── DAY VIEW ───────────────────────────────────────────────────────────────
 
   Widget _buildDayView(BoxConstraints constraints) {
-    const double hourHeight = 60.0;
+    const double hourHeight  = 60.0;
     const double gutterWidth = 56.0;
-    final now = DateTime.now();
+    final now     = DateTime.now();
     final isToday = DateUtils.isSameDay(_focusDate, now);
+    final range   = _visibleHourRange();
+    final hours   = List.generate(range.endHour - range.startHour, (i) => range.startHour + i);
+
     final dayAppts = _appointments.where((a) {
       final dt = DateTime.tryParse(a['start_date_time'] ?? '');
       return dt != null && DateUtils.isSameDay(dt, _focusDate);
@@ -393,9 +511,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
                           ),
                           alignment: Alignment.center,
                           child: Text('${_focusDate.day}',
-                              style: TextStyle(
-                                  fontSize: 14,
-                                  fontWeight: FontWeight.w600,
+                              style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600,
                                   color: isToday ? Colors.white : AppTheme.textPrimary)),
                         ),
                       ],
@@ -405,40 +521,34 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
               ],
             ),
           ),
-          // Time grid
+          // Time grid — only visible hours
           SizedBox(
-            height: hourHeight * 24,
+            height: hourHeight * hours.length,
             child: Stack(
               children: [
-                // Hour rows
                 Column(
-                  children: List.generate(24, (hour) => SizedBox(
+                  children: hours.map((hour) => SizedBox(
                     height: hourHeight,
                     child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+                      crossAxisAlignment: CrossAxisAlignment.center, // FIX: center vertically
                       children: [
-                        // Time label
+                        // FIX: time label centered vertically in the row
                         SizedBox(
                           width: gutterWidth,
-                          child: Padding(
-                            padding: const EdgeInsets.only(right: 8, top: 0),
-                            child: Transform.translate(
-                              offset: const Offset(0, -8),
-                              child: Text(
-                                hour == 0 ? '' : _formatHour(hour),
-                                textAlign: TextAlign.right,
-                                style: const TextStyle(fontSize: 10, color: AppTheme.textMuted),
-                              ),
-                            ),
+                          child: Text(
+                            _formatHour(hour),
+                            textAlign: TextAlign.center, // FIX: centered horizontally too
+                            style: const TextStyle(fontSize: 10, color: AppTheme.textSecondary),
                           ),
                         ),
-                        // Grid column
                         Expanded(
                           child: Container(
                             decoration: BoxDecoration(
                               border: Border(
                                 left: const BorderSide(color: AppTheme.borderColor),
-                                top: BorderSide(color: AppTheme.borderColor.withValues(alpha: 0.5)),
+                                top: BorderSide(
+                                  color: hour == hours.first ? Colors.transparent : AppTheme.borderColor,
+                                ),
                               ),
                               color: isToday ? AppTheme.brand.withValues(alpha: 0.01) : null,
                             ),
@@ -446,13 +556,15 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
                         ),
                       ],
                     ),
-                  )),
+                  )).toList(),
                 ),
                 // Appointment blocks
                 ...dayAppts.map((a) {
                   final start = DateTime.parse(a['start_date_time'] as String);
                   final end   = DateTime.parse(a['end_date_time']   as String);
-                  final top    = (start.hour + start.minute / 60.0) * hourHeight;
+                  final offsetHours = start.hour + start.minute / 60.0 - range.startHour;
+                  if (offsetHours < 0) return const SizedBox.shrink();
+                  final top    = offsetHours * hourHeight;
                   final height = ((end.difference(start).inMinutes) / 60.0) * hourHeight;
                   return Positioned(
                     top: top, left: gutterWidth + 4, right: 4,
@@ -465,23 +577,20 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
                           color: _statusColor(a['status'] ?? '').withValues(alpha: 0.85),
                           borderRadius: BorderRadius.circular(6),
                         ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(a['appointment_name'] ?? '',
-                                style: const TextStyle(fontSize: 12, color: Colors.white, fontWeight: FontWeight.w600)),
-                            if ((a['lead_name'] ?? '').isNotEmpty)
-                              Text(a['lead_name'], style: const TextStyle(fontSize: 10, color: Colors.white70)),
-                          ],
-                        ),
+                        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                          Text(a['appointment_name'] ?? '',
+                              style: const TextStyle(fontSize: 12, color: Colors.white, fontWeight: FontWeight.w600)),
+                          if ((a['lead_name'] ?? '').isNotEmpty)
+                            Text(a['lead_name'], style: const TextStyle(fontSize: 10, color: Colors.white70)),
+                        ]),
                       ),
                     ),
                   );
                 }),
                 // Current time red line
-                if (isToday)
+                if (isToday && now.hour >= range.startHour && now.hour < range.endHour)
                   Positioned(
-                    top: (now.hour + now.minute / 60.0) * hourHeight - 1,
+                    top: (now.hour + now.minute / 60.0 - range.startHour) * hourHeight - 1,
                     left: gutterWidth,
                     right: 0,
                     child: Row(children: [
@@ -501,22 +610,24 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
   // ── WEEK VIEW ──────────────────────────────────────────────────────────────
 
   Widget _buildWeekView(BoxConstraints constraints) {
-    const double hourHeight = 60.0;
+    const double hourHeight  = 60.0;
     const double gutterWidth = 48.0;
-    final monday = _focusDate.subtract(Duration(days: _focusDate.weekday - 1));
-    final days   = List.generate(7, (i) => monday.add(Duration(days: i)));
-    final now    = DateTime.now();
+    final monday   = _focusDate.subtract(Duration(days: _focusDate.weekday - 1));
+    final days     = List.generate(7, (i) => monday.add(Duration(days: i)));
+    final now      = DateTime.now();
     final colWidth = (constraints.maxWidth - gutterWidth) / 7;
+    final range    = _visibleHourRange();
+    final hours    = List.generate(range.endHour - range.startHour, (i) => range.startHour + i);
 
     return SingleChildScrollView(
       child: Column(
         children: [
-          // Day headers row
+          // Day headers
           SizedBox(
             height: 52,
             child: Row(
               children: [
-                SizedBox(width: gutterWidth),
+                const SizedBox(width: gutterWidth),
                 ...days.map((d) {
                   final isToday = DateUtils.isSameDay(d, now);
                   return SizedBox(
@@ -532,10 +643,8 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
                       child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          Text(
-                            ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][d.weekday - 1],
-                            style: TextStyle(fontSize: 11, color: isToday ? AppTheme.brand : AppTheme.textSecondary),
-                          ),
+                          Text(['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][d.weekday - 1],
+                              style: TextStyle(fontSize: 11, color: isToday ? AppTheme.brand : AppTheme.textSecondary)),
                           const SizedBox(height: 2),
                           Container(
                             width: 28, height: 28,
@@ -545,9 +654,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
                             ),
                             alignment: Alignment.center,
                             child: Text('${d.day}',
-                                style: TextStyle(
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.w600,
+                                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600,
                                     color: isToday ? Colors.white : AppTheme.textPrimary)),
                           ),
                         ],
@@ -558,30 +665,23 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
               ],
             ),
           ),
-          // Time grid
+          // Time grid — only visible hours
           SizedBox(
-            height: hourHeight * 24,
+            height: hourHeight * hours.length,
             child: Stack(
               children: [
-                // Hour rows
                 Column(
-                  children: List.generate(24, (hour) => SizedBox(
+                  children: hours.map((hour) => SizedBox(
                     height: hourHeight,
                     child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+                      crossAxisAlignment: CrossAxisAlignment.center, // FIX: centered
                       children: [
                         SizedBox(
                           width: gutterWidth,
-                          child: Padding(
-                            padding: const EdgeInsets.only(right: 6),
-                            child: Transform.translate(
-                              offset: const Offset(0, -8),
-                              child: Text(
-                                hour == 0 ? '' : _formatHour(hour),
-                                textAlign: TextAlign.right,
-                                style: const TextStyle(fontSize: 10, color: AppTheme.textMuted),
-                              ),
-                            ),
+                          child: Text(
+                            _formatHour(hour),
+                            textAlign: TextAlign.center, // FIX: centered
+                            style: const TextStyle(fontSize: 10, color: AppTheme.textSecondary),
                           ),
                         ),
                         ...days.map((d) => SizedBox(
@@ -590,7 +690,9 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
                             decoration: BoxDecoration(
                               border: Border(
                                 left: const BorderSide(color: AppTheme.borderColor),
-                                top: BorderSide(color: AppTheme.borderColor.withValues(alpha: 0.5)),
+                                top: BorderSide(
+                                  color: hour == hours.first ? Colors.transparent : AppTheme.borderColor,
+                                ),
                               ),
                               color: DateUtils.isSameDay(d, now)
                                   ? AppTheme.brand.withValues(alpha: 0.02)
@@ -600,7 +702,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
                         )),
                       ],
                     ),
-                  )),
+                  )).toList(),
                 ),
                 // Appointment blocks
                 ..._appointments.where((a) {
@@ -611,7 +713,9 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
                   final end      = DateTime.parse(a['end_date_time']   as String);
                   final dayIndex = days.indexWhere((d) => DateUtils.isSameDay(d, start));
                   if (dayIndex < 0) return const SizedBox.shrink();
-                  final top    = (start.hour + start.minute / 60.0) * hourHeight;
+                  final offsetHours = start.hour + start.minute / 60.0 - range.startHour;
+                  if (offsetHours < 0) return const SizedBox.shrink();
+                  final top    = offsetHours * hourHeight;
                   final height = ((end.difference(start).inMinutes) / 60.0) * hourHeight;
                   final left   = gutterWidth + dayIndex * colWidth + 2;
                   return Positioned(
@@ -633,9 +737,10 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
                   );
                 }),
                 // Current time red line
-                if (days.any((d) => DateUtils.isSameDay(d, now)))
+                if (days.any((d) => DateUtils.isSameDay(d, now)) &&
+                    now.hour >= range.startHour && now.hour < range.endHour)
                   Positioned(
-                    top: (now.hour + now.minute / 60.0) * hourHeight - 1,
+                    top: (now.hour + now.minute / 60.0 - range.startHour) * hourHeight - 1,
                     left: gutterWidth,
                     right: 0,
                     child: Row(children: [
@@ -657,17 +762,14 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
   Widget _buildMonthView(BoxConstraints constraints) {
     final firstDay    = DateTime(_focusDate.year, _focusDate.month, 1);
     final daysInMonth = DateUtils.getDaysInMonth(_focusDate.year, _focusDate.month);
-    final startOffset = firstDay.weekday % 7; // 0=Sun...6=Sat
+    final startOffset = firstDay.weekday % 7;
     final totalCells  = startOffset + daysInMonth;
     final rowCount    = (totalCells / 7).ceil();
     final now         = DateTime.now();
-
-    // Fixed cell height so all rows fit
-    final cellHeight  = (constraints.maxHeight - 36.0) / rowCount;
+    final cellHeight  = (constraints.maxHeight - 36.0 - 8.0) / rowCount;
 
     return Column(
       children: [
-        // Day headers
         SizedBox(
           height: 36,
           child: Row(
@@ -683,86 +785,79 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
             )).toList(),
           ),
         ),
-        // Grid
-        Expanded(
-          child: Column(
-            children: List.generate(rowCount, (row) => Expanded(
-              child: Row(
-                children: List.generate(7, (col) {
-                  final cellIndex = row * 7 + col;
-                  final dayNum    = cellIndex - startOffset + 1;
-                  if (dayNum < 1 || dayNum > daysInMonth) {
-                    return Expanded(child: Container(
-                      decoration: BoxDecoration(
-                        border: Border.all(color: AppTheme.borderColor.withValues(alpha: 0.3)),
-                        color: AppTheme.pageBg.withValues(alpha: 0.3),
-                      ),
-                    ));
-                  }
-                  final date    = DateTime(_focusDate.year, _focusDate.month, dayNum);
-                  final isToday = DateUtils.isSameDay(date, now);
-                  final dayAppts = _appointments.where((a) {
-                    final dt = DateTime.tryParse(a['start_date_time'] ?? '');
-                    return dt != null && DateUtils.isSameDay(dt, date);
-                  }).toList();
+        ...List.generate(rowCount, (row) => SizedBox(
+          height: cellHeight,
+          child: Row(
+            children: List.generate(7, (col) {
+              final cellIndex = row * 7 + col;
+              final dayNum    = cellIndex - startOffset + 1;
+              if (dayNum < 1 || dayNum > daysInMonth) {
+                return Expanded(child: Container(
+                  decoration: BoxDecoration(
+                    border: Border.all(color: AppTheme.borderColor.withValues(alpha: 0.3)),
+                    color: AppTheme.pageBg.withValues(alpha: 0.3),
+                  ),
+                ));
+              }
+              final date     = DateTime(_focusDate.year, _focusDate.month, dayNum);
+              final isToday  = DateUtils.isSameDay(date, now);
+              final dayAppts = _appointments.where((a) {
+                final dt = DateTime.tryParse(a['start_date_time'] ?? '');
+                return dt != null && DateUtils.isSameDay(dt, date);
+              }).toList();
 
-                  return Expanded(
-                    child: Clickable(
-                      onTap: () {
-                        if (dayAppts.isNotEmpty) {
-                          _showDaySheet(date, dayAppts);
-                        } else {
-                          setState(() { _focusDate = date; _calView = 'day'; });
-                        }
-                      },
-                      child: Container(
-                        decoration: BoxDecoration(
-                          color: isToday ? AppTheme.brand.withValues(alpha: 0.04) : AppTheme.cardBg,
-                          border: Border.all(color: AppTheme.borderColor.withValues(alpha: 0.5)),
-                        ),
-                        padding: const EdgeInsets.all(4),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Container(
-                              width: 24, height: 24,
-                              decoration: BoxDecoration(
-                                color: isToday ? AppTheme.brand : null,
-                                shape: BoxShape.circle,
-                              ),
-                              alignment: Alignment.center,
-                              child: Text('$dayNum',
-                                  style: TextStyle(
-                                      fontSize: 12,
-                                      fontWeight: isToday ? FontWeight.w700 : FontWeight.w400,
-                                      color: isToday ? Colors.white : AppTheme.textPrimary)),
-                            ),
-                            ...dayAppts.take(2).map((a) => Container(
-                              margin: const EdgeInsets.only(top: 2),
-                              padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 1),
-                              decoration: BoxDecoration(
-                                color: _statusColor(a['status'] ?? '').withValues(alpha: 0.15),
-                                borderRadius: BorderRadius.circular(3),
-                              ),
-                              child: Text(
-                                a['appointment_name'] ?? '',
-                                style: TextStyle(fontSize: 9, color: _statusColor(a['status'] ?? ''), fontWeight: FontWeight.w500),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            )),
-                            if (dayAppts.length > 2)
-                              Text('+${dayAppts.length - 2} more',
-                                  style: const TextStyle(fontSize: 9, color: AppTheme.textSecondary)),
-                          ],
-                        ),
-                      ),
+              return Expanded(
+                child: Clickable(
+                  onTap: () {
+                    if (dayAppts.isNotEmpty) {
+                      _showDaySheet(date, dayAppts);
+                    } else {
+                      setState(() { _focusDate = date; _calView = 'day'; });
+                    }
+                  },
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: isToday ? AppTheme.brand.withValues(alpha: 0.04) : AppTheme.cardBg,
+                      border: Border.all(color: AppTheme.borderColor.withValues(alpha: 0.5)),
                     ),
-                  );
-                }),
-              ),
-            )),
+                    padding: const EdgeInsets.all(4),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Container(
+                          width: 24, height: 24,
+                          decoration: BoxDecoration(
+                            color: isToday ? AppTheme.brand : null,
+                            shape: BoxShape.circle,
+                          ),
+                          alignment: Alignment.center,
+                          child: Text('$dayNum',
+                              style: TextStyle(fontSize: 12,
+                                  fontWeight: isToday ? FontWeight.w700 : FontWeight.w400,
+                                  color: isToday ? Colors.white : AppTheme.textPrimary)),
+                        ),
+                        ...dayAppts.take(2).map((a) => Container(
+                          margin: const EdgeInsets.only(top: 2),
+                          padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 1),
+                          decoration: BoxDecoration(
+                            color: _statusColor(a['status'] ?? '').withValues(alpha: 0.15),
+                            borderRadius: BorderRadius.circular(3),
+                          ),
+                          child: Text(a['appointment_name'] ?? '',
+                              style: TextStyle(fontSize: 9, color: _statusColor(a['status'] ?? ''), fontWeight: FontWeight.w500),
+                              overflow: TextOverflow.ellipsis),
+                        )),
+                        if (dayAppts.length > 2)
+                          Text('+${dayAppts.length - 2} more',
+                              style: const TextStyle(fontSize: 9, color: AppTheme.textSecondary)),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            }),
           ),
-        ),
+        )),
       ],
     );
   }
@@ -770,11 +865,22 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
   // ── RIGHT PANEL ────────────────────────────────────────────────────────────
 
   Widget _buildRightPanel() {
-    final now = DateTime.now();
+    final now         = DateTime.now();
     final firstDay    = DateTime(_focusDate.year, _focusDate.month, 1);
     final daysInMonth = DateUtils.getDaysInMonth(_focusDate.year, _focusDate.month);
     final startOffset = firstDay.weekday % 7;
     const fullMonths  = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+
+    final allUsers     = [_ownerName];
+    final allCalendars = ['Main Calendar'];
+    final allGroups    = ['Default Group'];
+
+    final filteredUsers     = allUsers.where((u) => u.toLowerCase().contains(_usersSearchCtrl.text.toLowerCase())).toList();
+    final filteredCalendars = allCalendars.where((c) => c.toLowerCase().contains(_calendarsSearchCtrl.text.toLowerCase())).toList();
+    final filteredGroups    = allGroups.where((g) => g.toLowerCase().contains(_groupsSearchCtrl.text.toLowerCase())).toList();
+
+    final activeCtrl = _panelTab == 0 ? _usersSearchCtrl : _panelTab == 1 ? _calendarsSearchCtrl : _groupsSearchCtrl;
+    final activeHint = _panelTab == 0 ? 'Search for User' : _panelTab == 1 ? 'Search Calendars' : 'Search Groups';
 
     return Container(
       width: 240,
@@ -790,24 +896,20 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        '${fullMonths[_focusDate.month - 1]} ${_focusDate.year}',
-                        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textPrimary),
-                      ),
-                    ),
-                    Clickable(
-                      onTap: () => setState(() => _focusDate = DateTime(_focusDate.year, _focusDate.month - 1)),
-                      child: const Icon(Icons.chevron_left, size: 16, color: AppTheme.textSecondary),
-                    ),
-                    Clickable(
-                      onTap: () => setState(() => _focusDate = DateTime(_focusDate.year, _focusDate.month + 1)),
-                      child: const Icon(Icons.chevron_right, size: 16, color: AppTheme.textSecondary),
-                    ),
-                  ],
-                ),
+                Row(children: [
+                  Expanded(
+                    child: Text('${fullMonths[_focusDate.month - 1]} ${_focusDate.year}',
+                        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+                  ),
+                  Clickable(
+                    onTap: () => setState(() => _focusDate = DateTime(_focusDate.year, _focusDate.month - 1)),
+                    child: const Icon(Icons.chevron_left, size: 16, color: AppTheme.textSecondary),
+                  ),
+                  Clickable(
+                    onTap: () => setState(() => _focusDate = DateTime(_focusDate.year, _focusDate.month + 1)),
+                    child: const Icon(Icons.chevron_right, size: 16, color: AppTheme.textSecondary),
+                  ),
+                ]),
                 const SizedBox(height: 6),
                 Row(
                   children: ['S','M','T','W','T','F','S'].map((d) => Expanded(
@@ -843,8 +945,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
                         child: Stack(
                           alignment: Alignment.center,
                           children: [
-                            Text('$day', style: TextStyle(
-                                fontSize: 10,
+                            Text('$day', style: TextStyle(fontSize: 10,
                                 color: isSelected ? Colors.white : isToday ? AppTheme.brand : AppTheme.textPrimary)),
                             if (hasAppt && !isSelected)
                               Positioned(
@@ -885,20 +986,15 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
                         borderRadius: BorderRadius.circular(6),
                         border: Border.all(color: _statusColor(a['status'] ?? '').withValues(alpha: 0.2)),
                       ),
-                      child: Row(
-                        children: [
-                          Container(width: 3, height: 28,
-                              decoration: BoxDecoration(color: _statusColor(a['status'] ?? ''), borderRadius: BorderRadius.circular(2))),
-                          const SizedBox(width: 7),
-                          Expanded(child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(a['appointment_name'] ?? '', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppTheme.textPrimary), overflow: TextOverflow.ellipsis),
-                              Text('${_fmtTime(dt)} · ${a['lead_name'] ?? ''}', style: const TextStyle(fontSize: 10, color: AppTheme.textSecondary), overflow: TextOverflow.ellipsis),
-                            ],
-                          )),
-                        ],
-                      ),
+                      child: Row(children: [
+                        Container(width: 3, height: 28,
+                            decoration: BoxDecoration(color: _statusColor(a['status'] ?? ''), borderRadius: BorderRadius.circular(2))),
+                        const SizedBox(width: 7),
+                        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                          Text(a['appointment_name'] ?? '', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppTheme.textPrimary), overflow: TextOverflow.ellipsis),
+                          Text('${_fmtTime(dt)} · ${a['lead_name'] ?? ''}', style: const TextStyle(fontSize: 10, color: AppTheme.textSecondary), overflow: TextOverflow.ellipsis),
+                        ])),
+                      ]),
                     ),
                   );
                 }),
@@ -907,22 +1003,21 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
           ),
           const Divider(height: 1, color: AppTheme.borderColor),
           // Users / Calendars / Groups tabs
-          Row(
-            children: [
-              _panelTabBtn('Users', 0),
-              _panelTabBtn('Calendars', 1),
-              _panelTabBtn('Groups', 2),
-            ],
-          ),
+          Row(children: [
+            _panelTabBtn('Users', 0),
+            _panelTabBtn('Calendars', 1),
+            _panelTabBtn('Groups', 2),
+          ]),
           const Divider(height: 1, color: AppTheme.borderColor),
-          // Search bar
+          // Search bar — per tab
           Padding(
             padding: const EdgeInsets.all(8),
             child: TextField(
-              controller: _panelSearchCtrl,
+              controller: activeCtrl,
+              onChanged: (_) => setState(() {}),
               style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary),
               decoration: InputDecoration(
-                hintText: _panelTab == 0 ? 'Search for User' : _panelTab == 1 ? 'Search Calendars' : 'Search Groups',
+                hintText: activeHint,
                 hintStyle: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
                 prefixIcon: const Icon(Icons.search, size: 16, color: AppTheme.textSecondary),
                 filled: true,
@@ -939,10 +1034,10 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
             child: ListView(
               padding: const EdgeInsets.symmetric(horizontal: 12),
               children: _panelTab == 0
-                  ? [_panelUserRow(_ownerName, AppTheme.brand)]
+                  ? filteredUsers.map((u) => _panelUserRow(u, AppTheme.brand)).toList()
                   : _panelTab == 1
-                      ? [_panelCheckRow('Main Calendar', const Color(0xFF6366F1))]
-                      : [_panelCheckRow('Default Group', AppTheme.brand)],
+                      ? filteredCalendars.map((c) => _panelCheckRow(c, const Color(0xFF6366F1))).toList()
+                      : filteredGroups.map((g) => _panelCheckRow(g, AppTheme.brand)).toList(),
             ),
           ),
         ],
@@ -958,14 +1053,11 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: 8),
           decoration: BoxDecoration(
-            border: Border(
-              bottom: BorderSide(color: sel ? AppTheme.brand : Colors.transparent, width: 2),
-            ),
+            border: Border(bottom: BorderSide(color: sel ? AppTheme.brand : Colors.transparent, width: 2)),
           ),
           alignment: Alignment.center,
           child: Text(label,
-              style: TextStyle(
-                  fontSize: 11,
+              style: TextStyle(fontSize: 11,
                   fontWeight: sel ? FontWeight.w600 : FontWeight.w400,
                   color: sel ? AppTheme.brand : AppTheme.textSecondary)),
         ),
@@ -977,43 +1069,27 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
     final initials = name.trim().split(' ').map((p) => p.isNotEmpty ? p[0] : '').take(2).join().toUpperCase();
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
-      child: Row(
-        children: [
-          Container(
-            width: 28, height: 28,
+      child: Row(children: [
+        Container(width: 28, height: 28,
             decoration: BoxDecoration(color: color, shape: BoxShape.circle),
             alignment: Alignment.center,
-            child: Text(initials, style: const TextStyle(fontSize: 10, color: Colors.white, fontWeight: FontWeight.w600)),
-          ),
-          const SizedBox(width: 8),
-          Expanded(child: Text(name, style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary))),
-          Checkbox(
-            value: true,
-            onChanged: (_) {},
-            activeColor: AppTheme.brand,
-            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-          ),
-        ],
-      ),
+            child: Text(initials, style: const TextStyle(fontSize: 10, color: Colors.white, fontWeight: FontWeight.w600))),
+        const SizedBox(width: 8),
+        Expanded(child: Text(name, style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary))),
+        Checkbox(value: true, onChanged: (_) {}, activeColor: AppTheme.brand, materialTapTargetSize: MaterialTapTargetSize.shrinkWrap),
+      ]),
     );
   }
 
   Widget _panelCheckRow(String label, Color color) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
-      child: Row(
-        children: [
-          Container(width: 12, height: 12, decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(3))),
-          const SizedBox(width: 8),
-          Expanded(child: Text(label, style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary))),
-          Checkbox(
-            value: true,
-            onChanged: (_) {},
-            activeColor: color,
-            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-          ),
-        ],
-      ),
+      child: Row(children: [
+        Container(width: 12, height: 12, decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(3))),
+        const SizedBox(width: 8),
+        Expanded(child: Text(label, style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary))),
+        Checkbox(value: true, onChanged: (_) {}, activeColor: color, materialTapTargetSize: MaterialTapTargetSize.shrinkWrap),
+      ]),
     );
   }
 
@@ -1027,42 +1103,40 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
       padding: const EdgeInsets.all(24),
       child: Column(
         children: [
-          Row(
-            children: [
-              _MiniStat(label: 'Total',     value: '${_appointments.length}', color: AppTheme.brand),
-              const SizedBox(width: 8),
-              _MiniStat(label: 'Scheduled', value: '${_appointments.where((a) => a['status'] == 'Scheduled').length}', color: const Color(0xFF6366f1)),
-              const SizedBox(width: 8),
-              _MiniStat(label: 'Completed', value: '${_appointments.where((a) => a['status'] == 'Completed').length}', color: AppTheme.success),
-              const SizedBox(width: 8),
-              _MiniStat(label: 'Cancelled', value: '${_appointments.where((a) => a['status'] == 'Cancelled').length}', color: AppTheme.error),
-            ],
-          ),
+          Row(children: [
+            _MiniStat(label: 'Total',     value: '${_appointments.length}',                                                         color: AppTheme.brand),
+            const SizedBox(width: 8),
+            _MiniStat(label: 'New',       value: '${_appointments.where((a) => a['status'] == 'New').length}',                      color: const Color(0xFF6366f1)),
+            const SizedBox(width: 8),
+            _MiniStat(label: 'Confirmed', value: '${_appointments.where((a) => a['status'] == 'Confirmed').length}',                color: const Color(0xFF0EA5E9)),
+            const SizedBox(width: 8),
+            _MiniStat(label: 'Showed',    value: '${_appointments.where((a) => a['status'] == 'Showed').length}',                   color: AppTheme.success),
+            const SizedBox(width: 8),
+            _MiniStat(label: 'No-Show',   value: '${_appointments.where((a) => a['status'] == 'No-Show' || a['status'] == 'No Show').length}', color: const Color(0xFFf59e0b)),
+          ]),
           const SizedBox(height: 16),
-          Row(
-            children: [
-              ..._statuses.map((s) {
-                final selected = _statusFilter == s;
-                return Padding(
-                  padding: const EdgeInsets.only(right: 8),
-                  child: Clickable(
-                    onTap: () => setState(() => _statusFilter = s),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
-                      decoration: BoxDecoration(
-                        color: selected ? AppTheme.brand : AppTheme.cardBg,
-                        borderRadius: BorderRadius.circular(99),
-                        border: Border.all(color: selected ? AppTheme.brand : AppTheme.borderColor),
-                      ),
-                      child: Text(s, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: selected ? Colors.white : AppTheme.textSecondary)),
+          Row(children: [
+            ..._statuses.map((s) {
+              final selected = _statusFilter == s;
+              return Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: Clickable(
+                  onTap: () => setState(() => _statusFilter = s),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                    decoration: BoxDecoration(
+                      color: selected ? AppTheme.brand : AppTheme.cardBg,
+                      borderRadius: BorderRadius.circular(99),
+                      border: Border.all(color: selected ? AppTheme.brand : AppTheme.borderColor),
                     ),
+                    child: Text(s, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: selected ? Colors.white : AppTheme.textSecondary)),
                   ),
-                );
-              }),
-              const Spacer(),
-              IconButton(onPressed: _load, icon: const Icon(Icons.refresh, size: 18, color: AppTheme.textSecondary)),
-            ],
-          ),
+                ),
+              );
+            }),
+            const Spacer(),
+            IconButton(onPressed: _load, icon: const Icon(Icons.refresh, size: 18, color: AppTheme.textSecondary)),
+          ]),
           const SizedBox(height: 16),
           Expanded(
             child: filtered.isEmpty
@@ -1108,7 +1182,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
   Widget _buildAppointmentRow(Map<String, dynamic> appt) {
     final startDt = DateTime.tryParse(appt['start_date_time'] ?? '') ?? DateTime.now();
     final endDt   = DateTime.tryParse(appt['end_date_time']   ?? '') ?? DateTime.now();
-    final status  = appt['status'] ?? 'Scheduled';
+    final status  = appt['status'] ?? 'New';
     return MouseRegion(
       cursor: SystemMouseCursors.click,
       child: InkWell(
@@ -1134,7 +1208,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
                 style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary))),
             Expanded(flex: 2, child: Text(appt['appointment_type'] ?? '—',
                 style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary))),
-            Expanded(flex: 2, child: _StatusBadge(status: status)),
+            Expanded(flex: 2, child: _StatusBadge(status: status, colorFn: _statusColor)),
             SizedBox(width: 40, child: IconButton(
               icon: const Icon(Icons.more_vert, size: 16, color: AppTheme.textMuted),
               onPressed: () => _showAppointmentDetail(appt),
@@ -1151,7 +1225,9 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
 
   Widget _buildSettingsTab() {
     const days      = ['monday','tuesday','wednesday','thursday','friday','saturday','sunday'];
+    // FIX: Saturday and Sunday now show their full names
     const dayLabels = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
+
     final timeValues = List.generate(48, (i) {
       final h = i ~/ 2;
       final m = i % 2 == 0 ? '00' : '30';
@@ -1169,17 +1245,23 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
       padding: const EdgeInsets.all(32),
       child: Center(
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 680),
+          constraints: const BoxConstraints(maxWidth: 720),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text('Calendar Settings', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: AppTheme.textPrimary)),
+              // FIX: Settings icon beside title
+              Row(children: [
+                const Icon(Icons.settings_outlined, size: 22, color: AppTheme.textPrimary),
+                const SizedBox(width: 10),
+                const Text('Calendar Settings',
+                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: AppTheme.textPrimary)),
+              ]),
               const SizedBox(height: 4),
               const Text('Set your availability and slot duration. The AI will use these to offer booking times to leads.',
                   style: TextStyle(fontSize: 13, color: AppTheme.textSecondary)),
               const SizedBox(height: 32),
 
-              // Slot duration
+              // ── Slot duration ──────────────────────────────────────────
               Container(
                 padding: const EdgeInsets.all(20),
                 decoration: BoxDecoration(color: AppTheme.cardBg, borderRadius: BorderRadius.circular(12), border: Border.all(color: AppTheme.borderColor)),
@@ -1189,64 +1271,207 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
                   const Text('How long is each appointment slot?', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
                   const SizedBox(height: 16),
                   Wrap(
-                    spacing: 10,
-                    children: [15, 30, 45, 60, 90, 120].map((min) {
-                      final sel = _slotDuration == min;
-                      return Clickable(
-                        onTap: () => setState(() => _slotDuration = min),
+                    spacing: 10, runSpacing: 10,
+                    children: [
+                      // Fixed presets
+                      ...[15, 30, 45, 60, 90, 120].map((min) {
+                        final sel = _slotDuration == min;
+                        return Clickable(
+                          onTap: () => setState(() => _slotDuration = min),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                            decoration: BoxDecoration(
+                              color: sel ? AppTheme.brand : AppTheme.pageBg,
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: sel ? AppTheme.brand : AppTheme.borderColor),
+                            ),
+                            child: Text(
+                              min < 60 ? '${min}m' : '${min ~/ 60}h${min % 60 > 0 ? ' ${min % 60}m' : ''}',
+                              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500,
+                                  color: sel ? Colors.white : AppTheme.textSecondary),
+                            ),
+                          ),
+                        );
+                      }),
+                      // FIX: Custom duration option
+                      Clickable(
+                        onTap: () => setState(() => _slotDuration = -1),
                         child: Container(
                           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                           decoration: BoxDecoration(
-                            color: sel ? AppTheme.brand : AppTheme.pageBg,
+                            color: _slotDuration == -1 ? AppTheme.brand : AppTheme.pageBg,
                             borderRadius: BorderRadius.circular(8),
-                            border: Border.all(color: sel ? AppTheme.brand : AppTheme.borderColor),
+                            border: Border.all(color: _slotDuration == -1 ? AppTheme.brand : AppTheme.borderColor),
                           ),
-                          child: Text(
-                            min < 60 ? '${min}m' : '${min ~/ 60}h${min % 60 > 0 ? ' ${min % 60}m' : ''}',
-                            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: sel ? Colors.white : AppTheme.textSecondary),
+                          child: Text('Custom',
+                              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500,
+                                  color: _slotDuration == -1 ? Colors.white : AppTheme.textSecondary)),
+                        ),
+                      ),
+                    ],
+                  ),
+                  // Custom duration input
+                  if (_slotDuration == -1) ...[
+                    const SizedBox(height: 16),
+                    Row(children: [
+                      SizedBox(
+                        width: 120,
+                        child: TextField(
+                          keyboardType: TextInputType.number,
+                          controller: TextEditingController(text: '$_customDurationMinutes')
+                            ..selection = TextSelection.collapsed(offset: '$_customDurationMinutes'.length),
+                          onChanged: (v) {
+                            final parsed = int.tryParse(v);
+                            if (parsed != null && parsed > 0) setState(() => _customDurationMinutes = parsed);
+                          },
+                          decoration: InputDecoration(
+                            labelText: 'Minutes',
+                            labelStyle: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+                            filled: true, fillColor: AppTheme.pageBg,
+                            contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
+                            enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
+                            focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide(color: AppTheme.brand, width: 2)),
                           ),
                         ),
-                      );
-                    }).toList(),
-                  ),
+                      ),
+                      const SizedBox(width: 12),
+                      Text(
+                        _customDurationMinutes >= 60
+                            ? '= ${_customDurationMinutes ~/ 60}h ${_customDurationMinutes % 60 > 0 ? '${_customDurationMinutes % 60}m' : ''}'
+                            : '',
+                        style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary),
+                      ),
+                    ]),
+                  ],
                 ]),
               ),
               const SizedBox(height: 20),
 
-              // Availability
+              // ── Availability hours ──────────────────────────────────────
               Container(
                 padding: const EdgeInsets.all(20),
                 decoration: BoxDecoration(color: AppTheme.cardBg, borderRadius: BorderRadius.circular(12), border: Border.all(color: AppTheme.borderColor)),
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   const Text('Availability Hours', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
                   const SizedBox(height: 4),
-                  const Text('Set the days and hours you are available for appointments.', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+                  const Text('Set the days and hours you\'re available. The AI will only offer slots within these windows.',
+                      style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
                   const SizedBox(height: 20),
                   ...List.generate(days.length, (i) {
                     final day     = days[i];
                     final label   = dayLabels[i];
                     final dayData = _availability[day]!;
                     final enabled = dayData['enabled'] as bool;
-                    return Container(
-                      margin: const EdgeInsets.only(bottom: 10),
-                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                      decoration: BoxDecoration(
-                        color: AppTheme.pageBg,
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: enabled ? AppTheme.borderColor : AppTheme.borderColor.withValues(alpha: 0.4)),
-                      ),
-                      child: Row(children: [
-                        Switch(value: enabled, onChanged: (v) => setState(() => _availability[day]!['enabled'] = v), activeColor: AppTheme.brand),
-                        const SizedBox(width: 10),
-                        SizedBox(width: 96, child: Text(label, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: enabled ? AppTheme.textPrimary : AppTheme.textMuted))),
-                        if (!enabled)
-                          const Expanded(child: Text('Unavailable', style: TextStyle(fontSize: 12, color: AppTheme.textMuted)))
-                        else ...[
-                          Expanded(child: _timeDropdown(value: dayData['start'] as String, items: timeValues, labels: timeLabels, onChanged: (v) => setState(() => _availability[day]!['start'] = v!))),
-                          const Padding(padding: EdgeInsets.symmetric(horizontal: 10), child: Text('to', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary))),
-                          Expanded(child: _timeDropdown(value: dayData['end'] as String, items: timeValues, labels: timeLabels, onChanged: (v) => setState(() => _availability[day]!['end'] = v!))),
-                        ],
-                      ]),
+                    final blocks  = (dayData['blocks'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+
+                    return Column(
+                      children: [
+                        Container(
+                          margin: const EdgeInsets.only(bottom: 4),
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                          decoration: BoxDecoration(
+                            color: AppTheme.pageBg,
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: enabled ? AppTheme.borderColor : AppTheme.borderColor.withValues(alpha: 0.4)),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(children: [
+                                Switch(value: enabled, onChanged: (v) => setState(() => _availability[day]!['enabled'] = v), activeColor: AppTheme.brand),
+                                const SizedBox(width: 10),
+                                // Day name always full opacity regardless of enabled state
+                                SizedBox(
+                                  width: 110,
+                                  child: Text(label,
+                                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500,
+                                          color: AppTheme.textPrimary)),
+                                ),
+                                if (!enabled)
+                                  const Expanded(child: Text('Unavailable', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)))
+                                else ...[
+                                  Expanded(child: _timeDropdown(value: dayData['start'] as String, items: timeValues, labels: timeLabels, onChanged: (v) => setState(() => _availability[day]!['start'] = v!))),
+                                  const Padding(padding: EdgeInsets.symmetric(horizontal: 10), child: Text('to', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary))),
+                                  Expanded(child: _timeDropdown(value: dayData['end'] as String, items: timeValues, labels: timeLabels, onChanged: (v) => setState(() => _availability[day]!['end'] = v!))),
+                                  // FIX: add block button
+                                  if (enabled)
+                                    Clickable(
+                                      onTap: () => _addBlock(day),
+                                      child: Container(
+                                        margin: const EdgeInsets.only(left: 8),
+                                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                        decoration: BoxDecoration(
+                                          border: Border.all(color: AppTheme.borderColor),
+                                          borderRadius: BorderRadius.circular(6),
+                                        ),
+                                        child: Row(mainAxisSize: MainAxisSize.min, children: [
+                                          const Icon(Icons.block, size: 12, color: AppTheme.textSecondary),
+                                          const SizedBox(width: 4),
+                                          const Text('Block', style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                                        ]),
+                                      ),
+                                    ),
+                                ],
+                              ]),
+                              // FIX: blocked time slots shown below the day row
+                              if (enabled && blocks.isNotEmpty) ...[
+                                const SizedBox(height: 8),
+                                ...blocks.asMap().entries.map((entry) {
+                                  final idx   = entry.key;
+                                  final block = entry.value;
+                                  return Container(
+                                    margin: const EdgeInsets.only(bottom: 6),
+                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                    decoration: BoxDecoration(
+                                      color: AppTheme.error.withValues(alpha: 0.05),
+                                      borderRadius: BorderRadius.circular(6),
+                                      border: Border.all(color: AppTheme.error.withValues(alpha: 0.2)),
+                                    ),
+                                    child: Row(children: [
+                                      const Icon(Icons.block, size: 12, color: AppTheme.error),
+                                      const SizedBox(width: 6),
+                                      const Text('Blocked: ', style: TextStyle(fontSize: 11, color: AppTheme.error, fontWeight: FontWeight.w500)),
+                                      Expanded(child: Row(children: [
+                                        Expanded(child: _timeDropdown(
+                                          value: block['start'] as String? ?? '12:00',
+                                          items: timeValues, labels: timeLabels,
+                                          onChanged: (v) => setState(() {
+                                            final newBlocks = List<Map<String, dynamic>>.from(blocks);
+                                            newBlocks[idx] = {...newBlocks[idx], 'start': v!};
+                                            _availability[day]!['blocks'] = newBlocks;
+                                          }),
+                                        )),
+                                        const Padding(padding: EdgeInsets.symmetric(horizontal: 8), child: Text('–', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary))),
+                                        Expanded(child: _timeDropdown(
+                                          value: block['end'] as String? ?? '13:00',
+                                          items: timeValues, labels: timeLabels,
+                                          onChanged: (v) => setState(() {
+                                            final newBlocks = List<Map<String, dynamic>>.from(blocks);
+                                            newBlocks[idx] = {...newBlocks[idx], 'end': v!};
+                                            _availability[day]!['blocks'] = newBlocks;
+                                          }),
+                                        )),
+                                      ])),
+                                      Clickable(
+                                        onTap: () => setState(() {
+                                          final newBlocks = List<Map<String, dynamic>>.from(blocks)..removeAt(idx);
+                                          _availability[day]!['blocks'] = newBlocks;
+                                        }),
+                                        child: const Padding(
+                                          padding: EdgeInsets.only(left: 8),
+                                          child: Icon(Icons.close, size: 14, color: AppTheme.error),
+                                        ),
+                                      ),
+                                    ]),
+                                  );
+                                }),
+                              ],
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                      ],
                     );
                   }),
                 ]),
@@ -1267,6 +1492,13 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
         ),
       ),
     );
+  }
+
+  void _addBlock(String day) {
+    setState(() {
+      final existing = ((_availability[day]!['blocks'] as List?) ?? []).cast<Map<String, dynamic>>();
+      _availability[day]!['blocks'] = [...existing, {'start': '12:00', 'end': '13:00'}];
+    });
   }
 
   Widget _timeDropdown({required String value, required List<String> items, required List<String> labels, required ValueChanged<String?> onChanged}) {
@@ -1293,14 +1525,23 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
   void _showAddAppointment() {
     showModalBottomSheet(
       context: context, isScrollControlled: true, backgroundColor: Colors.transparent,
-      builder: (_) => _AppointmentFormSheet(onSaved: () { Navigator.pop(context); _load(); }),
+      builder: (_) => _AppointmentFormSheet(
+        appointmentTypes: _appointmentTypes,
+        appointmentStatuses: _appointmentStatuses,
+        onSaved: () { Navigator.pop(context); _load(); },
+      ),
     );
   }
 
   void _showAppointmentDetail(Map<String, dynamic> appt) {
     showModalBottomSheet(
       context: context, isScrollControlled: true, backgroundColor: Colors.transparent,
-      builder: (_) => _AppointmentDetailSheet(appointment: appt, onUpdated: () { Navigator.pop(context); _load(); }),
+      builder: (_) => _AppointmentDetailSheet(
+        appointment: appt,
+        appointmentStatuses: _appointmentStatuses,
+        colorFn: _statusColor,
+        onUpdated: () { Navigator.pop(context); _load(); },
+      ),
     );
   }
 
@@ -1322,7 +1563,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(color: AppTheme.pageBg, borderRadius: BorderRadius.circular(8), border: Border.all(color: AppTheme.borderColor)),
               child: Row(children: [
-                _StatusBadge(status: a['status'] ?? ''),
+                _StatusBadge(status: a['status'] ?? '', colorFn: _statusColor),
                 const SizedBox(width: 10),
                 Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   Text(a['appointment_name'] ?? '', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
@@ -1337,41 +1578,12 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
       ),
     );
   }
-
-  String _formatHour(int hour) {
-    if (hour == 0 || hour == 24) return '12AM';
-    if (hour == 12) return '12PM';
-    return hour < 12 ? '${hour}AM' : '${hour - 12}PM';
-  }
-
-  String _formatDateKey(DateTime dt) {
-    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-    const days   = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
-    return '${days[dt.weekday - 1]}, ${months[dt.month - 1]} ${dt.day}, ${dt.year}';
-  }
-
-  String _fmtTime(DateTime dt) {
-    final h = dt.hour == 0 ? 12 : dt.hour > 12 ? dt.hour - 12 : dt.hour;
-    final m = dt.minute.toString().padLeft(2, '0');
-    return '$h:$m ${dt.hour < 12 ? 'AM' : 'PM'}';
-  }
-
-  Color _statusColor(String status) {
-    switch (status.toLowerCase()) {
-      case 'scheduled': return const Color(0xFF6366f1);
-      case 'completed': return AppTheme.success;
-      case 'cancelled': return AppTheme.error;
-      case 'no show':   return const Color(0xFFf59e0b);
-      default:          return AppTheme.textSecondary;
-    }
-  }
 }
 
 // ── MINI STAT ─────────────────────────────────────────────────────────────────
 
 class _MiniStat extends StatelessWidget {
-  final String label;
-  final String value;
+  final String label, value;
   final Color color;
   const _MiniStat({required this.label, required this.value, required this.color});
 
@@ -1395,18 +1607,12 @@ class _MiniStat extends StatelessWidget {
 
 class _StatusBadge extends StatelessWidget {
   final String status;
-  const _StatusBadge({required this.status});
+  final Color Function(String) colorFn;
+  const _StatusBadge({required this.status, required this.colorFn});
 
   @override
   Widget build(BuildContext context) {
-    Color color;
-    switch (status.toLowerCase()) {
-      case 'scheduled': color = const Color(0xFF6366f1); break;
-      case 'completed': color = AppTheme.success; break;
-      case 'cancelled': color = AppTheme.error; break;
-      case 'no show':   color = const Color(0xFFf59e0b); break;
-      default:          color = AppTheme.textSecondary;
-    }
+    final color = colorFn(status);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(color: color.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(99), border: Border.all(color: color.withValues(alpha: 0.3))),
@@ -1420,30 +1626,34 @@ class _StatusBadge extends StatelessWidget {
 class _AppointmentFormSheet extends StatefulWidget {
   final VoidCallback onSaved;
   final Map<String, dynamic>? existing;
-  const _AppointmentFormSheet({required this.onSaved, this.existing});
+  final List<String> appointmentTypes;
+  final List<String> appointmentStatuses;
+  const _AppointmentFormSheet({
+    required this.onSaved,
+    required this.appointmentTypes,
+    required this.appointmentStatuses,
+    this.existing,
+  });
 
   @override
   State<_AppointmentFormSheet> createState() => _AppointmentFormSheetState();
 }
 
 class _AppointmentFormSheetState extends State<_AppointmentFormSheet> {
-  final _db           = Supabase.instance.client;
-  final _nameCtrl     = TextEditingController();
-  final _locationCtrl = TextEditingController();
-  final _leadNameCtrl = TextEditingController();
-  final _leadPhoneCtrl= TextEditingController();
-  final _leadEmailCtrl= TextEditingController();
-  final _notesCtrl    = TextEditingController();
+  final _db            = Supabase.instance.client;
+  final _nameCtrl      = TextEditingController();
+  final _locationCtrl  = TextEditingController();
+  final _leadNameCtrl  = TextEditingController();
+  final _leadPhoneCtrl = TextEditingController();
+  final _leadEmailCtrl = TextEditingController();
+  final _notesCtrl     = TextEditingController();
 
   String   _type    = 'Consultation';
-  String   _status  = 'Scheduled';
+  String   _status  = 'New';
   DateTime _startDt = DateTime.now().add(const Duration(hours: 1));
   DateTime _endDt   = DateTime.now().add(const Duration(hours: 2));
   bool     _saving  = false;
   String?  _error;
-
-  final _types    = ['Consultation','Follow-up','Demo','Check-in','Service','Other'];
-  final _statuses = ['Scheduled','Completed','Cancelled','No Show'];
 
   @override
   void initState() {
@@ -1456,8 +1666,8 @@ class _AppointmentFormSheetState extends State<_AppointmentFormSheet> {
       _leadPhoneCtrl.text = e['lead_phone']        ?? '';
       _leadEmailCtrl.text = e['lead_email']        ?? '';
       _notesCtrl.text     = e['notes']             ?? '';
-      _type    = e['appointment_type'] ?? 'Consultation';
-      _status  = e['status']           ?? 'Scheduled';
+      _type    = widget.appointmentTypes.contains(e['appointment_type']) ? e['appointment_type'] : widget.appointmentTypes.first;
+      _status  = widget.appointmentStatuses.contains(e['status'])        ? e['status']           : widget.appointmentStatuses.first;
       _startDt = DateTime.tryParse(e['start_date_time'] ?? '') ?? _startDt;
       _endDt   = DateTime.tryParse(e['end_date_time']   ?? '') ?? _endDt;
     }
@@ -1549,9 +1759,9 @@ class _AppointmentFormSheetState extends State<_AppointmentFormSheet> {
             _field('Appointment Name', _nameCtrl, hint: 'e.g. Initial Consultation'),
             const SizedBox(height: 12),
             Row(children: [
-              Expanded(child: _dropdown('Type', _types, _type, (v) => setState(() => _type = v!))),
+              Expanded(child: _dropdown('Type', widget.appointmentTypes, _type, (v) => setState(() => _type = v!))),
               const SizedBox(width: 12),
-              Expanded(child: _dropdown('Status', _statuses, _status, (v) => setState(() => _status = v!))),
+              Expanded(child: _dropdown('Status', widget.appointmentStatuses, _status, (v) => setState(() => _status = v!))),
             ]),
             const SizedBox(height: 12),
             Row(children: [
@@ -1663,7 +1873,14 @@ class _DateTimePickerField extends StatelessWidget {
 class _AppointmentDetailSheet extends StatefulWidget {
   final Map<String, dynamic> appointment;
   final VoidCallback onUpdated;
-  const _AppointmentDetailSheet({required this.appointment, required this.onUpdated});
+  final List<String> appointmentStatuses;
+  final Color Function(String) colorFn;
+  const _AppointmentDetailSheet({
+    required this.appointment,
+    required this.onUpdated,
+    required this.appointmentStatuses,
+    required this.colorFn,
+  });
 
   @override
   State<_AppointmentDetailSheet> createState() => _AppointmentDetailSheetState();
@@ -1673,10 +1890,14 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
   final _db = Supabase.instance.client;
   late String _status;
   bool _saving = false;
-  final _statuses = ['Scheduled','Completed','Cancelled','No Show'];
 
   @override
-  void initState() { super.initState(); _status = widget.appointment['status'] ?? 'Scheduled'; }
+  void initState() {
+    super.initState();
+    _status = widget.appointment['status'] ?? 'New';
+    // Migrate legacy status values
+    if (!widget.appointmentStatuses.contains(_status)) _status = widget.appointmentStatuses.first;
+  }
 
   Future<void> _updateStatus(String s) async {
     setState(() { _saving = true; _status = s; });
@@ -1702,7 +1923,12 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
   void _showEdit() {
     Navigator.pop(context);
     showModalBottomSheet(context: context, isScrollControlled: true, backgroundColor: Colors.transparent,
-      builder: (_) => _AppointmentFormSheet(existing: widget.appointment, onSaved: widget.onUpdated));
+      builder: (_) => _AppointmentFormSheet(
+        existing: widget.appointment,
+        appointmentTypes: _AppointmentsScreenState._appointmentTypes,
+        appointmentStatuses: widget.appointmentStatuses,
+        onSaved: widget.onUpdated,
+      ));
   }
 
   String _fmtTime(DateTime dt) {
@@ -1739,8 +1965,8 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
               Text(a['appointment_name'] ?? 'Untitled', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: AppTheme.textPrimary)),
               Text(a['appointment_type'] ?? '—',        style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary)),
             ])),
-            IconButton(onPressed: _showEdit, icon: const Icon(Icons.edit_outlined,   size: 18, color: AppTheme.textSecondary)),
-            IconButton(onPressed: _delete,   icon: const Icon(Icons.delete_outline,  size: 18, color: AppTheme.error)),
+            IconButton(onPressed: _showEdit, icon: const Icon(Icons.edit_outlined,  size: 18, color: AppTheme.textSecondary)),
+            IconButton(onPressed: _delete,   icon: const Icon(Icons.delete_outline, size: 18, color: AppTheme.error)),
           ]),
           const SizedBox(height: 20),
           Container(
@@ -1758,14 +1984,14 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
           const SizedBox(height: 12),
           if ((a['location']   ?? '').isNotEmpty) _row(Icons.location_on_outlined, a['location']),
           _row(Icons.person_outline, a['lead_name'] ?? '—'),
-          if ((a['lead_phone'] ?? '').isNotEmpty) _row(Icons.phone_outlined,       a['lead_phone']),
-          if ((a['lead_email'] ?? '').isNotEmpty) _row(Icons.email_outlined,       a['lead_email']),
-          if ((a['notes']      ?? '').isNotEmpty) _row(Icons.notes_outlined,       a['notes']),
+          if ((a['lead_phone'] ?? '').isNotEmpty) _row(Icons.phone_outlined,  a['lead_phone']),
+          if ((a['lead_email'] ?? '').isNotEmpty) _row(Icons.email_outlined,  a['lead_email']),
+          if ((a['notes']      ?? '').isNotEmpty) _row(Icons.notes_outlined,  a['notes']),
           const SizedBox(height: 20),
           const Text('Update Status', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
           const SizedBox(height: 10),
           Wrap(spacing: 8, runSpacing: 8,
-            children: _statuses.map((s) {
+            children: widget.appointmentStatuses.map((s) {
               final sel = s == _status;
               return Clickable(
                 onTap: () => _updateStatus(s),
