@@ -134,7 +134,9 @@ class AppRouter {
           GoRoute(
             path: '/settings',
             name: 'settings',
-            builder: (context, state) => const SettingsScreen(),
+            builder: (context, state) => SettingsScreen(
+              initialSection: state.uri.queryParameters['section'],
+          ),
           ),
           GoRoute(
             path: '/ai-chat',

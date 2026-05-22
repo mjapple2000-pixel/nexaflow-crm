@@ -193,7 +193,8 @@ Future<void> _sendNotificationEmail(String subject, String body) async {
 // ─────────────────────────────────────────────
 
 class SettingsScreen extends StatefulWidget {
-  const SettingsScreen({super.key});
+  final String? initialSection;
+  const SettingsScreen({super.key, this.initialSection});
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -209,20 +210,42 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Map<String, dynamic> _business = {};
 
   final _sections = [
-    ('Business Profile', Icons.business_outlined),
-    ('AI Settings',      Icons.smart_toy_outlined),
-    ('Knowledge Base',   Icons.menu_book_outlined),
-    ('AI Phone Number',  Icons.phone_outlined),
-    ('Email Config',     Icons.email_outlined),
-    ('Team Members',     Icons.people_outline),
-    ('Notifications',    Icons.notifications_outlined),
-    ('Billing',          Icons.credit_card_outlined),
-  ];
+  ('Business Profile', Icons.business_outlined),
+  ('AI Settings',      Icons.smart_toy_outlined),
+  ('Knowledge Base',   Icons.menu_book_outlined),
+  ('AI Phone Number',  Icons.phone_outlined),
+  ('Email Config',     Icons.email_outlined),
+  ('Team Members',     Icons.people_outline),
+  ('Notifications',    Icons.notifications_outlined),
+  ('Payment Options',  Icons.payments_outlined),
+  ('Billing',          Icons.credit_card_outlined),
+];
 
-  @override
+@override
   void initState() {
     super.initState();
     _loadBusiness();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final section = GoRouterState.of(context).uri.queryParameters['section'];
+    final idx = _sectionIndexFromName(section);
+    if (idx != _selectedSection) {
+      setState(() => _selectedSection = idx);
+    }
+  }
+
+  int _sectionIndexFromName(String? name) {
+    switch (name) {
+      case 'ai':       return 1;
+      case 'payments': return 7;
+      case 'billing':  return 8;
+      case 'team':     return 5;
+      case 'notifications': return 6;
+      default:         return 0;
+    }
   }
 
   Future<void> _loadBusiness() async {
@@ -471,6 +494,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
         return _NotificationsSection(
             business: _business, onSave: _updateBusiness);
       case 7:
+        return _PaymentOptionsSection(
+            business: _business, onSave: _updateBusiness);
+      case 8:
         return _BillingSection(
             business: _business, onRefresh: _loadBusiness);
       default:
@@ -3281,7 +3307,379 @@ class _PlanConfirmModal extends StatelessWidget {
     );
   }
 }
+// ─────────────────────────────────────────────
+//  PAYMENT OPTIONS SECTION
+//  Drop this into settings_screen.dart
+// ─────────────────────────────────────────────
 
+class _PaymentOptionsSection extends StatefulWidget {
+  final Map<String, dynamic> business;
+  final Future<void> Function(Map<String, dynamic>) onSave;
+  const _PaymentOptionsSection(
+      {required this.business, required this.onSave});
+
+  @override
+  State<_PaymentOptionsSection> createState() =>
+      _PaymentOptionsSectionState();
+}
+
+class _PaymentOptionsSectionState
+    extends State<_PaymentOptionsSection> {
+  late bool _stripeConnected;
+  late bool _paypalConnected;
+  late bool _venmoConnected;
+  late bool _squareConnected;
+  bool _saving = false;
+  String? _successMsg;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    final b = widget.business;
+    _stripeConnected = b['connected_stripe'] as bool? ?? false;
+    _paypalConnected = b['connected_paypal'] as bool? ?? false;
+    _venmoConnected  = b['connected_venmo']  as bool? ?? false;
+    _squareConnected = b['connected_square'] as bool? ?? false;
+  }
+
+  Future<void> _save() async {
+    setState(() { _saving = true; _error = null; _successMsg = null; });
+    try {
+      await widget.onSave({
+        'connected_stripe': _stripeConnected,
+        'connected_paypal': _paypalConnected,
+        'connected_venmo':  _venmoConnected,
+        'connected_square': _squareConnected,
+      });
+      setState(() { _successMsg = 'Payment settings saved.'; _saving = false; });
+    } catch (e) {
+      setState(() { _error = e.toString(); _saving = false; });
+    }
+  }
+
+  void _showComingSoon(String name) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('$name integration coming soon!'),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return _SectionShell(
+      title: 'Payment Options',
+      subtitle:
+          'Connect payment processors so you can accept payments from your leads and customers.',
+      onSave: _save,
+      saving: _saving,
+      successMsg: _successMsg,
+      error: _error,
+      child: Column(
+        children: [
+          // Info banner
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: AppTheme.brand.withValues(alpha: 0.05),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                  color: AppTheme.brand.withValues(alpha: 0.2)),
+            ),
+            child: const Row(children: [
+              Icon(Icons.info_outline, size: 16, color: AppTheme.brand),
+              SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Connect a payment processor to accept payments directly from leads. '
+                  'Toggle the switch to mark an integration as connected.',
+                  style: TextStyle(
+                      fontSize: 12, color: AppTheme.brand, height: 1.5),
+                ),
+              ),
+            ]),
+          ),
+          const SizedBox(height: 24),
+
+          // Stripe
+          _PaymentCard(
+            name: 'Stripe',
+            description:
+                'Accept credit cards, debit cards, and more. The most powerful payment platform for businesses.',
+            note:
+                'Recommended for high-volume businesses. Supports invoicing, subscriptions, and one-time payments.',
+            color: const Color(0xFF635BFF),
+            icon: _StripeIcon(),
+            isConnected: _stripeConnected,
+            onToggle: (v) => setState(() => _stripeConnected = v),
+            onConnect: () => _showComingSoon('Stripe Connect'),
+          ),
+          const SizedBox(height: 16),
+
+          // PayPal
+          _PaymentCard(
+            name: 'PayPal',
+            description:
+                'Send payment requests directly to leads via email or SMS. Widely trusted by consumers.',
+            note:
+                'Great for businesses whose customers prefer PayPal. Supports invoicing and payment links.',
+            color: const Color(0xFF003087),
+            icon: _PayPalIcon(),
+            isConnected: _paypalConnected,
+            onToggle: (v) => setState(() => _paypalConnected = v),
+            onConnect: () => _showComingSoon('PayPal'),
+          ),
+          const SizedBox(height: 16),
+
+          // Venmo
+          _PaymentCard(
+            name: 'Venmo',
+            description:
+                'Accept instant peer-to-peer payments. Popular with younger customers for quick transactions.',
+            note:
+                'Best for smaller, informal payments. Owned by PayPal. Business profiles available.',
+            color: const Color(0xFF008CFF),
+            icon: _VenmoIcon(),
+            isConnected: _venmoConnected,
+            onToggle: (v) => setState(() => _venmoConnected = v),
+            onConnect: () => _showComingSoon('Venmo'),
+          ),
+          const SizedBox(height: 16),
+
+          // Square
+          _PaymentCard(
+            name: 'Square',
+            description:
+                'Accept payments in-person and online. Great for field service businesses with mobile teams.',
+            note:
+                'Includes free POS hardware options, invoicing, and next-day deposits.',
+            color: const Color(0xFF1A1A1A),
+            icon: _SquareIcon(),
+            isConnected: _squareConnected,
+            onToggle: (v) => setState(() => _squareConnected = v),
+            onConnect: () => _showComingSoon('Square'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Payment Card ──────────────────────────────────────────────────────────────
+
+class _PaymentCard extends StatelessWidget {
+  final String name;
+  final String description;
+  final String note;
+  final Color color;
+  final Widget icon;
+  final bool isConnected;
+  final ValueChanged<bool> onToggle;
+  final VoidCallback onConnect;
+
+  const _PaymentCard({
+    required this.name,
+    required this.description,
+    required this.note,
+    required this.color,
+    required this.icon,
+    required this.isConnected,
+    required this.onToggle,
+    required this.onConnect,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 200),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: AppTheme.cardBg,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: isConnected ? color.withValues(alpha: 0.4) : AppTheme.borderColor,
+          width: isConnected ? 1.5 : 1,
+        ),
+        boxShadow: isConnected
+            ? [BoxShadow(color: color.withValues(alpha: 0.08), blurRadius: 12)]
+            : null,
+      ),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              // Logo
+              Container(
+                width: 52, height: 52,
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: color.withValues(alpha: 0.15)),
+                ),
+                child: Center(child: icon),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Text(name,
+                            style: const TextStyle(
+                                fontSize: 15,
+                                fontWeight: FontWeight.w700,
+                                color: AppTheme.textPrimary)),
+                        const SizedBox(width: 10),
+                        if (isConnected)
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF10B981).withValues(alpha: 0.1),
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            child: const Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.check_circle,
+                                    size: 11, color: Color(0xFF10B981)),
+                                SizedBox(width: 4),
+                                Text('Connected',
+                                    style: TextStyle(
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w600,
+                                        color: Color(0xFF10B981))),
+                              ],
+                            ),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 3),
+                    Text(description,
+                        style: const TextStyle(
+                            fontSize: 12,
+                            color: AppTheme.textSecondary,
+                            height: 1.4)),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 16),
+              // Toggle
+              Switch(
+                value: isConnected,
+                onChanged: onToggle,
+                activeColor: color,
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+            ],
+          ),
+          // Note
+          const SizedBox(height: 12),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: AppTheme.pageBg,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: AppTheme.borderColor),
+            ),
+            child: Row(children: [
+              Icon(Icons.lightbulb_outline, size: 13, color: color),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(note,
+                    style: const TextStyle(
+                        fontSize: 11,
+                        color: AppTheme.textSecondary,
+                        height: 1.4)),
+              ),
+              const SizedBox(width: 12),
+              MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: GestureDetector(
+                  onTap: onConnect,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 5),
+                    decoration: BoxDecoration(
+                      color: color.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: color.withValues(alpha: 0.3)),
+                    ),
+                    child: Text('Connect',
+                        style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            color: color)),
+                  ),
+                ),
+              ),
+            ]),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Payment brand icons (SVG-style using Flutter widgets) ─────────────────────
+
+class _StripeIcon extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return const Text('S',
+        style: TextStyle(
+            color: Color(0xFF635BFF),
+            fontSize: 24,
+            fontWeight: FontWeight.w900,
+            fontStyle: FontStyle.italic));
+  }
+}
+
+class _PayPalIcon extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return const Text('P',
+        style: TextStyle(
+            color: Color(0xFF003087),
+            fontSize: 24,
+            fontWeight: FontWeight.w900));
+  }
+}
+
+class _VenmoIcon extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return const Text('V',
+        style: TextStyle(
+            color: Color(0xFF008CFF),
+            fontSize: 24,
+            fontWeight: FontWeight.w900));
+  }
+}
+
+class _SquareIcon extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 28, height: 28,
+      decoration: BoxDecoration(
+        color: const Color(0xFF1A1A1A),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: const Center(
+        child: Text('□',
+            style: TextStyle(
+                color: Colors.white,
+                fontSize: 16,
+                fontWeight: FontWeight.w900)),
+      ),
+    );
+  }
+}
 // ─────────────────────────────────────────────
 //  SHARED WIDGETS
 // ─────────────────────────────────────────────

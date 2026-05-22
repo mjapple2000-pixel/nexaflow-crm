@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../theme/app_theme.dart';
 import '../widgets/clickable.dart';
+import '../widgets/nexaflow_support_bubble.dart';
 
 // Below this width, show the "please use desktop" screen
 const double _kMinDesktopWidth = 800;
@@ -20,13 +21,18 @@ class MainLayout extends StatelessWidget {
     }
 
     return Scaffold(
-      body: Row(
+  body: Stack(
+    children: [
+      Row(
         children: [
           AppNavBar(),
           Expanded(child: child),
         ],
       ),
-    );
+      const NexaFlowSupportBubble(),
+    ],
+  ),
+);
   }
 }
 
