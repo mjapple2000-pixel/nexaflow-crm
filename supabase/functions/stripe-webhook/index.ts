@@ -42,7 +42,7 @@ serve(async (req) => {
 
     const { data: business } = await supabase
       .from('businesses')
-      .select('id')
+      .select('id, owner_name')
       .eq('owner_email', customerEmail)
       .maybeSingle()
 
@@ -57,6 +57,16 @@ serve(async (req) => {
           subscription_id: subscriptionId,
         })
         .eq('id', business.id)
+
+      // Fire welcome email via Make
+      await fetch('https://hook.us2.make.com/217vu6f50oluiu9e01thnx4dutehbdne', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          to: customerEmail,
+          owner_name: business.owner_name ?? 'there',
+        }),
+      })
     }
   }
 
