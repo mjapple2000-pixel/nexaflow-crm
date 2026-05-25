@@ -1,122 +1,102 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme/app_theme.dart';
-import '../widgets/clickable.dart';
 
 // ─────────────────────────────────────────────
 //  MODELS
 // ─────────────────────────────────────────────
 
-class PipelineStage {
+class _Stage {
   final int id;
   final String name;
   final int sortOrder;
-  final Color color;
+  final String color;
 
-  const PipelineStage({
-    required this.id,
-    required this.name,
-    required this.sortOrder,
-    required this.color,
-  });
+  _Stage({required this.id, required this.name,
+      required this.sortOrder, required this.color});
 
-  static const _fallbackColors = [
-    Color(0xFF6366F1),
-    Color(0xFF3B82F6),
-    Color(0xFFF59E0B),
-    Color(0xFF8B5CF6),
-    Color(0xFF10B981),
-    Color(0xFFEF4444),
-  ];
+  factory _Stage.fromJson(Map<String, dynamic> j) => _Stage(
+    id: (j['id'] as num).toInt(),
+    name: j['stage_name'] as String? ?? 'Unknown',
+    sortOrder: (j['sort_order'] as num?)?.toInt() ?? 0,
+    color: j['color'] as String? ?? '#6C63FF',
+  );
 
-  factory PipelineStage.fromJson(Map<String, dynamic> json, int index) {
-    Color color = _fallbackColors[index % _fallbackColors.length];
-    final colorStr = json['color'] as String?;
-    if (colorStr != null && colorStr.startsWith('#')) {
-      try {
-        color = Color(int.parse('FF${colorStr.substring(1)}', radix: 16));
-      } catch (_) {}
-    }
-    return PipelineStage(
-      id: json['id'] as int,
-      name: json['stage_name'] as String,
-      sortOrder: json['sort_order'] as int? ?? 0,
-      color: color,
-    );
+  Color get dartColor {
+    try {
+      final hex = color.replaceFirst('#', '');
+      return Color(int.parse('FF$hex', radix: 16));
+    } catch (_) { return AppTheme.brand; }
   }
 }
 
-class Deal {
+class _Deal {
   final int id;
   int stageId;
   final String name;
-  final String? contactName;
   final double value;
   final String status;
-  final DateTime? expectedClose;
-  final DateTime createdAt;
+  final String? contactName;
+  final String? assignedTo;
   final String? notes;
+  final DateTime? closeDate;
+  final DateTime? createdAt;
 
-  Deal({
-    required this.id,
-    required this.stageId,
-    required this.name,
-    this.contactName,
-    required this.value,
-    required this.status,
-    this.expectedClose,
-    required this.createdAt,
-    this.notes,
-  });
+  _Deal({required this.id, required this.stageId, required this.name,
+    required this.value, required this.status, this.contactName,
+    this.assignedTo, this.notes, this.closeDate, this.createdAt});
 
-  factory Deal.fromJson(Map<String, dynamic> json) {
-    return Deal(
-      id: json['id'] as int,
-      stageId: json['stage_id'] as int,
-      name: json['deal_name'] as String? ?? 'Untitled Deal',
-      contactName: json['contacts'] != null
-          ? '${json['contacts']['first_name'] ?? ''} ${json['contacts']['last_name'] ?? ''}'
-              .trim()
-          : null,
-      value: (json['value'] as num?)?.toDouble() ?? 0.0,
-      status: json['status'] as String? ?? 'open',
-      expectedClose: json['expected_close'] != null
-          ? DateTime.tryParse(json['expected_close'] as String)
-          : null,
-      createdAt: DateTime.parse(json['created_at'] as String),
-      notes: json['notes'] as String?,
+  factory _Deal.fromJson(Map<String, dynamic> j) {
+    // Contact name is stored in notes as "Contact: Name\n..." 
+    String? contactName;
+    final notesField = j['notes'] as String? ?? '';
+    if (notesField.startsWith('Contact: ')) {
+      final firstLine = notesField.split('\n').first;
+      contactName = firstLine.replaceFirst('Contact: ', '');
+    }
+    return _Deal(
+      id: (j['id'] as num).toInt(),
+      stageId: (j['stage_id'] as num).toInt(),
+      name: j['deal_name'] as String? ?? 'Untitled',
+      value: (j['value'] as num?)?.toDouble() ?? 0,
+      status: j['status'] as String? ?? 'open',
+      contactName: contactName,
+      assignedTo: j['assigned_to'] as String?,
+      notes: j['notes'] as String?,
+      closeDate: j['expected_close'] != null
+          ? DateTime.tryParse(j['expected_close'] as String) : null,
+      createdAt: j['created_at'] != null
+          ? DateTime.tryParse(j['created_at'] as String) : null,
     );
   }
 
-  int get daysInStage => DateTime.now().difference(createdAt).inDays;
-
-  Color get statusColor {
-    switch (status.toLowerCase()) {
-      case 'won':
-        return const Color(0xFF10B981);
-      case 'lost':
-        return const Color(0xFFEF4444);
-      default:
-        return const Color(0xFF6366F1);
-    }
+  String get formattedValue {
+    if (value >= 1000000) return '\$${(value / 1000000).toStringAsFixed(1)}M';
+    if (value >= 1000) return '\$${(value / 1000).toStringAsFixed(1)}K';
+    return '\$${value.toStringAsFixed(0)}';
   }
 
-  IconData get statusIcon {
-    switch (status.toLowerCase()) {
-      case 'won':
-        return Icons.check_circle_outline_rounded;
-      case 'lost':
-        return Icons.cancel_outlined;
-      default:
-        return Icons.radio_button_unchecked_rounded;
-    }
+  int get daysInStage {
+    if (createdAt == null) return 0;
+    return DateTime.now().difference(createdAt!).inDays;
   }
-}
 
-class _Contact {
-  final int id;
-  final String name;
-  const _Contact({required this.id, required this.name});
+  bool get isClosingSoon {
+    if (closeDate == null) return false;
+    final diff = closeDate!.difference(DateTime.now()).inDays;
+    return diff >= 0 && diff <= 7;
+  }
+
+  bool get isOverdue {
+    if (closeDate == null) return false;
+    return closeDate!.isBefore(DateTime.now());
+  }
+
+  Color get closeDateColor {
+    if (isOverdue) return const Color(0xFFEF4444);
+    if (isClosingSoon) return const Color(0xFFF59E0B);
+    return AppTheme.textSecondary;
+  }
 }
 
 // ─────────────────────────────────────────────
@@ -125,753 +105,628 @@ class _Contact {
 
 class PipelinesScreen extends StatefulWidget {
   const PipelinesScreen({super.key});
-
   @override
   State<PipelinesScreen> createState() => _PipelinesScreenState();
 }
 
 class _PipelinesScreenState extends State<PipelinesScreen> {
-  final _supabase = Supabase.instance.client;
+  final _db = Supabase.instance.client;
 
-  List<PipelineStage> _stages = [];
-  Map<int, List<Deal>> _dealsByStage = {};
-  List<_Contact> _contacts = [];
   bool _loading = true;
   String? _error;
+  int? _businessId;
 
-  static const _defaultStages = [
-    {'stage_name': 'Lead', 'sort_order': 0, 'color': '#6366F1', 'is_default': true, 'is_active': true},
-    {'stage_name': 'Contacted', 'sort_order': 1, 'color': '#3B82F6', 'is_default': false, 'is_active': true},
-    {'stage_name': 'Qualified', 'sort_order': 2, 'color': '#F59E0B', 'is_default': false, 'is_active': true},
-    {'stage_name': 'Proposal Sent', 'sort_order': 3, 'color': '#8B5CF6', 'is_default': false, 'is_active': true},
-    {'stage_name': 'Won', 'sort_order': 4, 'color': '#10B981', 'is_default': false, 'is_active': true},
-    {'stage_name': 'Lost', 'sort_order': 5, 'color': '#EF4444', 'is_default': false, 'is_active': true},
-  ];
+  List<_Stage> _stages = [];
+  List<_Deal> _deals = [];
+  int? _draggedDealId;
+  int? _hoveredStageId;
 
   @override
   void initState() {
     super.initState();
-    _loadData();
+    _load();
   }
 
-  Future<void> _loadData() async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
+  // ── DATA ──────────────────────────────────────────────────────────────────
+
+  Future<void> _load() async {
+    if (!mounted) return;
+    setState(() { _loading = true; _error = null; });
     try {
-      await Future.wait([_loadStages(), _loadContacts()]);
-      await _loadDeals();
+      final user = _db.auth.currentUser;
+      if (user == null) return;
+      final profile = await _db.from('profiles').select('business_id')
+          .eq('user_id', user.id).maybeSingle();
+      if (!mounted) return;
+      if (profile == null) return;
+      _businessId = (profile['business_id'] as num).toInt();
+
+      final stagesData = await _db.from('pipeline_stages').select().order('sort_order');
+      if (!mounted) return;
+      final dealsData = await _db.from('deals')
+          .select('*')
+          .eq('business_id', _businessId!)
+          .order('sort_order');
+      if (!mounted) return;
+
+      setState(() {
+        _stages = (stagesData as List).map((j) => _Stage.fromJson(j)).toList();
+        _deals = (dealsData as List).map((j) => _Deal.fromJson(j)).toList();
+      });
     } catch (e) {
+      if (!mounted) return;
       setState(() => _error = e.toString());
     } finally {
       if (mounted) setState(() => _loading = false);
     }
   }
 
-  Future<void> _loadStages() async {
-    final res = await _supabase
-        .from('pipeline_stages')
-        .select()
-        .eq('is_active', true)
-        .order('sort_order');
+  List<_Deal> _dealsForStage(int stageId) =>
+      _deals.where((d) => d.stageId == stageId).toList();
 
-    if ((res as List).isEmpty) {
-      for (final s in _defaultStages) {
-        await _supabase.from('pipeline_stages').insert(s);
-      }
-      final seeded = await _supabase
-          .from('pipeline_stages')
-          .select()
-          .eq('is_active', true)
-          .order('sort_order');
-      _stages = (seeded as List)
-          .asMap()
-          .entries
-          .map((e) => PipelineStage.fromJson(e.value, e.key))
-          .toList()
-        ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
-    } else {
-      _stages = res
-          .asMap()
-          .entries
-          .map((e) => PipelineStage.fromJson(e.value, e.key))
-          .toList()
-        ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
-    }
-  }
+  double _valueForStage(int stageId) =>
+      _dealsForStage(stageId).fold(0, (sum, d) => sum + d.value);
 
-  Future<void> _loadContacts() async {
-    final res = await _supabase
-        .from('contacts')
-        .select('id, first_name, last_name')
-        .order('first_name');
-    _contacts = (res as List)
-        .map((e) => _Contact(
-              id: e['id'] as int,
-              name: '${e['first_name'] ?? ''} ${e['last_name'] ?? ''}'.trim(),
-            ))
-        .toList();
-  }
+  int get _totalDeals => _deals.length;
+  double get _totalValue => _deals.fold(0, (sum, d) => sum + d.value);
 
-  Future<void> _loadDeals() async {
-    final res = await _supabase
-        .from('deals')
-        .select('*, contacts(first_name, last_name)')
-        .order('created_at', ascending: false);
-
-    final deals = (res as List).map((e) => Deal.fromJson(e)).toList();
-
-    final byStage = <int, List<Deal>>{};
-    for (final s in _stages) {
-      byStage[s.id] = [];
-    }
-    for (final d in deals) {
-      byStage.putIfAbsent(d.stageId, () => []).add(d);
-    }
-    if (mounted) setState(() => _dealsByStage = byStage);
-  }
-
-  Future<void> _moveDeal(Deal deal, int newStageId) async {
-    if (deal.stageId == newStageId) return;
-    final oldStageId = deal.stageId;
-
-    setState(() {
-      _dealsByStage[oldStageId]?.remove(deal);
-      deal.stageId = newStageId;
-      _dealsByStage.putIfAbsent(newStageId, () => []).insert(0, deal);
-    });
-
-    try {
-      await _supabase
-          .from('deals')
-          .update({'stage_id': newStageId}).eq('id', deal.id);
-    } catch (e) {
-      await _loadDeals();
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-              content: Text('Failed to move deal: $e'),
-              backgroundColor: Colors.red),
-        );
-      }
-    }
-  }
-
-  Future<void> _addDeal(Map<String, dynamic> data) async {
-    try {
-      await _supabase.from('deals').insert(data);
-      await _loadDeals();
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-              content: Text('Failed to add deal: $e'),
-              backgroundColor: Colors.red),
-        );
-      }
-    }
-  }
-
-  Future<void> _deleteDeal(Deal deal) async {
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        backgroundColor: AppTheme.cardBg,
-        title: const Text('Delete Deal',
-            style: TextStyle(color: AppTheme.textPrimary)),
-        content: Text('Delete "${deal.name}"? This cannot be undone.',
-            style: const TextStyle(color: AppTheme.textSecondary)),
-        actions: [
-          MouseRegion(
-            cursor: SystemMouseCursors.click,
-            child: TextButton(
-                onPressed: () => Navigator.pop(context, false),
-                child: const Text('Cancel')),
-          ),
-          MouseRegion(
-            cursor: SystemMouseCursors.click,
-            child: TextButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Delete', style: TextStyle(color: Colors.red)),
-            ),
-          ),
-        ],
-      ),
-    );
-    if (confirm != true) return;
-    setState(() => _dealsByStage[deal.stageId]?.remove(deal));
-    await _supabase.from('deals').delete().eq('id', deal.id);
-  }
-
-  void _showAddDealModal({int? prefilledStageId}) {
-    showDialog(
-      context: context,
-      builder: (_) => _AddDealModal(
-        stages: _stages,
-        contacts: _contacts,
-        prefilledStageId:
-            prefilledStageId ?? (_stages.isNotEmpty ? _stages.first.id : null),
-        onSave: _addDeal,
-      ),
-    );
-  }
-
-  double _stageTotal(int stageId) =>
-      (_dealsByStage[stageId] ?? []).fold(0.0, (s, d) => s + d.value);
-
-  String _fmt(double v) {
+  String _fmtTotal(double v) {
     if (v >= 1000000) return '\$${(v / 1000000).toStringAsFixed(1)}M';
     if (v >= 1000) return '\$${(v / 1000).toStringAsFixed(1)}K';
     return '\$${v.toStringAsFixed(0)}';
   }
+
+  // ── DRAG & DROP ───────────────────────────────────────────────────────────
+
+  Future<void> _moveDeal(_Deal deal, int newStageId) async {
+    if (deal.stageId == newStageId) return;
+    final oldStageId = deal.stageId;
+    if (mounted) setState(() => deal.stageId = newStageId);
+    try {
+      await _db.from('deals').update({'stage_id': newStageId}).eq('id', deal.id);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => deal.stageId = oldStageId);
+      _snack('Error moving deal: $e');
+    }
+  }
+
+  // ── DELETE ────────────────────────────────────────────────────────────────
+
+  Future<void> _deleteDeal(_Deal deal) async {
+    final ok = await showDialog<bool>(context: context, builder: (ctx) => AlertDialog(
+      backgroundColor: AppTheme.cardBg,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      title: const Text('Delete Deal?',
+          style: TextStyle(color: AppTheme.textPrimary, fontWeight: FontWeight.w700)),
+      content: Text('Delete "${deal.name}"? This cannot be undone.',
+          style: const TextStyle(color: AppTheme.textSecondary)),
+      actions: [
+        TextButton(onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel', style: TextStyle(color: AppTheme.textSecondary))),
+        ElevatedButton(onPressed: () => Navigator.of(ctx).pop(true),
+            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.error,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+            child: const Text('Delete')),
+      ],
+    ));
+    if (ok != true) return;
+    try {
+      await _db.from('deals').delete().eq('id', deal.id);
+      if (!mounted) return;
+      setState(() => _deals.removeWhere((d) => d.id == deal.id));
+    } catch (e) {
+      if (!mounted) return;
+      _snack('Error: $e');
+    }
+  }
+
+  // ── HELPERS ───────────────────────────────────────────────────────────────
+
+  void _snack(String msg) => ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(content: Text(msg), backgroundColor: AppTheme.brand,
+        duration: const Duration(seconds: 2)));
+
+  String _fmtDate(DateTime dt) {
+    const m = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    return '${m[dt.month]} ${dt.day}';
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  //  BUILD
+  // ─────────────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppTheme.pageBg,
-      body: Column(
-        children: [
-          _buildTopBar(),
-          Expanded(child: _buildBody()),
-        ],
-      ),
+      body: Column(children: [
+        _buildTopBar(),
+        Expanded(child: _loading
+            ? const Center(child: CircularProgressIndicator(color: AppTheme.brand))
+            : _error != null ? _buildError()
+            : _stages.isEmpty ? _buildEmpty()
+            : _buildBoard()),
+      ]),
     );
   }
+
+  // ── TOP BAR ───────────────────────────────────────────────────────────────
 
   Widget _buildTopBar() {
-    final totalValue = _dealsByStage.values
-        .expand((d) => d)
-        .fold(0.0, (s, d) => s + d.value);
-    final totalDeals = _dealsByStage.values.fold(0, (s, l) => s + l.length);
-
     return Container(
-      height: 56,
-      padding: const EdgeInsets.symmetric(horizontal: 24),
+      padding: const EdgeInsets.fromLTRB(24, 14, 24, 14),
       decoration: const BoxDecoration(
         color: AppTheme.cardBg,
-        border: Border(bottom: BorderSide(color: AppTheme.borderColor)),
-      ),
-      child: Row(
-        children: [
-          const Text('Pipelines',
-              style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                  color: AppTheme.textPrimary)),
-          const SizedBox(width: 16),
-          if (!_loading) ...[
-            _statChip('$totalDeals deals', Icons.handshake_outlined),
-            const SizedBox(width: 8),
-            _statChip(_fmt(totalValue), Icons.attach_money_rounded),
-          ],
-          const Spacer(),
-          MouseRegion(
-            cursor: SystemMouseCursors.click,
-            child: IconButton(
-              onPressed: _loadData,
-              icon: const Icon(Icons.refresh_rounded,
-                  size: 18, color: AppTheme.textSecondary),
-              tooltip: 'Refresh',
-            ),
+        border: Border(bottom: BorderSide(color: AppTheme.borderColor))),
+      child: Row(children: [
+        const Text('Pipelines', style: TextStyle(
+            fontSize: 20, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+        const SizedBox(width: 16),
+        // Stats
+        _statPill(Icons.handshake_outlined, '$_totalDeals deals',
+            const Color(0xFF6C63FF), const Color(0xFFEEEDFF)),
+        const SizedBox(width: 8),
+        _statPill(Icons.attach_money_rounded, _fmtTotal(_totalValue),
+            const Color(0xFF10B981), const Color(0xFFE8FAF3)),
+        const Spacer(),
+        // Refresh
+        MouseRegion(cursor: SystemMouseCursors.click,
+          child: GestureDetector(onTap: _load,
+            child: Container(width: 36, height: 36,
+              decoration: BoxDecoration(color: AppTheme.pageBg,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppTheme.borderColor)),
+              child: const Icon(Icons.refresh_rounded,
+                  size: 16, color: AppTheme.textSecondary)))),
+        const SizedBox(width: 8),
+        // Add Deal
+        ElevatedButton.icon(
+          onPressed: () => _showAddDeal(null),
+          icon: const Icon(Icons.add, size: 16),
+          label: const Text('Add Deal'),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: AppTheme.brand, foregroundColor: Colors.white,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
           ),
-          const SizedBox(width: 8),
-          MouseRegion(
-            cursor: SystemMouseCursors.click,
-            child: ElevatedButton.icon(
-              onPressed: _showAddDealModal,
-              icon: const Icon(Icons.add, size: 16),
-              label: const Text('Add Deal'),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _statChip(String label, IconData icon) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-      decoration: BoxDecoration(
-        color: AppTheme.brand.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 13, color: AppTheme.brand),
-          const SizedBox(width: 4),
-          Text(label,
-              style: const TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: AppTheme.brand)),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildBody() {
-    if (_loading) {
-      return const Center(child: CircularProgressIndicator());
-    }
-    if (_error != null) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.error_outline, color: Colors.red, size: 48),
-            const SizedBox(height: 12),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 32),
-              child: Text(_error!,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(color: AppTheme.textSecondary)),
-            ),
-            const SizedBox(height: 16),
-            MouseRegion(
-              cursor: SystemMouseCursors.click,
-              child: ElevatedButton(
-                  onPressed: _loadData, child: const Text('Retry')),
-            ),
-          ],
         ),
-      );
-    }
-
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final colWidth = ((constraints.maxWidth - 32) / _stages.length)
-            .clamp(180.0, 260.0);
-        return ListView.builder(
-          scrollDirection: Axis.horizontal,
-          padding: const EdgeInsets.all(16),
-          itemCount: _stages.length,
-          itemBuilder: (context, i) => _buildStageColumn(_stages[i], colWidth),
-        );
-      },
+      ]),
     );
   }
 
-  Widget _buildStageColumn(PipelineStage stage, double colWidth) {
-    final deals = _dealsByStage[stage.id] ?? [];
-    final total = _stageTotal(stage.id);
+  Widget _statPill(IconData icon, String label, Color color, Color bg) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(20)),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Icon(icon, size: 13, color: color),
+        const SizedBox(width: 5),
+        Text(label, style: TextStyle(
+            color: color, fontSize: 12, fontWeight: FontWeight.w600)),
+      ]),
+    );
+  }
 
-    return DragTarget<Deal>(
-      onWillAcceptWithDetails: (d) => d.data.stageId != stage.id,
-      onAcceptWithDetails: (d) => _moveDeal(d.data, stage.id),
-      builder: (context, candidateData, _) {
-        final isHovered = candidateData.isNotEmpty;
-        return AnimatedContainer(
-          duration: const Duration(milliseconds: 200),
-          width: colWidth,
-          margin: const EdgeInsets.only(right: 12),
-          decoration: BoxDecoration(
+  // ── BOARD ─────────────────────────────────────────────────────────────────
+
+  Widget _buildBoard() {
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      padding: const EdgeInsets.all(20),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: _stages.map((stage) => _buildColumn(stage)).toList(),
+      ),
+    );
+  }
+
+  Widget _buildColumn(_Stage stage) {
+    final deals = _dealsForStage(stage.id);
+    final stageValue = _valueForStage(stage.id);
+    final isHovered = _hoveredStageId == stage.id;
+
+    return DragTarget<_Deal>(
+      onWillAcceptWithDetails: (details) {
+        setState(() => _hoveredStageId = stage.id);
+        return details.data.stageId != stage.id;
+      },
+      onLeave: (_) => setState(() => _hoveredStageId = null),
+      onAcceptWithDetails: (details) {
+        setState(() => _hoveredStageId = null);
+        _moveDeal(details.data, stage.id);
+      },
+      builder: (ctx, candidates, rejected) => Container(
+        width: 260,
+        margin: const EdgeInsets.only(right: 12),
+        decoration: BoxDecoration(
+          color: isHovered
+              ? stage.dartColor.withOpacity(0.04) : AppTheme.pageBg,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
             color: isHovered
-                ? stage.color.withValues(alpha: 0.08)
-                : AppTheme.cardBg.withValues(alpha: 0.6),
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(
-              color: isHovered ? stage.color : AppTheme.borderColor,
-              width: isHovered ? 2 : 1,
+                ? stage.dartColor.withOpacity(0.3) : AppTheme.borderColor,
+            width: isHovered ? 2 : 1,
+          ),
+        ),
+        child: Column(children: [
+          // Column header
+          Container(
+            padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
+            decoration: BoxDecoration(
+              color: AppTheme.cardBg,
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(11)),
+              border: Border(bottom: BorderSide(color: AppTheme.borderColor)),
             ),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Container(
-                padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
-                decoration: const BoxDecoration(
-                  border:
-                      Border(bottom: BorderSide(color: AppTheme.borderColor)),
+            child: Column(children: [
+              Row(children: [
+                // Stage color dot
+                Container(width: 10, height: 10,
+                    decoration: BoxDecoration(
+                        color: stage.dartColor, shape: BoxShape.circle)),
+                const SizedBox(width: 8),
+                Expanded(child: Text(stage.name, style: const TextStyle(
+                    fontSize: 13, fontWeight: FontWeight.w700,
+                    color: AppTheme.textPrimary))),
+                // Deal count badge
+                Container(
+                  width: 22, height: 22,
+                  decoration: BoxDecoration(
+                      color: stage.dartColor.withOpacity(0.12),
+                      borderRadius: BorderRadius.circular(6)),
+                  child: Center(child: Text('${deals.length}',
+                    style: TextStyle(color: stage.dartColor,
+                        fontSize: 11, fontWeight: FontWeight.w700))),
                 ),
-                child: Row(
-                  children: [
-                    Container(
-                      width: 10,
-                      height: 10,
+                const SizedBox(width: 6),
+                // Add deal to stage
+                GestureDetector(
+                  onTap: () => _showAddDeal(stage.id),
+                  child: MouseRegion(cursor: SystemMouseCursors.click,
+                    child: Container(width: 22, height: 22,
                       decoration: BoxDecoration(
-                          color: stage.color, shape: BoxShape.circle),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(stage.name,
-                          style: const TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w700,
-                              color: AppTheme.textPrimary)),
-                    ),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 7, vertical: 2),
-                      decoration: BoxDecoration(
-                        color: stage.color.withValues(alpha: 0.15),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Text('${deals.length}',
-                          style: TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w700,
-                              color: stage.color)),
-                    ),
-                    const SizedBox(width: 6),
-                    Clickable(
-                      onTap: () =>
-                          _showAddDealModal(prefilledStageId: stage.id),
-                      child: Container(
-                        width: 24,
-                        height: 24,
-                        decoration: BoxDecoration(
-                          color: stage.color.withValues(alpha: 0.1),
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                        child: Icon(Icons.add, size: 14, color: stage.color),
-                      ),
-                    ),
-                  ],
+                          color: stage.dartColor.withOpacity(0.12),
+                          borderRadius: BorderRadius.circular(6)),
+                      child: Icon(Icons.add, size: 14, color: stage.dartColor))),
                 ),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(14, 8, 14, 4),
-                child: Text(
-                  _fmt(total),
-                  style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      color: stage.color.withValues(alpha: 0.8)),
-                ),
-              ),
-              Expanded(
-                child: deals.isEmpty
-                    ? Center(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(Icons.inbox_outlined,
-                                size: 28,
-                                color: AppTheme.textSecondary
-                                    .withValues(alpha: 0.4)),
-                            const SizedBox(height: 6),
-                            Text('Drop deals here',
-                                style: TextStyle(
-                                    fontSize: 12,
-                                    color: AppTheme.textSecondary
-                                        .withValues(alpha: 0.5))),
-                          ],
-                        ),
-                      )
-                    : ListView.builder(
-                        padding: const EdgeInsets.fromLTRB(10, 6, 10, 10),
-                        itemCount: deals.length,
-                        itemBuilder: (context, i) =>
-                            _buildDealCard(deals[i], stage),
-                      ),
-              ),
-            ],
+              ]),
+              const SizedBox(height: 6),
+              // Stage value
+              Align(alignment: Alignment.centerLeft,
+                child: Text(_fmtTotal(stageValue),
+                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600,
+                      color: stage.dartColor))),
+            ]),
           ),
-        );
-      },
+
+          // Deal cards
+          Flexible(
+            child: deals.isEmpty
+                ? _buildEmptyColumn(stage)
+                : ListView.builder(
+                    shrinkWrap: true,
+                    padding: const EdgeInsets.all(10),
+                    itemCount: deals.length,
+                    itemBuilder: (_, i) => _buildDealCard(deals[i], stage),
+                  ),
+          ),
+        ]),
+      ),
     );
   }
 
-  Widget _buildDealCard(Deal deal, PipelineStage stage) {
-    return Draggable<Deal>(
+  Widget _buildEmptyColumn(_Stage stage) {
+    return Container(
+      height: 120,
+      margin: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: stage.dartColor.withOpacity(0.04),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+            color: stage.dartColor.withOpacity(0.15),
+            style: BorderStyle.solid),
+      ),
+      child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+        Icon(Icons.inbox_outlined, size: 24,
+            color: stage.dartColor.withOpacity(0.3)),
+        const SizedBox(height: 6),
+        Text('Drop deals here', style: TextStyle(
+            color: stage.dartColor.withOpacity(0.4), fontSize: 12)),
+      ])),
+    );
+  }
+
+  Widget _buildDealCard(_Deal deal, _Stage stage) {
+    return Draggable<_Deal>(
       data: deal,
+      onDragStarted: () => setState(() => _draggedDealId = deal.id),
+      onDragEnd: (_) => setState(() { _draggedDealId = null; _hoveredStageId = null; }),
       feedback: Material(
         color: Colors.transparent,
-        child: Opacity(
-          opacity: 0.85,
-          child: SizedBox(
-            width: 220,
-            child: _DealCardWidget(
-                deal: deal, stageColor: stage.color, onDelete: null),
-          ),
-        ),
+        child: Opacity(opacity: 0.85,
+          child: SizedBox(width: 240, child: _dealCardContent(deal, stage, dragging: true))),
       ),
-      childWhenDragging: Opacity(
-        opacity: 0.3,
-        child: _DealCardWidget(
-            deal: deal, stageColor: stage.color, onDelete: null),
-      ),
+      childWhenDragging: Opacity(opacity: 0.3,
+        child: _dealCardContent(deal, stage)),
       child: Padding(
         padding: const EdgeInsets.only(bottom: 8),
-        child: _DealCardWidget(
-          deal: deal,
-          stageColor: stage.color,
-          onDelete: () => _deleteDeal(deal),
-        ),
-      ),
-    );
-  }
-}
-
-// ─────────────────────────────────────────────
-//  DEAL CARD WIDGET
-// ─────────────────────────────────────────────
-
-class _DealCardWidget extends StatefulWidget {
-  final Deal deal;
-  final Color stageColor;
-  final VoidCallback? onDelete;
-
-  const _DealCardWidget({
-    required this.deal,
-    required this.stageColor,
-    this.onDelete,
-  });
-
-  @override
-  State<_DealCardWidget> createState() => _DealCardWidgetState();
-}
-
-class _DealCardWidgetState extends State<_DealCardWidget> {
-  bool _hovered = false;
-
-  String _fmtVal(double v) {
-    if (v >= 1000000) return '\$${(v / 1000000).toStringAsFixed(1)}M';
-    if (v >= 1000) return '\$${(v / 1000).toStringAsFixed(1)}K';
-    return '\$${v.toStringAsFixed(0)}';
-  }
-
-  String _fmtDate(DateTime d) {
-    const months = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
-    ];
-    return '${months[d.month - 1]} ${d.day}';
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final deal = widget.deal;
-    final isClosingSoon = deal.expectedClose != null &&
-        deal.expectedClose!.difference(DateTime.now()).inDays <= 7 &&
-        deal.expectedClose!.isAfter(DateTime.now());
-    final isOverdue = deal.expectedClose != null &&
-        deal.expectedClose!.isBefore(DateTime.now());
-
-    return MouseRegion(
-      cursor: SystemMouseCursors.grab,
-      onEnter: (_) => setState(() => _hovered = true),
-      onExit: (_) => setState(() => _hovered = false),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 150),
-        decoration: BoxDecoration(
-          color: _hovered ? AppTheme.cardBg : AppTheme.pageBg,
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(
-            color: _hovered
-                ? widget.stageColor.withValues(alpha: 0.4)
-                : AppTheme.borderColor,
+        child: MouseRegion(
+          cursor: SystemMouseCursors.grab,
+          child: GestureDetector(
+            onTap: () => _showDealDetail(deal, stage),
+            child: _dealCardContent(deal, stage),
           ),
-          boxShadow: _hovered
-              ? [
-                  BoxShadow(
-                      color: widget.stageColor.withValues(alpha: 0.12),
-                      blurRadius: 8,
-                      offset: const Offset(0, 3))
-                ]
-              : [],
         ),
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(deal.name,
-                      style: const TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
-                          color: AppTheme.textPrimary),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis),
-                ),
-                if (_hovered && widget.onDelete != null)
-                  Clickable(
-                    onTap: widget.onDelete,
-                    child: const Icon(Icons.close_rounded,
-                        size: 14, color: AppTheme.textSecondary),
-                  ),
-              ],
-            ),
-            if (deal.contactName?.isNotEmpty == true) ...[
-              const SizedBox(height: 5),
-              Row(
-                children: [
-                  const Icon(Icons.person_outline_rounded,
-                      size: 12, color: AppTheme.textSecondary),
-                  const SizedBox(width: 4),
-                  Expanded(
-                    child: Text(deal.contactName!,
-                        style: const TextStyle(
-                            fontSize: 12, color: AppTheme.textSecondary),
-                        overflow: TextOverflow.ellipsis),
-                  ),
-                ],
-              ),
+      ),
+    );
+  }
+
+  Widget _dealCardContent(_Deal deal, _Stage stage, {bool dragging = false}) {
+    return Container(
+      decoration: BoxDecoration(
+        color: AppTheme.cardBg,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppTheme.borderColor),
+        boxShadow: dragging ? [BoxShadow(
+          color: Colors.black.withOpacity(0.12),
+          blurRadius: 12, offset: const Offset(0, 4))] : null,
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        // Top color bar
+        Container(height: 3,
+          decoration: BoxDecoration(
+            color: stage.dartColor,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(9)))),
+        Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            // Deal name + value
+            Row(children: [
+              Expanded(child: Text(deal.name, style: const TextStyle(
+                  fontSize: 13, fontWeight: FontWeight.w600,
+                  color: AppTheme.textPrimary), maxLines: 2,
+                  overflow: TextOverflow.ellipsis)),
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFE8FAF3),
+                  borderRadius: BorderRadius.circular(6)),
+                child: Text(deal.formattedValue, style: const TextStyle(
+                    color: Color(0xFF059669), fontSize: 12,
+                    fontWeight: FontWeight.w700))),
+            ]),
+
+            // Contact
+            if (deal.contactName != null) ...[
+              const SizedBox(height: 6),
+              Row(children: [
+                const Icon(Icons.person_outline, size: 12, color: AppTheme.textSecondary),
+                const SizedBox(width: 4),
+                Text(deal.contactName!, style: const TextStyle(
+                    color: AppTheme.textSecondary, fontSize: 11),
+                    overflow: TextOverflow.ellipsis),
+              ]),
             ],
+
+            // Assigned to
+            if (deal.assignedTo != null) ...[
+              const SizedBox(height: 4),
+              Row(children: [
+                const Icon(Icons.person_pin_outlined, size: 12, color: AppTheme.textSecondary),
+                const SizedBox(width: 4),
+                Text(deal.assignedTo!, style: const TextStyle(
+                    color: AppTheme.textSecondary, fontSize: 11)),
+              ]),
+            ],
+
             const SizedBox(height: 8),
-            Row(
-              children: [
-                Text(_fmtVal(deal.value),
-                    style: TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w700,
-                        color: widget.stageColor)),
-                const Spacer(),
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: deal.statusColor.withValues(alpha: 0.12),
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(deal.statusIcon, size: 10, color: deal.statusColor),
-                      const SizedBox(width: 3),
-                      Text(deal.status.toUpperCase(),
-                          style: TextStyle(
-                              fontSize: 9,
-                              fontWeight: FontWeight.w800,
-                              color: deal.statusColor,
-                              letterSpacing: 0.5)),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Icon(Icons.schedule_rounded,
-                    size: 11,
-                    color: AppTheme.textSecondary.withValues(alpha: 0.6)),
+            // Bottom row: days in stage + close date + delete
+            Row(children: [
+              // Days in stage
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: AppTheme.pageBg,
+                  borderRadius: BorderRadius.circular(4),
+                  border: Border.all(color: AppTheme.borderColor)),
+                child: Text('${deal.daysInStage}d', style: const TextStyle(
+                    color: AppTheme.textSecondary, fontSize: 10,
+                    fontWeight: FontWeight.w500))),
+              const SizedBox(width: 6),
+
+              // Close date
+              if (deal.closeDate != null) ...[
+                Icon(Icons.calendar_today_outlined,
+                    size: 11, color: deal.closeDateColor),
                 const SizedBox(width: 3),
-                Text('${deal.daysInStage}d in stage',
-                    style: TextStyle(
-                        fontSize: 11,
-                        color: AppTheme.textSecondary.withValues(alpha: 0.7))),
-                const Spacer(),
-                if (deal.expectedClose != null)
-                  Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: isOverdue
-                          ? const Color(0xFFEF4444).withValues(alpha: 0.12)
-                          : isClosingSoon
-                              ? const Color(0xFFF59E0B).withValues(alpha: 0.12)
-                              : Colors.transparent,
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          isOverdue
-                              ? Icons.warning_amber_rounded
-                              : Icons.calendar_today_rounded,
-                          size: 10,
-                          color: isOverdue
-                              ? const Color(0xFFEF4444)
-                              : isClosingSoon
-                                  ? const Color(0xFFF59E0B)
-                                  : AppTheme.textSecondary
-                                      .withValues(alpha: 0.6),
-                        ),
-                        const SizedBox(width: 3),
-                        Text(_fmtDate(deal.expectedClose!),
-                            style: TextStyle(
-                                fontSize: 10,
-                                fontWeight: isOverdue || isClosingSoon
-                                    ? FontWeight.w600
-                                    : FontWeight.normal,
-                                color: isOverdue
-                                    ? const Color(0xFFEF4444)
-                                    : isClosingSoon
-                                        ? const Color(0xFFF59E0B)
-                                        : AppTheme.textSecondary
-                                            .withValues(alpha: 0.7))),
-                      ],
-                    ),
-                  ),
+                Text(_fmtDate(deal.closeDate!), style: TextStyle(
+                    color: deal.closeDateColor, fontSize: 11,
+                    fontWeight: deal.isClosingSoon || deal.isOverdue
+                        ? FontWeight.w600 : FontWeight.w400)),
               ],
-            ),
-          ],
+
+              const Spacer(),
+
+              // Status badge
+              if (deal.status != 'open') Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: deal.status == 'won'
+                      ? const Color(0xFFE8FAF3) : const Color(0xFFFEF2F2),
+                  borderRadius: BorderRadius.circular(4)),
+                child: Text(deal.status.toUpperCase(), style: TextStyle(
+                    color: deal.status == 'won'
+                        ? const Color(0xFF059669) : AppTheme.error,
+                    fontSize: 9, fontWeight: FontWeight.w700))),
+
+              // Delete button
+              GestureDetector(
+                onTap: () => _deleteDeal(deal),
+                child: MouseRegion(cursor: SystemMouseCursors.click,
+                  child: Padding(padding: const EdgeInsets.all(2),
+                    child: Icon(Icons.close, size: 14,
+                        color: AppTheme.textSecondary.withOpacity(0.5))))),
+            ]),
+          ]),
         ),
+      ]),
+    );
+  }
+
+  // ── EMPTY / ERROR ─────────────────────────────────────────────────────────
+
+  Widget _buildEmpty() => Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+    Icon(Icons.view_kanban_outlined, size: 56, color: AppTheme.borderColor),
+    const SizedBox(height: 16),
+    const Text('No pipeline stages yet', style: TextStyle(
+        color: AppTheme.textSecondary, fontSize: 14)),
+    const SizedBox(height: 8),
+    const Text('Run the SQL in the docs to seed your pipeline stages.',
+        style: TextStyle(color: AppTheme.textSecondary, fontSize: 12)),
+  ]));
+
+  Widget _buildError() => Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+    const Icon(Icons.error_outline, color: AppTheme.error, size: 40),
+    const SizedBox(height: 12),
+    Text(_error ?? 'Unknown error',
+        style: const TextStyle(color: AppTheme.textSecondary, fontSize: 13),
+        textAlign: TextAlign.center),
+    const SizedBox(height: 12),
+    ElevatedButton.icon(onPressed: _load,
+        icon: const Icon(Icons.refresh),
+        label: const Text('Retry'),
+        style: ElevatedButton.styleFrom(backgroundColor: AppTheme.brand,
+            foregroundColor: Colors.white)),
+  ]));
+
+  // ── ADD DEAL ──────────────────────────────────────────────────────────────
+
+  void _showAddDeal(int? preselectedStageId) {
+    showDialog(
+      context: context,
+      builder: (dialogCtx) => _AddDealDialog(
+        stages: _stages,
+        preselectedStageId: preselectedStageId ?? (_stages.isNotEmpty ? _stages.first.id : null),
+        businessId: _businessId ?? 0,
+        onSaved: () {
+          Navigator.of(dialogCtx).pop();
+          _load();
+        },
+      ),
+    );
+  }
+
+  // ── DEAL DETAIL ───────────────────────────────────────────────────────────
+
+  void _showDealDetail(_Deal deal, _Stage stage) {
+    showDialog(
+      context: context,
+      builder: (dialogCtx) => _DealDetailDialog(
+        deal: deal, stage: stage, stages: _stages,
+        onUpdated: () {
+          Navigator.of(dialogCtx).pop();
+          _load();
+        },
+        onDeleted: () {
+          Navigator.of(dialogCtx).pop();
+          _load();
+        },
       ),
     );
   }
 }
 
 // ─────────────────────────────────────────────
-//  ADD DEAL MODAL
+//  ADD DEAL DIALOG
 // ─────────────────────────────────────────────
 
-class _AddDealModal extends StatefulWidget {
-  final List<PipelineStage> stages;
-  final List<_Contact> contacts;
-  final int? prefilledStageId;
-  final Future<void> Function(Map<String, dynamic>) onSave;
+class _AddDealDialog extends StatefulWidget {
+  final List<_Stage> stages;
+  final int? preselectedStageId;
+  final int businessId;
+  final VoidCallback onSaved;
 
-  const _AddDealModal({
-    required this.stages,
-    required this.contacts,
-    this.prefilledStageId,
-    required this.onSave,
-  });
+  const _AddDealDialog({required this.stages, this.preselectedStageId,
+      required this.businessId, required this.onSaved});
 
   @override
-  State<_AddDealModal> createState() => _AddDealModalState();
+  State<_AddDealDialog> createState() => _AddDealDialogState();
 }
 
-class _AddDealModalState extends State<_AddDealModal> {
-  final _formKey = GlobalKey<FormState>();
-  final _nameCtrl = TextEditingController();
+class _AddDealDialogState extends State<_AddDealDialog> {
+  final _db = Supabase.instance.client;
+  final _nameCtrl  = TextEditingController();
   final _valueCtrl = TextEditingController();
   final _notesCtrl = TextEditingController();
+  final _assignCtrl = TextEditingController();
 
   int? _stageId;
-  int? _contactId;
   String _status = 'open';
   DateTime? _closeDate;
+  List<Map<String, dynamic>> _leads = [];
+  String? _selectedLeadName;
   bool _saving = false;
+  String? _error;
 
   @override
   void initState() {
     super.initState();
-    _stageId = widget.prefilledStageId ??
-        (widget.stages.isNotEmpty ? widget.stages.first.id : null);
+    _stageId = widget.preselectedStageId;
+    _loadLeads();
   }
 
   @override
   void dispose() {
-    _nameCtrl.dispose();
-    _valueCtrl.dispose();
-    _notesCtrl.dispose();
+    _nameCtrl.dispose(); _valueCtrl.dispose();
+    _notesCtrl.dispose(); _assignCtrl.dispose();
     super.dispose();
   }
 
-  Future<void> _save() async {
-    if (!_formKey.currentState!.validate()) return;
-    setState(() => _saving = true);
+  Future<void> _loadLeads() async {
     try {
-      await widget.onSave({
+      final data = await _db.from('leads')
+          .select('id, lead_name')
+          .eq('business_id', widget.businessId)
+          .order('lead_name');
+      if (!mounted) return;
+      setState(() => _leads = List<Map<String, dynamic>>.from(data));
+    } catch (e) { debugPrint('Load leads: $e'); }
+  }
+
+  Future<void> _save() async {
+    if (_nameCtrl.text.trim().isEmpty) {
+      setState(() => _error = 'Deal name is required');
+      return;
+    }
+    if (_stageId == null) {
+      setState(() => _error = 'Please select a stage');
+      return;
+    }
+    setState(() { _saving = true; _error = null; });
+    try {
+      // Build notes: prepend contact name if selected
+      String? notesVal = _notesCtrl.text.trim().isEmpty ? null : _notesCtrl.text.trim();
+      if (_selectedLeadName != null && _selectedLeadName!.isNotEmpty) {
+        notesVal = notesVal != null
+            ? 'Contact: $_selectedLeadName\n$notesVal'
+            : 'Contact: $_selectedLeadName';
+      }
+      await _db.from('deals').insert({
         'deal_name': _nameCtrl.text.trim(),
+        'value': double.tryParse(_valueCtrl.text.trim().replaceAll(',', '')) ?? 0,
         'stage_id': _stageId,
-        'contact_id': _contactId,
-        'value': double.tryParse(_valueCtrl.text) ?? 0,
         'status': _status,
+        'notes': notesVal,
+        'assigned_to': _assignCtrl.text.trim().isEmpty ? null : _assignCtrl.text.trim(),
         'expected_close': _closeDate?.toIso8601String().split('T').first,
-        'notes': _notesCtrl.text.trim().isEmpty ? null : _notesCtrl.text.trim(),
+        'business_id': widget.businessId,
       });
-      if (mounted) Navigator.pop(context);
-    } finally {
-      if (mounted) setState(() => _saving = false);
+      widget.onSaved();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() { _error = e.toString(); _saving = false; });
     }
   }
 
@@ -879,326 +734,557 @@ class _AddDealModalState extends State<_AddDealModal> {
   Widget build(BuildContext context) {
     return Dialog(
       backgroundColor: AppTheme.cardBg,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      child: SizedBox(
-        width: 480,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              padding: const EdgeInsets.fromLTRB(24, 20, 16, 20),
-              decoration: const BoxDecoration(
-                border:
-                    Border(bottom: BorderSide(color: AppTheme.borderColor)),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: SizedBox(width: 500,
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          // Header
+          Container(
+            padding: const EdgeInsets.fromLTRB(24, 18, 20, 16),
+            decoration: const BoxDecoration(
+              border: Border(bottom: BorderSide(color: AppTheme.borderColor))),
+            child: Row(children: [
+              Container(width: 32, height: 32,
+                decoration: BoxDecoration(color: AppTheme.brand.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(8)),
+                child: const Icon(Icons.handshake_outlined, color: AppTheme.brand, size: 18)),
+              const SizedBox(width: 12),
+              const Expanded(child: Text('Add Deal', style: TextStyle(
+                  fontSize: 16, fontWeight: FontWeight.w700,
+                  color: AppTheme.textPrimary))),
+              GestureDetector(onTap: () => Navigator.pop(context),
+                child: const Icon(Icons.close, color: AppTheme.textSecondary, size: 20)),
+            ]),
+          ),
+
+          // Body
+          SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              if (_error != null) Container(
+                margin: const EdgeInsets.only(bottom: 16),
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(color: AppTheme.error.withOpacity(0.08),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppTheme.error.withOpacity(0.3))),
+                child: Text(_error!, style: TextStyle(color: AppTheme.error, fontSize: 12))),
+
+              _field(_nameCtrl, 'Deal Name *'),
+              const SizedBox(height: 12),
+
+              Row(children: [
+                Expanded(child: _field(_valueCtrl, r'Deal Value ($)',
+                    type: TextInputType.number)),
+                const SizedBox(width: 12),
+                Expanded(child: _dropdownField('Stage', _stageId?.toString(),
+                  [const DropdownMenuItem(value: null,
+                      child: Text('Select stage...',
+                        style: TextStyle(color: AppTheme.textSecondary))),
+                  ...widget.stages.map((s) => DropdownMenuItem(
+                      value: s.id.toString(), child: Row(children: [
+                        Container(width: 8, height: 8, decoration: BoxDecoration(
+                            color: s.dartColor, shape: BoxShape.circle)),
+                        const SizedBox(width: 8),
+                        Text(s.name),
+                      ])))],
+                  (v) => setState(() => _stageId = v == null ? null : int.parse(v)))),
+              ]),
+              const SizedBox(height: 12),
+
+              Row(children: [
+                Expanded(child: _dropdownField('Status', _status,
+                  const [
+                    DropdownMenuItem(value: 'open', child: Text('Open')),
+                    DropdownMenuItem(value: 'won', child: Text('Won')),
+                    DropdownMenuItem(value: 'lost', child: Text('Lost')),
+                  ], (v) => setState(() => _status = v ?? 'open'))),
+                const SizedBox(width: 12),
+                Expanded(child: _field(_assignCtrl, 'Assigned To')),
+              ]),
+              const SizedBox(height: 12),
+
+              // Contact dropdown — links to lead for reference only
+              _label('Linked Contact (optional)'),
+              const SizedBox(height: 6),
+              Container(height: 44, padding: const EdgeInsets.symmetric(horizontal: 12),
+                decoration: BoxDecoration(color: AppTheme.pageBg,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppTheme.borderColor)),
+                child: DropdownButtonHideUnderline(child: DropdownButton<String>(
+                  value: _selectedLeadName, isExpanded: true,
+                  dropdownColor: AppTheme.cardBg,
+                  style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13),
+                  hint: const Text('Link to a contact...',
+                      style: TextStyle(color: AppTheme.textSecondary)),
+                  items: [
+                    const DropdownMenuItem(value: null,
+                        child: Text('None', style: TextStyle(color: AppTheme.textSecondary))),
+                    ..._leads.map((l) => DropdownMenuItem(
+                        value: l['lead_name'] as String? ?? '',
+                        child: Text(l['lead_name'] as String? ?? 'Unknown'))),
+                  ],
+                  onChanged: (v) => setState(() => _selectedLeadName = v),
+                ))),
+              const SizedBox(height: 12),
+
+              // Close date
+              _label('Expected Close Date'),
+              const SizedBox(height: 6),
+              GestureDetector(
+                onTap: () async {
+                  final picked = await showDatePicker(
+                    context: context,
+                    initialDate: _closeDate ?? DateTime.now(),
+                    firstDate: DateTime(2020),
+                    lastDate: DateTime(2030),
+                    builder: (ctx, child) => Theme(
+                      data: Theme.of(ctx).copyWith(
+                        colorScheme: ColorScheme.light(primary: AppTheme.brand)),
+                      child: child!),
+                  );
+                  if (picked != null) setState(() => _closeDate = picked);
+                },
+                child: MouseRegion(cursor: SystemMouseCursors.click,
+                  child: Container(height: 44,
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    decoration: BoxDecoration(color: AppTheme.pageBg,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: AppTheme.borderColor)),
+                    child: Row(children: [
+                      const Icon(Icons.calendar_today_outlined,
+                          size: 15, color: AppTheme.textSecondary),
+                      const SizedBox(width: 8),
+                      Text(_closeDate == null ? 'Pick a date...'
+                          : '${_closeDate!.month}/${_closeDate!.day}/${_closeDate!.year}',
+                        style: TextStyle(
+                          color: _closeDate == null
+                              ? AppTheme.textSecondary : AppTheme.textPrimary,
+                          fontSize: 13)),
+                      const Spacer(),
+                      if (_closeDate != null)
+                        GestureDetector(
+                          onTap: () => setState(() => _closeDate = null),
+                          child: const Icon(Icons.close, size: 14,
+                              color: AppTheme.textSecondary)),
+                    ]))),
               ),
-              child: Row(
-                children: [
-                  const Icon(Icons.handshake_outlined,
-                      size: 20, color: AppTheme.brand),
-                  const SizedBox(width: 10),
-                  const Text('Add New Deal',
-                      style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w700,
-                          color: AppTheme.textPrimary)),
-                  const Spacer(),
-                  MouseRegion(
-                    cursor: SystemMouseCursors.click,
-                    child: IconButton(
-                      onPressed: () => Navigator.pop(context),
-                      icon: const Icon(Icons.close_rounded,
-                          color: AppTheme.textSecondary),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            Flexible(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.all(24),
-                child: Form(
-                  key: _formKey,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      _label('Deal Name *'),
-                      _textField(
-                        controller: _nameCtrl,
-                        hint: 'e.g. Website Redesign Project',
-                        validator: (v) =>
-                            v == null || v.trim().isEmpty ? 'Required' : null,
-                      ),
-                      const SizedBox(height: 16),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                _label('Deal Value'),
-                                _textField(
-                                  controller: _valueCtrl,
-                                  hint: '0.00',
-                                  prefixText: '\$ ',
-                                  keyboardType:
-                                      const TextInputType.numberWithOptions(
-                                          decimal: true),
-                                ),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(width: 16),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                _label('Pipeline Stage'),
-                                _dropdownField<int>(
-                                  value: _stageId,
-                                  items: widget.stages
-                                      .map((s) => DropdownMenuItem(
-                                          value: s.id, child: Text(s.name)))
-                                      .toList(),
-                                  onChanged: (v) =>
-                                      setState(() => _stageId = v),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 16),
-                      _label('Contact'),
-                      _dropdownField<int>(
-                        value: _contactId,
-                        hint: 'Select a contact (optional)',
-                        items: widget.contacts
-                            .map((c) => DropdownMenuItem(
-                                value: c.id, child: Text(c.name)))
-                            .toList(),
-                        onChanged: (v) => setState(() => _contactId = v),
-                      ),
-                      const SizedBox(height: 16),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                _label('Status'),
-                                _dropdownField<String>(
-                                  value: _status,
-                                  items: const [
-                                    DropdownMenuItem(
-                                        value: 'open', child: Text('Open')),
-                                    DropdownMenuItem(
-                                        value: 'won', child: Text('Won')),
-                                    DropdownMenuItem(
-                                        value: 'lost', child: Text('Lost')),
-                                  ],
-                                  onChanged: (v) =>
-                                      setState(() => _status = v ?? 'open'),
-                                ),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(width: 16),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                _label('Expected Close'),
-                                Clickable(
-                                  onTap: () async {
-                                    final picked = await showDatePicker(
-                                      context: context,
-                                      initialDate: DateTime.now()
-                                          .add(const Duration(days: 30)),
-                                      firstDate: DateTime.now(),
-                                      lastDate: DateTime.now()
-                                          .add(const Duration(days: 365 * 5)),
-                                    );
-                                    if (picked != null) {
-                                      setState(() => _closeDate = picked);
-                                    }
-                                  },
-                                  child: Container(
-                                    height: 44,
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 12),
-                                    decoration: BoxDecoration(
-                                      color: AppTheme.pageBg,
-                                      borderRadius: BorderRadius.circular(8),
-                                      border: Border.all(
-                                          color: AppTheme.borderColor),
-                                    ),
-                                    child: Row(
-                                      children: [
-                                        Expanded(
-                                          child: Text(
-                                            _closeDate != null
-                                                ? '${_closeDate!.month}/${_closeDate!.day}/${_closeDate!.year}'
-                                                : 'Pick a date',
-                                            style: TextStyle(
-                                                fontSize: 13,
-                                                color: _closeDate != null
-                                                    ? AppTheme.textPrimary
-                                                    : AppTheme.textSecondary),
-                                          ),
-                                        ),
-                                        const Icon(
-                                            Icons.calendar_today_rounded,
-                                            size: 14,
-                                            color: AppTheme.textSecondary),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 16),
-                      _label('Notes'),
-                      _textField(
-                        controller: _notesCtrl,
-                        hint: 'Add any notes about this deal...',
-                        maxLines: 3,
-                      ),
-                    ],
-                  ),
+              const SizedBox(height: 12),
+
+              _field(_notesCtrl, 'Notes', maxLines: 3),
+            ]),
+          ),
+
+          // Footer
+          Container(
+            padding: const EdgeInsets.fromLTRB(24, 0, 24, 20),
+            child: Row(children: [
+              Expanded(child: OutlinedButton(
+                onPressed: () => Navigator.pop(context),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppTheme.textSecondary,
+                  side: const BorderSide(color: AppTheme.borderColor),
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                 ),
-              ),
-            ),
-            Container(
-              padding: const EdgeInsets.fromLTRB(24, 16, 24, 20),
-              decoration: const BoxDecoration(
-                border: Border(top: BorderSide(color: AppTheme.borderColor)),
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  MouseRegion(
-                    cursor: SystemMouseCursors.click,
-                    child: TextButton(
-                      onPressed: _saving ? null : () => Navigator.pop(context),
-                      child: const Text('Cancel'),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  MouseRegion(
-                    cursor: SystemMouseCursors.click,
-                    child: ElevatedButton(
-                      onPressed: _saving ? null : _save,
-                      child: _saving
-                          ? const SizedBox(
-                              width: 16,
-                              height: 16,
-                              child: CircularProgressIndicator(
-                                  strokeWidth: 2, color: Colors.white),
-                            )
-                          : const Text('Add Deal'),
-                    ),
-                  ),
-                ],
-              ),
-            ),
+                child: const Text('Cancel'),
+              )),
+              const SizedBox(width: 12),
+              Expanded(flex: 2, child: ElevatedButton(
+                onPressed: _saving ? null : _save,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppTheme.brand, foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+                child: _saving
+                    ? const SizedBox(width: 18, height: 18,
+                        child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                    : const Text('Create Deal',
+                        style: TextStyle(fontWeight: FontWeight.w600)),
+              )),
+            ]),
+          ),
+        ]),
+      ),
+    );
+  }
+
+  Widget _field(TextEditingController ctrl, String label,
+      {TextInputType? type, int maxLines = 1}) {
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      _label(label),
+      const SizedBox(height: 6),
+      TextFormField(controller: ctrl, keyboardType: type, maxLines: maxLines,
+        style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13),
+        decoration: InputDecoration(hintText: label,
+          hintStyle: const TextStyle(color: AppTheme.textSecondary, fontSize: 13))),
+    ]);
+  }
+
+  Widget _dropdownField<T>(String label, T value, List<DropdownMenuItem<T>> items,
+      ValueChanged<T?> onChange) {
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      _label(label),
+      const SizedBox(height: 6),
+      Container(height: 44, padding: const EdgeInsets.symmetric(horizontal: 12),
+        decoration: BoxDecoration(color: AppTheme.pageBg,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: AppTheme.borderColor)),
+        child: DropdownButtonHideUnderline(child: DropdownButton<T>(
+          value: value, isExpanded: true, dropdownColor: AppTheme.cardBg,
+          style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13),
+          items: items, onChanged: onChange))),
+    ]);
+  }
+
+  Widget _label(String text) => Text(text, style: const TextStyle(
+      color: AppTheme.textSecondary, fontSize: 12, fontWeight: FontWeight.w500));
+}
+
+// ─────────────────────────────────────────────
+//  DEAL DETAIL DIALOG
+// ─────────────────────────────────────────────
+
+class _DealDetailDialog extends StatefulWidget {
+  final _Deal deal;
+  final _Stage stage;
+  final List<_Stage> stages;
+  final VoidCallback onUpdated;
+  final VoidCallback onDeleted;
+
+  const _DealDetailDialog({required this.deal, required this.stage,
+      required this.stages, required this.onUpdated, required this.onDeleted});
+
+  @override
+  State<_DealDetailDialog> createState() => _DealDetailDialogState();
+}
+
+class _DealDetailDialogState extends State<_DealDetailDialog> {
+  final _db = Supabase.instance.client;
+  bool _editing = false;
+  bool _saving = false;
+
+  late TextEditingController _nameCtrl;
+  late TextEditingController _valueCtrl;
+  late TextEditingController _notesCtrl;
+  late TextEditingController _assignCtrl;
+  late int _stageId;
+  late String _status;
+  DateTime? _closeDate;
+
+  @override
+  void initState() {
+    super.initState();
+    _nameCtrl = TextEditingController(text: widget.deal.name);
+    _valueCtrl = TextEditingController(text: widget.deal.value.toStringAsFixed(0));
+    _notesCtrl = TextEditingController(text: widget.deal.notes ?? '');
+    _assignCtrl = TextEditingController(text: widget.deal.assignedTo ?? '');
+    _stageId = widget.deal.stageId;
+    _status = widget.deal.status;
+    _closeDate = widget.deal.closeDate;
+  }
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose(); _valueCtrl.dispose();
+    _notesCtrl.dispose(); _assignCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    setState(() => _saving = true);
+    try {
+      await _db.from('deals').update({
+        'deal_name': _nameCtrl.text.trim(),
+        'value': double.tryParse(_valueCtrl.text.trim().replaceAll(',', '')) ?? 0,
+        'stage_id': _stageId,
+        'status': _status,
+        'notes': _notesCtrl.text.trim().isEmpty ? null : _notesCtrl.text.trim(),
+        'assigned_to': _assignCtrl.text.trim().isEmpty ? null : _assignCtrl.text.trim(),
+        'expected_close': _closeDate?.toIso8601String().split('T').first,
+      }).eq('id', widget.deal.id);
+      widget.onUpdated();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _saving = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error: $e'), backgroundColor: AppTheme.error));
+    }
+  }
+
+  Future<void> _confirmAndDelete() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.cardBg,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        title: const Row(children: [
+          Icon(Icons.delete_forever, color: AppTheme.error, size: 22),
+          SizedBox(width: 8),
+          Text('Delete Deal?',
+            style: TextStyle(color: AppTheme.error, fontWeight: FontWeight.w700)),
+        ]),
+        content: Text(
+          'Delete "${widget.deal.name}"? This cannot be undone.',
+          style: const TextStyle(color: AppTheme.textSecondary, fontSize: 14)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel',
+              style: TextStyle(color: AppTheme.textSecondary))),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.error, foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+            child: const Text('Delete')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    try {
+      await Supabase.instance.client
+          .from('deals')
+          .delete()
+          .eq('id', widget.deal.id);
+      if (mounted) widget.onDeleted();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Error deleting: $e'),
+          backgroundColor: AppTheme.error));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final deal = widget.deal;
+    final stage = widget.stage;
+
+    return Dialog(
+      backgroundColor: AppTheme.cardBg,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: SizedBox(width: 500,
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          // Header with color bar
+          Container(
+            decoration: BoxDecoration(
+              border: const Border(bottom: BorderSide(color: AppTheme.borderColor)),
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(13))),
+            child: Column(children: [
+              Container(height: 4,
+                decoration: BoxDecoration(color: stage.dartColor,
+                    borderRadius: const BorderRadius.vertical(top: Radius.circular(13)))),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(24, 14, 20, 14),
+                child: Row(children: [
+                  Expanded(child: _editing
+                      ? TextField(controller: _nameCtrl,
+                          style: const TextStyle(fontSize: 16,
+                              fontWeight: FontWeight.w700, color: AppTheme.textPrimary))
+                      : Text(deal.name, style: const TextStyle(fontSize: 16,
+                          fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
+                  if (!_editing) ...[
+                    TextButton.icon(
+                      onPressed: () => setState(() => _editing = true),
+                      icon: const Icon(Icons.edit_outlined, size: 14),
+                      label: const Text('Edit'),
+                      style: TextButton.styleFrom(foregroundColor: AppTheme.brand)),
+                    IconButton(
+                      onPressed: () => _confirmAndDelete(),
+                      icon: const Icon(Icons.delete_outline, size: 18),
+                      color: AppTheme.error),
+                  ],
+                  GestureDetector(onTap: () => Navigator.pop(context),
+                    child: const Icon(Icons.close, color: AppTheme.textSecondary, size: 20)),
+                ])),
+            ]),
+          ),
+
+          // Body
+          SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: _editing ? _buildEditBody() : _buildViewBody(deal, stage),
+          ),
+
+          // Footer
+          if (_editing) Container(
+            padding: const EdgeInsets.fromLTRB(24, 0, 24, 20),
+            child: Row(children: [
+              Expanded(child: OutlinedButton(
+                onPressed: () => setState(() => _editing = false),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppTheme.textSecondary,
+                  side: const BorderSide(color: AppTheme.borderColor),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+                child: const Text('Cancel'))),
+              const SizedBox(width: 12),
+              Expanded(flex: 2, child: ElevatedButton(
+                onPressed: _saving ? null : _save,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppTheme.brand, foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+                child: _saving
+                    ? const SizedBox(width: 16, height: 16,
+                        child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                    : const Text('Save Changes',
+                        style: TextStyle(fontWeight: FontWeight.w600)))),
+            ])),
+        ]),
+      ),
+    );
+  }
+
+  Widget _buildViewBody(_Deal deal, _Stage stage) {
+    return Column(children: [
+      // Value + stage
+      Row(children: [
+        Expanded(child: _infoCard(
+          icon: Icons.attach_money_rounded,
+          label: 'Deal Value',
+          value: deal.formattedValue,
+          color: const Color(0xFF059669),
+          bg: const Color(0xFFE8FAF3))),
+        const SizedBox(width: 12),
+        Expanded(child: _infoCard(
+          icon: Icons.view_kanban_outlined,
+          label: 'Stage',
+          value: stage.name,
+          color: stage.dartColor,
+          bg: stage.dartColor.withOpacity(0.1))),
+        const SizedBox(width: 12),
+        Expanded(child: _infoCard(
+          icon: Icons.schedule_outlined,
+          label: 'Days in Stage',
+          value: '${deal.daysInStage}d',
+          color: AppTheme.brand,
+          bg: AppTheme.brand.withOpacity(0.08))),
+      ]),
+      const SizedBox(height: 16),
+      // Details
+      Container(padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(color: AppTheme.pageBg,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: AppTheme.borderColor)),
+        child: Column(children: [
+          _row('Contact', deal.contactName),
+          _row('Assigned To', deal.assignedTo),
+          _row('Status', deal.status.toUpperCase()),
+          _row('Close Date', deal.closeDate != null
+              ? '${deal.closeDate!.month}/${deal.closeDate!.day}/${deal.closeDate!.year}' : null),
+          if (deal.notes != null && deal.notes!.isNotEmpty)
+            _row('Notes', deal.notes),
+        ])),
+    ]);
+  }
+
+  Widget _infoCard({required IconData icon, required String label,
+      required String value, required Color color, required Color bg}) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: color.withOpacity(0.2))),
+      child: Column(children: [
+        Icon(icon, size: 18, color: color),
+        const SizedBox(height: 6),
+        Text(value, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: color)),
+        Text(label, style: const TextStyle(fontSize: 10, color: AppTheme.textSecondary)),
+      ]));
+  }
+
+  Widget _row(String label, String? value) {
+    return Padding(padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(children: [
+        SizedBox(width: 100, child: Text(label,
+          style: const TextStyle(color: AppTheme.textSecondary, fontSize: 13))),
+        Expanded(child: Text(value ?? '—', style: const TextStyle(
+            color: AppTheme.textPrimary, fontSize: 13, fontWeight: FontWeight.w500))),
+      ]));
+  }
+
+  Widget _buildEditBody() {
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      _ef(_valueCtrl, r'Deal Value ($)', type: TextInputType.number),
+      const SizedBox(height: 12),
+      // Stage dropdown
+      _lbl('Stage'),
+      const SizedBox(height: 6),
+      Container(height: 44, padding: const EdgeInsets.symmetric(horizontal: 12),
+        decoration: BoxDecoration(color: AppTheme.pageBg, borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: AppTheme.borderColor)),
+        child: DropdownButtonHideUnderline(child: DropdownButton<int>(
+          value: _stageId, isExpanded: true, dropdownColor: AppTheme.cardBg,
+          style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13),
+          items: widget.stages.map((s) => DropdownMenuItem(value: s.id,
+            child: Row(children: [
+              Container(width: 8, height: 8, decoration: BoxDecoration(
+                  color: s.dartColor, shape: BoxShape.circle)),
+              const SizedBox(width: 8), Text(s.name),
+            ]))).toList(),
+          onChanged: (v) => setState(() => _stageId = v ?? _stageId)))),
+      const SizedBox(height: 12),
+      // Status
+      _lbl('Status'),
+      const SizedBox(height: 6),
+      Container(height: 44, padding: const EdgeInsets.symmetric(horizontal: 12),
+        decoration: BoxDecoration(color: AppTheme.pageBg, borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: AppTheme.borderColor)),
+        child: DropdownButtonHideUnderline(child: DropdownButton<String>(
+          value: _status, isExpanded: true, dropdownColor: AppTheme.cardBg,
+          style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13),
+          items: const [
+            DropdownMenuItem(value: 'open', child: Text('Open')),
+            DropdownMenuItem(value: 'won', child: Text('Won')),
+            DropdownMenuItem(value: 'lost', child: Text('Lost')),
           ],
-        ),
-      ),
-    );
+          onChanged: (v) => setState(() => _status = v ?? _status)))),
+      const SizedBox(height: 12),
+      _ef(_assignCtrl, 'Assigned To'),
+      const SizedBox(height: 12),
+      // Close date
+      _lbl('Expected Close Date'),
+      const SizedBox(height: 6),
+      GestureDetector(
+        onTap: () async {
+          final picked = await showDatePicker(
+            context: context, initialDate: _closeDate ?? DateTime.now(),
+            firstDate: DateTime(2020), lastDate: DateTime(2030),
+            builder: (ctx, child) => Theme(data: Theme.of(ctx).copyWith(
+              colorScheme: ColorScheme.light(primary: AppTheme.brand)), child: child!));
+          if (picked != null) setState(() => _closeDate = picked);
+        },
+        child: MouseRegion(cursor: SystemMouseCursors.click,
+          child: Container(height: 44, padding: const EdgeInsets.symmetric(horizontal: 12),
+            decoration: BoxDecoration(color: AppTheme.pageBg,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: AppTheme.borderColor)),
+            child: Row(children: [
+              const Icon(Icons.calendar_today_outlined, size: 14, color: AppTheme.textSecondary),
+              const SizedBox(width: 8),
+              Text(_closeDate == null ? 'Pick a date...'
+                  : '${_closeDate!.month}/${_closeDate!.day}/${_closeDate!.year}',
+                style: TextStyle(color: _closeDate == null
+                    ? AppTheme.textSecondary : AppTheme.textPrimary, fontSize: 13)),
+              const Spacer(),
+              if (_closeDate != null) GestureDetector(
+                onTap: () => setState(() => _closeDate = null),
+                child: const Icon(Icons.close, size: 14, color: AppTheme.textSecondary)),
+            ])))),
+      const SizedBox(height: 12),
+      _ef(_notesCtrl, 'Notes', maxLines: 4),
+    ]);
   }
 
-  Widget _label(String text) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
-      child: Text(text,
-          style: const TextStyle(
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-              color: AppTheme.textSecondary)),
-    );
-  }
+  Widget _ef(TextEditingController ctrl, String label,
+      {TextInputType? type, int maxLines = 1}) =>
+    Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      _lbl(label), const SizedBox(height: 6),
+      TextFormField(controller: ctrl, keyboardType: type, maxLines: maxLines,
+        style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13),
+        decoration: InputDecoration(hintText: label,
+          hintStyle: const TextStyle(color: AppTheme.textSecondary, fontSize: 13))),
+    ]);
 
-  Widget _textField({
-    required TextEditingController controller,
-    String? hint,
-    String? prefixText,
-    int maxLines = 1,
-    TextInputType? keyboardType,
-    String? Function(String?)? validator,
-  }) {
-    return TextFormField(
-      controller: controller,
-      maxLines: maxLines,
-      keyboardType: keyboardType,
-      validator: validator,
-      style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
-      decoration: InputDecoration(
-        hintText: hint,
-        prefixText: prefixText,
-        hintStyle:
-            const TextStyle(color: AppTheme.textSecondary, fontSize: 13),
-        filled: true,
-        fillColor: AppTheme.pageBg,
-        contentPadding:
-            const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(8),
-          borderSide: const BorderSide(color: AppTheme.borderColor),
-        ),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(8),
-          borderSide: const BorderSide(color: AppTheme.borderColor),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(8),
-          borderSide: const BorderSide(color: AppTheme.brand, width: 1.5),
-        ),
-        errorBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(8),
-          borderSide: const BorderSide(color: Colors.red),
-        ),
-      ),
-    );
-  }
-
-  Widget _dropdownField<T>({
-    required T? value,
-    required List<DropdownMenuItem<T>> items,
-    required ValueChanged<T?> onChanged,
-    String? hint,
-  }) {
-    return DropdownButtonFormField<T>(
-      initialValue: value,
-      items: items,
-      onChanged: onChanged,
-      hint: hint != null
-          ? Text(hint,
-              style: const TextStyle(
-                  color: AppTheme.textSecondary, fontSize: 13))
-          : null,
-      style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
-      dropdownColor: AppTheme.cardBg,
-      decoration: InputDecoration(
-        filled: true,
-        fillColor: AppTheme.pageBg,
-        contentPadding:
-            const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(8),
-          borderSide: const BorderSide(color: AppTheme.borderColor),
-        ),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(8),
-          borderSide: const BorderSide(color: AppTheme.borderColor),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(8),
-          borderSide: const BorderSide(color: AppTheme.brand, width: 1.5),
-        ),
-      ),
-    );
-  }
+  Widget _lbl(String t) => Text(t, style: const TextStyle(
+      color: AppTheme.textSecondary, fontSize: 12, fontWeight: FontWeight.w500));
 }
