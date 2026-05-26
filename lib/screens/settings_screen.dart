@@ -243,13 +243,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   int _sectionIndexFromName(String? name) {
     switch (name) {
-      case 'ai':           return 1;
-      case 'payments':     return 7;
-      case 'social':       return 8;
-      case 'billing':      return 9;
-      case 'team':         return 5;
+      case 'ai':            return 1;
+      case 'knowledge':     return 2;
+      case 'phone':         return 3;
+      case 'email':         return 4;
+      case 'team':          return 5;
       case 'notifications': return 6;
-      default:             return 0;
+      case 'payments':      return 7;
+      case 'social':        return 8;
+      case 'billing':       return 9;
+      default:              return 0;
     }
   }
 
