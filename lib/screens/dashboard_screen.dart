@@ -725,48 +725,43 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   // ── Tasks placeholder ─────────────────────────────────────────────────────
+  // ── Tasks card ────────────────────────────────────────────────────────────
   Widget _buildTasksPlaceholder() {
     return _card('Tasks', Column(children: [
-      Container(
-        width: double.infinity,
-        padding: const EdgeInsets.all(20),
-        decoration: BoxDecoration(
-          color: AppTheme.pageBg,
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: AppTheme.borderColor.withValues(alpha: 0.5)),
+      Row(children: [
+        Container(
+          width: 36, height: 36,
+          decoration: BoxDecoration(
+            color: const Color(0xFF6366f1).withValues(alpha: 0.1),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: const Icon(Icons.task_alt_outlined, size: 18, color: Color(0xFF6366f1)),
         ),
+        const SizedBox(width: 12),
+        const Expanded(
+          child: Text('Manage your team tasks',
+              style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+        ),
+      ]),
+      const SizedBox(height: 16),
+      const Divider(color: AppTheme.borderColor, height: 1),
+      const SizedBox(height: 16),
+      const Center(
         child: Column(children: [
-          Container(
-            width: 44, height: 44,
-            decoration: BoxDecoration(
-              color: const Color(0xFF6366f1).withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: const Icon(Icons.task_alt_outlined, size: 22, color: Color(0xFF6366f1)),
-          ),
-          const SizedBox(height: 12),
-          const Text('Tasks Coming Soon',
-              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
-          const SizedBox(height: 6),
-          const Text(
-            'Assign tasks to team members, set due dates, and track completion — all from your dashboard.',
-            style: TextStyle(fontSize: 11, color: AppTheme.textSecondary, height: 1.5),
-            textAlign: TextAlign.center,
-          ),
-          const SizedBox(height: 14),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            decoration: BoxDecoration(
-              color: const Color(0xFF6366f1).withValues(alpha: 0.08),
-              borderRadius: BorderRadius.circular(99),
-              border: Border.all(color: const Color(0xFF6366f1).withValues(alpha: 0.2)),
-            ),
-            child: const Text('On the Roadmap',
-                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w500, color: Color(0xFF6366f1))),
-          ),
+          Icon(Icons.task_alt_outlined, size: 32, color: AppTheme.textMuted),
+          SizedBox(height: 8),
+          Text('No tasks yet', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
         ]),
       ),
-    ]));
+    ]),
+    trailing: MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: TextButton(
+        onPressed: () => context.go('/tasks'),
+        child: const Text('View Tasks',
+            style: TextStyle(fontSize: 12, color: AppTheme.brand)),
+      ),
+    ));
   }
 
   // ── Meta Ads placeholder ──────────────────────────────────────────────────

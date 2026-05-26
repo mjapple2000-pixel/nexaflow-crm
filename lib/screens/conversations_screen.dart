@@ -165,6 +165,9 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
   bool _sending = false;
   bool _togglingAi = false;
   String _filter = 'all';
+  String _searchQuery = '';
+  String _subTab = 'recents';
+  String _sortOrder = 'latest';
   String _sendChannel = 'sms';
 
   static const String _emailWebhookUrl =
@@ -441,6 +444,32 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
     }
   }
 
+  Future<void> _markAsUnread(Conversation c) async {
+    await _supabase.from('conversations').update({'unread_count': 1}).eq('id', c.id);
+    await _loadConversations();
+  }
+
+  Future<void> _archiveConversation(Conversation c) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Archive Conversation'),
+        content: Text('Archive conversation with ${c.contactName}?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Archive', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+    await _supabase.from('conversations').update({'status': 'archived'}).eq('id', c.id);
+    if (mounted) setState(() => _selected = null);
+    await _loadConversations();
+  }
+
   Future<void> _toggleStatus(Conversation c) async {
     final newStatus = c.status == 'open' ? 'closed' : 'open';
     await _supabase
@@ -476,52 +505,25 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
   }
 
   Widget _buildTopBar() {
-    final totalUnread = _conversations.fold(0, (s, c) => s + c.unreadCount);
-
     return Container(
-      height: 56,
-      padding: const EdgeInsets.symmetric(horizontal: 24),
       decoration: const BoxDecoration(
         color: AppTheme.cardBg,
         border: Border(bottom: BorderSide(color: AppTheme.borderColor)),
       ),
-      child: Row(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Conversations',
-              style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                  color: AppTheme.textPrimary)),
-          const SizedBox(width: 12),
-          if (totalUnread > 0)
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-              decoration: BoxDecoration(
-                color: AppTheme.brand,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Text('$totalUnread',
-                  style: const TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w700,
-                      color: Colors.white)),
-            ),
-          const Spacer(),
-          _filterChip('All', 'all'),
-          const SizedBox(width: 6),
-          _filterChip('Unread', 'unread'),
-          const SizedBox(width: 6),
-          _filterChip('SMS', 'sms'),
-          const SizedBox(width: 6),
-          _filterChip('Email', 'email'),
-          const SizedBox(width: 12),
-          MouseRegion(
-            cursor: SystemMouseCursors.click,
-            child: IconButton(
-              onPressed: _loadConversations,
-              icon: const Icon(Icons.refresh_rounded,
-                  size: 18, color: AppTheme.textSecondary),
-              tooltip: 'Refresh',
+          // ── Top nav tabs ──
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+              children: [
+                _topNavTab('Conversations', true),
+                _topNavTab('Manual Actions', false),
+                _topNavTab('Snippets', false),
+                _topNavDropdown('Trigger Links'),
+              ],
             ),
           ),
         ],
@@ -529,52 +531,249 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
     );
   }
 
-  Widget _filterChip(String label, String value) {
-    final active = _filter == value;
-    return Clickable(
-      onTap: () {
-        setState(() => _filter = value);
-        _loadConversations();
-      },
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 150),
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-        decoration: BoxDecoration(
-          color: active ? AppTheme.brand : AppTheme.pageBg,
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(
-              color: active ? AppTheme.brand : AppTheme.borderColor),
+ Widget _topNavTab(String label, bool active) {
+    return Padding(
+      padding: const EdgeInsets.only(right: 4),
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: GestureDetector(
+          onTap: active ? null : () => _showComingSoon(label),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+            decoration: BoxDecoration(
+              border: Border(
+                bottom: BorderSide(
+                  color: active ? AppTheme.brand : Colors.transparent,
+                  width: 2,
+                ),
+              ),
+            ),
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: active ? FontWeight.w600 : FontWeight.w400,
+                color: active ? AppTheme.brand : AppTheme.textSecondary,
+              ),
+            ),
+          ),
         ),
-        child: Text(label,
-            style: TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-                color: active ? Colors.white : AppTheme.textSecondary)),
       ),
     );
   }
 
+  Widget _topNavDropdown(String label) {
+    return Padding(
+      padding: const EdgeInsets.only(right: 4),
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: GestureDetector(
+          onTap: () => _showComingSoon(label),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(label,
+                    style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w400,
+                        color: AppTheme.textSecondary)),
+                const SizedBox(width: 4),
+                const Icon(Icons.keyboard_arrow_down_rounded,
+                    size: 16, color: AppTheme.textSecondary),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  
+
   Widget _buildConversationList() {
+    final totalUnread = _conversations.fold(0, (s, c) => s + c.unreadCount);
+
     return Container(
-      width: 300,
+      width: 340,
       decoration: const BoxDecoration(
         color: AppTheme.cardBg,
         border: Border(right: BorderSide(color: AppTheme.borderColor)),
       ),
-      child: _loadingConvos
-          ? const Center(child: CircularProgressIndicator())
-          : _error != null
-              ? _errorView()
-              : _conversations.isEmpty
-                  ? _emptyConvos()
-                  : ListView.builder(
-                      itemCount: _conversations.length,
-                      itemBuilder: (_, i) =>
-                          _buildConvoTile(_conversations[i]),
+      child: Column(
+        children: [
+          // ── Unread / Recents / Starred / All tabs ──
+          Container(
+            decoration: const BoxDecoration(
+              border: Border(bottom: BorderSide(color: AppTheme.borderColor)),
+            ),
+            child: Row(
+              children: [
+                _subTabItem('Unread', 'unread', badge: totalUnread > 0 ? totalUnread : null),
+                _subTabItem('Recents', 'recents'),
+                _subTabItem('Starred', 'starred'),
+                _subTabItem('All', 'all'),
+              ],
+            ),
+          ),
+          // ── Search bar + icons ──
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Container(
+                    height: 36,
+                    decoration: BoxDecoration(
+                      color: AppTheme.pageBg,
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: AppTheme.borderColor),
                     ),
+                    child: TextField(
+                      onChanged: (val) => setState(() => _searchQuery = val.toLowerCase()),
+                      style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                      decoration: const InputDecoration(
+                        hintText: 'Search',
+                        hintStyle: TextStyle(fontSize: 13, color: AppTheme.textSecondary),
+                        prefixIcon: Icon(Icons.search, size: 16, color: AppTheme.textSecondary),
+                        border: InputBorder.none,
+                        contentPadding: EdgeInsets.symmetric(vertical: 8),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                _iconBtn(Icons.filter_list_rounded, _showFilterDialog),
+                const SizedBox(width: 4),
+                _iconBtn(Icons.edit_outlined, () => _showComingSoon('New Conversation')),
+              ],
+            ),
+          ),
+          // ── Results count + sort ──
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+            child: Row(
+              children: [
+                Checkbox(
+                  value: false,
+                  onChanged: (_) {},
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  visualDensity: VisualDensity.compact,
+                ),
+                Text(
+                  '${_conversations.length} RESULTS',
+                  style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary, fontWeight: FontWeight.w600),
+                ),
+                const Spacer(),
+                GestureDetector(
+                  onTap: _showSortDialog,
+                  child: MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          _sortOrder == 'latest' ? 'Latest-All' : 'Oldest-All',
+                          style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
+                        ),
+                        const Icon(Icons.keyboard_arrow_down_rounded, size: 14, color: AppTheme.textSecondary),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          // ── List ──
+          Expanded(
+            child: _loadingConvos
+                ? const Center(child: CircularProgressIndicator())
+                : _error != null
+                    ? _errorView()
+                    : Builder(builder: (_) {
+                        var filtered = _subTab == 'unread'
+                            ? _conversations.where((c) => c.unreadCount > 0).toList()
+                            : _conversations;
+                        if (_searchQuery.isNotEmpty) {
+                          filtered = filtered.where((c) =>
+                              c.contactName.toLowerCase().contains(_searchQuery) ||
+                              c.contactPhone.contains(_searchQuery) ||
+                              (c.lastMessage?.toLowerCase().contains(_searchQuery) ?? false)).toList();
+                        }
+                        return filtered.isEmpty
+                            ? _emptyConvos()
+                            : ListView.builder(
+                                itemCount: filtered.length,
+                                itemBuilder: (_, i) => _buildConvoTile(filtered[i]),
+                              );
+                      }),
+          ),
+        ],
+      ),
     );
   }
 
+  Widget _subTabItem(String label, String value, {int? badge}) {
+    final active = _subTab == value;
+    return Expanded(
+      child: Clickable(
+        onTap: () => setState(() => _subTab = value),
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          decoration: BoxDecoration(
+            border: Border(
+              bottom: BorderSide(
+                color: active ? AppTheme.brand : Colors.transparent,
+                width: 2,
+              ),
+            ),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: active ? FontWeight.w600 : FontWeight.w400,
+                  color: active ? AppTheme.brand : AppTheme.textSecondary,
+                ),
+              ),
+              if (badge != null) ...[
+                const SizedBox(width: 4),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                  decoration: BoxDecoration(
+                    color: AppTheme.brand,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Text('$badge',
+                      style: const TextStyle(fontSize: 9, color: Colors.white, fontWeight: FontWeight.w700)),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _iconBtn(IconData icon, VoidCallback onTap) {
+    return Clickable(
+      onTap: onTap,
+      child: Container(
+        width: 32,
+        height: 32,
+        decoration: BoxDecoration(
+          color: AppTheme.pageBg,
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: AppTheme.borderColor),
+        ),
+        child: Icon(icon, size: 16, color: AppTheme.textSecondary),
+      ),
+    );
+  }
   Widget _buildConvoTile(Conversation convo) {
     final isSelected = _selected?.id == convo.id;
     final hasUnread = convo.unreadCount > 0;
@@ -600,22 +799,21 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
           children: [
             Stack(
               children: [
-                Container(
-                  width: 40,
-                  height: 40,
+               Container(
+                  width: 44,
+                  height: 44,
                   decoration: BoxDecoration(
                     color: isSelected
                         ? AppTheme.brand
-                        : AppTheme.brand.withValues(alpha: 0.15),
+                        : _avatarColor(convo.contactName),
                     shape: BoxShape.circle,
                   ),
                   child: Center(
                     child: Text(convo.initials,
-                        style: TextStyle(
-                            fontSize: 14,
+                        style: const TextStyle(
+                            fontSize: 15,
                             fontWeight: FontWeight.w700,
-                            color:
-                                isSelected ? Colors.white : AppTheme.brand)),
+                            color: Colors.white)),
                   ),
                 ),
                 if (convo.aiEnabled && convo.channel == 'sms')
@@ -947,6 +1145,32 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
           MouseRegion(
             cursor: SystemMouseCursors.click,
             child: OutlinedButton.icon(
+              onPressed: () => _markAsUnread(c),
+              icon: const Icon(Icons.mark_chat_unread_outlined, size: 14),
+              label: const Text('Unread', style: TextStyle(fontSize: 12)),
+              style: OutlinedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                minimumSize: Size.zero,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: OutlinedButton.icon(
+              onPressed: () => _archiveConversation(c),
+              icon: const Icon(Icons.archive_outlined, size: 14),
+              label: const Text('Archive', style: TextStyle(fontSize: 12)),
+              style: OutlinedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                minimumSize: Size.zero,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: OutlinedButton.icon(
               onPressed: () => _toggleStatus(c),
               icon: Icon(
                 c.status == 'open'
@@ -957,8 +1181,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
               label: Text(c.status == 'open' ? 'Close' : 'Reopen',
                   style: const TextStyle(fontSize: 12)),
               style: OutlinedButton.styleFrom(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                 minimumSize: Size.zero,
               ),
             ),
@@ -1369,7 +1592,116 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
       ),
     );
   }
+void _showComingSoon(String feature) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(children: [
+          const Icon(Icons.construction_rounded, color: Colors.white, size: 16),
+          const SizedBox(width: 8),
+          Text('$feature — coming soon'),
+        ]),
+        backgroundColor: AppTheme.textSecondary,
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
 
+  void _showFilterDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Filter Conversations', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _filterOption(ctx, 'All', 'all'),
+            _filterOption(ctx, 'SMS only', 'sms'),
+            _filterOption(ctx, 'Email only', 'email'),
+            _filterOption(ctx, 'Unread only', 'unread'),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _filterOption(BuildContext ctx, String label, String value) {
+    final active = _filter == value;
+    return ListTile(
+      dense: true,
+      leading: Icon(
+        active ? Icons.radio_button_checked : Icons.radio_button_unchecked,
+        color: active ? AppTheme.brand : AppTheme.textSecondary,
+        size: 18,
+      ),
+      title: Text(label, style: TextStyle(fontSize: 13, fontWeight: active ? FontWeight.w600 : FontWeight.normal)),
+      onTap: () {
+        setState(() => _filter = value);
+        Navigator.of(ctx).pop();
+        _loadConversations();
+      },
+    );
+  }
+
+  void _showSortDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Sort By', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              dense: true,
+              leading: Icon(
+                _sortOrder == 'latest' ? Icons.radio_button_checked : Icons.radio_button_unchecked,
+                color: _sortOrder == 'latest' ? AppTheme.brand : AppTheme.textSecondary,
+                size: 18,
+              ),
+              title: const Text('Latest first', style: TextStyle(fontSize: 13)),
+              onTap: () {
+                setState(() {
+                  _sortOrder = 'latest';
+                  _conversations.sort((a, b) => (b.lastMessageAt ?? DateTime(0)).compareTo(a.lastMessageAt ?? DateTime(0)));
+                });
+                Navigator.of(ctx).pop();
+              },
+            ),
+            ListTile(
+              dense: true,
+              leading: Icon(
+                _sortOrder == 'oldest' ? Icons.radio_button_checked : Icons.radio_button_unchecked,
+                color: _sortOrder == 'oldest' ? AppTheme.brand : AppTheme.textSecondary,
+                size: 18,
+              ),
+              title: const Text('Oldest first', style: TextStyle(fontSize: 13)),
+              onTap: () {
+                setState(() {
+                  _sortOrder = 'oldest';
+                  _conversations.sort((a, b) => (a.lastMessageAt ?? DateTime(0)).compareTo(b.lastMessageAt ?? DateTime(0)));
+                });
+                Navigator.of(ctx).pop();
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+  Color _avatarColor(String name) {
+    const colors = [
+      Color(0xFF7C3AED),
+      Color(0xFF2563EB),
+      Color(0xFF059669),
+      Color(0xFFD97706),
+      Color(0xFFDC2626),
+      Color(0xFF0891B2),
+      Color(0xFF7C3AED),
+      Color(0xFFDB2777),
+    ];
+    final idx = name.isNotEmpty ? name.codeUnitAt(0) % colors.length : 0;
+    return colors[idx];
+  }
   bool _sameDay(DateTime a, DateTime b) =>
       a.year == b.year && a.month == b.month && a.day == b.day;
 
@@ -1377,7 +1709,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
     final now = DateTime.now();
     final diff = now.difference(dt);
     if (diff.inDays == 0) {
-      return '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+      return '${dt.hour.toString().padLeft(2, "0")}:${dt.minute.toString().padLeft(2, "0")}';
     } else if (diff.inDays == 1) {
       return 'Yesterday';
     } else if (diff.inDays < 7) {

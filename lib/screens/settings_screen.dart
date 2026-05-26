@@ -87,6 +87,7 @@ const _kPermissions = [
   ('contacts',      'Contacts',       Icons.people_alt_outlined),
   ('pipelines',     'Pipelines',      Icons.bar_chart_rounded),
   ('appointments',  'Appointments',   Icons.calendar_today_outlined),
+  ('tasks',         'Tasks',          Icons.task_alt_outlined),
   ('campaigns',     'Campaigns',      Icons.campaign_outlined),
   ('conversations', 'Conversations',  Icons.chat_bubble_outline_rounded),
   ('reporting',     'Reporting',      Icons.show_chart_rounded),
@@ -101,6 +102,7 @@ Map<String, bool> _defaultPermissions() => {
   'contacts':      true,
   'pipelines':     true,
   'appointments':  true,
+  'tasks':         true,
   'campaigns':     false,
   'conversations': true,
   'reporting':     false,
@@ -111,6 +113,7 @@ Map<String, bool> _defaultPermissions() => {
 };
 
 // ─────────────────────────────────────────────
+//  TIMEZONE OPTIONS// ─────────────────────────────────────────────
 //  TIMEZONE OPTIONS
 // ─────────────────────────────────────────────
 
@@ -218,6 +221,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   ('Team Members',     Icons.people_outline),
   ('Notifications',    Icons.notifications_outlined),
   ('Payment Options',  Icons.payments_outlined),
+  ('Social Media',     Icons.share_rounded),
   ('Billing',          Icons.credit_card_outlined),
 ];
 
@@ -239,12 +243,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   int _sectionIndexFromName(String? name) {
     switch (name) {
-      case 'ai':       return 1;
-      case 'payments': return 7;
-      case 'billing':  return 8;
-      case 'team':     return 5;
+      case 'ai':           return 1;
+      case 'payments':     return 7;
+      case 'social':       return 8;
+      case 'billing':      return 9;
+      case 'team':         return 5;
       case 'notifications': return 6;
-      default:         return 0;
+      default:             return 0;
     }
   }
 
@@ -497,6 +502,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
         return _PaymentOptionsSection(
             business: _business, onSave: _updateBusiness);
       case 8:
+        return _SocialMediaSection(
+            business: _business, onSave: _updateBusiness);
+      case 9:
         return _BillingSection(
             business: _business, onRefresh: _loadBusiness);
       default:
@@ -3311,7 +3319,285 @@ class _PlanConfirmModal extends StatelessWidget {
 //  PAYMENT OPTIONS SECTION
 //  Drop this into settings_screen.dart
 // ─────────────────────────────────────────────
+// ─────────────────────────────────────────────
+//  SOCIAL MEDIA SECTION
+// ─────────────────────────────────────────────
 
+class _SocialMediaSection extends StatefulWidget {
+  final Map<String, dynamic> business;
+  final Future<void> Function(Map<String, dynamic>) onSave;
+  const _SocialMediaSection({required this.business, required this.onSave});
+
+  @override
+  State<_SocialMediaSection> createState() => _SocialMediaSectionState();
+}
+
+class _SocialMediaSectionState extends State<_SocialMediaSection> {
+  late bool _facebookConnected;
+  late bool _whatsappConnected;
+  bool _saving = false;
+  String? _successMsg;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _facebookConnected = widget.business['connected_facebook'] as bool? ?? false;
+    _whatsappConnected = widget.business['connected_whatsapp'] as bool? ?? false;
+  }
+
+  Future<void> _save() async {
+    setState(() { _saving = true; _error = null; _successMsg = null; });
+    try {
+      await widget.onSave({
+        'connected_facebook': _facebookConnected,
+        'connected_whatsapp': _whatsappConnected,
+      });
+      setState(() { _successMsg = 'Social media settings saved.'; _saving = false; });
+    } catch (e) {
+      setState(() { _error = e.toString(); _saving = false; });
+    }
+  }
+
+  void _showComingSoon(String name) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('$name integration coming soon!'),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return _SectionShell(
+      title: 'Social Media',
+      subtitle: 'Connect your social media accounts to communicate with leads and customers directly from NexaFlow.',
+      onSave: _save,
+      saving: _saving,
+      successMsg: _successMsg,
+      error: _error,
+      child: Column(
+        children: [
+          // Info banner
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1877F2).withValues(alpha: 0.05),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: const Color(0xFF1877F2).withValues(alpha: 0.2)),
+            ),
+            child: const Row(children: [
+              Icon(Icons.info_outline, size: 16, color: Color(0xFF1877F2)),
+              SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Connecting your social media accounts lets you receive messages, sync leads, and reply to customers — all without leaving NexaFlow. Toggle each platform to mark it as connected once you\'ve set it up.',
+                  style: TextStyle(fontSize: 12, color: Color(0xFF1877F2), height: 1.5),
+                ),
+              ),
+            ]),
+          ),
+          const SizedBox(height: 24),
+
+          // Facebook
+          _SocialCard(
+            name: 'Facebook & Messenger',
+            description: 'Connect your Facebook Business Page to sync incoming leads from Facebook Lead Ads directly into your Contacts, and reply to Messenger conversations from your NexaFlow inbox.',
+            note: 'Requires a Facebook Business Page with admin access. Lead sync works automatically once connected.',
+            color: const Color(0xFF1877F2),
+            icon: const Icon(Icons.facebook, color: Color(0xFF1877F2), size: 28),
+            isConnected: _facebookConnected,
+            onToggle: (v) => setState(() => _facebookConnected = v),
+            onConnect: () => _showComingSoon('Facebook'),
+            features: const [
+              'Sync Facebook Lead Ads to Contacts',
+              'Reply to Messenger conversations',
+              'Track ad performance in Dashboard',
+            ],
+          ),
+          const SizedBox(height: 16),
+
+          // WhatsApp
+          _SocialCard(
+            name: 'WhatsApp Business',
+            description: 'Link your WhatsApp Business account to send and receive messages with customers on the world\'s most popular messaging platform. All conversations appear in your NexaFlow inbox.',
+            note: 'Requires a WhatsApp Business account and a dedicated phone number. Messages are end-to-end encrypted.',
+            color: const Color(0xFF25D366),
+            icon: const Icon(Icons.message_rounded, color: Color(0xFF25D366), size: 28),
+            isConnected: _whatsappConnected,
+            onToggle: (v) => setState(() => _whatsappConnected = v),
+            onConnect: () => _showComingSoon('WhatsApp'),
+            features: const [
+              'Send & receive WhatsApp messages',
+              'AI can handle WhatsApp conversations',
+              'Broadcast messages to opt-in contacts',
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SocialCard extends StatelessWidget {
+  final String name;
+  final String description;
+  final String note;
+  final Color color;
+  final Widget icon;
+  final bool isConnected;
+  final ValueChanged<bool> onToggle;
+  final VoidCallback onConnect;
+  final List<String> features;
+
+  const _SocialCard({
+    required this.name,
+    required this.description,
+    required this.note,
+    required this.color,
+    required this.icon,
+    required this.isConnected,
+    required this.onToggle,
+    required this.onConnect,
+    required this.features,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 200),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: AppTheme.cardBg,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: isConnected ? color.withValues(alpha: 0.4) : AppTheme.borderColor,
+          width: isConnected ? 1.5 : 1,
+        ),
+        boxShadow: isConnected
+            ? [BoxShadow(color: color.withValues(alpha: 0.08), blurRadius: 12)]
+            : null,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 52, height: 52,
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: color.withValues(alpha: 0.15)),
+                ),
+                child: Center(child: icon),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(children: [
+                      Text(name,
+                          style: const TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w700,
+                              color: AppTheme.textPrimary)),
+                      const SizedBox(width: 10),
+                      if (isConnected)
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF10B981).withValues(alpha: 0.1),
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.check_circle, size: 11, color: Color(0xFF10B981)),
+                              SizedBox(width: 4),
+                              Text('Connected',
+                                  style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFF10B981))),
+                            ],
+                          ),
+                        ),
+                    ]),
+                    const SizedBox(height: 3),
+                    Text(description,
+                        style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary, height: 1.4)),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 16),
+              Switch(
+                value: isConnected,
+                onChanged: onToggle,
+                activeColor: color,
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          // Features list
+          Wrap(
+            spacing: 8,
+            runSpacing: 6,
+            children: features.map((f) => Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                color: color.withValues(alpha: 0.06),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: color.withValues(alpha: 0.2)),
+              ),
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                Icon(Icons.check, size: 11, color: color),
+                const SizedBox(width: 5),
+                Text(f, style: TextStyle(fontSize: 11, color: color, fontWeight: FontWeight.w500)),
+              ]),
+            )).toList(),
+          ),
+          const SizedBox(height: 12),
+          // Note + Connect button
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              color: AppTheme.pageBg,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: AppTheme.borderColor),
+            ),
+            child: Row(children: [
+              Icon(Icons.lightbulb_outline, size: 13, color: color),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(note,
+                    style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary, height: 1.4)),
+              ),
+              const SizedBox(width: 12),
+              MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: GestureDetector(
+                  onTap: onConnect,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: color.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: color.withValues(alpha: 0.3)),
+                    ),
+                    child: Text('Connect',
+                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: color)),
+                  ),
+                ),
+              ),
+            ]),
+          ),
+        ],
+      ),
+    );
+  }
+}
 class _PaymentOptionsSection extends StatefulWidget {
   final Map<String, dynamic> business;
   final Future<void> Function(Map<String, dynamic>) onSave;

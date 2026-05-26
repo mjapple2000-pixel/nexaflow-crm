@@ -187,18 +187,24 @@ class _LaunchpadScreenState extends State<LaunchpadScreen> {
                       ),
                       const Divider(height: 1, thickness: 1, color: Color(0xFFEEEEEE)),
 
-                      // Facebook
+                      // Social Media
                       _IntegrationRow(
-                        icon: ClipOval(
-                          child: Image.asset('assets/icons/Facebook-Logosu.png',
-                              width: 64, height: 64, fit: BoxFit.cover),
+                        icon: Container(
+                          width: 64,
+                          height: 64,
+                          decoration: const BoxDecoration(
+                            color: Color(0xFF1877F2),
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Icon(Icons.share_rounded, color: Colors.white, size: 32),
                         ),
-                        title: 'Connect directly with prospects and customers via Messenger in Conversations and sync your Facebook leads with your CRM.',
-                        subtitle: null,
-                        buttonLabel: 'Connect',
-                        onTap: () => _showComingSoon('Facebook'),
-                        isConnected: _facebookConnected,
-                        onMarkConnected: () => _markConnected('connected_facebook'),
+                        title: 'Connect your Social Media accounts to reach more customers.',
+                        subtitle: 'Link Facebook and WhatsApp to sync leads, reply to messages, and manage conversations — all from one place.',
+                        buttonLabel: 'Set Up',
+                        onTap: () => context.go('/settings?section=social'),
+                        isConnected: _facebookConnected || _whatsappConnected,
+                        onMarkConnected: null,
+                        showConnectedState: false,
                       ),
                       const Divider(height: 1, thickness: 1, color: Color(0xFFEEEEEE)),
 
@@ -218,19 +224,7 @@ class _LaunchpadScreenState extends State<LaunchpadScreen> {
                         isConnected: false,
                         showConnectedState: false,
                       ),
-                      const Divider(height: 1, thickness: 1, color: Color(0xFFEEEEEE)),
-
-                      // WhatsApp
-                      _IntegrationRow(
-                        icon: Image.asset('assets/icons/WhatsApp_icon.png',
-                            width: 64, height: 64, fit: BoxFit.contain),
-                        title: 'Integrate WhatsApp',
-                        subtitle: 'Connect your WhatsApp Business account for instant, real-time communication and reach out to your customers on their preferred platform.',
-                        buttonLabel: 'Connect',
-                        onTap: () => _showComingSoon('WhatsApp'),
-                        isConnected: _whatsappConnected,
-                        onMarkConnected: () => _markConnected('connected_whatsapp'),
-                      ),
+                     
                       const Divider(height: 1, thickness: 1, color: Color(0xFFEEEEEE)),
 
                       // Payment Options — navigates to Settings > Payment Options

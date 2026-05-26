@@ -268,7 +268,7 @@ class _AppNavBarState extends State<AppNavBar> {
                   ),
 
                   // ── CRM ───────────────────────────────────────────────
-                  if (_can('contacts') || _can('pipelines') || _can('appointments'))
+                  if (_can('contacts') || _can('pipelines') || _can('appointments') || _can('tasks'))
                     _SectionLabel('CRM'),
                   if (_can('contacts'))
                     _NavItem(
@@ -290,6 +290,13 @@ class _AppNavBarState extends State<AppNavBar> {
                       label: 'Calendars',
                       route: '/appointments',
                       active: location.startsWith('/appointments'),
+                    ),
+                  if (_can('tasks'))
+                    _NavItem(
+                      icon: Icons.task_alt_outlined,
+                      label: 'Tasks',
+                      route: '/tasks',
+                      active: location.startsWith('/tasks'),
                     ),
 
                   // ── MARKETING ─────────────────────────────────────────
