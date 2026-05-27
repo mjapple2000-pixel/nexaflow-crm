@@ -16,7 +16,35 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _loading = false;
   bool _obscurePassword = true;
   String? _errorMessage;
+@override
+  void initState() {
+    super.initState();
+    _handleMagicLink();
+  }
 
+  Future<void> _handleMagicLink() async {
+    final uri = Uri.base;
+    final fragment = uri.fragment;
+    if (fragment.contains('access_token')) {
+      final params = Uri.splitQueryString(fragment);
+      final accessToken = params['access_token'] ?? '';
+      final refreshToken = params['refresh_token'] ?? '';
+      final type = params['type'] ?? '';
+      if (accessToken.isNotEmpty) {
+        try {
+        await Supabase.instance.client.auth.recoverSession(accessToken);          
+          if (!mounted) return;
+          if (type == 'invite') {
+            context.go('/setup-account');
+          } else {
+            context.go('/dashboard');
+          }
+        } catch (e) {
+          debugPrint('Magic link error: $e');
+        }
+      }
+    }
+  }
   // Show a success banner if coming back from signup flow
   bool get _showSignupSuccess =>
       GoRouterState.of(context).uri.queryParameters['signup'] == 'complete';

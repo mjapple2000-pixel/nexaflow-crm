@@ -182,8 +182,7 @@ async function buildSystemPrompt(
   // Contact context
   const knownName = contactName ? firstName(contactName) : null;
   if (knownName) {
-    sections.push(`CONTACT INFO:\nThe person's name is ${knownName}. Address them by their first name naturally during the conversation.`);
-  }
+sections.push(`CONTACT INFO:\nThe person's name is ${knownName}. IMPORTANT: You already know their name. Open your very first reply by greeting them as "${knownName}" — for example "Hi ${knownName}! How can I help you today?" Never say "Hey there" or a generic greeting when you already know their name.`);  }
   if (lead?.lead_email)   sections.push(`Their email: ${lead.lead_email}`);
   if (lead?.lead_address) sections.push(`Their address: ${lead.lead_address}`);
 
@@ -445,11 +444,48 @@ Deno.serve(async (req) => {
           await supabase.from("leads").update({ lead_email: capturedEmail }).eq("id", lead.id);
         }
         collectingInfo = { ...collectingInfo, waiting_for: null, email_collected: true };
-        // Continue to booking flow — will now ask for address next if needed
 
+        // Immediately continue booking flow if booking was requested
+        if (collectingInfo.booking_requested) {
+          const currentName = conversation!.contact_name ?? knownName ?? from;
+          const first = firstName(currentName);
+          const hasAddress = lead?.lead_address || collectingInfo.address_collected;
+
+          if (!hasAddress) {
+            // Still need address — ask for it now
+            aiReply = `Great! And could I get your full address, ${first}?`;
+            await supabase.from("conversations").update({
+              collecting_info: { ...collectingInfo, waiting_for: "address" },
+            }).eq("id", conversationId);
+            skipNormalFlow = true;
+          } else {
+            // Have everything — find and offer slots
+            const { data: existingAppts } = await supabase
+              .from("appointments")
+              .select("start_date_time, end_date_time")
+              .eq("business_id", businessId)
+              .gte("start_date_time", new Date().toISOString());
+
+            const availability   = business.availability_hours ?? {};
+            const slotDuration   = business.slot_duration_minutes ?? 60;
+            const availableSlots = await findAvailableSlots(businessId, availability, slotDuration, existingAppts ?? []);
+
+            if (availableSlots.length === 0) {
+              aiReply = `I'm sorry ${first}, I don't see any open slots in the next two weeks. I'll have someone from our team follow up with you directly.`;
+            } else {
+              await supabase.from("conversations").update({
+                pending_booking_slots: availableSlots,
+                collecting_info: { ...collectingInfo, waiting_for: null },
+              }).eq("id", conversationId);
+              const slotList = availableSlots.map((s, i) => `${i + 1}) ${s.label}`).join("  ");
+              aiReply = `Perfect! Here are our next available times, ${first}: ${slotList}. Reply 1, 2, or 3 to book your spot.`;
+            }
+            skipNormalFlow = true;
+          }
+        }
       }
-
-    } else if (collectingInfo.waiting_for === "address") {
+    }
+      else if (collectingInfo.waiting_for === "address") {
       if (looksLikeAddress(body)) {
         const capturedAddress = body.trim();
         await supabase.from("conversations").update({
@@ -459,7 +495,33 @@ Deno.serve(async (req) => {
           await supabase.from("leads").update({ lead_address: capturedAddress }).eq("id", lead.id);
         }
         collectingInfo = { ...collectingInfo, waiting_for: null, address_collected: true };
-        // Continue to booking flow — will now offer slots
+
+        // Immediately find and offer slots now that we have everything
+        if (collectingInfo.booking_requested) {
+          const currentName = conversation!.contact_name ?? knownName ?? from;
+          const first = firstName(currentName);
+          const { data: existingAppts } = await supabase
+            .from("appointments")
+            .select("start_date_time, end_date_time")
+            .eq("business_id", businessId)
+            .gte("start_date_time", new Date().toISOString());
+
+          const availability   = business.availability_hours ?? {};
+          const slotDuration   = business.slot_duration_minutes ?? 60;
+          const availableSlots = await findAvailableSlots(businessId, availability, slotDuration, existingAppts ?? []);
+
+          if (availableSlots.length === 0) {
+            aiReply = `I'm sorry ${first}, I don't see any open slots in the next two weeks. I'll have someone from our team follow up with you directly.`;
+          } else {
+            await supabase.from("conversations").update({
+              pending_booking_slots: availableSlots,
+              collecting_info: { ...collectingInfo, waiting_for: null },
+            }).eq("id", conversationId);
+            const slotList = availableSlots.map((s, i) => `${i + 1}) ${s.label}`).join("  ");
+            aiReply = `Perfect! Here are our next available times, ${first}: ${slotList}. Reply 1, 2, or 3 to book your spot.`;
+          }
+          skipNormalFlow = true;
+        }
       }
     }
 

@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"></head>
+<body>
+<script>
+  const hash = window.location.hash;
+  if (hash && hash.includes('access_token')) {
+    const params = new URLSearchParams(hash.replace('#', ''));
+    const type = params.get('type');
+    const token = hash;
+    if (type === 'invite') {
+      window.location.href = '/?invite' + token;
+    } else {
+      window.location.href = '/' + token;
+    }
+  } else {
+    window.location.href = '/';
+  }
+</script>
+</body>
+</html>
