@@ -213,10 +213,11 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
   }
 
   String _fmtTime(DateTime dt) {
-    final h = dt.hour == 0 ? 12 : dt.hour > 12 ? dt.hour - 12 : dt.hour;
-    final m = dt.minute.toString().padLeft(2, '0');
-    return '$h:$m ${dt.hour < 12 ? 'AM' : 'PM'}';
-  }
+  final local = dt.isUtc ? dt.toLocal() : dt;
+  final h = local.hour == 0 ? 12 : local.hour > 12 ? local.hour - 12 : local.hour;
+  final m = local.minute.toString().padLeft(2, '0');
+  return '$h:$m ${local.hour < 12 ? 'AM' : 'PM'}';
+}
 
   Color _statusColor(String status) {
     switch (status.toLowerCase()) {
@@ -560,8 +561,8 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
                 ),
                 // Appointment blocks
                 ...dayAppts.map((a) {
-                  final start = DateTime.parse(a['start_date_time'] as String);
-                  final end   = DateTime.parse(a['end_date_time']   as String);
+                  final start = DateTime.parse(a['start_date_time'] as String).toLocal();
+                  final end   = DateTime.parse(a['end_date_time']   as String).toLocal();
                   final offsetHours = start.hour + start.minute / 60.0 - range.startHour;
                   if (offsetHours < 0) return const SizedBox.shrink();
                   final top    = offsetHours * hourHeight;
@@ -706,11 +707,11 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
                 ),
                 // Appointment blocks
                 ..._appointments.where((a) {
-                  final dt = DateTime.tryParse(a['start_date_time'] ?? '');
+                  final dt = DateTime.tryParse(a['start_date_time'] ?? '')?.toLocal();
                   return dt != null && days.any((d) => DateUtils.isSameDay(d, dt));
                 }).map((a) {
-                  final start    = DateTime.parse(a['start_date_time'] as String);
-                  final end      = DateTime.parse(a['end_date_time']   as String);
+                  final start    = DateTime.parse(a['start_date_time'] as String).toLocal();
+                  final end      = DateTime.parse(a['end_date_time']   as String).toLocal();
                   final dayIndex = days.indexWhere((d) => DateUtils.isSameDay(d, start));
                   if (dayIndex < 0) return const SizedBox.shrink();
                   final offsetHours = start.hour + start.minute / 60.0 - range.startHour;
@@ -802,7 +803,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
               final date     = DateTime(_focusDate.year, _focusDate.month, dayNum);
               final isToday  = DateUtils.isSameDay(date, now);
               final dayAppts = _appointments.where((a) {
-                final dt = DateTime.tryParse(a['start_date_time'] ?? '');
+              final dt = DateTime.tryParse(a['start_date_time'] ?? '')?.toLocal();
                 return dt != null && DateUtils.isSameDay(dt, date);
               }).toList();
 
@@ -930,10 +931,10 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
                     final date = DateTime(_focusDate.year, _focusDate.month, day);
                     final isToday    = DateUtils.isSameDay(date, now);
                     final isSelected = DateUtils.isSameDay(date, _focusDate);
-                    final hasAppt    = _appointments.any((a) {
-                      final dt = DateTime.tryParse(a['start_date_time'] ?? '');
-                      return dt != null && DateUtils.isSameDay(dt, date);
-                    });
+                    final hasAppt = _appointments.any((a) {
+                    final dt = DateTime.tryParse(a['start_date_time'] ?? '')?.toLocal();
+                    return dt != null && DateUtils.isSameDay(dt, date);
+                  });
                     return Clickable(
                       onTap: () => setState(() { _focusDate = date; _calView = 'day'; }),
                       child: Container(
@@ -1931,10 +1932,11 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
       ));
   }
 
-  String _fmtTime(DateTime dt) {
-    final h = dt.hour == 0 ? 12 : dt.hour > 12 ? dt.hour - 12 : dt.hour;
-    return '$h:${dt.minute.toString().padLeft(2, '0')} ${dt.hour < 12 ? 'AM' : 'PM'}';
-  }
+ String _fmtTime(DateTime dt) {
+  final local = dt.isUtc ? dt.toLocal() : dt;
+  final h = local.hour == 0 ? 12 : local.hour > 12 ? local.hour - 12 : local.hour;
+  return '$h:${local.minute.toString().padLeft(2, '0')} ${local.hour < 12 ? 'AM' : 'PM'}';
+}
 
   String _fmtFullDate(DateTime dt) {
     const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];

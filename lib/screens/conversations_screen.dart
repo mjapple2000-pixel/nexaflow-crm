@@ -166,7 +166,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
   bool _togglingAi = false;
   String _filter = 'all';
   String _searchQuery = '';
-  String _subTab = 'recents';
+  String _subTab = 'all';
   String _sortOrder = 'latest';
   String _sendChannel = 'sms';
 
@@ -470,6 +470,12 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
     await _loadConversations();
   }
 
+  Future<void> _unarchiveConversation(Conversation c) async {
+    await _supabase.from('conversations').update({'status': 'open'}).eq('id', c.id);
+    if (mounted) setState(() => _selected = null);
+    await _loadConversations();
+  }
+
   Future<void> _toggleStatus(Conversation c) async {
     final newStatus = c.status == 'open' ? 'closed' : 'open';
     await _supabase
@@ -610,10 +616,11 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
             ),
             child: Row(
               children: [
-                _subTabItem('Unread', 'unread', badge: totalUnread > 0 ? totalUnread : null),
-                _subTabItem('Recents', 'recents'),
-                _subTabItem('Starred', 'starred'),
-                _subTabItem('All', 'all'),
+                _subTabItem('All', 'all', badge: totalUnread > 0 ? totalUnread : null),
+                _subTabItem('Unread', 'unread'),
+                _subTabItem('SMS', 'sms'),
+                _subTabItem('Email', 'email'),
+                _subTabItem('Archived', 'archived'),
               ],
             ),
           ),
@@ -692,9 +699,12 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                 : _error != null
                     ? _errorView()
                     : Builder(builder: (_) {
-                        var filtered = _subTab == 'unread'
-                            ? _conversations.where((c) => c.unreadCount > 0).toList()
-                            : _conversations;
+                        var filtered = _subTab == 'archived'
+                    ? _conversations.where((c) => c.status == 'archived').toList()
+                    : _conversations.where((c) => c.status != 'archived').toList();
+                        if (_subTab == 'unread') filtered = filtered.where((c) => c.unreadCount > 0).toList();
+                        if (_subTab == 'sms')    filtered = filtered.where((c) => c.channel == 'sms').toList();
+                        if (_subTab == 'email')  filtered = filtered.where((c) => c.channel == 'email').toList();
                         if (_searchQuery.isNotEmpty) {
                           filtered = filtered.where((c) =>
                               c.contactName.toLowerCase().contains(_searchQuery) ||
@@ -1158,9 +1168,14 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
           MouseRegion(
             cursor: SystemMouseCursors.click,
             child: OutlinedButton.icon(
-              onPressed: () => _archiveConversation(c),
-              icon: const Icon(Icons.archive_outlined, size: 14),
-              label: const Text('Archive', style: TextStyle(fontSize: 12)),
+              onPressed: c.status == 'archived'
+                  ? () => _unarchiveConversation(c)
+                  : () => _archiveConversation(c),
+              icon: Icon(c.status == 'archived'
+                  ? Icons.unarchive_outlined
+                  : Icons.archive_outlined, size: 14),
+              label: Text(c.status == 'archived' ? 'Unarchive' : 'Archive',
+                  style: const TextStyle(fontSize: 12)),
               style: OutlinedButton.styleFrom(
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                 minimumSize: Size.zero,

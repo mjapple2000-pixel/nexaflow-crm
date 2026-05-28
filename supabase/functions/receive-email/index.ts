@@ -129,8 +129,14 @@ async function ensureLeadExists(businessId: number, email: string, name: string,
     return existing.id;
   }
   const { data: created } = await supabase.from("leads").insert({
-    business_id: businessId, lead_name: name, lead_email: email, lead_status: "In Conversation",
-  }).select("id").maybeSingle();
+  business_id: businessId,
+  lead_name: name,
+  lead_email: email,
+  lead_status: "In Conversation",
+  date_added: new Date().toISOString(),
+  last_message_at: new Date().toISOString(),
+  source: "Email",
+}).select("id").maybeSingle();
   return created!.id;
 }
 
@@ -141,7 +147,7 @@ async function findAvailableSlots(
   existingAppointments: Array<{ start_date_time: string; end_date_time: string }>
 ): Promise<Array<{ label: string; start: string; end: string }>> {
   const slots: Array<{ label: string; start: string; end: string }> = [];
-  const now        = new Date();
+  const now       = new Date();
   const dayNames   = ["sunday","monday","tuesday","wednesday","thursday","friday","saturday"];
   const dayShort   = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
   const monthShort = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -157,7 +163,8 @@ async function findAvailableSlots(
     const blocks: Array<{ start: string; end: string }> = dayConf.blocks ?? [];
 
     let cursor = new Date(date); cursor.setHours(startH, startM, 0, 0);
-    const dayEnd = new Date(date); dayEnd.setHours(endH, endM, 0, 0);
+    const dayEnd = new Date(date);
+          dayEnd.setHours(endH, endM, 0, 0);
 
     while (cursor < dayEnd && slots.length < 3) {
       const slotStart = new Date(cursor);
@@ -170,18 +177,20 @@ async function findAvailableSlots(
       const blockedByConfig = blocks.some((b) => {
         const [bSH, bSM] = (b.start as string).split(":").map(Number);
         const [bEH, bEM] = (b.end   as string).split(":").map(Number);
-        const bS = new Date(date); bS.setHours(bSH, bSM, 0, 0);
-        const bE = new Date(date); bE.setHours(bEH, bEM, 0, 0);
+        const bStart = new Date(date); bStart.setHours(bSH + TZ_OFFSET_HOURS, bSM, 0, 0);
+        const bEnd   = new Date(date); bEnd.setHours(bEH + TZ_OFFSET_HOURS, bEM, 0, 0);
         return slotStart < bE && slotEnd > bS;
       });
       const blockedByAppt = existingAppointments.some((a) =>
         slotStart < new Date(a.end_date_time) && slotEnd > new Date(a.start_date_time)
       );
       if (!blockedByConfig && !blockedByAppt) {
-        const h  = slotStart.getHours();
+        const TZ_OFFSET_MS = -4 * 60 * 60 * 1000; // EDT = UTC-4
+        const localStart   = new Date(slotStart.getTime() + TZ_OFFSET_MS);
+        const h  = localStart.getUTCHours();
         const hr = h === 0 ? 12 : h > 12 ? h - 12 : h;
         slots.push({
-          label: `${dayShort[slotStart.getDay()]} ${monthShort[slotStart.getMonth()]} ${slotStart.getDate()} at ${hr}:${slotStart.getMinutes().toString().padStart(2,"0")} ${h < 12 ? "AM" : "PM"}`,
+          label: `${dayShort[localStart.getUTCDay()]} ${monthShort[localStart.getUTCMonth()]} ${localStart.getUTCDate()} at ${hr}:${localStart.getUTCMinutes().toString().padStart(2,"0")} ${h < 12 ? "AM" : "PM"}`,
           start: slotStart.toISOString(), end: slotEnd.toISOString(),
         });
       }
@@ -622,6 +631,13 @@ Deno.serve(async (req) => {
       direction: "outbound", channel: "email", status: "delivered", sender_name: "AI Assistant", sent_via_twiml: true,
     });
     await supabase.from("conversations").update({ last_message: aiReply.slice(0, 200), last_message_at: new Date().toISOString() }).eq("id", conversationId);
+    
+    // Update lead last_message_at
+    if (lead?.id) {
+      await supabase.from("leads").update({
+        last_message_at: new Date().toISOString(),
+      }).eq("id", lead.id);
+    }
 
     if (isNewConvo) {
       fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/run-automation`, {

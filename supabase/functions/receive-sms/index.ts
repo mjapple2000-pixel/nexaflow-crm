@@ -82,9 +82,9 @@ async function findAvailableSlots(
 
     // Generate slots for this day
     let cursor = new Date(date);
-    cursor.setHours(startH, startM, 0, 0);
-    const dayEnd = new Date(date);
-    dayEnd.setHours(endH, endM, 0, 0);
+      cursor.setHours(startH, startM, 0, 0);
+      const dayEnd = new Date(date);
+        dayEnd.setHours(endH, endM, 0, 0);
 
     while (cursor < dayEnd && slots.length < 3) {
       const slotStart = new Date(cursor);
@@ -102,8 +102,8 @@ async function findAvailableSlots(
       const blockedByDayConfig = blocks.some((b) => {
         const [bSH, bSM] = (b.start as string).split(":").map(Number);
         const [bEH, bEM] = (b.end   as string).split(":").map(Number);
-        const bStart = new Date(date); bStart.setHours(bSH, bSM, 0, 0);
-        const bEnd   = new Date(date); bEnd.setHours(bEH, bEM, 0, 0);
+        const bStart = new Date(date); bStart.setHours(bSH + TZ_OFFSET_HOURS, bSM, 0, 0);
+        const bEnd   = new Date(date); bEnd.setHours(bEH + TZ_OFFSET_HOURS, bEM, 0, 0);
         return slotStart < bEnd && slotEnd > bStart;
       });
 
@@ -115,20 +115,21 @@ async function findAvailableSlots(
       });
 
       if (!blockedByDayConfig && !blockedByAppt) {
-        const dow = dayShort[slotStart.getDay()];
-        const mon = monthShort[slotStart.getMonth()];
-        const day = slotStart.getDate();
-        const h   = slotStart.getHours();
-        const m   = slotStart.getMinutes().toString().padStart(2, "0");
+        const TZ_OFFSET_MS = -4 * 60 * 60 * 1000; // EDT = UTC-4
+        const localStart   = new Date(slotStart.getTime() + TZ_OFFSET_MS);
+        const h   = localStart.getUTCHours();
+        const m   = localStart.getUTCMinutes().toString().padStart(2, "0");
         const hr  = h === 0 ? 12 : h > 12 ? h - 12 : h;
         const per = h < 12 ? "AM" : "PM";
+        const dow = dayShort[localStart.getUTCDay()];
+        const mon = monthShort[localStart.getUTCMonth()];
+        const day = localStart.getUTCDate();
         slots.push({
           label: `${dow} ${mon} ${day} at ${hr}:${m} ${per}`,
           start: slotStart.toISOString(),
           end:   slotEnd.toISOString(),
         });
       }
-
       cursor.setMinutes(cursor.getMinutes() + slotDurationMinutes);
     }
   }
@@ -417,7 +418,10 @@ Deno.serve(async (req) => {
             lead_name:   capturedName,
             lead_phone:  from,
             lead_status: "In Conversation",
-          });
+            date_added:  new Date().toISOString(),
+            last_message_at: new Date().toISOString(),
+            source: "SMS",
+        });
         }
 
         collectingInfo = { ...collectingInfo, waiting_for: null, name_collected: true };
@@ -738,7 +742,12 @@ Deno.serve(async (req) => {
       last_message:    aiReply,
       last_message_at: new Date().toISOString(),
     }).eq("id", conversationId);
-
+    // Update lead last_message_at
+    if (lead?.id) {
+    await supabase.from("leads").update({
+      last_message_at: new Date().toISOString(),
+    }).eq("id", lead.id);
+  }
     // ── Fire new_lead automation on first contact ─────────────────────────────
     if (isNewConvo) {
       fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/run-automation`, {
