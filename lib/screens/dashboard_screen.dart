@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme/app_theme.dart';
 import '../widgets/clickable.dart';
+import '../screens/business_picker_screen.dart';
 
 // ── Date range options ────────────────────────────────────────────────────────
 enum _DateRange { today, thisWeek, thisMonth, thisQuarter }
@@ -115,7 +116,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
-  Future<void> _loadBusinessInfo() async {
+ Future<void> _loadBusinessInfo() async {
+    // Superuser impersonation takes priority
+    if (SuperuserState.impersonatedBusinessId != null) {
+      _businessId   = SuperuserState.impersonatedBusinessId;
+      _businessName = SuperuserState.impersonatedBusinessName ?? '';
+      debugPrint('Dashboard using impersonated business ID: $_businessId name: $_businessName');
+      return;
+    }
+    debugPrint('Dashboard using profile business ID (no impersonation)');
+
     final profile = await _db
         .from('profiles')
         .select('business_id, businesses(business_name)')

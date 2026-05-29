@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme/app_theme.dart';
 import '../widgets/clickable.dart';
+import '../utils/business_utils.dart';
 
 class AiChatScreen extends StatefulWidget {
   const AiChatScreen({super.key});
@@ -55,13 +56,7 @@ class _AiChatScreenState extends State<AiChatScreen> {
   Future<void> _loadBusiness() async {
     setState(() => _loading = true);
     try {
-      final userId = _db.auth.currentUser?.id;
-      final profileRes = await _db
-          .from('profiles')
-          .select('business_id')
-          .eq('user_id', userId!)
-          .maybeSingle();
-      _businessId = profileRes?['business_id'] as int?;
+      _businessId = await getActiveBusinessId();
       if (_businessId == null) return;
 
       final data = await _db

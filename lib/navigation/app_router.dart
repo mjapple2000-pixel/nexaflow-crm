@@ -20,10 +20,14 @@ import '../screens/automations_screen.dart';
 import '../screens/launchpad_screen.dart';
 import '../screens/tasks_screen.dart';
 import '../screens/setup_account_screen.dart';
+import '../screens/business_picker_screen.dart';
 import '../theme/app_theme.dart';
+import 'dart:convert';
+import 'package:http/http.dart' as http;
 
 class AppRouter {
   static String _initialRoute = '/login';
+  static bool? cachedIsSuperuser;
 
   static void setInitialRoute(String route) {
     _initialRoute = route;
@@ -43,10 +47,12 @@ class AppRouter {
       final isSetupPage = loc == '/setup-account';
       final isErrorPage = loc == '/error';
       final isRootPage = loc == '/';
+      final isBusinessPicker = loc == '/business-picker';
 
       if (isRootPage) return '/login';
       if (isErrorPage) return null;
       if (isSetupPage) return isLoggedIn ? null : '/login';
+      if (isBusinessPicker) return isLoggedIn ? null : '/login';
 
       if (isLoginPage || isSignupPage) {
         if (isLoggedIn) {
@@ -90,6 +96,9 @@ class AppRouter {
         return null;
       }
 
+      if (isLoggedIn && !isBusinessPicker && cachedIsSuperuser == true && SuperuserState.impersonatedBusinessId == null) {
+        return '/business-picker';
+      }
       if (!isLoggedIn) return '/login';
       return null;
     },
@@ -112,6 +121,11 @@ class AppRouter {
         path: '/setup-account',
         name: 'setup-account',
         builder: (context, state) => const SetupAccountScreen(),
+      ),
+      GoRoute(
+        path: '/business-picker',
+        name: 'business-picker',
+        builder: (context, state) => const BusinessPickerScreen(),
       ),
       GoRoute(
         path: '/error',

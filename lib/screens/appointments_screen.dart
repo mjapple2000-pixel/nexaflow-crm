@@ -4,6 +4,8 @@ import '../theme/app_theme.dart';
 import '../widgets/clickable.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import '../utils/business_utils.dart';
+
 
 class AppointmentsScreen extends StatefulWidget {
   const AppointmentsScreen({super.key});
@@ -102,14 +104,8 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
   Future<void> _load() async {
     setState(() => _loading = true);
     try {
-      final userId = _db.auth.currentUser?.id;
-      final profileRes = await _db
-          .from('profiles')
-          .select('business_id, full_name')
-          .eq('user_id', userId!)
-          .maybeSingle();
-      _businessId = profileRes?['business_id'] as int?;
-      _ownerName  = profileRes?['full_name'] as String? ?? 'Owner';
+      _businessId = await getActiveBusinessId();
+      _ownerName  = 'Owner';
       if (_businessId == null) return;
 
       final results = await Future.wait([

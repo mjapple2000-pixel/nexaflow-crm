@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme/app_theme.dart';
 import '../widgets/clickable.dart';
+import '../utils/business_utils.dart';
 
 // ─────────────────────────────────────────────
 //  MODEL
@@ -97,15 +98,13 @@ class _TasksScreenState extends State<TasksScreen> {
   }
 
   Future<void> _loadBusinessId() async {
+    _businessId = await getActiveBusinessId();
     final res = await _db
         .from('profiles')
-        .select('business_id, full_name')
+        .select('full_name')
         .eq('user_id', _currentUserId!)
         .maybeSingle();
-    if (res != null) {
-      _businessId = res['business_id'] as int?;
-      _currentUserName = res['full_name'] as String?;
-    }
+    _currentUserName = res?['full_name'] as String?;
   }
 
   Future<void> _loadTasks() async {
@@ -221,7 +220,6 @@ class _TasksScreenState extends State<TasksScreen> {
         teamMembers: _teamMembers,
         existing: existing,
         onSaved: () {
-          Navigator.pop(context);
           _loadTasks();
         },
       ),
@@ -785,9 +783,14 @@ class _TaskDialogState extends State<_TaskDialog> {
       } else {
         await _db.from('tasks').insert(payload);
       }
+      if (mounted) Navigator.of(context, rootNavigator: true).pop();
       widget.onSaved();
     } catch (e) {
       debugPrint('Task save error: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red));
+      }
       setState(() => _saving = false);
     }
   }
@@ -820,7 +823,7 @@ class _TaskDialogState extends State<_TaskDialog> {
                         color: AppTheme.textPrimary)),
                 const Spacer(),
                 TextButton(
-                    onPressed: () => Navigator.pop(context),
+                    onPressed: () => Navigator.of(context, rootNavigator: true).pop(),
                     child: const Text('Cancel')),
                 const SizedBox(width: 8),
                 ElevatedButton(

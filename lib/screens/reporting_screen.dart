@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme/app_theme.dart';
 import '../widgets/clickable.dart';
+import '../utils/business_utils.dart';
 
 // ─────────────────────────────────────────────
 //  REPORTING SCREEN
@@ -55,13 +56,7 @@ class _ReportingScreenState extends State<ReportingScreen> {
 
     try {
       final userId = _supabase.auth.currentUser?.id;
-      final profileRes = await _supabase
-          .from('profiles')
-          .select('business_id')
-          .eq('user_id', userId!)
-          .maybeSingle();
-
-      _businessId = profileRes?['business_id'] as int?;
+      _businessId = await getActiveBusinessId();
       if (_businessId == null) throw Exception('No business found.');
 
       final since = DateTime.now()

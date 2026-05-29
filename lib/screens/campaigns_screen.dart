@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme/app_theme.dart';
 import '../widgets/clickable.dart';
+import '../utils/business_utils.dart';
 
 // ─────────────────────────────────────────────
 //  CAMPAIGNS SCREEN
@@ -39,13 +40,7 @@ class _CampaignsScreenState extends State<CampaignsScreen> {
       final userId = _supabase.auth.currentUser?.id;
       if (userId == null) throw Exception('Not authenticated');
 
-      final profileRes = await _supabase
-          .from('profiles')
-          .select('business_id')
-          .eq('user_id', userId)
-          .maybeSingle();
-
-      _businessId = profileRes?['business_id'] as int?;
+      _businessId = await getActiveBusinessId();
       if (_businessId == null) throw Exception('No business found');
 
       final res = await _supabase

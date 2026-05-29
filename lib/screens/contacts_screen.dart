@@ -7,6 +7,7 @@ import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:universal_html/html.dart' as html;
 import '../theme/app_theme.dart';
+import '../utils/business_utils.dart';
 
 // ─────────────────────────────────────────────
 //  MODEL
@@ -182,12 +183,9 @@ class _ContactsScreenState extends State<ContactsScreen> {
   Future<void> _loadLeads() async {
     setState(() { _loading = true; _error = null; });
     try {
-      final user = _db.auth.currentUser;
-      if (user == null) return;
-      final profile = await _db.from('profiles').select('business_id')
-          .eq('user_id', user.id).maybeSingle();
-      if (profile == null) return;
-      _businessId = (profile['business_id'] as num).toInt();
+      _businessId = await getActiveBusinessId();
+      debugPrint('Contacts using business ID: $_businessId');
+      if (_businessId == null) return;
 
       final data = await _db.from('leads').select(
         'id, lead_name, lead_email, lead_phone, lead_status, source, '

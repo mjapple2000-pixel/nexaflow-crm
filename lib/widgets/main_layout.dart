@@ -4,6 +4,8 @@ import 'package:go_router/go_router.dart';
 import '../theme/app_theme.dart';
 import '../widgets/clickable.dart';
 import '../widgets/nexaflow_support_bubble.dart';
+import '../navigation/app_router.dart';
+import '../screens/business_picker_screen.dart';
 
 // Below this width, show the "please use desktop" screen
 const double _kMinDesktopWidth = 800;
@@ -588,6 +590,9 @@ class _UserRowState extends State<_UserRow> {
       ),
     );
     if (doLogout && context.mounted) {
+      AppRouter.cachedIsSuperuser = null;
+      SuperuserState.impersonatedBusinessId = null;
+      SuperuserState.impersonatedBusinessName = null;
       await Supabase.instance.client.auth.signOut();
       if (context.mounted) context.go('/login');
     }

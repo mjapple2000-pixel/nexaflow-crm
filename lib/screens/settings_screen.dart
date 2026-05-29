@@ -7,6 +7,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../theme/app_theme.dart';
 import '../widgets/clickable.dart';
 import '../widgets/invite_member_dialog.dart';
+import '../utils/business_utils.dart';
 
 // ─────────────────────────────────────────────
 //  STRIPE PLAN CONFIG
@@ -260,12 +261,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     setState(() { _loading = true; _error = null; });
     try {
       final userId = _supabase.auth.currentUser?.id;
-      final profileRes = await _supabase
-          .from('profiles')
-          .select('business_id')
-          .eq('user_id', userId!)
-          .maybeSingle();
-      _businessId = profileRes?['business_id'] as int?;
+      _businessId = await getActiveBusinessId();
       if (_businessId == null) throw Exception('No business found.');
       final res = await _supabase
           .from('businesses')

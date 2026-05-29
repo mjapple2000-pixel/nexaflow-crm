@@ -4,6 +4,7 @@ import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme/app_theme.dart';
 import '../widgets/clickable.dart';
+import '../utils/business_utils.dart';
 
 // ─────────────────────────────────────────────
 //  MODELS
@@ -211,10 +212,17 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
       _error = null;
     });
     try {
-      final res = await _supabase
-          .from('conversations')
-          .select()
-          .order('last_message_at', ascending: false);
+      final businessId = await getActiveBusinessId();
+      final res = businessId != null
+          ? await _supabase
+              .from('conversations')
+              .select()
+              .eq('business_id', businessId)
+              .order('last_message_at', ascending: false)
+          : await _supabase
+              .from('conversations')
+              .select()
+              .order('last_message_at', ascending: false);
 
       var convos = (res as List).map((e) => Conversation.fromJson(e)).toList();
 
@@ -388,13 +396,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
 
     try {
       final userId = _supabase.auth.currentUser?.id;
-      final profileRes = await _supabase
-          .from('profiles')
-          .select('business_id')
-          .eq('user_id', userId!)
-          .maybeSingle();
-
-      final businessId = profileRes?['business_id'] as int?;
+      final businessId = await getActiveBusinessId();
       if (businessId == null) throw Exception('No business found.');
 
       // Insert to DB — webhook fires and sends via Twilio automatically

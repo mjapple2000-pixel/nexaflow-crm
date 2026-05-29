@@ -2,6 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:go_router/go_router.dart';
 import '../theme/app_theme.dart';
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+import '../navigation/app_router.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -63,46 +66,70 @@ class _LoginScreenState extends State<LoginScreen> {
     });
 
     try {
-      await Supabase.instance.client.auth.signInWithPassword(
+      final authResponse = await Supabase.instance.client.auth.signInWithPassword(
         email: _emailController.text.trim(),
         password: _passwordController.text.trim(),
       );
 
       if (!mounted) return;
 
-      // Check if this is their first login
-      final userId = Supabase.instance.client.auth.currentUser?.id;
-      if (userId != null) {
-        final profileRes = await Supabase.instance.client
-            .from('profiles')
-            .select('business_id')
-            .eq('user_id', userId)
-            .maybeSingle();
-        final businessId = profileRes?['business_id'] as int?;
+      final session = authResponse.session;
+      if (session == null) {
+        setState(() => _errorMessage = 'Login failed. Please try again.');
+        return;
+      }
 
-        if (businessId != null) {
-          final bizRes = await Supabase.instance.client
-              .from('businesses')
-              .select('has_logged_in_before')
-              .eq('id', businessId)
-              .maybeSingle();
+      // ── Superuser check ──────────────────────────────────────────
+      final superRes = await http.post(
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/check-superuser'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ${session.accessToken}',
+        },
+      );
 
-          final hasLoggedInBefore =
-              bizRes?['has_logged_in_before'] as bool? ?? false;
+      if (!mounted) return;
 
-          if (!hasLoggedInBefore) {
-            // First login — mark it and go to Launchpad
-            await Supabase.instance.client
-                .from('businesses')
-                .update({'has_logged_in_before': true})
-                .eq('id', businessId);
-            if (mounted) context.go('/launchpad');
-            return;
-          }
+      if (superRes.statusCode == 200) {
+        final body = jsonDecode(superRes.body);
+        AppRouter.cachedIsSuperuser = body['is_superuser'] == true;
+        if (AppRouter.cachedIsSuperuser == true) {
+          context.go('/business-picker');
+          return;
         }
       }
 
-      // Every login after the first → Dashboard
+      // ── Normal user flow ─────────────────────────────────────────
+      final userId = session.user.id;
+      final profileRes = await Supabase.instance.client
+          .from('profiles')
+          .select('business_id')
+          .eq('user_id', userId)
+          .maybeSingle();
+      final businessId = profileRes?['business_id'] as int?;
+
+      if (!mounted) return;
+
+      if (businessId != null) {
+        final bizRes = await Supabase.instance.client
+            .from('businesses')
+            .select('has_logged_in_before')
+            .eq('id', businessId)
+            .maybeSingle();
+
+        final hasLoggedInBefore =
+            bizRes?['has_logged_in_before'] as bool? ?? false;
+
+        if (!hasLoggedInBefore) {
+          await Supabase.instance.client
+              .from('businesses')
+              .update({'has_logged_in_before': true})
+              .eq('id', businessId);
+          if (mounted) context.go('/launchpad');
+          return;
+        }
+      }
+
       if (mounted) context.go('/dashboard');
 
     } on AuthException catch (e) {

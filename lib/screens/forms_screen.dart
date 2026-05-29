@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import '../utils/business_utils.dart';
 
 class FormsScreen extends StatefulWidget {
   const FormsScreen({super.key});
@@ -28,13 +29,7 @@ class _FormsScreenState extends State<FormsScreen> {
 
   Future<void> _loadData() async {
     setState(() => _loading = true);
-    final userId = _db.auth.currentUser?.id;
-    final profileRes = await _db
-        .from('profiles')
-        .select('business_id')
-        .eq('user_id', userId!)
-        .maybeSingle();
-    _businessId = profileRes?['business_id'] as int?;
+    _businessId = await getActiveBusinessId();
 
     if (_businessId != null) {
       final forms = await _db

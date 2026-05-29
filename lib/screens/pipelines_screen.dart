@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme/app_theme.dart';
+import '../utils/business_utils.dart';
 
 // ─────────────────────────────────────────────
 //  MODELS
@@ -135,11 +136,9 @@ class _PipelinesScreenState extends State<PipelinesScreen> {
     try {
       final user = _db.auth.currentUser;
       if (user == null) return;
-      final profile = await _db.from('profiles').select('business_id')
-          .eq('user_id', user.id).maybeSingle();
+      _businessId = await getActiveBusinessId();
       if (!mounted) return;
-      if (profile == null) return;
-      _businessId = (profile['business_id'] as num).toInt();
+      if (_businessId == null) return;
 
       final stagesData = await _db.from('pipeline_stages').select().order('sort_order');
       if (!mounted) return;
