@@ -248,6 +248,11 @@ class _AppNavBarState extends State<AppNavBar> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             _LogoArea(),
+
+            // ── Superuser business switcher — only visible to superusers ──
+            if (AppRouter.cachedIsSuperuser == true)
+              _SuperuserBanner(),
+
             Expanded(
               child: ListView(
                 padding: const EdgeInsets.symmetric(vertical: 8),
@@ -372,6 +377,89 @@ class _AppNavBarState extends State<AppNavBar> {
             _UserRow(),
           ],
         ),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+//  SUPERUSER BUSINESS SWITCHER BANNER
+// ─────────────────────────────────────────────
+class _SuperuserBanner extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    final businessName =
+        SuperuserState.impersonatedBusinessName ?? 'Unknown Business';
+
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF2D2200),
+        border: Border(
+          bottom: BorderSide(color: Colors.amber.withValues(alpha: 0.25)),
+        ),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.shield_outlined,
+                  size: 10, color: Colors.amber),
+              const SizedBox(width: 5),
+              const Text(
+                'SUPERUSER MODE',
+                style: TextStyle(
+                  color: Colors.amber,
+                  fontSize: 8.5,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 1.1,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 5),
+          Text(
+            businessName,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 11.5,
+              fontWeight: FontWeight.w600,
+            ),
+            overflow: TextOverflow.ellipsis,
+            maxLines: 1,
+          ),
+          const SizedBox(height: 6),
+          Clickable(
+            onTap: () => context.go('/business-picker'),
+            child: Container(
+              height: 24,
+              decoration: BoxDecoration(
+                color: Colors.amber.withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(5),
+                border: Border.all(
+                    color: Colors.amber.withValues(alpha: 0.4), width: 1),
+              ),
+              alignment: Alignment.center,
+              child: const Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.swap_horiz_rounded,
+                      size: 12, color: Colors.amber),
+                  SizedBox(width: 5),
+                  Text(
+                    'Switch Business',
+                    style: TextStyle(
+                      color: Colors.amber,
+                      fontSize: 10.5,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
