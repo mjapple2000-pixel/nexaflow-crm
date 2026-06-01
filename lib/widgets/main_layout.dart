@@ -6,6 +6,7 @@ import '../widgets/clickable.dart';
 import '../widgets/nexaflow_support_bubble.dart';
 import '../navigation/app_router.dart';
 import '../screens/business_picker_screen.dart';
+import '../screens/tickets_screen.dart';
 
 // Below this width, show the "please use desktop" screen
 const double _kMinDesktopWidth = 800;
@@ -371,6 +372,16 @@ class _AppNavBarState extends State<AppNavBar> {
                       route: '/settings',
                       active: location.startsWith('/settings'),
                     ),
+                    // ── SUPERUSER ONLY ────────────────────────────────────
+                  if (AppRouter.cachedIsSuperuser == true) ...[
+                    _SectionLabel('Admin'),
+                    _NavItem(
+                      icon: Icons.confirmation_number_outlined,
+                      label: 'Support Tickets',
+                      route: '/tickets',
+                      active: location.startsWith('/tickets'),
+                    ),
+                  ],
                 ],
               ),
             ),

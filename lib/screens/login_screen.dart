@@ -19,38 +19,47 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _loading = false;
   bool _obscurePassword = true;
   String? _errorMessage;
-@override
+
+  @override
   void initState() {
     super.initState();
     _handleMagicLink();
   }
 
   Future<void> _handleMagicLink() async {
-    final uri = Uri.base;
-    final fragment = uri.fragment;
-    if (fragment.contains('access_token')) {
-      final params = Uri.splitQueryString(fragment);
-      final accessToken = params['access_token'] ?? '';
-      final refreshToken = params['refresh_token'] ?? '';
-      final type = params['type'] ?? '';
-      if (accessToken.isNotEmpty) {
-        try {
-        await Supabase.instance.client.auth.recoverSession(accessToken);          
-          if (!mounted) return;
-          if (type == 'invite') {
-            context.go('/setup-account');
-          } else {
-            context.go('/dashboard');
-          }
-        } catch (e) {
-          debugPrint('Magic link error: $e');
+  final uri = Uri.base;
+  final fragment = uri.fragment;
+  if (fragment.contains('type=recovery')) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) context.go('/reset-password');
+    });
+    return;
+  }
+  if (fragment.contains('access_token')) {
+    final params = Uri.splitQueryString(fragment);
+    final accessToken = params['access_token'] ?? '';
+    final type = params['type'] ?? '';
+    if (accessToken.isNotEmpty) {
+      try {
+        await Supabase.instance.client.auth.recoverSession(accessToken);
+        if (!mounted) return;
+        if (type == 'invite') {
+          context.go('/setup-account');
+        } else {
+          context.go('/dashboard');
         }
+      } catch (e) {
+        debugPrint('Magic link error: $e');
       }
     }
   }
-  // Show a success banner if coming back from signup flow
+}
+
   bool get _showSignupSuccess =>
       GoRouterState.of(context).uri.queryParameters['signup'] == 'complete';
+
+  bool get _showResetSuccess =>
+      GoRouterState.of(context).uri.queryParameters['reset'] == 'complete';
 
   @override
   void dispose() {
@@ -131,7 +140,6 @@ class _LoginScreenState extends State<LoginScreen> {
       }
 
       if (mounted) context.go('/dashboard');
-
     } on AuthException catch (e) {
       setState(() => _errorMessage = e.message);
     } catch (e) {
@@ -250,8 +258,7 @@ class _LoginScreenState extends State<LoginScreen> {
                           color: AppTheme.success.withValues(alpha: 0.1),
                           borderRadius: BorderRadius.circular(8),
                           border: Border.all(
-                              color: AppTheme.success
-                                  .withValues(alpha: 0.3)),
+                              color: AppTheme.success.withValues(alpha: 0.3)),
                         ),
                         child: const Row(
                           children: [
@@ -262,8 +269,35 @@ class _LoginScreenState extends State<LoginScreen> {
                               child: Text(
                                 'Account setup complete! Your login credentials will be activated once your trial begins.',
                                 style: TextStyle(
-                                    fontSize: 12,
-                                    color: AppTheme.success),
+                                    fontSize: 12, color: AppTheme.success),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+
+                    // ── Password reset success banner ──────────────
+                    if (_showResetSuccess) ...[
+                      const SizedBox(height: 16),
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: AppTheme.success.withValues(alpha: 0.1),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                              color: AppTheme.success.withValues(alpha: 0.3)),
+                        ),
+                        child: const Row(
+                          children: [
+                            Icon(Icons.check_circle_outline,
+                                size: 16, color: AppTheme.success),
+                            SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'Password updated! Please sign in with your new password.',
+                                style: TextStyle(
+                                    fontSize: 12, color: AppTheme.success),
                               ),
                             ),
                           ],
@@ -291,18 +325,18 @@ class _LoginScreenState extends State<LoginScreen> {
                         fillColor: AppTheme.pageBg,
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(8),
-                          borderSide: const BorderSide(
-                              color: AppTheme.borderColor),
+                          borderSide:
+                              const BorderSide(color: AppTheme.borderColor),
                         ),
                         enabledBorder: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(8),
-                          borderSide: const BorderSide(
-                              color: AppTheme.borderColor),
+                          borderSide:
+                              const BorderSide(color: AppTheme.borderColor),
                         ),
                         focusedBorder: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(8),
-                          borderSide: const BorderSide(
-                              color: AppTheme.brand, width: 2),
+                          borderSide:
+                              const BorderSide(color: AppTheme.brand, width: 2),
                         ),
                       ),
                     ),
@@ -332,26 +366,26 @@ class _LoginScreenState extends State<LoginScreen> {
                               size: 18,
                               color: AppTheme.textSecondary,
                             ),
-                            onPressed: () => setState(() =>
-                                _obscurePassword = !_obscurePassword),
+                            onPressed: () => setState(
+                                () => _obscurePassword = !_obscurePassword),
                           ),
                         ),
                         filled: true,
                         fillColor: AppTheme.pageBg,
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(8),
-                          borderSide: const BorderSide(
-                              color: AppTheme.borderColor),
+                          borderSide:
+                              const BorderSide(color: AppTheme.borderColor),
                         ),
                         enabledBorder: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(8),
-                          borderSide: const BorderSide(
-                              color: AppTheme.borderColor),
+                          borderSide:
+                              const BorderSide(color: AppTheme.borderColor),
                         ),
                         focusedBorder: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(8),
-                          borderSide: const BorderSide(
-                              color: AppTheme.brand, width: 2),
+                          borderSide:
+                              const BorderSide(color: AppTheme.brand, width: 2),
                         ),
                       ),
                       onSubmitted: (_) => _signIn(),
@@ -366,8 +400,7 @@ class _LoginScreenState extends State<LoginScreen> {
                           color: AppTheme.error.withValues(alpha: 0.1),
                           borderRadius: BorderRadius.circular(8),
                           border: Border.all(
-                              color: AppTheme.error
-                                  .withValues(alpha: 0.3)),
+                              color: AppTheme.error.withValues(alpha: 0.3)),
                         ),
                         child: Row(
                           children: [
@@ -377,8 +410,7 @@ class _LoginScreenState extends State<LoginScreen> {
                             Expanded(
                               child: Text(_errorMessage!,
                                   style: const TextStyle(
-                                      fontSize: 13,
-                                      color: AppTheme.error)),
+                                      fontSize: 13, color: AppTheme.error)),
                             ),
                           ],
                         ),
@@ -408,8 +440,7 @@ class _LoginScreenState extends State<LoginScreen> {
                                   width: 20,
                                   height: 20,
                                   child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                      color: Colors.white))
+                                      strokeWidth: 2, color: Colors.white))
                               : const Text('Sign In',
                                   style: TextStyle(
                                       fontSize: 15,
@@ -426,8 +457,7 @@ class _LoginScreenState extends State<LoginScreen> {
                           onPressed: _showForgotPassword,
                           child: const Text('Forgot your password?',
                               style: TextStyle(
-                                  fontSize: 13,
-                                  color: AppTheme.brand)),
+                                  fontSize: 13, color: AppTheme.brand)),
                         ),
                       ),
                     ),
@@ -436,19 +466,17 @@ class _LoginScreenState extends State<LoginScreen> {
                     Row(
                       children: [
                         const Expanded(
-                            child: Divider(
-                                color: AppTheme.borderColor)),
+                            child: Divider(color: AppTheme.borderColor)),
                         Padding(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 12),
+                          padding:
+                              const EdgeInsets.symmetric(horizontal: 12),
                           child: Text('New to NexaFlow?',
                               style: TextStyle(
                                   fontSize: 12,
                                   color: AppTheme.textSecondary)),
                         ),
                         const Expanded(
-                            child: Divider(
-                                color: AppTheme.borderColor)),
+                            child: Divider(color: AppTheme.borderColor)),
                       ],
                     ),
                     const SizedBox(height: 16),
@@ -463,8 +491,7 @@ class _LoginScreenState extends State<LoginScreen> {
                           onPressed: () => context.go('/signup'),
                           style: OutlinedButton.styleFrom(
                             foregroundColor: AppTheme.brand,
-                            side: const BorderSide(
-                                color: AppTheme.brand),
+                            side: const BorderSide(color: AppTheme.brand),
                             shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(8),
                             ),
@@ -481,8 +508,7 @@ class _LoginScreenState extends State<LoginScreen> {
                       child: Text(
                           '15-day free trial · No credit card charged today',
                           style: TextStyle(
-                              fontSize: 11,
-                              color: AppTheme.textMuted)),
+                              fontSize: 11, color: AppTheme.textMuted)),
                     ),
                   ],
                 ),
@@ -501,8 +527,7 @@ class _ForgotPasswordSheet extends StatefulWidget {
   const _ForgotPasswordSheet();
 
   @override
-  State<_ForgotPasswordSheet> createState() =>
-      _ForgotPasswordSheetState();
+  State<_ForgotPasswordSheet> createState() => _ForgotPasswordSheetState();
 }
 
 class _ForgotPasswordSheetState extends State<_ForgotPasswordSheet> {
@@ -523,8 +548,10 @@ class _ForgotPasswordSheetState extends State<_ForgotPasswordSheet> {
       _error = null;
     });
     try {
-      await Supabase.instance.client.auth
-          .resetPasswordForEmail(_emailController.text.trim());
+      await Supabase.instance.client.auth.resetPasswordForEmail(
+        _emailController.text.trim(),
+        redirectTo: 'https://nexaflow-crm.web.app',
+      );
       if (mounted) setState(() => _sent = true);
     } on AuthException catch (e) {
       setState(() => _error = e.message);
@@ -538,13 +565,12 @@ class _ForgotPasswordSheetState extends State<_ForgotPasswordSheet> {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: EdgeInsets.only(
-          bottom: MediaQuery.of(context).viewInsets.bottom),
+      padding:
+          EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
       child: Container(
         decoration: BoxDecoration(
           color: AppTheme.cardBg,
-          borderRadius:
-              const BorderRadius.vertical(top: Radius.circular(24)),
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
           border: Border.all(color: AppTheme.borderColor),
         ),
         padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
@@ -573,8 +599,7 @@ class _ForgotPasswordSheetState extends State<_ForgotPasswordSheet> {
               const Text(
                 'We sent a password reset link to your email address. Click the link to set a new password.',
                 textAlign: TextAlign.center,
-                style: TextStyle(
-                    fontSize: 13, color: AppTheme.textSecondary),
+                style: TextStyle(fontSize: 13, color: AppTheme.textSecondary),
               ),
               const SizedBox(height: 24),
               MouseRegion(
@@ -593,8 +618,7 @@ class _ForgotPasswordSheetState extends State<_ForgotPasswordSheet> {
                     ),
                     child: const Text('Done',
                         style: TextStyle(
-                            fontSize: 15,
-                            fontWeight: FontWeight.w600)),
+                            fontSize: 15, fontWeight: FontWeight.w600)),
                   ),
                 ),
               ),
@@ -608,8 +632,7 @@ class _ForgotPasswordSheetState extends State<_ForgotPasswordSheet> {
               const Text(
                 'Enter your email and we\'ll send you a reset link.',
                 textAlign: TextAlign.center,
-                style: TextStyle(
-                    fontSize: 13, color: AppTheme.textSecondary),
+                style: TextStyle(fontSize: 13, color: AppTheme.textSecondary),
               ),
               const SizedBox(height: 24),
               TextField(
@@ -624,18 +647,16 @@ class _ForgotPasswordSheetState extends State<_ForgotPasswordSheet> {
                   fillColor: AppTheme.pageBg,
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(8),
-                    borderSide: const BorderSide(
-                        color: AppTheme.borderColor),
+                    borderSide: const BorderSide(color: AppTheme.borderColor),
                   ),
                   enabledBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(8),
-                    borderSide: const BorderSide(
-                        color: AppTheme.borderColor),
+                    borderSide: const BorderSide(color: AppTheme.borderColor),
                   ),
                   focusedBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(8),
-                    borderSide: const BorderSide(
-                        color: AppTheme.brand, width: 2),
+                    borderSide:
+                        const BorderSide(color: AppTheme.brand, width: 2),
                   ),
                 ),
                 onSubmitted: (_) => _sendReset(),
@@ -648,8 +669,7 @@ class _ForgotPasswordSheetState extends State<_ForgotPasswordSheet> {
                     color: AppTheme.error.withValues(alpha: 0.1),
                     borderRadius: BorderRadius.circular(8),
                     border: Border.all(
-                        color:
-                            AppTheme.error.withValues(alpha: 0.3)),
+                        color: AppTheme.error.withValues(alpha: 0.3)),
                   ),
                   child: Row(
                     children: [
@@ -659,8 +679,7 @@ class _ForgotPasswordSheetState extends State<_ForgotPasswordSheet> {
                       Expanded(
                         child: Text(_error!,
                             style: const TextStyle(
-                                fontSize: 13,
-                                color: AppTheme.error)),
+                                fontSize: 13, color: AppTheme.error)),
                       ),
                     ],
                   ),
@@ -686,12 +705,10 @@ class _ForgotPasswordSheetState extends State<_ForgotPasswordSheet> {
                             width: 20,
                             height: 20,
                             child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                color: Colors.white))
+                                strokeWidth: 2, color: Colors.white))
                         : const Text('Send Reset Link',
                             style: TextStyle(
-                                fontSize: 15,
-                                fontWeight: FontWeight.w600)),
+                                fontSize: 15, fontWeight: FontWeight.w600)),
                   ),
                 ),
               ),
@@ -713,8 +730,7 @@ class _FeatureItem extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding:
-          const EdgeInsets.symmetric(vertical: 8, horizontal: 48),
+      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 48),
       child: Row(
         children: [
           Icon(icon, size: 18, color: AppTheme.brand),

@@ -14,26 +14,32 @@ Future<void> main() async {
     ),
   );
 
-  // Handle magic link token in URL fragment before app starts
   final uri = Uri.base;
   final fragment = uri.fragment;
+
   if (fragment.contains('access_token')) {
     final params = Uri.splitQueryString(fragment);
     final accessToken = params['access_token'] ?? '';
     final type = params['type'] ?? '';
+
     if (accessToken.isNotEmpty) {
-      try {
+      if (type == 'recovery') {
         await Supabase.instance.client.auth.recoverSession(accessToken);
-        // Set initial route based on type
-        if (type == 'invite') {
-          AppRouter.setInitialRoute('/setup-account');
-        } else {
-          AppRouter.setInitialRoute('/dashboard');
+        AppRouter.pendingRecoveryToken = accessToken;
+      } else {
+        try {
+          await Supabase.instance.client.auth.recoverSession(accessToken);
+          if (type == 'invite') {
+            AppRouter.pendingInvite = true;
+          }
+        } catch (e) {
+          debugPrint('Magic link error: $e');
+          AppRouter.pendingError = true;
         }
-      } catch (e) {
-        debugPrint('Magic link error: $e');
       }
     }
+  } else if (!fragment.contains('reset-password')) {
+    await Supabase.instance.client.auth.signOut();
   }
 
   runApp(const NexaFlowApp());

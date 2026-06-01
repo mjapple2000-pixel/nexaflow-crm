@@ -24,17 +24,17 @@ import '../screens/business_picker_screen.dart';
 import '../theme/app_theme.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import '../screens/tickets_screen.dart';
+import '../screens/reset_password_screen.dart';
 
 class AppRouter {
-  static String _initialRoute = '/login';
   static bool? cachedIsSuperuser;
-
-  static void setInitialRoute(String route) {
-    _initialRoute = route;
-  }
+  static String? pendingRecoveryToken;
+  static bool pendingInvite = false;
+  static bool pendingError = false;
 
   static final GoRouter router = GoRouter(
-    initialLocation: _initialRoute,
+    initialLocation: '/login',
     refreshListenable: GoRouterRefreshStream(
       Supabase.instance.client.auth.onAuthStateChange,
     ),
@@ -48,17 +48,32 @@ class AppRouter {
       final isErrorPage = loc == '/error';
       final isRootPage = loc == '/';
       final isBusinessPicker = loc == '/business-picker';
+      final isResetPassword = loc == '/reset-password';
 
-      if (isRootPage) return '/login';
+      // Handle flags set by main.dart before router was built
+      if (pendingError) {
+        pendingError = false;
+        return '/error';
+      }
+      if (pendingRecoveryToken != null) {
+        return '/reset-password';
+      }
+      if (pendingInvite) {
+        pendingInvite = false;
+        return '/setup-account';
+      }
+
+      // Always allow these through
       if (isErrorPage) return null;
+      if (isResetPassword) return null;
+      if (isRootPage) return '/login';
       if (isSetupPage) return isLoggedIn ? null : '/login';
       if (isBusinessPicker) return isLoggedIn ? null : '/login';
 
       if (isLoginPage || isSignupPage) {
         if (isLoggedIn) {
           try {
-            final userId =
-                Supabase.instance.client.auth.currentUser?.id;
+            final userId = Supabase.instance.client.auth.currentUser?.id;
             if (userId != null) {
               final profileRes = await Supabase.instance.client
                   .from('profiles')
@@ -96,7 +111,10 @@ class AppRouter {
         return null;
       }
 
-      if (isLoggedIn && !isBusinessPicker && cachedIsSuperuser == true && SuperuserState.impersonatedBusinessId == null) {
+      if (isLoggedIn &&
+          !isBusinessPicker &&
+          cachedIsSuperuser == true &&
+          SuperuserState.impersonatedBusinessId == null) {
         return '/business-picker';
       }
       if (!isLoggedIn) return '/login';
@@ -128,6 +146,11 @@ class AppRouter {
         builder: (context, state) => const BusinessPickerScreen(),
       ),
       GoRoute(
+        path: '/reset-password',
+        name: 'reset-password',
+        builder: (context, state) => const ResetPasswordScreen(),
+      ),
+      GoRoute(
         path: '/error',
         name: 'error',
         builder: (context, state) => Scaffold(
@@ -154,7 +177,7 @@ class AppRouter {
                           color: AppTheme.textPrimary)),
                   const SizedBox(height: 8),
                   const Text(
-                      'This invite link has expired. Please ask your admin to send a new invite.',
+                      'This invite link has expired. Please request a new one.',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                           fontSize: 13,
@@ -253,6 +276,11 @@ class AppRouter {
             path: '/appointments',
             name: 'appointments',
             builder: (context, state) => const AppointmentsScreen(),
+          ),
+          GoRoute(
+            path: '/tickets',
+            name: 'tickets',
+            builder: (context, state) => const TicketsScreen(),
           ),
         ],
       ),
