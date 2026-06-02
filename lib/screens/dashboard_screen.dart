@@ -62,6 +62,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
   int    _noShowAppointments    = 0;
   int    _unreadConversations   = 0;
   int    _totalConversations    = 0;
+  int    _totalTasks            = 0;
+  int    _openTasks             = 0;
+  int    _overdueTasks          = 0;
+  int    _completedTasks        = 0;
 
   List<Map<String, dynamic>> _recentLeads       = [];
   List<Map<String, dynamic>> _pipelineSnapshot  = [];
@@ -88,6 +92,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         _loadRecentLeads(),
         _loadPipelineSnapshot(),
         _loadTodayAppointments(),
+        _loadTaskStats(),
       ]);
     } catch (e) {
       debugPrint('Dashboard error: $e');
@@ -108,9 +113,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
         _loadRecentLeads(),
         _loadPipelineSnapshot(),
         _loadTodayAppointments(),
+        _loadTaskStats(),
       ]);
     } catch (e) {
-      debugPrint('Dashboard range reload error: $e');
+      debugPrint('Dashboard error: $e');
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -227,6 +233,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
     _unreadConversations = convos
         .where((c) => (c['unread_count'] ?? 0) > 0)
         .length;
+  }
+Future<void> _loadTaskStats() async {
+    final tasks = await _db
+        .from('tasks')
+        .select('id, status, due_date')
+        .eq('business_id', _businessId!);
+
+    final now = DateTime.now();
+    _totalTasks     = tasks.length;
+    _openTasks      = tasks.where((t) => t['status'] != 'done').length;
+    _completedTasks = tasks.where((t) => t['status'] == 'done').length;
+    _overdueTasks   = tasks.where((t) {
+      if (t['status'] == 'done') return false;
+      final due = t['due_date'] != null ? DateTime.tryParse(t['due_date']) : null;
+      return due != null && due.isBefore(now);
+    }).length;
   }
 
   Future<void> _loadRecentLeads() async {
@@ -734,35 +756,42 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 style: TextStyle(fontSize: 12, color: AppTheme.brand)))));
   }
 
-  // ── Tasks placeholder ─────────────────────────────────────────────────────
   // ── Tasks card ────────────────────────────────────────────────────────────
   Widget _buildTasksPlaceholder() {
     return _card('Tasks', Column(children: [
       Row(children: [
-        Container(
-          width: 36, height: 36,
-          decoration: BoxDecoration(
-            color: const Color(0xFF6366f1).withValues(alpha: 0.1),
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: const Icon(Icons.task_alt_outlined, size: 18, color: Color(0xFF6366f1)),
-        ),
-        const SizedBox(width: 12),
-        const Expanded(
-          child: Text('Manage your team tasks',
-              style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
-        ),
+        _taskStat('Total',   '$_totalTasks',     const Color(0xFF6366f1)),
+        const SizedBox(width: 8),
+        _taskStat('Open',    '$_openTasks',      AppTheme.brand),
+        const SizedBox(width: 8),
+        _taskStat('Overdue', '$_overdueTasks',   Colors.red),
+        const SizedBox(width: 8),
+        _taskStat('Done',    '$_completedTasks', AppTheme.success),
       ]),
       const SizedBox(height: 16),
       const Divider(color: AppTheme.borderColor, height: 1),
-      const SizedBox(height: 16),
-      const Center(
-        child: Column(children: [
-          Icon(Icons.task_alt_outlined, size: 32, color: AppTheme.textMuted),
-          SizedBox(height: 8),
-          Text('No tasks yet', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
-        ]),
-      ),
+      const SizedBox(height: 12),
+      if (_overdueTasks > 0)
+        Container(
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: Colors.red.withValues(alpha: 0.07),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: Colors.red.withValues(alpha: 0.2)),
+          ),
+          child: Row(children: [
+            const Icon(Icons.warning_amber_rounded, size: 14, color: Colors.red),
+            const SizedBox(width: 8),
+            Text('$_overdueTasks task${_overdueTasks > 1 ? 's' : ''} overdue',
+                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.red)),
+          ]),
+        )
+      else if (_totalTasks == 0)
+        const Center(child: Padding(
+          padding: EdgeInsets.symmetric(vertical: 8),
+          child: Text('No tasks yet',
+              style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+        )),
     ]),
     trailing: MouseRegion(
       cursor: SystemMouseCursors.click,
@@ -774,6 +803,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
     ));
   }
 
+  Widget _taskStat(String label, String value, Color color) {
+    return Expanded(child: Container(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.07),
+          borderRadius: BorderRadius.circular(8)),
+      child: Column(children: [
+        Text(value,
+            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: color)),
+        Text(label,
+            style: const TextStyle(fontSize: 10, color: AppTheme.textSecondary)),
+      ]),
+    ));
+  }
   // ── Meta Ads placeholder ──────────────────────────────────────────────────
   Widget _buildMetaAdsPlaceholder() {
     return _card('Meta Ads', Column(children: [

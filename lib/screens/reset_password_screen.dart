@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:go_router/go_router.dart';
 import '../theme/app_theme.dart';
+import '../navigation/app_router.dart';
 
 class ResetPasswordScreen extends StatefulWidget {
   const ResetPasswordScreen({super.key});
@@ -26,33 +27,14 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
   }
 
   Future<void> _initSession() async {
-    // If session already exists (Supabase auto-recovered it), we're good
+    // Supabase has already established the session via the passwordRecovery
+    // event before routing here. Just verify it exists.
     final session = Supabase.instance.client.auth.currentSession;
     if (session != null) {
+      AppRouter.isPasswordRecovery = false;
       if (mounted) setState(() { _sessionReady = true; _loading = false; });
       return;
     }
-
-    // Try to recover from URL fragment manually
-    try {
-      final uri = Uri.base;
-      // Supabase puts tokens after the path fragment, try the full URL string
-      final fullUrl = uri.toString();
-      final hashIndex = fullUrl.indexOf('#');
-      if (hashIndex != -1) {
-        final fragment = fullUrl.substring(hashIndex + 1);
-        final params = Uri.splitQueryString(fragment);
-        final accessToken = params['access_token'] ?? '';
-        if (accessToken.isNotEmpty) {
-          await Supabase.instance.client.auth.recoverSession(accessToken);
-          if (mounted) setState(() { _sessionReady = true; _loading = false; });
-          return;
-        }
-      }
-    } catch (e) {
-      debugPrint('Session recovery error: $e');
-    }
-
     if (mounted) {
       setState(() {
         _errorMessage = 'This reset link has expired. Please request a new one.';

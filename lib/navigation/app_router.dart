@@ -32,8 +32,10 @@ class AppRouter {
   static String? pendingRecoveryToken;
   static bool pendingInvite = false;
   static bool pendingError = false;
+  static bool isPasswordRecovery = false;
 
-  static final GoRouter router = GoRouter(
+  static GoRouter? _router;
+  static GoRouter get router => _router ??= GoRouter(
     initialLocation: '/login',
     refreshListenable: GoRouterRefreshStream(
       Supabase.instance.client.auth.onAuthStateChange,
@@ -50,22 +52,24 @@ class AppRouter {
       final isBusinessPicker = loc == '/business-picker';
       final isResetPassword = loc == '/reset-password';
 
-      // Handle flags set by main.dart before router was built
+      // Password recovery event fired by Supabase — go to reset screen
+      if (isPasswordRecovery) {
+        return '/reset-password';
+      }
+
+      // Handle other flags set by main.dart
       if (pendingError) {
         pendingError = false;
         return '/error';
-      }
-      if (pendingRecoveryToken != null) {
-        return '/reset-password';
       }
       if (pendingInvite) {
         pendingInvite = false;
         return '/setup-account';
       }
 
-      // Always allow these through
+      // Always allow these through unconditionally
       if (isErrorPage) return null;
-      if (isResetPassword) return null;
+      if (isResetPassword) return null; // Never redirect away from reset screen
       if (isRootPage) return '/login';
       if (isSetupPage) return isLoggedIn ? null : '/login';
       if (isBusinessPicker) return isLoggedIn ? null : '/login';
@@ -291,7 +295,15 @@ class AppRouter {
 class GoRouterRefreshStream extends ChangeNotifier {
   GoRouterRefreshStream(Stream<AuthState> stream) {
     notifyListeners();
-    _subscription = stream.listen((_) => notifyListeners());
+    _subscription = stream.listen((authState) {
+      // When Supabase fires the passwordRecovery event, set the flag
+      // and notify the router to redirect to /reset-password.
+      // The session is already established at this point.
+      if (authState.event == AuthChangeEvent.passwordRecovery) {
+        AppRouter.isPasswordRecovery = true;
+      }
+      notifyListeners();
+    });
   }
 
   late final StreamSubscription<AuthState> _subscription;

@@ -11,34 +11,16 @@ Future<void> main() async {
     anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJsbHJpb3Bxb2phcmFjZXl0ZG5vIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzczOTQzMzgsImV4cCI6MjA5Mjk3MDMzOH0.BxTbaRRD_xc88gyWBm5k7ZVVGP8c3CqW5U8aXBmXPMw',
     authOptions: const FlutterAuthClientOptions(
       authFlowType: AuthFlowType.implicit,
+      // Let Supabase handle the token from the URL automatically.
+      // We intercept via onAuthStateChange passwordRecovery event instead.
     ),
   );
 
-  final uri = Uri.base;
-  final fragment = uri.fragment;
-
-  if (fragment.contains('access_token')) {
-    final params = Uri.splitQueryString(fragment);
-    final accessToken = params['access_token'] ?? '';
-    final type = params['type'] ?? '';
-
-    if (accessToken.isNotEmpty) {
-      if (type == 'recovery') {
-        await Supabase.instance.client.auth.recoverSession(accessToken);
-        AppRouter.pendingRecoveryToken = accessToken;
-      } else {
-        try {
-          await Supabase.instance.client.auth.recoverSession(accessToken);
-          if (type == 'invite') {
-            AppRouter.pendingInvite = true;
-          }
-        } catch (e) {
-          debugPrint('Magic link error: $e');
-          AppRouter.pendingError = true;
-        }
-      }
-    }
-  } else if (!fragment.contains('reset-password')) {
+  // Only sign out if there's no token in the URL (i.e. normal page load).
+  // Supabase will fire passwordRecovery event automatically when the
+  // recovery link is clicked — we handle routing in GoRouterRefreshStream.
+  final fragment = Uri.base.fragment;
+  if (!fragment.contains('access_token')) {
     await Supabase.instance.client.auth.signOut();
   }
 
