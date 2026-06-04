@@ -260,7 +260,7 @@ class _PipelinesScreenState extends State<PipelinesScreen> {
         color: AppTheme.cardBg,
         border: Border(bottom: BorderSide(color: AppTheme.borderColor))),
       child: Row(children: [
-        const Text('Pipelines', style: TextStyle(
+        const Text('Opportunities', style: TextStyle(
             fontSize: 20, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
         const SizedBox(width: 16),
         // Stats

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
@@ -249,6 +250,7 @@ class _AppNavBarState extends State<AppNavBar> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             _LogoArea(),
+            _SidebarSearch(),
 
             // ── Superuser business switcher — only visible to superusers ──
             if (AppRouter.cachedIsSuperuser == true)
@@ -288,9 +290,9 @@ class _AppNavBarState extends State<AppNavBar> {
                   if (_can('pipelines'))
                     _NavItem(
                       icon: Icons.bar_chart_rounded,
-                      label: 'Pipelines',
-                      route: '/pipelines',
-                      active: location.startsWith('/pipelines'),
+                      label: 'Opportunities',
+                      route: '/opportunities',
+                      active: location.startsWith('/opportunities'),
                     ),
                   if (_can('appointments'))
                     _NavItem(
@@ -396,6 +398,316 @@ class _AppNavBarState extends State<AppNavBar> {
 // ─────────────────────────────────────────────
 //  SUPERUSER BUSINESS SWITCHER BANNER
 // ─────────────────────────────────────────────
+// ─────────────────────────────────────────────
+//  SIDEBAR SEARCH
+// ─────────────────────────────────────────────
+class _SidebarSearch extends StatefulWidget {
+  @override
+  State<_SidebarSearch> createState() => _SidebarSearchState();
+}
+
+class _SidebarSearchState extends State<_SidebarSearch> {
+  final _ctrl   = TextEditingController();
+  final _focus  = FocusNode();
+  final _db     = Supabase.instance.client;
+
+  Timer?        _debounce;
+  bool          _loading = false;
+
+  List<_SearchResult> _results = [];
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    _focus.dispose();
+    _debounce?.cancel();
+    super.dispose();
+  }
+
+
+  void _onChanged(String q) {
+    _debounce?.cancel();
+    if (q.trim().isEmpty) {
+      setState(() => _results = []);
+      return;
+    }
+    _debounce = Timer(const Duration(milliseconds: 300), () => _search(q.trim()));
+  }
+
+  Future<void> _search(String q) async {
+    if (!mounted) return;
+    setState(() => _loading = true);
+
+    try {
+      final bizId = await _loadBizId();
+      if (!mounted) return;
+      if (bizId == null) return;
+
+      final lower = q.toLowerCase();
+
+      final results = <_SearchResult>[];
+
+      // Contacts
+      final contacts = await _db.from('leads')
+          .select('id, lead_name, lead_phone, lead_email')
+          .eq('business_id', bizId)
+          .or('lead_name.ilike.%$lower%,lead_phone.ilike.%$lower%,lead_email.ilike.%$lower%')
+          .limit(4);
+      for (final c in (contacts as List)) {
+        results.add(_SearchResult(
+          type: 'Contact',
+          title: c['lead_name'] ?? 'Unknown',
+          subtitle: c['lead_phone'] ?? c['lead_email'] ?? '',
+          icon: Icons.person_outline,
+          color: const Color(0xFF6366F1),
+          route: '/contacts/${c['id']}',
+        ));
+      }
+
+      // Deals
+      final deals = await _db.from('deals')
+          .select('id, deal_name, value, status')
+          .eq('business_id', bizId)
+          .ilike('deal_name', '%$lower%')
+          .limit(3);
+      for (final d in (deals as List)) {
+        final val = (d['value'] as num?)?.toDouble() ?? 0;
+        final valStr = val >= 1000
+            ? '\$${(val / 1000).toStringAsFixed(1)}K'
+            : '\$${val.toStringAsFixed(0)}';
+        results.add(_SearchResult(
+          type: 'Deal',
+          title: d['deal_name'] ?? 'Untitled',
+          subtitle: '$valStr · ${(d['status'] ?? 'open').toString().toUpperCase()}',
+          icon: Icons.handshake_outlined,
+          color: const Color(0xFF10B981),
+          route: '/opportunities',
+        ));
+      }
+
+      // Appointments
+      final appts = await _db.from('appointments')
+          .select('id, appointment_name, lead_name, start_date_time')
+          .eq('business_id', bizId)
+          .or('appointment_name.ilike.%$lower%,lead_name.ilike.%$lower%')
+          .limit(3);
+      for (final a in (appts as List)) {
+        final dt = DateTime.tryParse(a['start_date_time'] ?? '')?.toLocal();
+        const months = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+        final dtStr = dt != null ? '${months[dt.month]} ${dt.day}' : '';
+        results.add(_SearchResult(
+          type: 'Appointment',
+          title: a['appointment_name'] ?? 'Untitled',
+          subtitle: '${a['lead_name'] ?? ''}${dtStr.isNotEmpty ? ' · $dtStr' : ''}',
+          icon: Icons.calendar_today_outlined,
+          color: const Color(0xFF0EA5E9),
+          route: '/appointments',
+        ));
+      }
+
+      // Conversations
+      final convos = await _db.from('conversations')
+          .select('id, lead_name, last_message')
+          .eq('business_id', bizId)
+          .ilike('lead_name', '%$lower%')
+          .limit(3);
+      for (final c in (convos as List)) {
+        results.add(_SearchResult(
+          type: 'Conversation',
+          title: c['lead_name'] ?? 'Unknown',
+          subtitle: c['last_message'] ?? '',
+          icon: Icons.chat_bubble_outline_rounded,
+          color: const Color(0xFFf59e0b),
+          route: '/conversations',
+        ));
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _results = results;
+        _loading = false;
+      });
+      _showOverlay();
+    } catch (e) {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  int? _cachedBizId;
+  Future<int?> _loadBizId() async {
+    if (_cachedBizId != null) return _cachedBizId;
+    final userId = _db.auth.currentUser?.id;
+    if (userId == null) return null;
+    final profile = await _db.from('profiles').select('business_id').eq('user_id', userId).maybeSingle();
+    _cachedBizId = profile?['business_id'] as int?;
+    return _cachedBizId;
+  }
+
+  void _showOverlay() {
+    // No-op — overlay is now driven by _results state in build()
+    if (mounted) setState(() {});
+  }
+
+  List<Widget> _buildResultItems() {
+    final grouped = <String, List<_SearchResult>>{};
+    for (final r in _results) {
+      grouped.putIfAbsent(r.type, () => []).add(r);
+    }
+
+    final items = <Widget>[];
+    grouped.forEach((type, results) {
+      items.add(Padding(
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+        child: Text(type.toUpperCase(),
+            style: const TextStyle(
+                fontSize: 9, fontWeight: FontWeight.w700,
+                color: AppTheme.textMuted, letterSpacing: 1.0)),
+      ));
+      for (final r in results) {
+        items.add(_ResultTile(result: r, onTap: () => _navigate(r)));
+      }
+    });
+    return items;
+  }
+
+  void _navigate(_SearchResult r) {
+    _clearSearch();
+    context.go(r.route);
+  }
+
+  void _clearSearch() {
+    _ctrl.clear();
+    _focus.unfocus();
+    if (mounted) setState(() => _results = []);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final showDropdown = _results.isNotEmpty && _ctrl.text.isNotEmpty;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Container(
+          padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+          decoration: const BoxDecoration(
+            border: Border(bottom: BorderSide(color: AppTheme.divider)),
+          ),
+          child: SizedBox(
+            height: 32,
+            child: TextField(
+              controller: _ctrl,
+              focusNode: _focus,
+              onChanged: _onChanged,
+              style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary),
+              decoration: InputDecoration(
+                hintText: 'Search...',
+                hintStyle: const TextStyle(fontSize: 12, color: AppTheme.textMuted),
+                prefixIcon: _loading
+                    ? const Padding(
+                        padding: EdgeInsets.all(8),
+                        child: SizedBox(width: 12, height: 12,
+                            child: CircularProgressIndicator(strokeWidth: 1.5, color: AppTheme.brand)))
+                    : const Icon(Icons.search, size: 14, color: AppTheme.textMuted),
+                prefixIconConstraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                suffixIcon: _ctrl.text.isNotEmpty
+                    ? GestureDetector(
+                        onTap: _clearSearch,
+                        child: const Icon(Icons.close, size: 13, color: AppTheme.textMuted))
+                    : null,
+                suffixIconConstraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                filled: true,
+                fillColor: AppTheme.pageBg,
+                isDense: true,
+                contentPadding: const EdgeInsets.symmetric(vertical: 7, horizontal: 8),
+                border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(7),
+                    borderSide: const BorderSide(color: AppTheme.divider)),
+                enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(7),
+                    borderSide: const BorderSide(color: AppTheme.divider)),
+                focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(7),
+                    borderSide: BorderSide(color: AppTheme.brand, width: 1.5)),
+              ),
+            ),
+          ),
+        ),
+        if (showDropdown)
+          Container(
+            constraints: const BoxConstraints(maxHeight: 380),
+            decoration: BoxDecoration(
+              color: AppTheme.cardBg,
+              border: const Border(
+                bottom: BorderSide(color: AppTheme.borderColor),
+              ),
+              boxShadow: [BoxShadow(
+                color: Colors.black.withValues(alpha: 0.15),
+                blurRadius: 8,
+                offset: const Offset(2, 4),
+              )],
+            ),
+            child: ListView(
+              padding: const EdgeInsets.symmetric(vertical: 6),
+              shrinkWrap: true,
+              children: _buildResultItems(),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _SearchResult {
+  final String type;
+  final String title;
+  final String subtitle;
+  final IconData icon;
+  final Color color;
+  final String route;
+
+  const _SearchResult({
+    required this.type, required this.title, required this.subtitle,
+    required this.icon, required this.color, required this.route,
+  });
+}
+
+class _ResultTile extends StatelessWidget {
+  final _SearchResult result;
+  final VoidCallback onTap;
+  const _ResultTile({required this.result, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+        child: Row(children: [
+          Container(
+            width: 28, height: 28,
+            decoration: BoxDecoration(
+              color: result.color.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(6),
+            ),
+            alignment: Alignment.center,
+            child: Icon(result.icon, size: 13, color: result.color),
+          ),
+          const SizedBox(width: 10),
+          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(result.title,
+                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600,
+                    color: AppTheme.textPrimary),
+                overflow: TextOverflow.ellipsis),
+            if (result.subtitle.isNotEmpty)
+              Text(result.subtitle,
+                  style: const TextStyle(fontSize: 10, color: AppTheme.textSecondary),
+                  overflow: TextOverflow.ellipsis),
+          ])),
+        ]),
+      ),
+    );
+  }
+}
 class _SuperuserBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {

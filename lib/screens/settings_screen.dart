@@ -573,6 +573,7 @@ class _BusinessProfileSectionState
   String? _selectedIndustry;
   // SMS consent
   bool _smsConsent = false;
+  Map<String, dynamic> _availabilityHours = {};
 
   bool _saving = false;
   String? _successMsg;
@@ -616,6 +617,20 @@ class _BusinessProfileSectionState
     }
 
     _smsConsent = b['sms_consent'] as bool? ?? false;
+    final rawHours = b['availability_hours'];
+    if (rawHours is Map) {
+      _availabilityHours = Map<String, dynamic>.from(rawHours);
+    } else {
+      _availabilityHours = {
+        'monday':    {'enabled': true,  'start': '08:00', 'end': '17:00'},
+        'tuesday':   {'enabled': true,  'start': '08:00', 'end': '17:00'},
+        'wednesday': {'enabled': true,  'start': '08:00', 'end': '17:00'},
+        'thursday':  {'enabled': true,  'start': '08:00', 'end': '17:00'},
+        'friday':    {'enabled': true,  'start': '08:00', 'end': '17:00'},
+        'saturday':  {'enabled': false, 'start': '09:00', 'end': '14:00'},
+        'sunday':    {'enabled': false, 'start': '09:00', 'end': '14:00'},
+      };
+    }
   }
 
   @override
@@ -665,6 +680,7 @@ class _BusinessProfileSectionState
         'timezone':         _selectedTimezone,
         'industry':         _selectedIndustry,
         'sms_consent':      _smsConsent,
+        'availability_hours': _availabilityHours,
       });
       setState(
           () { _successMsg = 'Profile saved.'; _saving = false; });
@@ -807,6 +823,15 @@ class _BusinessProfileSectionState
         ]),
         const SizedBox(height: 24),
 
+        // ── Availability Hours ─────────────────────────────────────
+        _SettingsGroup(title: 'Business Hours', children: [
+          _AvailabilityHoursEditor(
+            hours: _availabilityHours,
+            onChanged: (updated) => setState(() => _availabilityHours = updated),
+          ),
+        ]),
+        const SizedBox(height: 24),
+
         // ── SMS Consent ────────────────────────────────────────────
         _SmsConsentCard(
           value: _smsConsent,
@@ -818,7 +843,140 @@ class _BusinessProfileSectionState
 }
 
 // ── SMS CONSENT CARD ──────────────────────────────────────────────────────────
+// ── AVAILABILITY HOURS EDITOR ─────────────────────────────────────────────────
 
+class _AvailabilityHoursEditor extends StatelessWidget {
+  final Map<String, dynamic> hours;
+  final ValueChanged<Map<String, dynamic>> onChanged;
+
+  const _AvailabilityHoursEditor({required this.hours, required this.onChanged});
+
+  static const _days = [
+    ('monday',    'Monday'),
+    ('tuesday',   'Tuesday'),
+    ('wednesday', 'Wednesday'),
+    ('thursday',  'Thursday'),
+    ('friday',    'Friday'),
+    ('saturday',  'Saturday'),
+    ('sunday',    'Sunday'),
+  ];
+
+  static const _times = [
+    '06:00','06:30','07:00','07:30','08:00','08:30','09:00','09:30',
+    '10:00','10:30','11:00','11:30','12:00','12:30','13:00','13:30',
+    '14:00','14:30','15:00','15:30','16:00','16:30','17:00','17:30',
+    '18:00','18:30','19:00','19:30','20:00','20:30','21:00',
+  ];
+
+  String _fmt(String t) {
+    final parts = t.split(':');
+    final h = int.parse(parts[0]);
+    final m = parts[1];
+    final ampm = h >= 12 ? 'PM' : 'AM';
+    final h12 = h == 0 ? 12 : (h > 12 ? h - 12 : h);
+    return '$h12:$m $ampm';
+  }
+
+  void _update(String day, String key, dynamic value) {
+    final updated = Map<String, dynamic>.from(hours);
+    final dayMap = Map<String, dynamic>.from(updated[day] as Map? ?? {});
+    dayMap[key] = value;
+    updated[day] = dayMap;
+    onChanged(updated);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: _days.map((d) {
+        final key = d.$1;
+        final label = d.$2;
+        final dayData = hours[key] as Map? ?? {};
+        final enabled = dayData['enabled'] as bool? ?? false;
+        final start = dayData['start'] as String? ?? '08:00';
+        final end = dayData['end'] as String? ?? '17:00';
+
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 10),
+          child: Row(
+            children: [
+              Switch(
+                value: enabled,
+                onChanged: (v) => _update(key, 'enabled', v),
+                activeColor: AppTheme.brand,
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              const SizedBox(width: 8),
+              SizedBox(
+                width: 90,
+                child: Text(label,
+                    style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w500,
+                        color: enabled ? AppTheme.textPrimary : AppTheme.textSecondary)),
+              ),
+              const SizedBox(width: 12),
+              if (enabled) ...[
+                _TimeDropdown(
+                  value: _times.contains(start) ? start : '08:00',
+                  times: _times,
+                  formatter: _fmt,
+                  onChanged: (v) => _update(key, 'start', v),
+                ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                  child: Text('to', style: TextStyle(fontSize: 13, color: AppTheme.textSecondary)),
+                ),
+                _TimeDropdown(
+                  value: _times.contains(end) ? end : '17:00',
+                  times: _times,
+                  formatter: _fmt,
+                  onChanged: (v) => _update(key, 'end', v),
+                ),
+              ] else
+                Text('Closed', style: TextStyle(fontSize: 13, color: AppTheme.textMuted)),
+            ],
+          ),
+        );
+      }).toList(),
+    );
+  }
+}
+
+class _TimeDropdown extends StatelessWidget {
+  final String value;
+  final List<String> times;
+  final String Function(String) formatter;
+  final ValueChanged<String> onChanged;
+
+  const _TimeDropdown({
+    required this.value,
+    required this.times,
+    required this.formatter,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10),
+      decoration: BoxDecoration(
+        color: AppTheme.pageBg,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: AppTheme.borderColor),
+      ),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<String>(
+          value: value,
+          dropdownColor: AppTheme.cardBg,
+          style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+          items: times.map((t) => DropdownMenuItem(value: t, child: Text(formatter(t)))).toList(),
+          onChanged: (v) { if (v != null) onChanged(v); },
+        ),
+      ),
+    );
+  }
+}
 class _SmsConsentCard extends StatelessWidget {
   final bool value;
   final ValueChanged<bool> onChanged;

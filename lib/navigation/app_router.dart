@@ -230,8 +230,8 @@ class AppRouter {
             ),
           ),
           GoRoute(
-            path: '/pipelines',
-            name: 'pipelines',
+            path: '/opportunities',
+            name: 'opportunities',
             builder: (context, state) => const PipelinesScreen(),
           ),
           GoRoute(

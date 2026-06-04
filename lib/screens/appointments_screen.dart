@@ -20,11 +20,16 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
   bool _loading = true;
   List<Map<String, dynamic>> _appointments = [];
   List<Map<String, dynamic>> _calendars    = [];
+  List<Map<String, dynamic>> _calendarGroups = [];
+  List<Map<String, dynamic>> _serviceMenuItems = [];
+  List<Map<String, dynamic>> _calendarRooms = [];
+  List<Map<String, dynamic>> _calendarEquipment = [];
   List<Map<String, dynamic>> _teamMembers  = [];
   List<Map<String, dynamic>> _leads        = [];
   int? _businessId;
   Map<String, dynamic>? _business;
 
+  late final _AppLifecycleObserver _observer = _AppLifecycleObserver(onResume: _load);
   String   _calView   = 'week';
   DateTime _focusDate = DateTime.now();
 
@@ -62,11 +67,18 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
     super.initState();
     _tabController = TabController(length: 3, vsync: this);
     _load();
+    WidgetsBinding.instance.addObserver(_observer);
+  }
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!_loading) _load();
   }
 
   @override
   void dispose() {
     _tabController.dispose();
+    WidgetsBinding.instance.removeObserver(_observer);
     _usersSearchCtrl.dispose();
     _calendarsSearchCtrl.dispose();
     _groupsSearchCtrl.dispose();
@@ -84,12 +96,20 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
         _db.from('profiles').select('id, full_name, role').eq('business_id', _businessId!),
         _db.from('leads').select('id, lead_name, lead_email, lead_phone').eq('business_id', _businessId!).order('lead_name', ascending: true),
         _db.from('calendars').select().eq('business_id', _businessId!).order('created_at', ascending: true),
+        _db.from('calendar_groups').select().eq('business_id', _businessId!).order('created_at', ascending: true),
+        _db.from('service_menu_items').select().eq('business_id', _businessId!).order('created_at', ascending: true),
+        _db.from('calendar_rooms').select().eq('business_id', _businessId!).order('created_at', ascending: true),
+        _db.from('calendar_equipment').select().eq('business_id', _businessId!).order('created_at', ascending: true),
       ]);
-      _appointments = List<Map<String, dynamic>>.from(results[0] as List);
-      _business     = results[1] as Map<String, dynamic>?;
-      _teamMembers  = List<Map<String, dynamic>>.from(results[2] as List);
-      _leads        = List<Map<String, dynamic>>.from(results[3] as List);
-      _calendars    = List<Map<String, dynamic>>.from(results[4] as List);
+      _appointments  = List<Map<String, dynamic>>.from(results[0] as List);
+      _business      = results[1] as Map<String, dynamic>?;
+      _teamMembers   = List<Map<String, dynamic>>.from(results[2] as List);
+      _leads         = List<Map<String, dynamic>>.from(results[3] as List);
+      _calendars     = List<Map<String, dynamic>>.from(results[4] as List);
+      _calendarGroups = List<Map<String, dynamic>>.from(results[5] as List);
+      _serviceMenuItems = List<Map<String, dynamic>>.from(results[6] as List);
+      _calendarRooms = List<Map<String, dynamic>>.from(results[7] as List);
+      _calendarEquipment = List<Map<String, dynamic>>.from(results[8] as List);
       if (_business != null) {
         final ah = _business!['availability_hours'];
         if (ah != null) {
@@ -337,8 +357,8 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
   Widget _buildApptBlock(Map<String, dynamic> a, ({int startHour, int endHour}) range,
       double gutterWidth, double? colWidth, {int dayIndex = 0}) {
     const double hourHeight = 60.0;
-    final start = DateTime.tryParse(a['start_date_time'] as String) ?? DateTime.now();
-    final end   = DateTime.tryParse(a['end_date_time']   as String) ?? DateTime.now();
+    final start = (DateTime.tryParse(a['start_date_time'] as String) ?? DateTime.now()).toLocal();
+    final end   = (DateTime.tryParse(a['end_date_time']   as String) ?? DateTime.now()).toLocal();
     final offsetHours = start.hour + start.minute / 60.0 - range.startHour;
     if (offsetHours < 0) return const SizedBox.shrink();
     final top     = offsetHours * hourHeight;
@@ -383,7 +403,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
     final range   = _visibleHourRange();
     final hours   = List.generate(range.endHour - range.startHour, (i) => range.startHour + i);
     final dayAppts = _appointments.where((a) {
-      final dt = DateTime.tryParse(a['start_date_time'] ?? '');
+      final dt = DateTime.tryParse(a['start_date_time'] ?? '')?.toLocal();
       return dt != null && DateUtils.isSameDay(dt, _focusDate);
     }).toList();
 
@@ -424,8 +444,8 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
               top: (now.hour + now.minute / 60.0 - range.startHour) * hourHeight - 1,
               left: gutterWidth, right: 0,
               child: Row(children: [
-                Container(width: 8, height: 8, decoration: const BoxDecoration(color: Colors.red, shape: BoxShape.circle)),
-                Expanded(child: Container(height: 1.5, color: Colors.red)),
+                Container(width: 8, height: 8, decoration: BoxDecoration(color: Colors.red.withValues(alpha: 0.7), shape: BoxShape.circle)),
+                Expanded(child: Container(height: 1, color: Colors.red.withValues(alpha: 0.4))),
               ]),
             ),
         ]),
@@ -475,10 +495,10 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
             )))),
           ]))).toList()),
           ..._appointments.where((a) {
-            final dt = DateTime.tryParse(a['start_date_time'] ?? '');
+            final dt = DateTime.tryParse(a['start_date_time'] ?? '')?.toLocal();
             return dt != null && days.any((d) => DateUtils.isSameDay(d, dt));
           }).map((a) {
-            final start    = DateTime.tryParse(a['start_date_time'] as String) ?? DateTime.now();
+            final start    = (DateTime.tryParse(a['start_date_time'] as String) ?? DateTime.now()).toLocal();
             final dayIndex = days.indexWhere((d) => DateUtils.isSameDay(d, start));
             if (dayIndex < 0) return const SizedBox.shrink();
             return _buildApptBlock(a, range, gutterWidth, colWidth, dayIndex: dayIndex);
@@ -488,8 +508,8 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
               top: (now.hour + now.minute / 60.0 - range.startHour) * hourHeight - 1,
               left: gutterWidth, right: 0,
               child: Row(children: [
-                Container(width: 8, height: 8, decoration: const BoxDecoration(color: Colors.red, shape: BoxShape.circle)),
-                Expanded(child: Container(height: 1.5, color: Colors.red)),
+                Container(width: 8, height: 8, decoration: BoxDecoration(color: Colors.red.withValues(alpha: 0.7), shape: BoxShape.circle)),
+                Expanded(child: Container(height: 1, color: Colors.red.withValues(alpha: 0.4))),
               ]),
             ),
         ]),
@@ -835,7 +855,31 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
               const SizedBox(height: 4),
               const Spacer(),
               OutlinedButton.icon(
-                onPressed: () {},
+                onPressed: () => _showEquipmentDialog(),
+                icon: const Icon(Icons.build_outlined, size: 16),
+                label: const Text('Add Equipment'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppTheme.textPrimary,
+                  side: const BorderSide(color: AppTheme.borderColor),
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+              ),
+              const SizedBox(width: 10),
+              OutlinedButton.icon(
+                onPressed: () => _showServiceMenuDialog(),
+                icon: const Icon(Icons.room_service_outlined, size: 16),
+                label: const Text('Add Service'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppTheme.textPrimary,
+                  side: const BorderSide(color: AppTheme.borderColor),
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+              ),
+              const SizedBox(width: 10),
+              OutlinedButton.icon(
+                onPressed: () => _showGroupDialog(),
                 icon: const Icon(Icons.group_add_outlined, size: 16),
                 label: const Text('Create Group'),
                 style: OutlinedButton.styleFrom(
@@ -887,16 +931,563 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
           physics: const NeverScrollableScrollPhysics(),
           children: [
             _buildCalendarsListTab(),
-            _buildComingSoonTab('Groups'),
-            _buildComingSoonTab('Service Menu'),
-            _buildComingSoonTab('Rooms'),
-            _buildComingSoonTab('Equipment'),
+            _buildGroupsTab(),
+            _buildServiceMenuTab(),
+            _buildRoomsTab(),
+            _buildEquipmentTab(),
           ],
         )),
       ]),
     );
   }
 
+// ══════════════════════════════════════════════════════════════════════════
+  //  GROUPS TAB
+  // ══════════════════════════════════════════════════════════════════════════
+
+  Widget _buildGroupsTab() {
+    return Padding(
+      padding: const EdgeInsets.all(24),
+      child: Column(children: [
+        // Table header
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          decoration: BoxDecoration(
+            color: AppTheme.cardBg,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
+            border: Border.all(color: AppTheme.borderColor),
+          ),
+          child: const Row(children: [
+            Expanded(flex: 4, child: Text('GROUP NAME', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
+            Expanded(flex: 3, child: Text('CALENDARS', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
+            Expanded(flex: 2, child: Text('STATUS',    style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
+            SizedBox(width: 80),
+          ]),
+        ),
+        Expanded(
+          child: _calendarGroups.isEmpty
+              ? Container(
+                  decoration: BoxDecoration(
+                    color: AppTheme.cardBg,
+                    borderRadius: const BorderRadius.vertical(bottom: Radius.circular(12)),
+                    border: const Border(left: BorderSide(color: AppTheme.borderColor), right: BorderSide(color: AppTheme.borderColor), bottom: BorderSide(color: AppTheme.borderColor)),
+                  ),
+                  child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+                    const Icon(Icons.group_work_outlined, size: 48, color: AppTheme.textMuted),
+                    const SizedBox(height: 12),
+                    const Text('No groups yet', style: TextStyle(fontSize: 15, color: AppTheme.textSecondary)),
+                    const SizedBox(height: 8),
+                    TextButton(
+                      onPressed: () => _showGroupDialog(),
+                      child: const Text('Create your first group'),
+                    ),
+                  ])),
+                )
+              : Container(
+                  decoration: BoxDecoration(
+                    color: AppTheme.cardBg,
+                    borderRadius: const BorderRadius.vertical(bottom: Radius.circular(12)),
+                    border: const Border(left: BorderSide(color: AppTheme.borderColor), right: BorderSide(color: AppTheme.borderColor), bottom: BorderSide(color: AppTheme.borderColor)),
+                  ),
+                  child: ListView.separated(
+                    itemCount: _calendarGroups.length,
+                    separatorBuilder: (_, __) => const Divider(height: 1, color: AppTheme.borderColor),
+                    itemBuilder: (_, i) {
+                      final group    = _calendarGroups[i];
+                      final isActive = group['is_active'] as bool? ?? true;
+                      final calIds   = (group['calendar_ids'] as List?)?.map((e) => e.toString()).toList() ?? [];
+                      final assignedCals = _calendars.where((c) => calIds.contains(c['id'].toString())).toList();
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                        child: Row(children: [
+                          Expanded(flex: 4, child: Row(children: [
+                            Container(
+                              width: 36, height: 36,
+                              decoration: BoxDecoration(color: const Color(0xFF6366F1).withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8)),
+                              alignment: Alignment.center,
+                              child: const Icon(Icons.group_work_outlined, size: 18, color: Color(0xFF6366F1)),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                              Text(group['name'] ?? 'Unnamed', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+                              if ((group['description'] ?? '').isNotEmpty)
+                                Text(group['description'], style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary), overflow: TextOverflow.ellipsis),
+                            ])),
+                          ])),
+                          Expanded(flex: 3, child: assignedCals.isEmpty
+                              ? const Text('No calendars', style: TextStyle(fontSize: 12, color: AppTheme.textMuted))
+                              : Wrap(spacing: 4, runSpacing: 4, children: assignedCals.take(3).map((c) => Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: AppTheme.brand.withValues(alpha: 0.08),
+                                    borderRadius: BorderRadius.circular(4),
+                                  ),
+                                  child: Text(c['name'] ?? '', style: const TextStyle(fontSize: 10, color: AppTheme.brand, fontWeight: FontWeight.w500)),
+                                )).toList()
+                              ),
+                          ),
+                          Expanded(flex: 2, child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: isActive ? AppTheme.success.withValues(alpha: 0.1) : AppTheme.borderColor.withValues(alpha: 0.3),
+                              borderRadius: BorderRadius.circular(99),
+                            ),
+                            child: Text(isActive ? 'Active' : 'Inactive',
+                                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w500,
+                                    color: isActive ? AppTheme.success : AppTheme.textSecondary)),
+                          )),
+                          SizedBox(width: 80, child: Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+                            IconButton(icon: const Icon(Icons.edit_outlined,  size: 16, color: AppTheme.textSecondary), onPressed: () => _showGroupDialog(existing: group)),
+                            IconButton(icon: const Icon(Icons.delete_outline, size: 16, color: AppTheme.error),         onPressed: () => _deleteGroup(group)),
+                          ])),
+                        ]),
+                      );
+                    },
+                  ),
+                ),
+        ),
+      ]),
+    );
+  }
+
+  void _showGroupDialog({Map<String, dynamic>? existing}) {
+    showDialog(
+      context: context,
+      barrierColor: Colors.black54,
+      builder: (ctx) => _GroupFormDialog(
+        businessId: _businessId,
+        calendars: _calendars,
+        existing: existing,
+        onSaved: () {
+          Navigator.of(ctx, rootNavigator: true).pop();
+          _load();
+        },
+      ),
+    );
+  }
+
+  Future<void> _deleteGroup(Map<String, dynamic> group) async {
+    bool confirmed = false;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete Group'),
+        content: Text('Delete "${group['name']}"? This will not affect the calendars in this group.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () { confirmed = true; Navigator.of(ctx, rootNavigator: true).pop(); },
+            child: const Text('Delete', style: TextStyle(color: AppTheme.error)),
+          ),
+        ],
+      ),
+    );
+    if (!confirmed) return;
+    await _db.from('calendar_groups').delete().eq('id', group['id']);
+    _load();
+  }
+  // ══════════════════════════════════════════════════════════════════════════
+  //  SERVICE MENU TAB
+  // ══════════════════════════════════════════════════════════════════════════
+
+  Widget _buildServiceMenuTab() {
+    return Padding(
+      padding: const EdgeInsets.all(24),
+      child: Column(children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          decoration: BoxDecoration(
+            color: AppTheme.cardBg,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
+            border: Border.all(color: AppTheme.borderColor),
+          ),
+          child: const Row(children: [
+            Expanded(flex: 4, child: Text('SERVICE', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
+            Expanded(flex: 2, child: Text('DURATION', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
+            Expanded(flex: 2, child: Text('PRICE', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
+            Expanded(flex: 2, child: Text('STATUS', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
+            SizedBox(width: 80),
+          ]),
+        ),
+        Expanded(
+          child: _serviceMenuItems.isEmpty
+              ? Container(
+                  decoration: BoxDecoration(
+                    color: AppTheme.cardBg,
+                    borderRadius: const BorderRadius.vertical(bottom: Radius.circular(12)),
+                    border: const Border(left: BorderSide(color: AppTheme.borderColor), right: BorderSide(color: AppTheme.borderColor), bottom: BorderSide(color: AppTheme.borderColor)),
+                  ),
+                  child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+                    const Icon(Icons.room_service_outlined, size: 48, color: AppTheme.textMuted),
+                    const SizedBox(height: 12),
+                    const Text('No services yet', style: TextStyle(fontSize: 15, color: AppTheme.textSecondary)),
+                    const SizedBox(height: 8),
+                    TextButton(onPressed: () => _showServiceMenuDialog(), child: const Text('Add your first service')),
+                  ])),
+                )
+              : Container(
+                  decoration: BoxDecoration(
+                    color: AppTheme.cardBg,
+                    borderRadius: const BorderRadius.vertical(bottom: Radius.circular(12)),
+                    border: const Border(left: BorderSide(color: AppTheme.borderColor), right: BorderSide(color: AppTheme.borderColor), bottom: BorderSide(color: AppTheme.borderColor)),
+                  ),
+                  child: ListView.separated(
+                    itemCount: _serviceMenuItems.length,
+                    separatorBuilder: (_, __) => const Divider(height: 1, color: AppTheme.borderColor),
+                    itemBuilder: (_, i) {
+                      final item     = _serviceMenuItems[i];
+                      final isActive = item['is_active'] as bool? ?? true;
+                      final duration = item['duration_minutes'] as int? ?? 60;
+                      final price    = item['price'];
+                      final durationLabel = duration < 60 ? '${duration}m' : duration % 60 == 0 ? '${duration ~/ 60}h' : '${duration ~/ 60}h ${duration % 60}m';
+                      final priceLabel = price != null ? '\$${(price as num).toStringAsFixed(2)}' : '—';
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                        child: Row(children: [
+                          Expanded(flex: 4, child: Row(children: [
+                            Container(
+                              width: 36, height: 36,
+                              decoration: BoxDecoration(color: const Color(0xFF10B981).withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8)),
+                              alignment: Alignment.center,
+                              child: const Icon(Icons.room_service_outlined, size: 18, color: Color(0xFF10B981)),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                              Text(item['name'] ?? 'Unnamed', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+                              if ((item['description'] ?? '').isNotEmpty)
+                                Text(item['description'], style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary), overflow: TextOverflow.ellipsis),
+                            ])),
+                          ])),
+                          Expanded(flex: 2, child: Text(durationLabel, style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary))),
+                          Expanded(flex: 2, child: Text(priceLabel, style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary))),
+                          Expanded(flex: 2, child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: isActive ? AppTheme.success.withValues(alpha: 0.1) : AppTheme.borderColor.withValues(alpha: 0.3),
+                              borderRadius: BorderRadius.circular(99),
+                            ),
+                            child: Text(isActive ? 'Active' : 'Inactive',
+                                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w500,
+                                    color: isActive ? AppTheme.success : AppTheme.textSecondary)),
+                          )),
+                          SizedBox(width: 80, child: Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+                            IconButton(icon: const Icon(Icons.edit_outlined, size: 16, color: AppTheme.textSecondary), onPressed: () => _showServiceMenuDialog(existing: item)),
+                            IconButton(icon: const Icon(Icons.delete_outline, size: 16, color: AppTheme.error), onPressed: () => _deleteServiceMenuItem(item)),
+                          ])),
+                        ]),
+                      );
+                    },
+                  ),
+                ),
+        ),
+      ]),
+    );
+  }
+
+  void _showServiceMenuDialog({Map<String, dynamic>? existing}) {
+    showDialog(
+      context: context,
+      barrierColor: Colors.black54,
+      builder: (ctx) => _ServiceMenuFormDialog(
+        businessId: _businessId,
+        calendars: _calendars,
+        existing: existing,
+        onSaved: () {
+          Navigator.of(ctx, rootNavigator: true).pop();
+          _load();
+        },
+      ),
+    );
+  }
+
+  Future<void> _deleteServiceMenuItem(Map<String, dynamic> item) async {
+    bool confirmed = false;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete Service'),
+        content: Text('Delete "${item['name']}"?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () { confirmed = true; Navigator.of(ctx, rootNavigator: true).pop(); },
+            child: const Text('Delete', style: TextStyle(color: AppTheme.error)),
+          ),
+        ],
+      ),
+    );
+    if (!confirmed) return;
+    await _db.from('service_menu_items').delete().eq('id', item['id']);
+    _load();
+  }
+  // ══════════════════════════════════════════════════════════════════════════
+  //  ROOMS TAB
+  // ══════════════════════════════════════════════════════════════════════════
+
+  Widget _buildRoomsTab() {
+    return Padding(
+      padding: const EdgeInsets.all(24),
+      child: Column(children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          decoration: BoxDecoration(
+            color: AppTheme.cardBg,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
+            border: Border.all(color: AppTheme.borderColor),
+          ),
+          child: const Row(children: [
+            Expanded(flex: 4, child: Text('ROOM', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
+            Expanded(flex: 2, child: Text('CAPACITY', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
+            Expanded(flex: 2, child: Text('LOCATION', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
+            Expanded(flex: 2, child: Text('STATUS', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
+            SizedBox(width: 80),
+          ]),
+        ),
+        Expanded(
+          child: _calendarRooms.isEmpty
+              ? Container(
+                  decoration: BoxDecoration(
+                    color: AppTheme.cardBg,
+                    borderRadius: const BorderRadius.vertical(bottom: Radius.circular(12)),
+                    border: const Border(left: BorderSide(color: AppTheme.borderColor), right: BorderSide(color: AppTheme.borderColor), bottom: BorderSide(color: AppTheme.borderColor)),
+                  ),
+                  child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+                    const Icon(Icons.meeting_room_outlined, size: 48, color: AppTheme.textMuted),
+                    const SizedBox(height: 12),
+                    const Text('No rooms yet', style: TextStyle(fontSize: 15, color: AppTheme.textSecondary)),
+                    const SizedBox(height: 8),
+                    TextButton(onPressed: () => _showRoomDialog(), child: const Text('Add your first room')),
+                  ])),
+                )
+              : Container(
+                  decoration: BoxDecoration(
+                    color: AppTheme.cardBg,
+                    borderRadius: const BorderRadius.vertical(bottom: Radius.circular(12)),
+                    border: const Border(left: BorderSide(color: AppTheme.borderColor), right: BorderSide(color: AppTheme.borderColor), bottom: BorderSide(color: AppTheme.borderColor)),
+                  ),
+                  child: ListView.separated(
+                    itemCount: _calendarRooms.length,
+                    separatorBuilder: (_, __) => const Divider(height: 1, color: AppTheme.borderColor),
+                    itemBuilder: (_, i) {
+                      final room     = _calendarRooms[i];
+                      final isActive = room['is_active'] as bool? ?? true;
+                      final capacity = room['capacity'] as int?;
+                      final location = room['location'] as String? ?? '';
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                        child: Row(children: [
+                          Expanded(flex: 4, child: Row(children: [
+                            Container(
+                              width: 36, height: 36,
+                              decoration: BoxDecoration(color: const Color(0xFF0EA5E9).withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8)),
+                              alignment: Alignment.center,
+                              child: const Icon(Icons.meeting_room_outlined, size: 18, color: Color(0xFF0EA5E9)),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                              Text(room['name'] ?? 'Unnamed', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+                              if ((room['description'] ?? '').isNotEmpty)
+                                Text(room['description'], style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary), overflow: TextOverflow.ellipsis),
+                            ])),
+                          ])),
+                          Expanded(flex: 2, child: Text(
+                            capacity != null ? '$capacity people' : '—',
+                            style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary),
+                          )),
+                          Expanded(flex: 2, child: Text(
+                            location.isNotEmpty ? location : '—',
+                            style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary),
+                            overflow: TextOverflow.ellipsis,
+                          )),
+                          Expanded(flex: 2, child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: isActive ? AppTheme.success.withValues(alpha: 0.1) : AppTheme.borderColor.withValues(alpha: 0.3),
+                              borderRadius: BorderRadius.circular(99),
+                            ),
+                            child: Text(isActive ? 'Active' : 'Inactive',
+                                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w500,
+                                    color: isActive ? AppTheme.success : AppTheme.textSecondary)),
+                          )),
+                          SizedBox(width: 80, child: Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+                            IconButton(icon: const Icon(Icons.edit_outlined, size: 16, color: AppTheme.textSecondary), onPressed: () => _showRoomDialog(existing: room)),
+                            IconButton(icon: const Icon(Icons.delete_outline, size: 16, color: AppTheme.error), onPressed: () => _deleteRoom(room)),
+                          ])),
+                        ]),
+                      );
+                    },
+                  ),
+                ),
+        ),
+      ]),
+    );
+  }
+
+  void _showRoomDialog({Map<String, dynamic>? existing}) {
+    showDialog(
+      context: context,
+      barrierColor: Colors.black54,
+      builder: (ctx) => _RoomFormDialog(
+        businessId: _businessId,
+        calendars: _calendars,
+        existing: existing,
+        onSaved: () {
+          Navigator.of(ctx, rootNavigator: true).pop();
+          _load();
+        },
+      ),
+    );
+  }
+
+  Future<void> _deleteRoom(Map<String, dynamic> room) async {
+    bool confirmed = false;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete Room'),
+        content: Text('Delete "${room['name']}"?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () { confirmed = true; Navigator.of(ctx, rootNavigator: true).pop(); },
+            child: const Text('Delete', style: TextStyle(color: AppTheme.error)),
+          ),
+        ],
+      ),
+    );
+    if (!confirmed) return;
+    await _db.from('calendar_rooms').delete().eq('id', room['id']);
+    _load();
+  }
+  Widget _buildEquipmentTab() {
+    return Padding(
+      padding: const EdgeInsets.all(24),
+      child: Column(children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          decoration: BoxDecoration(
+            color: AppTheme.cardBg,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
+            border: Border.all(color: AppTheme.borderColor),
+          ),
+          child: const Row(children: [
+            Expanded(flex: 3, child: Text('EQUIPMENT', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
+            Expanded(flex: 2, child: Text('TYPE',     style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
+            Expanded(flex: 1, child: Text('QTY',      style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
+            Expanded(flex: 2, child: Text('STATUS',   style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
+            SizedBox(width: 80),
+          ]),
+        ),
+        Expanded(
+          child: _calendarEquipment.isEmpty
+              ? Container(
+                  decoration: BoxDecoration(
+                    color: AppTheme.cardBg,
+                    borderRadius: const BorderRadius.vertical(bottom: Radius.circular(12)),
+                    border: const Border(left: BorderSide(color: AppTheme.borderColor), right: BorderSide(color: AppTheme.borderColor), bottom: BorderSide(color: AppTheme.borderColor)),
+                  ),
+                  child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+                    const Icon(Icons.build_outlined, size: 48, color: AppTheme.textMuted),
+                    const SizedBox(height: 12),
+                    const Text('No equipment yet', style: TextStyle(fontSize: 15, color: AppTheme.textSecondary)),
+                    const SizedBox(height: 8),
+                    TextButton(onPressed: () => _showEquipmentDialog(), child: const Text('Add your first equipment')),
+                  ])),
+                )
+              : Container(
+                  decoration: BoxDecoration(
+                    color: AppTheme.cardBg,
+                    borderRadius: const BorderRadius.vertical(bottom: Radius.circular(12)),
+                    border: const Border(left: BorderSide(color: AppTheme.borderColor), right: BorderSide(color: AppTheme.borderColor), bottom: BorderSide(color: AppTheme.borderColor)),
+                  ),
+                  child: ListView.separated(
+                    itemCount: _calendarEquipment.length,
+                    separatorBuilder: (_, __) => const Divider(height: 1, color: AppTheme.borderColor),
+                    itemBuilder: (_, i) {
+                      final eq       = _calendarEquipment[i];
+                      final isActive = eq['is_active'] as bool? ?? true;
+                      final qty      = eq['quantity']  as int?  ?? 1;
+                      final type     = eq['equipment_type'] as String? ?? '';
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                        child: Row(children: [
+                          Expanded(flex: 3, child: Row(children: [
+                            Container(
+                              width: 36, height: 36,
+                              decoration: BoxDecoration(color: const Color(0xFFf59e0b).withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8)),
+                              alignment: Alignment.center,
+                              child: const Icon(Icons.build_outlined, size: 18, color: Color(0xFFf59e0b)),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                              Text(eq['name'] ?? 'Unnamed', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+                              if ((eq['description'] ?? '').isNotEmpty)
+                                Text(eq['description'], style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary), overflow: TextOverflow.ellipsis),
+                            ])),
+                          ])),
+                          Expanded(flex: 2, child: Text(type.isNotEmpty ? type : '—', style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary))),
+                          Expanded(flex: 1, child: Text('$qty', style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary))),
+                          Expanded(flex: 2, child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: isActive ? AppTheme.success.withValues(alpha: 0.1) : AppTheme.borderColor.withValues(alpha: 0.3),
+                              borderRadius: BorderRadius.circular(99),
+                            ),
+                            child: Text(isActive ? 'Active' : 'Inactive',
+                                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w500,
+                                    color: isActive ? AppTheme.success : AppTheme.textSecondary)),
+                          )),
+                          SizedBox(width: 80, child: Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+                            IconButton(icon: const Icon(Icons.edit_outlined,  size: 16, color: AppTheme.textSecondary), onPressed: () => _showEquipmentDialog(existing: eq)),
+                            IconButton(icon: const Icon(Icons.delete_outline, size: 16, color: AppTheme.error),         onPressed: () => _deleteEquipment(eq)),
+                          ])),
+                        ]),
+                      );
+                    },
+                  ),
+                ),
+        ),
+      ]),
+    );
+  }
+
+  void _showEquipmentDialog({Map<String, dynamic>? existing}) {
+    showDialog(
+      context: context,
+      barrierColor: Colors.black54,
+      builder: (ctx) => _EquipmentFormDialog(
+        businessId: _businessId,
+        calendars: _calendars,
+        existing: existing,
+        onSaved: () {
+          Navigator.of(ctx, rootNavigator: true).pop();
+          _load();
+        },
+      ),
+    );
+  }
+
+  Future<void> _deleteEquipment(Map<String, dynamic> eq) async {
+    bool confirmed = false;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete Equipment'),
+        content: Text('Delete "${eq['name']}"?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () { confirmed = true; Navigator.of(ctx, rootNavigator: true).pop(); },
+            child: const Text('Delete', style: TextStyle(color: AppTheme.error)),
+          ),
+        ],
+      ),
+    );
+    if (!confirmed) return;
+    await _db.from('calendar_equipment').delete().eq('id', eq['id']);
+    if (!mounted) return;
+    _load();
+  }
   Widget _buildComingSoonTab(String name) {
     return Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
       const Icon(Icons.construction_outlined, size: 48, color: AppTheme.textMuted),
@@ -1154,7 +1745,14 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
 
   void _showAppointmentDetail(Map<String, dynamic> appt) {
     showModalBottomSheet(context: context, isScrollControlled: true, backgroundColor: Colors.transparent,
-      builder: (_) => _AppointmentDetailSheet(appointment: appt, appointmentStatuses: _appointmentStatuses, colorFn: _statusColor, onUpdated: () { Navigator.pop(context); _load(); }));
+      builder: (_) => _AppointmentDetailSheet(
+        appointment: appt,
+        appointmentStatuses: _appointmentStatuses,
+        colorFn: _statusColor,
+        calendars: _calendars,
+        teamMembers: _teamMembers,
+        onUpdated: () { Navigator.pop(context); _load(); },
+      ));
   }
 
   void _showDaySheet(DateTime date, List<Map<String, dynamic>> appts) {
@@ -1185,6 +1783,1053 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
     ));
   }
 }
+// ══════════════════════════════════════════════════════════════════════════════
+//  GROUP FORM DIALOG
+// ══════════════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════════════
+//  SERVICE MENU FORM DIALOG
+// ══════════════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════════════
+//  ROOM FORM DIALOG
+// ══════════════════════════════════════════════════════════════════════════════
+class _EquipmentFormDialog extends StatefulWidget {
+  final int? businessId;
+  final List<Map<String, dynamic>> calendars;
+  final Map<String, dynamic>? existing;
+  final VoidCallback onSaved;
+
+  const _EquipmentFormDialog({
+    required this.businessId,
+    required this.calendars,
+    required this.onSaved,
+    this.existing,
+  });
+
+  @override
+  State<_EquipmentFormDialog> createState() => _EquipmentFormDialogState();
+}
+
+class _EquipmentFormDialogState extends State<_EquipmentFormDialog> {
+  final _db           = Supabase.instance.client;
+  final _nameCtrl     = TextEditingController();
+  final _descCtrl     = TextEditingController();
+  final _typeCtrl     = TextEditingController();
+  final _qtyCtrl      = TextEditingController();
+
+  bool    _isActive = true;
+  bool    _saving   = false;
+  String? _error;
+  Set<String> _selectedCalendarIds = {};
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.existing != null) {
+      final e = widget.existing!;
+      _nameCtrl.text = e['name']           ?? '';
+      _descCtrl.text = e['description']    ?? '';
+      _typeCtrl.text = e['equipment_type'] ?? '';
+      _qtyCtrl.text  = (e['quantity'] ?? 1).toString();
+      _isActive      = e['is_active'] as bool? ?? true;
+      _selectedCalendarIds = (e['calendar_ids'] as List?)
+          ?.map((v) => v.toString()).toSet() ?? {};
+    } else {
+      _qtyCtrl.text = '1';
+    }
+  }
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    _descCtrl.dispose();
+    _typeCtrl.dispose();
+    _qtyCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    if (_nameCtrl.text.trim().isEmpty) {
+      setState(() => _error = 'Equipment name is required');
+      return;
+    }
+    setState(() { _saving = true; _error = null; });
+    try {
+      final payload = {
+        'business_id':    widget.businessId,
+        'name':           _nameCtrl.text.trim(),
+        'description':    _descCtrl.text.trim(),
+        'equipment_type': _typeCtrl.text.trim(),
+        'quantity':       int.tryParse(_qtyCtrl.text.trim()) ?? 1,
+        'calendar_ids':   _selectedCalendarIds.toList(),
+        'is_active':      _isActive,
+        'updated_at':     DateTime.now().toIso8601String(),
+      };
+      if (widget.existing != null) {
+        await _db.from('calendar_equipment').update(payload).eq('id', widget.existing!['id']);
+      } else {
+        await _db.from('calendar_equipment').insert(payload);
+      }
+      widget.onSaved();
+    } catch (e) {
+      setState(() => _error = 'Failed to save: $e');
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: AppTheme.cardBg,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      insetPadding: const EdgeInsets.symmetric(horizontal: 40, vertical: 40),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 560, maxHeight: 700),
+        child: Column(children: [
+          Container(
+            padding: const EdgeInsets.fromLTRB(24, 20, 16, 16),
+            decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: AppTheme.borderColor))),
+            child: Row(children: [
+              const Icon(Icons.build_outlined, size: 20, color: Color(0xFFf59e0b)),
+              const SizedBox(width: 10),
+              Expanded(child: Text(
+                widget.existing != null ? 'Edit Equipment' : 'New Equipment',
+                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: AppTheme.textPrimary),
+              )),
+              IconButton(
+                onPressed: () => Navigator.of(context, rootNavigator: true).pop(),
+                icon: const Icon(Icons.close, size: 20, color: AppTheme.textSecondary),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+              ),
+            ]),
+          ),
+          Flexible(child: SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+
+              _label('Equipment Name *'),
+              const SizedBox(height: 4),
+              _textField(_nameCtrl, hint: 'e.g. Pressure Washer, Company Van'),
+              const SizedBox(height: 14),
+
+              _label('Description (optional)'),
+              const SizedBox(height: 4),
+              _textField(_descCtrl, hint: 'Brief description...', maxLines: 2),
+              const SizedBox(height: 14),
+
+              Row(children: [
+                Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  _label('Equipment Type (optional)'),
+                  const SizedBox(height: 4),
+                  _textField(_typeCtrl, hint: 'e.g. Vehicle, Tool, Machine'),
+                ])),
+                const SizedBox(width: 12),
+                Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  _label('Quantity'),
+                  const SizedBox(height: 4),
+                  _textField(_qtyCtrl, hint: '1', keyboard: TextInputType.number),
+                ])),
+              ]),
+              const SizedBox(height: 20),
+
+              if (widget.calendars.isNotEmpty) ...[
+                _label('Available On Calendars'),
+                const SizedBox(height: 4),
+                const Text('Select which calendars can use this equipment.',
+                    style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                const SizedBox(height: 12),
+                ...widget.calendars.map((cal) {
+                  final id      = cal['id'].toString();
+                  final name    = cal['name']?.toString() ?? 'Unnamed';
+                  final checked = _selectedCalendarIds.contains(id);
+                  return Clickable(
+                    onTap: () => setState(() {
+                      if (checked) _selectedCalendarIds.remove(id);
+                      else         _selectedCalendarIds.add(id);
+                    }),
+                    child: Container(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                      decoration: BoxDecoration(
+                        color: checked ? AppTheme.brand.withValues(alpha: 0.05) : AppTheme.pageBg,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: checked ? AppTheme.brand.withValues(alpha: 0.3) : AppTheme.borderColor,
+                          width: checked ? 1.5 : 1,
+                        ),
+                      ),
+                      child: Row(children: [
+                        Container(
+                          width: 30, height: 30,
+                          decoration: BoxDecoration(color: AppTheme.brand.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(6)),
+                          alignment: Alignment.center,
+                          child: const Icon(Icons.calendar_month, size: 15, color: AppTheme.brand),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(child: Text(name, style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary))),
+                        Checkbox(
+                          value: checked,
+                          onChanged: (_) => setState(() {
+                            if (checked) _selectedCalendarIds.remove(id);
+                            else         _selectedCalendarIds.add(id);
+                          }),
+                          activeColor: AppTheme.brand,
+                          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                      ]),
+                    ),
+                  );
+                }),
+                const SizedBox(height: 20),
+              ],
+
+              Row(children: [
+                Switch(value: _isActive, onChanged: (v) => setState(() => _isActive = v), activeColor: AppTheme.brand),
+                const SizedBox(width: 8),
+                const Text('Equipment is active', style: TextStyle(fontSize: 13, color: AppTheme.textPrimary)),
+              ]),
+
+              if (_error != null) ...[
+                const SizedBox(height: 12),
+                Text(_error!, style: const TextStyle(fontSize: 13, color: AppTheme.error)),
+              ],
+              const SizedBox(height: 20),
+              SizedBox(
+                width: double.infinity, height: 44,
+                child: ElevatedButton(
+                  onPressed: _saving ? null : _save,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppTheme.brand, foregroundColor: Colors.white, elevation: 0,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  child: _saving
+                      ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                      : Text(widget.existing != null ? 'Save Changes' : 'Add Equipment',
+                          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+                ),
+              ),
+            ]),
+          )),
+        ]),
+      ),
+    );
+  }
+
+  Widget _label(String text) => Text(text,
+      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textSecondary));
+
+  Widget _textField(TextEditingController ctrl, {String? hint, int maxLines = 1, TextInputType? keyboard}) {
+    return TextField(
+      controller: ctrl, maxLines: maxLines, keyboardType: keyboard,
+      style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+      decoration: InputDecoration(
+        hintText: hint,
+        hintStyle: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+        filled: true, fillColor: AppTheme.pageBg,
+        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        border:        OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
+        enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
+        focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.brand, width: 2)),
+      ),
+    );
+  }
+}
+class _RoomFormDialog extends StatefulWidget {
+  final int? businessId;
+  final List<Map<String, dynamic>> calendars;
+  final Map<String, dynamic>? existing;
+  final VoidCallback onSaved;
+
+  const _RoomFormDialog({
+    required this.businessId,
+    required this.calendars,
+    required this.onSaved,
+    this.existing,
+  });
+
+  @override
+  State<_RoomFormDialog> createState() => _RoomFormDialogState();
+}
+
+class _RoomFormDialogState extends State<_RoomFormDialog> {
+  final _db           = Supabase.instance.client;
+  final _nameCtrl     = TextEditingController();
+  final _descCtrl     = TextEditingController();
+  final _locationCtrl = TextEditingController();
+  final _capacityCtrl = TextEditingController();
+
+  bool    _isActive = true;
+  bool    _saving   = false;
+  String? _error;
+  Set<String> _selectedCalendarIds = {};
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.existing != null) {
+      final e = widget.existing!;
+      _nameCtrl.text     = e['name']        ?? '';
+      _descCtrl.text     = e['description'] ?? '';
+      _locationCtrl.text = e['location']    ?? '';
+      _capacityCtrl.text = e['capacity']?.toString() ?? '';
+      _isActive          = e['is_active'] as bool? ?? true;
+      _selectedCalendarIds = (e['calendar_ids'] as List?)
+          ?.map((v) => v.toString()).toSet() ?? {};
+    }
+  }
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    _descCtrl.dispose();
+    _locationCtrl.dispose();
+    _capacityCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    if (_nameCtrl.text.trim().isEmpty) {
+      setState(() => _error = 'Room name is required');
+      return;
+    }
+    setState(() { _saving = true; _error = null; });
+    try {
+      final capacityText = _capacityCtrl.text.trim();
+      final payload = {
+        'business_id':  widget.businessId,
+        'name':         _nameCtrl.text.trim(),
+        'description':  _descCtrl.text.trim(),
+        'location':     _locationCtrl.text.trim(),
+        'capacity':     capacityText.isNotEmpty ? int.tryParse(capacityText) : null,
+        'calendar_ids': _selectedCalendarIds.toList(),
+        'is_active':    _isActive,
+        'updated_at':   DateTime.now().toIso8601String(),
+      };
+      if (widget.existing != null) {
+        await _db.from('calendar_rooms').update(payload).eq('id', widget.existing!['id']);
+      } else {
+        await _db.from('calendar_rooms').insert(payload);
+      }
+      widget.onSaved();
+    } catch (e) {
+      setState(() => _error = 'Failed to save: $e');
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: AppTheme.cardBg,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      insetPadding: const EdgeInsets.symmetric(horizontal: 40, vertical: 40),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 560, maxHeight: 700),
+        child: Column(children: [
+          // Header
+          Container(
+            padding: const EdgeInsets.fromLTRB(24, 20, 16, 16),
+            decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: AppTheme.borderColor))),
+            child: Row(children: [
+              const Icon(Icons.meeting_room_outlined, size: 20, color: Color(0xFF0EA5E9)),
+              const SizedBox(width: 10),
+              Expanded(child: Text(
+                widget.existing != null ? 'Edit Room' : 'New Room',
+                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: AppTheme.textPrimary),
+              )),
+              IconButton(
+                onPressed: () => Navigator.of(context, rootNavigator: true).pop(),
+                icon: const Icon(Icons.close, size: 20, color: AppTheme.textSecondary),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+              ),
+            ]),
+          ),
+          // Body
+          Flexible(child: SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+
+              _label('Room Name *'),
+              const SizedBox(height: 4),
+              _textField(_nameCtrl, hint: 'e.g. Conference Room A'),
+              const SizedBox(height: 14),
+
+              _label('Description (optional)'),
+              const SizedBox(height: 4),
+              _textField(_descCtrl, hint: 'Brief description...', maxLines: 2),
+              const SizedBox(height: 14),
+
+              Row(children: [
+                Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  _label('Location (optional)'),
+                  const SizedBox(height: 4),
+                  _textField(_locationCtrl, hint: 'e.g. Floor 2, Building A'),
+                ])),
+                const SizedBox(width: 12),
+                Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  _label('Capacity (optional)'),
+                  const SizedBox(height: 4),
+                  _textField(_capacityCtrl, hint: 'e.g. 10', keyboard: TextInputType.number),
+                ])),
+              ]),
+              const SizedBox(height: 20),
+
+              if (widget.calendars.isNotEmpty) ...[
+                _label('Available On Calendars'),
+                const SizedBox(height: 4),
+                const Text('Select which calendars can book this room.',
+                    style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                const SizedBox(height: 12),
+                ...widget.calendars.map((cal) {
+                  final id      = cal['id'].toString();
+                  final name    = cal['name']?.toString() ?? 'Unnamed';
+                  final checked = _selectedCalendarIds.contains(id);
+                  return Clickable(
+                    onTap: () => setState(() {
+                      if (checked) _selectedCalendarIds.remove(id);
+                      else         _selectedCalendarIds.add(id);
+                    }),
+                    child: Container(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                      decoration: BoxDecoration(
+                        color: checked ? AppTheme.brand.withValues(alpha: 0.05) : AppTheme.pageBg,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: checked ? AppTheme.brand.withValues(alpha: 0.3) : AppTheme.borderColor,
+                          width: checked ? 1.5 : 1,
+                        ),
+                      ),
+                      child: Row(children: [
+                        Container(
+                          width: 30, height: 30,
+                          decoration: BoxDecoration(color: AppTheme.brand.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(6)),
+                          alignment: Alignment.center,
+                          child: const Icon(Icons.calendar_month, size: 15, color: AppTheme.brand),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(child: Text(name, style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary))),
+                        Checkbox(
+                          value: checked,
+                          onChanged: (_) => setState(() {
+                            if (checked) _selectedCalendarIds.remove(id);
+                            else         _selectedCalendarIds.add(id);
+                          }),
+                          activeColor: AppTheme.brand,
+                          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                      ]),
+                    ),
+                  );
+                }),
+                const SizedBox(height: 20),
+              ],
+
+              Row(children: [
+                Switch(value: _isActive, onChanged: (v) => setState(() => _isActive = v), activeColor: AppTheme.brand),
+                const SizedBox(width: 8),
+                const Text('Room is active', style: TextStyle(fontSize: 13, color: AppTheme.textPrimary)),
+              ]),
+
+              if (_error != null) ...[
+                const SizedBox(height: 12),
+                Text(_error!, style: const TextStyle(fontSize: 13, color: AppTheme.error)),
+              ],
+              const SizedBox(height: 20),
+              SizedBox(
+                width: double.infinity, height: 44,
+                child: ElevatedButton(
+                  onPressed: _saving ? null : _save,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppTheme.brand, foregroundColor: Colors.white, elevation: 0,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  child: _saving
+                      ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                      : Text(widget.existing != null ? 'Save Changes' : 'Add Room',
+                          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+                ),
+              ),
+            ]),
+          )),
+        ]),
+      ),
+    );
+  }
+
+  Widget _label(String text) => Text(text,
+      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textSecondary));
+
+  Widget _textField(TextEditingController ctrl, {String? hint, int maxLines = 1, TextInputType? keyboard}) {
+    return TextField(
+      controller: ctrl, maxLines: maxLines, keyboardType: keyboard,
+      style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+      decoration: InputDecoration(
+        hintText: hint,
+        hintStyle: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+        filled: true, fillColor: AppTheme.pageBg,
+        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        border:        OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
+        enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
+        focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.brand, width: 2)),
+      ),
+    );
+  }
+}
+class _ServiceMenuFormDialog extends StatefulWidget {
+  final int? businessId;
+  final List<Map<String, dynamic>> calendars;
+  final Map<String, dynamic>? existing;
+  final VoidCallback onSaved;
+
+  const _ServiceMenuFormDialog({
+    required this.businessId,
+    required this.calendars,
+    required this.onSaved,
+    this.existing,
+  });
+
+  @override
+  State<_ServiceMenuFormDialog> createState() => _ServiceMenuFormDialogState();
+}
+
+class _ServiceMenuFormDialogState extends State<_ServiceMenuFormDialog> {
+  final _db       = Supabase.instance.client;
+  final _nameCtrl = TextEditingController();
+  final _descCtrl = TextEditingController();
+  final _priceCtrl = TextEditingController();
+
+  int     _duration  = 60;
+  int     _customDuration = 45;
+  bool    _isActive  = true;
+  bool    _saving    = false;
+  String? _error;
+  Set<String> _selectedCalendarIds = {};
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.existing != null) {
+      final e = widget.existing!;
+      _nameCtrl.text  = e['name']        ?? '';
+      _descCtrl.text  = e['description'] ?? '';
+      _priceCtrl.text = e['price']?.toString() ?? '';
+      _duration       = e['duration_minutes'] as int? ?? 60;
+      _isActive       = e['is_active'] as bool? ?? true;
+      _selectedCalendarIds = (e['calendar_ids'] as List?)
+          ?.map((v) => v.toString()).toSet() ?? {};
+    }
+  }
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    _descCtrl.dispose();
+    _priceCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    if (_nameCtrl.text.trim().isEmpty) {
+      setState(() => _error = 'Service name is required');
+      return;
+    }
+    setState(() { _saving = true; _error = null; });
+    try {
+      final effectiveDuration = _duration == -1 ? _customDuration : _duration;
+      final priceText = _priceCtrl.text.trim();
+      final payload = {
+        'business_id':      widget.businessId,
+        'name':             _nameCtrl.text.trim(),
+        'description':      _descCtrl.text.trim(),
+        'duration_minutes': effectiveDuration,
+        'price':            priceText.isNotEmpty ? double.tryParse(priceText) : null,
+        'calendar_ids':     _selectedCalendarIds.toList(),
+        'is_active':        _isActive,
+        'updated_at':       DateTime.now().toIso8601String(),
+      };
+      if (widget.existing != null) {
+        await _db.from('service_menu_items').update(payload).eq('id', widget.existing!['id']);
+      } else {
+        await _db.from('service_menu_items').insert(payload);
+      }
+      widget.onSaved();
+    } catch (e) {
+      setState(() => _error = 'Failed to save: $e');
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: AppTheme.cardBg,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      insetPadding: const EdgeInsets.symmetric(horizontal: 40, vertical: 40),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 560, maxHeight: 720),
+        child: Column(children: [
+          // Header
+          Container(
+            padding: const EdgeInsets.fromLTRB(24, 20, 16, 16),
+            decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: AppTheme.borderColor))),
+            child: Row(children: [
+              const Icon(Icons.room_service_outlined, size: 20, color: Color(0xFF10B981)),
+              const SizedBox(width: 10),
+              Expanded(child: Text(
+                widget.existing != null ? 'Edit Service' : 'New Service',
+                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: AppTheme.textPrimary),
+              )),
+              IconButton(
+                onPressed: () => Navigator.of(context, rootNavigator: true).pop(),
+                icon: const Icon(Icons.close, size: 20, color: AppTheme.textSecondary),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+              ),
+            ]),
+          ),
+          // Body
+          Flexible(child: SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+
+              _label('Service Name *'),
+              const SizedBox(height: 4),
+              _textField(_nameCtrl, hint: 'e.g. Initial Consultation'),
+              const SizedBox(height: 14),
+
+              _label('Description (optional)'),
+              const SizedBox(height: 4),
+              _textField(_descCtrl, hint: 'Brief description...', maxLines: 2),
+              const SizedBox(height: 20),
+
+              _label('Duration'),
+              const SizedBox(height: 8),
+              Wrap(spacing: 8, runSpacing: 8, children: [
+                ...[15, 30, 45, 60, 90, 120].map((min) {
+                  final sel = _duration == min;
+                  return Clickable(
+                    onTap: () => setState(() => _duration = min),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: sel ? AppTheme.brand : AppTheme.pageBg,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: sel ? AppTheme.brand : AppTheme.borderColor),
+                      ),
+                      child: Text(
+                        min < 60 ? '${min}m' : '${min ~/ 60}h${min % 60 > 0 ? ' ${min % 60}m' : ''}',
+                        style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500,
+                            color: sel ? Colors.white : AppTheme.textSecondary),
+                      ),
+                    ),
+                  );
+                }),
+                Clickable(
+                  onTap: () => setState(() => _duration = -1),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: _duration == -1 ? AppTheme.brand : AppTheme.pageBg,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: _duration == -1 ? AppTheme.brand : AppTheme.borderColor),
+                    ),
+                    child: Text('Custom', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500,
+                        color: _duration == -1 ? Colors.white : AppTheme.textSecondary)),
+                  ),
+                ),
+              ]),
+              if (_duration == -1) ...[
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: 140,
+                  child: TextField(
+                    keyboardType: TextInputType.number,
+                    controller: TextEditingController(text: '$_customDuration')
+                      ..selection = TextSelection.collapsed(offset: '$_customDuration'.length),
+                    onChanged: (v) {
+                      final p = int.tryParse(v);
+                      if (p != null && p > 0) setState(() => _customDuration = p);
+                    },
+                    decoration: _inputDecor(hint: 'Minutes'),
+                  ),
+                ),
+              ],
+              const SizedBox(height: 20),
+
+              _label('Price (optional)'),
+              const SizedBox(height: 4),
+              _textField(_priceCtrl, hint: 'e.g. 150.00', keyboard: TextInputType.numberWithOptions(decimal: true)),
+              const SizedBox(height: 20),
+
+              if (widget.calendars.isNotEmpty) ...[
+                _label('Available On Calendars'),
+                const SizedBox(height: 4),
+                const Text('Select which calendars offer this service.',
+                    style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                const SizedBox(height: 12),
+                ...widget.calendars.map((cal) {
+                  final id      = cal['id'].toString();
+                  final name    = cal['name']?.toString() ?? 'Unnamed';
+                  final checked = _selectedCalendarIds.contains(id);
+                  return Clickable(
+                    onTap: () => setState(() {
+                      if (checked) _selectedCalendarIds.remove(id);
+                      else         _selectedCalendarIds.add(id);
+                    }),
+                    child: Container(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                      decoration: BoxDecoration(
+                        color: checked ? AppTheme.brand.withValues(alpha: 0.05) : AppTheme.pageBg,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: checked ? AppTheme.brand.withValues(alpha: 0.3) : AppTheme.borderColor,
+                          width: checked ? 1.5 : 1,
+                        ),
+                      ),
+                      child: Row(children: [
+                        Container(
+                          width: 30, height: 30,
+                          decoration: BoxDecoration(color: AppTheme.brand.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(6)),
+                          alignment: Alignment.center,
+                          child: const Icon(Icons.calendar_month, size: 15, color: AppTheme.brand),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(child: Text(name, style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary))),
+                        Checkbox(
+                          value: checked,
+                          onChanged: (_) => setState(() {
+                            if (checked) _selectedCalendarIds.remove(id);
+                            else         _selectedCalendarIds.add(id);
+                          }),
+                          activeColor: AppTheme.brand,
+                          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                      ]),
+                    ),
+                  );
+                }),
+                const SizedBox(height: 20),
+              ],
+
+              Row(children: [
+                Switch(value: _isActive, onChanged: (v) => setState(() => _isActive = v), activeColor: AppTheme.brand),
+                const SizedBox(width: 8),
+                const Text('Service is active', style: TextStyle(fontSize: 13, color: AppTheme.textPrimary)),
+              ]),
+
+              if (_error != null) ...[
+                const SizedBox(height: 12),
+                Text(_error!, style: const TextStyle(fontSize: 13, color: AppTheme.error)),
+              ],
+              const SizedBox(height: 20),
+              SizedBox(
+                width: double.infinity, height: 44,
+                child: ElevatedButton(
+                  onPressed: _saving ? null : _save,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppTheme.brand, foregroundColor: Colors.white, elevation: 0,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  child: _saving
+                      ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                      : Text(widget.existing != null ? 'Save Changes' : 'Add Service',
+                          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+                ),
+              ),
+            ]),
+          )),
+        ]),
+      ),
+    );
+  }
+
+  Widget _label(String text) => Text(text,
+      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textSecondary));
+
+  Widget _textField(TextEditingController ctrl, {String? hint, int maxLines = 1, TextInputType? keyboard}) {
+    return TextField(
+      controller: ctrl, maxLines: maxLines, keyboardType: keyboard,
+      style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+      decoration: _inputDecor(hint: hint),
+    );
+  }
+
+  InputDecoration _inputDecor({String? hint}) => InputDecoration(
+    hintText: hint,
+    hintStyle: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+    filled: true, fillColor: AppTheme.pageBg,
+    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+    border:        OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
+    enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
+    focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.brand, width: 2)),
+  );
+}
+class _GroupFormDialog extends StatefulWidget {
+  final int? businessId;
+  final List<Map<String, dynamic>> calendars;
+  final Map<String, dynamic>? existing;
+  final VoidCallback onSaved;
+
+  const _GroupFormDialog({
+    required this.businessId,
+    required this.calendars,
+    required this.onSaved,
+    this.existing,
+  });
+
+  @override
+  State<_GroupFormDialog> createState() => _GroupFormDialogState();
+}
+
+class _GroupFormDialogState extends State<_GroupFormDialog> {
+  final _db       = Supabase.instance.client;
+  final _nameCtrl = TextEditingController();
+  final _descCtrl = TextEditingController();
+  bool    _isActive = true;
+  bool    _saving   = false;
+  String? _error;
+  Set<String> _selectedCalendarIds = {};
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.existing != null) {
+      final e = widget.existing!;
+      _nameCtrl.text = e['name']        ?? '';
+      _descCtrl.text = e['description'] ?? '';
+      _isActive      = e['is_active']   as bool? ?? true;
+      _selectedCalendarIds = (e['calendar_ids'] as List?)
+          ?.map((v) => v.toString()).toSet() ?? {};
+    }
+  }
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    _descCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    if (_nameCtrl.text.trim().isEmpty) {
+      setState(() => _error = 'Group name is required');
+      return;
+    }
+    setState(() { _saving = true; _error = null; });
+    try {
+      final payload = {
+        'business_id':  widget.businessId,
+        'name':         _nameCtrl.text.trim(),
+        'description':  _descCtrl.text.trim(),
+        'calendar_ids': _selectedCalendarIds.toList(),
+        'is_active':    _isActive,
+        'updated_at':   DateTime.now().toIso8601String(),
+      };
+      if (widget.existing != null) {
+        await _db.from('calendar_groups').update(payload).eq('id', widget.existing!['id']);
+      } else {
+        await _db.from('calendar_groups').insert(payload);
+      }
+      widget.onSaved();
+    } catch (e) {
+      setState(() => _error = 'Failed to save: $e');
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: AppTheme.cardBg,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      insetPadding: const EdgeInsets.symmetric(horizontal: 40, vertical: 40),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 560, maxHeight: 700),
+        child: Column(children: [
+          // Header
+          Container(
+            padding: const EdgeInsets.fromLTRB(24, 20, 16, 16),
+            decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: AppTheme.borderColor))),
+            child: Row(children: [
+              const Icon(Icons.group_work_outlined, size: 20, color: Color(0xFF6366F1)),
+              const SizedBox(width: 10),
+              Expanded(child: Text(
+                widget.existing != null ? 'Edit Group' : 'New Calendar Group',
+                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: AppTheme.textPrimary),
+              )),
+              IconButton(
+                onPressed: () => Navigator.of(context, rootNavigator: true).pop(),
+                icon: const Icon(Icons.close, size: 20, color: AppTheme.textSecondary),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+              ),
+            ]),
+          ),
+          // Body
+          Flexible(child: SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+
+              // Name
+              _label('Group Name *'),
+              const SizedBox(height: 4),
+              _textField(_nameCtrl, hint: 'e.g. Sales Team Calendars'),
+              const SizedBox(height: 14),
+
+              // Description
+              _label('Description (optional)'),
+              const SizedBox(height: 4),
+              _textField(_descCtrl, hint: 'Brief description...', maxLines: 2),
+              const SizedBox(height: 20),
+
+              // Calendar selection
+              _label('Calendars in this Group'),
+              const SizedBox(height: 4),
+              const Text('Select which calendars belong to this group.',
+                  style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+              const SizedBox(height: 12),
+
+              if (widget.calendars.isEmpty)
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: AppTheme.pageBg,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: AppTheme.borderColor),
+                  ),
+                  child: const Text('No calendars available. Create a calendar first.',
+                      style: TextStyle(fontSize: 13, color: AppTheme.textSecondary)),
+                )
+              else
+                ...widget.calendars.map((cal) {
+                  final id      = cal['id'].toString();
+                  final name    = cal['name']?.toString() ?? 'Unnamed';
+                  final checked = _selectedCalendarIds.contains(id);
+                  final type    = cal['calendar_type'] ?? 'personal';
+                  final typeLabel = {
+                    'personal':    'Personal',
+                    'round_robin': 'Round Robin',
+                    'class':       'Class',
+                    'collective':  'Collective',
+                  }[type] ?? type;
+
+                  return Clickable(
+                    onTap: () => setState(() {
+                      if (checked) _selectedCalendarIds.remove(id);
+                      else         _selectedCalendarIds.add(id);
+                    }),
+                    child: Container(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                      decoration: BoxDecoration(
+                        color: checked ? AppTheme.brand.withValues(alpha: 0.05) : AppTheme.pageBg,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: checked ? AppTheme.brand.withValues(alpha: 0.3) : AppTheme.borderColor,
+                          width: checked ? 1.5 : 1,
+                        ),
+                      ),
+                      child: Row(children: [
+                        Container(
+                          width: 32, height: 32,
+                          decoration: BoxDecoration(
+                            color: AppTheme.brand.withValues(alpha: 0.1),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          alignment: Alignment.center,
+                          child: const Icon(Icons.calendar_month, size: 16, color: AppTheme.brand),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                          Text(name, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: AppTheme.textPrimary)),
+                          Text(typeLabel, style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                        ])),
+                        Checkbox(
+                          value: checked,
+                          onChanged: (_) => setState(() {
+                            if (checked) _selectedCalendarIds.remove(id);
+                            else         _selectedCalendarIds.add(id);
+                          }),
+                          activeColor: AppTheme.brand,
+                          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                      ]),
+                    ),
+                  );
+                }),
+
+              const SizedBox(height: 20),
+
+              // Active toggle
+              Row(children: [
+                Switch(value: _isActive, onChanged: (v) => setState(() => _isActive = v), activeColor: AppTheme.brand),
+                const SizedBox(width: 8),
+                const Text('Group is active', style: TextStyle(fontSize: 13, color: AppTheme.textPrimary)),
+              ]),
+
+              if (_error != null) ...[
+                const SizedBox(height: 12),
+                Text(_error!, style: const TextStyle(fontSize: 13, color: AppTheme.error)),
+              ],
+              const SizedBox(height: 20),
+              SizedBox(
+                width: double.infinity, height: 44,
+                child: ElevatedButton(
+                  onPressed: _saving ? null : _save,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppTheme.brand, foregroundColor: Colors.white, elevation: 0,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  child: _saving
+                      ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                      : Text(widget.existing != null ? 'Save Changes' : 'Create Group',
+                          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+                ),
+              ),
+            ]),
+          )),
+        ]),
+      ),
+    );
+  }
+
+  Widget _label(String text) => Text(text,
+      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textSecondary));
+
+  Widget _textField(TextEditingController ctrl, {String? hint, int maxLines = 1}) {
+    return TextField(
+      controller: ctrl, maxLines: maxLines,
+      style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+      decoration: InputDecoration(
+        hintText: hint,
+        hintStyle: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+        filled: true, fillColor: AppTheme.pageBg,
+        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        border:        OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
+        enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
+        focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.brand, width: 2)),
+      ),
+    );
+  }
+}
+class _AppLifecycleObserver extends WidgetsBindingObserver {
+  final VoidCallback onResume;
+  _AppLifecycleObserver({required this.onResume});
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) onResume();
+  }
+}
+
+// ═══════════════ END OF PART 1 — continue with appt_part2.dart ═══════════════
 // ═══════════════ END OF PART 1 — continue with appt_part2.dart ═══════════════
 // ═══════════════ PART 2 OF 4 — paste directly after Part 1 ═══════════════
 
@@ -1890,8 +3535,8 @@ class _AppointmentFormTabState extends State<_AppointmentFormTab> {
         'appointment_name': _titleCtrl.text.trim(),
         'appointment_type': _type,
         'status':           _status,
-        'start_date_time':  _startDt.toIso8601String(),
-        'end_date_time':    _endDt.toIso8601String(),
+        'start_date_time':  _startDt.toUtc().toIso8601String(),
+        'end_date_time':    _endDt.toUtc().toIso8601String(),
         'location':         _locationCtrl.text.trim(),
         'lead_name':        _contactCtrl.text.trim(),
         'lead_phone':       _phoneCtrl.text.trim(),
@@ -2767,12 +4412,16 @@ class _AppointmentDetailSheet extends StatefulWidget {
   final VoidCallback onUpdated;
   final List<String> appointmentStatuses;
   final Color Function(String) colorFn;
+  final List<Map<String, dynamic>> calendars;
+  final List<Map<String, dynamic>> teamMembers;
 
   const _AppointmentDetailSheet({
     required this.appointment,
     required this.onUpdated,
     required this.appointmentStatuses,
     required this.colorFn,
+    this.calendars = const [],
+    this.teamMembers = const [],
   });
 
   @override
@@ -2781,68 +4430,167 @@ class _AppointmentDetailSheet extends StatefulWidget {
 
 class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
   final _db = Supabase.instance.client;
-  late String _status;
   bool _saving = false;
+  bool _deleting = false;
+
+  late final TextEditingController _nameCtrl;
+  late final TextEditingController _locationCtrl;
+  late final TextEditingController _leadNameCtrl;
+  late final TextEditingController _leadPhoneCtrl;
+  late final TextEditingController _leadEmailCtrl;
+  late final TextEditingController _notesCtrl;
+  late final TextEditingController _sourceCtrl;
+  late final TextEditingController _adminEmailCtrl;
+
+  late String _status;
+  late String _type;
+  late DateTime _startDt;
+  late DateTime _endDt;
+  String? _calendarId;
+  String? _assignedTo;
+
+  static const _appointmentTypes = [
+    'Consultation','Discovery Call','Demo','Strategy Session','Follow-Up',
+    'Check-In','Onboarding','Renewal','Support Call','Sales Call',
+    'Service Appointment','In-Person Meeting','Virtual Meeting','Round Robin',
+    'Class / Event','Collective Meeting','Internal Meeting','Interview','Training','Other',
+  ];
 
   @override
   void initState() {
     super.initState();
-    _status = widget.appointment['status'] ?? 'New';
+    final a = widget.appointment;
+    _nameCtrl      = TextEditingController(text: a['appointment_name'] ?? '');
+    _locationCtrl  = TextEditingController(text: a['location'] ?? '');
+    _leadNameCtrl  = TextEditingController(text: a['lead_name'] ?? '');
+    _leadPhoneCtrl = TextEditingController(text: a['lead_phone'] ?? '');
+    _leadEmailCtrl = TextEditingController(text: a['lead_email'] ?? '');
+    _notesCtrl     = TextEditingController(text: a['notes'] ?? '');
+    _sourceCtrl    = TextEditingController(text: a['booking_source'] ?? '');
+    _adminEmailCtrl = TextEditingController(text: a['admin_email'] ?? '');
+
+    _status = a['status'] ?? 'New';
     if (!widget.appointmentStatuses.contains(_status)) {
       _status = widget.appointmentStatuses.first;
     }
+    _type = a['appointment_type'] ?? 'Consultation';
+    if (!_appointmentTypes.contains(_type)) _type = 'Consultation';
+
+    final startRaw = DateTime.tryParse(a['start_date_time'] ?? '') ?? DateTime.now();
+    final endRaw   = DateTime.tryParse(a['end_date_time']   ?? '') ?? DateTime.now();
+    _startDt = startRaw.isUtc ? startRaw.toLocal() : startRaw;
+    _endDt   = endRaw.isUtc   ? endRaw.toLocal()   : endRaw;
+
+    _calendarId = a['calendar_id']?.toString();
+    _assignedTo = a['assigned_to'] as String?;
   }
 
-  Future<void> _updateStatus(String s) async {
-    setState(() { _saving = true; _status = s; });
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    _locationCtrl.dispose();
+    _leadNameCtrl.dispose();
+    _leadPhoneCtrl.dispose();
+    _leadEmailCtrl.dispose();
+    _notesCtrl.dispose();
+    _sourceCtrl.dispose();
+    _adminEmailCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    setState(() => _saving = true);
     try {
-      await _db.from('appointments').update({'status': s}).eq('id', widget.appointment['id']);
+      await _db.from('appointments').update({
+        'appointment_name': _nameCtrl.text.trim(),
+        'appointment_type': _type,
+        'status':           _status,
+        'start_date_time':  _startDt.toUtc().toIso8601String(),
+        'end_date_time':    _endDt.toUtc().toIso8601String(),
+        'location':         _locationCtrl.text.trim(),
+        'lead_name':        _leadNameCtrl.text.trim(),
+        'lead_phone':       _leadPhoneCtrl.text.trim(),
+        'lead_email':       _leadEmailCtrl.text.trim(),
+        'notes':            _notesCtrl.text.trim(),
+        'booking_source':   _sourceCtrl.text.trim(),
+        'admin_email':      _adminEmailCtrl.text.trim(),
+        if (_calendarId != null) 'calendar_id': int.tryParse(_calendarId!),
+        if (_assignedTo != null) 'assigned_to': _assignedTo,
+      }).eq('id', widget.appointment['id']);
+      widget.onUpdated();
     } catch (e) {
-      debugPrint('Update error: $e');
+      debugPrint('Save error: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to save: $e'), backgroundColor: Colors.red),
+        );
+      }
     } finally {
       if (mounted) setState(() => _saving = false);
     }
   }
 
   Future<void> _delete() async {
-    final confirm = await showDialog<bool>(
+    bool confirmed = false;
+    await showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Delete Appointment'),
         content: const Text('Are you sure you want to delete this appointment?'),
         actions: [
-          TextButton(onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(false), child: const Text('Cancel')),
-          TextButton(onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(true),
-              child: const Text('Delete', style: TextStyle(color: AppTheme.error))),
+          TextButton(onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () { confirmed = true; Navigator.of(ctx, rootNavigator: true).pop(); },
+            child: const Text('Delete', style: TextStyle(color: AppTheme.error)),
+          ),
         ],
       ),
     );
-    if (confirm != true) return;
+    if (!confirmed || !mounted) return;
+    setState(() => _deleting = true);
     await _db.from('appointments').delete().eq('id', widget.appointment['id']);
     widget.onUpdated();
   }
 
-  String _fmtTime(DateTime dt) {
-    final local = dt.isUtc ? dt.toLocal() : dt;
-    final h = local.hour == 0 ? 12 : local.hour > 12 ? local.hour - 12 : local.hour;
-    return '$h:${local.minute.toString().padLeft(2, '0')} ${local.hour < 12 ? 'AM' : 'PM'}';
-  }
-
-  String _fmtFullDate(DateTime dt) {
-    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-    const days   = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
-    return '${days[dt.weekday - 1]}, ${months[dt.month - 1]} ${dt.day}, ${dt.year}';
+  Future<void> _pickDateTime(bool isStart) async {
+    final initial = isStart ? _startDt : _endDt;
+    final date = await showDatePicker(
+      context: context,
+      initialDate: initial,
+      firstDate: DateTime.now().subtract(const Duration(days: 365)),
+      lastDate: DateTime.now().add(const Duration(days: 365 * 2)),
+    );
+    if (date == null || !mounted) return;
+    final time = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(initial),
+    );
+    if (time == null || !mounted) return;
+    final result = DateTime(date.year, date.month, date.day, time.hour, time.minute);
+    setState(() {
+      if (isStart) {
+        _startDt = result;
+        if (_endDt.isBefore(_startDt)) _endDt = _startDt.add(const Duration(hours: 1));
+      } else {
+        _endDt = result;
+      }
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    final a       = widget.appointment;
-    final startDtRaw = DateTime.tryParse(a['start_date_time'] ?? '') ?? DateTime.now();
-    final endDtRaw   = DateTime.tryParse(a['end_date_time']   ?? '') ?? DateTime.now();
-    final startDt = startDtRaw.isUtc ? startDtRaw.toLocal() : startDtRaw;
-    final endDt   = endDtRaw.isUtc   ? endDtRaw.toLocal()   : endDtRaw;
-    final blocked = (a['appointment_type'] ?? '').toString().toLowerCase() == 'blocked' ||
-                    (a['status'] ?? '').toString().toLowerCase() == 'blocked';
+    final blocked = (widget.appointment['appointment_type'] ?? '').toString().toLowerCase() == 'blocked' ||
+                    (widget.appointment['status'] ?? '').toString().toLowerCase() == 'blocked';
+
+    final calItems = widget.calendars.isEmpty
+        ? <String>[]
+        : widget.calendars.map((c) => c['name']?.toString() ?? 'Unnamed').toList();
+    final calValue = widget.calendars.isEmpty ? null
+        : widget.calendars.where((c) => c['id'].toString() == _calendarId).map((c) => c['name']?.toString()).firstOrNull
+          ?? (calItems.isNotEmpty ? calItems.first : null);
+
+    final memberItems = ['Unassigned', ...widget.teamMembers.map((m) => m['full_name']?.toString() ?? 'Unknown')];
+    final memberValue = _assignedTo != null && memberItems.contains(_assignedTo) ? _assignedTo! : 'Unassigned';
 
     return Container(
       decoration: const BoxDecoration(
@@ -2850,119 +4598,197 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
       padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
-      child: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Center(child: Container(width: 40, height: 4,
-            decoration: BoxDecoration(color: AppTheme.borderColor, borderRadius: BorderRadius.circular(2)))),
-        const SizedBox(height: 20),
+      child: SingleChildScrollView(
+        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          // Drag handle
+          Center(child: Container(width: 40, height: 4,
+              decoration: BoxDecoration(color: AppTheme.borderColor, borderRadius: BorderRadius.circular(2)))),
+          const SizedBox(height: 16),
 
-        // Title row
-        Row(children: [
-          Container(
-            width: 48, height: 48,
-            decoration: BoxDecoration(
-              color: blocked
-                  ? const Color(0xFF94a3b8).withValues(alpha: 0.15)
-                  : AppTheme.brand.withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            alignment: Alignment.center,
-            child: Icon(
-              blocked ? Icons.block : Icons.calendar_today,
-              color: blocked ? const Color(0xFF94a3b8) : AppTheme.brand,
-              size: 22,
-            ),
-          ),
-          const SizedBox(width: 16),
-          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(a['appointment_name'] ?? 'Untitled',
-                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: AppTheme.textPrimary)),
-            Text(a['appointment_type'] ?? '—',
-                style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary)),
-          ])),
-          IconButton(onPressed: _delete,
-              icon: const Icon(Icons.delete_outline, size: 18, color: AppTheme.error)),
-        ]),
-        const SizedBox(height: 20),
-
-        // Date/time block
-        Container(
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: AppTheme.brand.withValues(alpha: 0.05),
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: AppTheme.brand.withValues(alpha: 0.15)),
-          ),
-          child: Row(children: [
-            const Icon(Icons.access_time, size: 16, color: AppTheme.brand),
-            const SizedBox(width: 10),
-            Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(_fmtFullDate(startDt),
-                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
-              Text('${_fmtTime(startDt)} – ${_fmtTime(endDt)}',
-                  style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
-            ]),
-          ]),
-        ),
-        const SizedBox(height: 12),
-
-        // Detail rows
-        if ((a['location']   ?? '').isNotEmpty) _row(Icons.location_on_outlined, a['location']),
-        if (!blocked) ...[
-          _row(Icons.person_outline, a['lead_name'] ?? '—'),
-          if ((a['lead_phone'] ?? '').isNotEmpty) _row(Icons.phone_outlined,  a['lead_phone']),
-          if ((a['lead_email'] ?? '').isNotEmpty) _row(Icons.email_outlined,  a['lead_email']),
-        ],
-        if ((a['notes'] ?? '').isNotEmpty) _row(Icons.notes_outlined, a['notes']),
-
-        // Status chips — only for real appointments, not blocked time
-        if (!blocked) ...[
-          const SizedBox(height: 20),
-          const Text('Update Status',
-              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
-          const SizedBox(height: 10),
-          Wrap(spacing: 8, runSpacing: 8, children: widget.appointmentStatuses.map((s) {
-            final sel = s == _status;
-            return Clickable(
-              onTap: () => _updateStatus(s),
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                decoration: BoxDecoration(
-                  color: sel ? AppTheme.brand : AppTheme.pageBg,
-                  borderRadius: BorderRadius.circular(99),
-                  border: Border.all(color: sel ? AppTheme.brand : AppTheme.borderColor),
-                ),
-                child: Text(s, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500,
-                    color: sel ? Colors.white : AppTheme.textSecondary)),
+          // Header
+          Row(children: [
+            Container(
+              width: 44, height: 44,
+              decoration: BoxDecoration(
+                color: blocked ? const Color(0xFF94a3b8).withValues(alpha: 0.15) : AppTheme.brand.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(10),
               ),
-            );
-          }).toList()),
-        ],
-
-        const SizedBox(height: 20),
-        SizedBox(
-          width: double.infinity, height: 44,
-          child: ElevatedButton(
-            onPressed: widget.onUpdated,
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppTheme.brand, foregroundColor: Colors.white, elevation: 0,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              alignment: Alignment.center,
+              child: Icon(blocked ? Icons.block : Icons.edit_calendar_outlined,
+                  color: blocked ? const Color(0xFF94a3b8) : AppTheme.brand, size: 20),
             ),
-            child: const Text('Done', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+            const SizedBox(width: 12),
+            const Expanded(child: Text('Edit Appointment',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
+            IconButton(
+              onPressed: _deleting ? null : _delete,
+              icon: _deleting
+                  ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.red))
+                  : const Icon(Icons.delete_outline, size: 18, color: AppTheme.error),
+            ),
+          ]),
+          const SizedBox(height: 20),
+
+          // ── Appointment Info ──────────────────────────────────────────
+          _sectionLabel('Appointment Info'),
+          const SizedBox(height: 8),
+          _field('Title', _nameCtrl),
+          const SizedBox(height: 10),
+          Row(children: [
+            Expanded(child: _dropdownField(
+              label: 'Type',
+              value: _type,
+              items: _appointmentTypes,
+              onChanged: (v) => setState(() => _type = v!),
+            )),
+            const SizedBox(width: 12),
+            Expanded(child: _dropdownField(
+              label: 'Status',
+              value: _status,
+              items: widget.appointmentStatuses,
+              onChanged: (v) => setState(() => _status = v!),
+            )),
+          ]),
+          const SizedBox(height: 10),
+          Row(children: [
+            Expanded(child: _dateTimeField('Start', _startDt, () => _pickDateTime(true))),
+            const SizedBox(width: 12),
+            Expanded(child: _dateTimeField('End', _endDt, () => _pickDateTime(false))),
+          ]),
+          const SizedBox(height: 10),
+          _field('Location', _locationCtrl, hint: 'Office, Zoom, Phone...'),
+
+          if (calItems.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            _dropdownField(
+              label: 'Calendar',
+              value: calValue ?? calItems.first,
+              items: calItems,
+              onChanged: (v) {
+                final match = widget.calendars.firstWhere((c) => c['name'] == v, orElse: () => widget.calendars.first);
+                setState(() => _calendarId = match['id'].toString());
+              },
+            ),
+          ],
+
+          if (widget.teamMembers.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            _dropdownField(
+              label: 'Assigned To',
+              value: memberValue,
+              items: memberItems,
+              onChanged: (v) => setState(() => _assignedTo = v == 'Unassigned' ? null : v),
+            ),
+          ],
+
+          const SizedBox(height: 20),
+
+          // ── Contact Info ──────────────────────────────────────────────
+          if (!blocked) ...[
+            _sectionLabel('Contact Info'),
+            const SizedBox(height: 8),
+            _field('Contact Name', _leadNameCtrl),
+            const SizedBox(height: 10),
+            Row(children: [
+              Expanded(child: _field('Phone', _leadPhoneCtrl, hint: '555-0100', keyboard: TextInputType.phone)),
+              const SizedBox(width: 12),
+              Expanded(child: _field('Email', _leadEmailCtrl, hint: 'jane@example.com', keyboard: TextInputType.emailAddress)),
+            ]),
+            const SizedBox(height: 10),
+            _field('Booking Source', _sourceCtrl, hint: 'e.g. Website, Referral, Facebook...'),
+            const SizedBox(height: 10),
+            _field('Admin Email', _adminEmailCtrl, hint: 'admin@yourbusiness.com', keyboard: TextInputType.emailAddress),
+            const SizedBox(height: 20),
+          ],
+
+          // ── Notes ─────────────────────────────────────────────────────
+          _sectionLabel('Notes'),
+          const SizedBox(height: 8),
+          _field('Notes', _notesCtrl, hint: 'Any notes...', maxLines: 3),
+          const SizedBox(height: 24),
+
+          // ── Save button ───────────────────────────────────────────────
+          SizedBox(
+            width: double.infinity, height: 44,
+            child: ElevatedButton(
+              onPressed: _saving ? null : _save,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.brand, foregroundColor: Colors.white, elevation: 0,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              child: _saving
+                  ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                  : const Text('Save Changes', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+            ),
           ),
-        ),
-      ])),
+        ]),
+      ),
     );
   }
 
-  Widget _row(IconData icon, String text) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Icon(icon, size: 16, color: AppTheme.textSecondary),
-        const SizedBox(width: 10),
-        Expanded(child: Text(text, style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary))),
-      ]),
-    );
+  Widget _sectionLabel(String text) => Padding(
+    padding: const EdgeInsets.only(bottom: 2),
+    child: Text(text, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700,
+        color: AppTheme.textSecondary, letterSpacing: 0.5)),
+  );
+
+  Widget _field(String label, TextEditingController ctrl,
+      {String? hint, TextInputType? keyboard, int maxLines = 1}) {
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: AppTheme.textSecondary)),
+      const SizedBox(height: 4),
+      TextField(
+        controller: ctrl, keyboardType: keyboard, maxLines: maxLines,
+        style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+        decoration: InputDecoration(
+          hintText: hint,
+          hintStyle: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+          filled: true, fillColor: AppTheme.pageBg,
+          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          border:        OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
+          enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
+          focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.brand, width: 2)),
+        ),
+      ),
+    ]);
+  }
+
+  Widget _dropdownField({required String label, required String value, required List<String> items, required ValueChanged<String?> onChanged}) {
+    final safe = items.contains(value) ? value : items.first;
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: AppTheme.textSecondary)),
+      const SizedBox(height: 4),
+      Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        decoration: BoxDecoration(color: AppTheme.pageBg, borderRadius: BorderRadius.circular(8), border: Border.all(color: AppTheme.borderColor)),
+        child: DropdownButtonHideUnderline(child: DropdownButton<String>(
+          value: safe, isExpanded: true, dropdownColor: AppTheme.cardBg,
+          style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+          items: items.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
+          onChanged: onChanged,
+        )),
+      ),
+    ]);
+  }
+
+  Widget _dateTimeField(String label, DateTime value, VoidCallback onTap) {
+    final h = value.hour == 0 ? 12 : value.hour > 12 ? value.hour - 12 : value.hour;
+    final m = value.minute.toString().padLeft(2, '0');
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    final formatted = '${months[value.month-1]} ${value.day} · $h:$m ${value.hour < 12 ? 'AM' : 'PM'}';
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: AppTheme.textSecondary)),
+      const SizedBox(height: 4),
+      Clickable(onTap: onTap, child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+        decoration: BoxDecoration(color: AppTheme.pageBg, borderRadius: BorderRadius.circular(8), border: Border.all(color: AppTheme.borderColor)),
+        child: Row(children: [
+          const Icon(Icons.access_time, size: 14, color: AppTheme.textSecondary),
+          const SizedBox(width: 8),
+          Text(formatted, style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary)),
+        ]),
+      )),
+    ]);
   }
 }
 // ════════════════════════════ END OF PART 4 ════════════════════════════════
