@@ -383,6 +383,12 @@ class _AppNavBarState extends State<AppNavBar> {
                       route: '/tickets',
                       active: location.startsWith('/tickets'),
                     ),
+                    _NavItem(
+                      icon: Icons.science_outlined,
+                      label: 'Beta Testers',
+                      route: '/beta-testers',
+                      active: location.startsWith('/beta-testers'),
+                    ),
                   ],
                 ],
               ),
@@ -441,7 +447,9 @@ class _SidebarSearchState extends State<_SidebarSearch> {
     try {
       final bizId = await _loadBizId();
       if (!mounted) return;
-      if (bizId == null) return;
+      if (bizId == null) {
+        return;
+      }
 
       final lower = q.toLowerCase();
 
@@ -507,14 +515,14 @@ class _SidebarSearchState extends State<_SidebarSearch> {
 
       // Conversations
       final convos = await _db.from('conversations')
-          .select('id, lead_name, last_message')
+          .select('id, contact_name, last_message')
           .eq('business_id', bizId)
-          .ilike('lead_name', '%$lower%')
+          .ilike('contact_name', '%$lower%')
           .limit(3);
       for (final c in (convos as List)) {
         results.add(_SearchResult(
           type: 'Conversation',
-          title: c['lead_name'] ?? 'Unknown',
+          title: c['contact_name'] ?? 'Unknown',
           subtitle: c['last_message'] ?? '',
           icon: Icons.chat_bubble_outline_rounded,
           color: const Color(0xFFf59e0b),
