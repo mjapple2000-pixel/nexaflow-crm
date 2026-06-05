@@ -20,7 +20,9 @@ Future<void> main() async {
   // Supabase will fire passwordRecovery event automatically when the
   // recovery link is clicked — we handle routing in GoRouterRefreshStream.
   final fragment = Uri.base.fragment;
-  if (!fragment.contains('access_token')) {
+  final path = Uri.base.fragment.split('?').first;
+  final isBetaSignup = path.contains('beta-signup');
+  if (!fragment.contains('access_token') && !isBetaSignup) {
     await Supabase.instance.client.auth.signOut();
   }
 
