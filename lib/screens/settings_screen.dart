@@ -2893,8 +2893,10 @@ class _BillingSectionState extends State<_BillingSection> {
 
   String get _currentPlan =>
       widget.business['subscription_status'] as String? ?? '';
+  bool get _isBeta =>
+      widget.business['is_beta'] as bool? ?? false;
   bool get _isPaid =>
-      widget.business['is_paid'] as bool? ?? false;
+      _isBeta || (widget.business['is_paid'] as bool? ?? false);
   String get _subscriptionId =>
       widget.business['subscription_id'] as String? ?? '';
 
@@ -3060,9 +3062,11 @@ class _BillingSectionState extends State<_BillingSection> {
                                   ? const Color(0xFF10B981)
                                   : Colors.red)),
                       Text(
-                          _isPaid && _currentPlan.isNotEmpty
-                              ? '${_currentPlan[0].toUpperCase()}${_currentPlan.substring(1)} Plan'
-                              : 'Subscribe below to get started',
+                          _isBeta
+                              ? 'Beta Access — Full Feature Unlock'
+                              : _isPaid && _currentPlan.isNotEmpty
+                                  ? '${_currentPlan[0].toUpperCase()}${_currentPlan.substring(1)} Plan'
+                                  : 'Subscribe below to get started',
                           style: const TextStyle(
                               fontSize: 13,
                               color: AppTheme.textSecondary)),
