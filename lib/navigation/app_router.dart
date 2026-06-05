@@ -26,6 +26,8 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../screens/tickets_screen.dart';
 import '../screens/reset_password_screen.dart';
+import '../screens/beta_testers_screen.dart';
+import '../screens/beta_signup_screen.dart';
 
 class AppRouter {
   static bool? cachedIsSuperuser;
@@ -69,7 +71,8 @@ class AppRouter {
 
       // Always allow these through unconditionally
       if (isErrorPage) return null;
-      if (isResetPassword) return null; // Never redirect away from reset screen
+      if (isResetPassword) return null;
+      if (loc == '/beta-signup') return null; // Never redirect away from reset screen
       if (isRootPage) return '/login';
       if (isSetupPage) return isLoggedIn ? null : '/login';
       if (isBusinessPicker) return isLoggedIn ? null : '/login';
@@ -153,6 +156,13 @@ class AppRouter {
         path: '/reset-password',
         name: 'reset-password',
         builder: (context, state) => const ResetPasswordScreen(),
+      ),
+      GoRoute(
+        path: '/beta-signup',
+        name: 'beta-signup',
+        builder: (context, state) => BetaSignupScreen(
+          token: state.uri.queryParameters['token'] ?? '',
+        ),
       ),
       GoRoute(
         path: '/error',
@@ -285,6 +295,11 @@ class AppRouter {
             path: '/tickets',
             name: 'tickets',
             builder: (context, state) => const TicketsScreen(),
+          ),
+          GoRoute(
+            path: '/beta-testers',
+            name: 'beta-testers',
+            builder: (context, state) => const BetaTestersScreen(),
           ),
         ],
       ),
