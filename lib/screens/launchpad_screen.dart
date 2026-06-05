@@ -79,12 +79,12 @@ class _LaunchpadScreenState extends State<LaunchpadScreen> {
     final hasContact = (contactsRes as List).isNotEmpty;
 
     // Pipeline stages
-    final stagesRes = await _supabase
-        .from('pipeline_stages')
+    final pipelinesRes = await _supabase
+        .from('pipelines')
         .select('id')
-        .eq('is_active', true)
+        .eq('business_id', businessId)
         .limit(1);
-    final hasStage = (stagesRes as List).isNotEmpty;
+    final hasStage = (pipelinesRes as List).isNotEmpty;
 
     // Campaigns
     final campaignsRes = await _supabase
