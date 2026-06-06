@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:intl/intl.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+import 'package:flutter/services.dart';
 import '../theme/app_theme.dart';
 
 class BetaTestersScreen extends StatefulWidget {
@@ -100,12 +103,110 @@ class _BetaTestersScreenState extends State<BetaTestersScreen> {
     try {
       await _db.from('beta_testers').update({'status': 'inactive'})
           .eq('id', tester['id'] as int);
-      // Also mark the business as non-beta
       if (tester['business_id'] != null) {
         await _db.from('businesses').update({'is_beta': false})
             .eq('id', tester['business_id'] as int);
       }
       await _load();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: AppTheme.error));
+      }
+    }
+  }
+
+  Future<void> _reactivate(Map<String, dynamic> tester) async {
+    try {
+      await _db.from('beta_testers').update({'status': 'active'})
+          .eq('id', tester['id'] as int);
+      if (tester['business_id'] != null) {
+        await _db.from('businesses').update({'is_beta': true})
+            .eq('id', tester['business_id'] as int);
+      }
+      await _load();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: AppTheme.error));
+      }
+    }
+  }
+
+  Future<void> _delete(Map<String, dynamic> tester) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.cardBg,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        title: const Text('Delete Beta Tester?',
+            style: TextStyle(color: AppTheme.textPrimary, fontWeight: FontWeight.w700)),
+        content: Text(
+          'Permanently delete ${tester['email']}? This cannot be undone.',
+          style: const TextStyle(color: AppTheme.textSecondary)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel', style: TextStyle(color: AppTheme.textSecondary))),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.error, foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+            child: const Text('Delete')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    try {
+      await _db.from('beta_testers').delete().eq('id', tester['id'] as int);
+      await _load();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: AppTheme.error));
+      }
+    }
+  }
+String _generateToken() {
+    const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    var token = '';
+    var seed = DateTime.now().millisecondsSinceEpoch;
+    for (var i = 0; i < 32; i++) {
+      seed = (seed * 1664525 + 1013904223) & 0xFFFFFFFF;
+      token += chars[seed % chars.length];
+    }
+    return token;
+  }
+
+  Future<void> _resendInvite(Map<String, dynamic> tester) async {
+    try {
+      final token = _generateToken();
+      final expiresAt = DateTime.now().toUtc().add(const Duration(days: 7));
+
+      await _db.from('beta_testers').update({
+        'invite_token': token,
+        'token_expires_at': expiresAt.toIso8601String(),
+        'invited_at': DateTime.now().toUtc().toIso8601String(),
+        'status': 'invited',
+      }).eq('id', tester['id'] as int);
+
+      const webhookUrl = 'https://hook.us2.make.com/gzauxp215th4nj93r2xhqkchidc9g77g';
+      final signupUrl = 'https://nexaflow-crm.web.app/#/beta-signup?token=$token';
+
+      try {
+        await http.post(
+          Uri.parse(webhookUrl),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({'email': tester['email'], 'signup_url': signupUrl}),
+        );
+      } catch (_) {}
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Invite resent successfully.')));
+        _load();
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -234,6 +335,8 @@ class _BetaTestersScreenState extends State<BetaTestersScreen> {
                                 child: const Row(children: [
                                   Expanded(flex: 3, child: Text('Email',
                                       style: _hStyle)),
+                                  Expanded(flex: 2, child: Text('Name',
+                                      style: _hStyle)),
                                   Expanded(flex: 2, child: Text('Business',
                                       style: _hStyle)),
                                   SizedBox(width: 100, child: Text('Status',
@@ -242,7 +345,7 @@ class _BetaTestersScreenState extends State<BetaTestersScreen> {
                                       style: _hStyle)),
                                   SizedBox(width: 110, child: Text('Activated',
                                       style: _hStyle)),
-                                  SizedBox(width: 80, child: Text('Actions',
+                                  SizedBox(width: 220, child: Text('Actions',
                                       style: _hStyle)),
                                 ]),
                               ),
@@ -266,6 +369,12 @@ class _BetaTestersScreenState extends State<BetaTestersScreen> {
                                                     fontSize: 13,
                                                     color: Color(0xFF1A1A2E),
                                                     fontWeight: FontWeight.w500),
+                                                overflow: TextOverflow.ellipsis)),
+                                        Expanded(flex: 2,
+                                            child: Text(t['full_name'] ?? '—',
+                                                style: const TextStyle(
+                                                    fontSize: 13,
+                                                    color: Color(0xFF444444)),
                                                 overflow: TextOverflow.ellipsis)),
                                         Expanded(flex: 2,
                                             child: Text(t['business_name'] ?? '—',
@@ -296,18 +405,68 @@ class _BetaTestersScreenState extends State<BetaTestersScreen> {
                                             child: Text(_formatDate(t['activated_at']),
                                                 style: const TextStyle(
                                                     fontSize: 12, color: Colors.grey))),
-                                        SizedBox(width: 80,
-                                            child: isActive
-                                                ? TextButton(
-                                                    onPressed: () => _deactivate(t),
-                                                    style: TextButton.styleFrom(
-                                                        foregroundColor: AppTheme.error,
-                                                        padding: EdgeInsets.zero),
-                                                    child: const Text('Deactivate',
-                                                        style: TextStyle(fontSize: 12)))
-                                                : const Text('—',
-                                                    style: TextStyle(
-                                                        fontSize: 12, color: Colors.grey))),
+                                        SizedBox(width: 220,
+                                            child: Row(children: [
+                                              if (status == 'active')
+                                                TextButton(
+                                                  onPressed: () => _deactivate(t),
+                                                  style: TextButton.styleFrom(
+                                                      foregroundColor: AppTheme.error,
+                                                      padding: EdgeInsets.zero),
+                                                  child: const Text('Deactivate',
+                                                      style: TextStyle(fontSize: 12))),
+                                              if (status == 'invited') ...[
+                                                TextButton(
+                                                  onPressed: () => _resendInvite(t),
+                                                  style: TextButton.styleFrom(
+                                                      foregroundColor: AppTheme.brand,
+                                                      padding: EdgeInsets.zero),
+                                                  child: const Text('Resend',
+                                                      style: TextStyle(fontSize: 12))),
+                                                const SizedBox(width: 4),
+                                                TextButton(
+                                                  onPressed: () => _reactivate(t),
+                                                  style: TextButton.styleFrom(
+                                                      foregroundColor: const Color(0xFF10B981),
+                                                      padding: EdgeInsets.zero),
+                                                  child: const Text('Activate',
+                                                      style: TextStyle(fontSize: 12))),
+                                                const SizedBox(width: 4),
+                                                IconButton(
+                                                  onPressed: () {
+                                                    final token = t['invite_token'] as String?;
+                                                    if (token == null) return;
+                                                    final link = 'https://nexaflow-crm.web.app/#/beta-signup?token=$token';
+                                                    Clipboard.setData(ClipboardData(text: link));
+                                                    ScaffoldMessenger.of(context).showSnackBar(
+                                                      const SnackBar(content: Text('Invite link copied to clipboard.')));
+                                                  },
+                                                  icon: const Icon(Icons.copy, size: 15),
+                                                  color: AppTheme.textSecondary,
+                                                  padding: EdgeInsets.zero,
+                                                  constraints: const BoxConstraints(),
+                                                  tooltip: 'Copy invite link'),
+                                                const SizedBox(width: 4),
+                                              ],
+                                              if (status == 'inactive') ...[
+                                                TextButton(
+                                                  onPressed: () => _reactivate(t),
+                                                  style: TextButton.styleFrom(
+                                                      foregroundColor: AppTheme.brand,
+                                                      padding: EdgeInsets.zero),
+                                                  child: const Text('Reactivate',
+                                                      style: TextStyle(fontSize: 12))),
+                                                const SizedBox(width: 4),
+                                              ],
+                                              if (status != 'active')
+                                                IconButton(
+                                                  onPressed: () => _delete(t),
+                                                  icon: const Icon(Icons.delete_outline, size: 16),
+                                                  color: AppTheme.error,
+                                                  padding: EdgeInsets.zero,
+                                                  constraints: const BoxConstraints(),
+                                                  tooltip: 'Delete'),
+                                            ])),
                                       ]),
                                     );
                                   },
@@ -386,12 +545,15 @@ class _InviteDialogState extends State<_InviteDialog> {
 
       // Fire Make webhook to send invite email
       // Replace with your actual Make webhook URL for beta invites
-      const webhookUrl = 'https://hook.us2.make.com/REPLACE_WITH_BETA_INVITE_WEBHOOK';
+      const webhookUrl = 'https://hook.us2.make.com/gzauxp215th4nj93r2xhqkchidc9g77g';
       final signupUrl = 'https://nexaflow-crm.web.app/#/beta-signup?token=$token';
 
       try {
-        await Future.delayed(Duration.zero); // placeholder — wire up webhook after
-        debugPrint('Beta invite URL: $signupUrl');
+        await http.post(
+          Uri.parse(webhookUrl),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({'email': email, 'signup_url': signupUrl}),
+        );
       } catch (_) {}
 
       if (mounted) widget.onInvited();
