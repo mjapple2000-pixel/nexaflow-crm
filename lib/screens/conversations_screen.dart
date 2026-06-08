@@ -102,6 +102,7 @@ class Message {
   final String channel;
   final String status;
   final String? mediaUrl;
+  final bool private;
   final DateTime createdAt;
 
   const Message({
@@ -113,11 +114,13 @@ class Message {
     required this.channel,
     required this.status,
     this.mediaUrl,
+    this.private = false,
     required this.createdAt,
   });
 
   bool get isOutbound => direction == 'outbound';
   bool get isAi => senderName == 'AI Assistant';
+  bool get isPrivate => direction == 'internal';
 
   factory Message.fromJson(Map<String, dynamic> j) {
     String body = j['body'] as String? ?? '';
@@ -139,6 +142,7 @@ class Message {
       channel: j['channel'] as String? ?? 'sms',
       status: j['status'] as String? ?? 'delivered',
       mediaUrl: j['media_url'] as String?,
+      private: j['private'] as bool? ?? false,
       createdAt: j['inserted_at'] != null
           ? DateTime.tryParse(j['inserted_at'] as String) ?? DateTime.now()
           : DateTime.tryParse(j['created_at'] as String? ?? '') ??
@@ -191,6 +195,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
   bool _isOwnerOrSuperuser = false;
   List<Map<String, dynamic>> _teamMembers = [];
   bool _assigningConvo = false;
+  String _composeMode = 'reply'; // 'reply' or 'note'
 
   static const String _emailWebhookUrl =
       'https://hook.us2.make.com/ap29d91tjwbus1x41a9o7c3ky86ihg6q';
@@ -291,6 +296,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
       _upcomingAppointments = [];
       _openDeals = [];
       _noteCtrl.clear();
+      _composeMode = 'reply';
     });
     _loadContactDetails(convo);
 
@@ -588,19 +594,22 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
       final businessId = await getActiveBusinessId();
       if (businessId == null) throw Exception('No business found.');
 
-      // Insert to DB — webhook fires and sends via Twilio automatically
+      final isNote = _composeMode == 'note';
+
+      // Insert to DB
       await _supabase.from('messages').insert({
         'conversation_id': _selected!.id,
         'business_id': businessId,
         'body': body,
-        'direction': 'outbound',
-        'channel': _sendChannel,
-        'status': 'sending',
-        'sender_name': 'You',
-        'sent_via_twiml': false,
+        'direction': isNote ? 'internal' : 'outbound',
+        'channel': isNote ? 'note' : _sendChannel,
+        'status': isNote ? 'delivered' : 'sending',
+        'sender_name': _currentUserFullName ?? 'You',
+        'sent_via_twiml': isNote ? true : false,
+        'private': isNote,
       });
 
-      if (_sendChannel == 'email') {
+      if (!isNote && _sendChannel == 'email') {
         final contactEmail = _selected!.contactEmail ?? '';
         if (contactEmail.isNotEmpty) {
           await http.post(
@@ -616,10 +625,12 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
         }
       }
 
-      await _supabase.from('conversations').update({
-        'last_message': body,
-        'last_message_at': DateTime.now().toIso8601String(),
-      }).eq('id', _selected!.id);
+      if (!isNote) {
+        await _supabase.from('conversations').update({
+          'last_message': body,
+          'last_message_at': DateTime.now().toIso8601String(),
+        }).eq('id', _selected!.id);
+      }
     } catch (e) {
       debugPrint('SEND ERROR: $e');
       if (mounted) {
@@ -1880,6 +1891,9 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
     final isOut = msg.isOutbound;
     final isAi = msg.isAi;
     final isEmail = msg.channel == 'email';
+    final isNote = msg.isPrivate;
+
+    if (isNote) return _buildNoteBubble(msg);
 
     final bubbleColor = isOut
         ? isAi
@@ -2033,26 +2047,116 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
     );
   }
 
+  Widget _composeModeTab(String label, String value, IconData icon) {
+    final active = _composeMode == value;
+    final isNote = value == 'note';
+    final activeColor = isNote ? const Color(0xFFF59E0B) : AppTheme.brand;
+    return Clickable(
+      onTap: () => setState(() => _composeMode = value),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          border: Border(
+            bottom: BorderSide(
+              color: active ? activeColor : Colors.transparent,
+              width: 2,
+            ),
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 13, color: active ? activeColor : AppTheme.textSecondary),
+            const SizedBox(width: 5),
+            Text(label,
+                style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: active ? FontWeight.w600 : FontWeight.w400,
+                    color: active ? activeColor : AppTheme.textSecondary)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildNoteBubble(Message msg) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Flexible(
+            child: Container(
+              constraints: const BoxConstraints(maxWidth: 480),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFEF3C7),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: const Color(0xFFF59E0B).withValues(alpha: 0.4)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.lock_outline_rounded, size: 11, color: Color(0xFF92400E)),
+                      const SizedBox(width: 4),
+                      Text(
+                        'Internal Note${msg.senderName != null ? ' · ${msg.senderName}' : ''}',
+                        style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: Color(0xFF92400E)),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 5),
+                  Text(msg.body, style: const TextStyle(fontSize: 13, color: Color(0xFF78350F), height: 1.4)),
+                  const SizedBox(height: 3),
+                  Text(_fmtTime(msg.createdAt), style: const TextStyle(fontSize: 10, color: Color(0xFF92400E))),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildReplyBox() {
     final isClosed = _selected?.status == 'closed';
+    final isNote = _composeMode == 'note';
 
     return Container(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
       decoration: const BoxDecoration(
         color: AppTheme.cardBg,
         border: Border(top: BorderSide(color: AppTheme.borderColor)),
       ),
       child: isClosed
-          ? const Center(
-              child: Text('This conversation is closed.',
-                  style: TextStyle(
-                      fontSize: 13, color: AppTheme.textSecondary)),
+          ? const Padding(
+              padding: EdgeInsets.all(16),
+              child: Center(
+                child: Text('This conversation is closed.',
+                    style: TextStyle(
+                        fontSize: 13, color: AppTheme.textSecondary)),
+              ),
             )
           : Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
+                // ── Reply / Note tabs ──
                 Row(
+                  children: [
+                    _composeModeTab('Reply', 'reply', Icons.reply_rounded),
+                    _composeModeTab('Note', 'note', Icons.lock_outline_rounded),
+                  ],
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 10, 16, 16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                if (!isNote) Row(
                   children: [
                     const Text('Send via:',
                         style: TextStyle(
@@ -2107,9 +2211,11 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                         style: const TextStyle(
                             fontSize: 13, color: AppTheme.textPrimary),
                         decoration: InputDecoration(
-                          hintText: _sendChannel == 'email'
-                              ? 'Type an email message...'
-                              : 'Type an SMS message...',
+                          hintText: isNote
+                              ? 'Add an internal note — only your team can see this...'
+                              : _sendChannel == 'email'
+                                  ? 'Type an email message...'
+                                  : 'Type an SMS message...',
                           hintStyle: const TextStyle(
                               color: AppTheme.textSecondary, fontSize: 13),
                           filled: true,
@@ -2139,9 +2245,11 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                     MouseRegion(
                       cursor: SystemMouseCursors.click,
                       child: Material(
-                        color: _sendChannel == 'email'
-                            ? const Color(0xFF10B981)
-                            : AppTheme.brand,
+                        color: isNote
+                            ? const Color(0xFFF59E0B)
+                            : _sendChannel == 'email'
+                                ? const Color(0xFF10B981)
+                                : AppTheme.brand,
                         borderRadius: BorderRadius.circular(24),
                         child: InkWell(
                           borderRadius: BorderRadius.circular(24),
@@ -2159,9 +2267,11 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                                           color: Colors.white),
                                     )
                                   : Icon(
-                                      _sendChannel == 'email'
-                                          ? Icons.send_outlined
-                                          : Icons.send_rounded,
+                                      isNote
+                                          ? Icons.lock_outline_rounded
+                                          : _sendChannel == 'email'
+                                              ? Icons.send_outlined
+                                              : Icons.send_rounded,
                                       color: Colors.white,
                                       size: 18,
                                     ),
@@ -2171,6 +2281,9 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                       ),
                     ),
                   ],
+                ),
+              ],
+            ),
                 ),
               ],
             ),
