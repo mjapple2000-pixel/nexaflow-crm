@@ -6,6 +6,7 @@ import '../theme/app_theme.dart';
 import '../widgets/clickable.dart';
 import 'package:go_router/go_router.dart';
 import '../utils/business_utils.dart';
+import '../navigation/app_router.dart';
 
 // ─────────────────────────────────────────────
 //  MODELS
@@ -23,6 +24,7 @@ class Conversation {
   final DateTime? lastMessageAt;
   final int unreadCount;
   final bool aiEnabled;
+  final String? assignedTo;
 
   const Conversation({
     required this.id,
@@ -36,6 +38,7 @@ class Conversation {
     this.lastMessageAt,
     required this.unreadCount,
     this.aiEnabled = true,
+    this.assignedTo,
   });
 
   factory Conversation.fromJson(Map<String, dynamic> j) {
@@ -53,6 +56,7 @@ class Conversation {
           : null,
       unreadCount: j['unread_count'] as int? ?? 0,
       aiEnabled: j['ai_enabled'] as bool? ?? true,
+      assignedTo: j['assigned_to'] as String?,
     );
   }
 
@@ -62,6 +66,7 @@ class Conversation {
     bool? aiEnabled,
     String? lastMessage,
     DateTime? lastMessageAt,
+    String? assignedTo,
   }) {
     return Conversation(
       id: id,
@@ -75,6 +80,7 @@ class Conversation {
       lastMessageAt: lastMessageAt ?? this.lastMessageAt,
       unreadCount: unreadCount ?? this.unreadCount,
       aiEnabled: aiEnabled ?? this.aiEnabled,
+      assignedTo: assignedTo ?? this.assignedTo,
     );
   }
 
@@ -179,6 +185,12 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
   bool _loadingContact = false;
   final _noteCtrl = TextEditingController();
   bool _savingNote = false;
+  String _inboxFilter = 'all'; // 'all' or 'mine'
+  String? _currentUserFullName;
+  String? _currentUserRole;
+  bool _isOwnerOrSuperuser = false;
+  List<Map<String, dynamic>> _teamMembers = [];
+  bool _assigningConvo = false;
 
   static const String _emailWebhookUrl =
       'https://hook.us2.make.com/ap29d91tjwbus1x41a9o7c3ky86ihg6q';
@@ -190,6 +202,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
   @override
   void initState() {
     super.initState();
+    _loadUserProfile();
     _loadConversations();
     _subscribeToConversations();
   }
@@ -235,6 +248,12 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
               .order('last_message_at', ascending: false);
 
       var convos = (res as List).map((e) => Conversation.fromJson(e)).toList();
+
+      // Mine filter: assigned to me OR unassigned (owners/superusers skip this)
+      if (_inboxFilter == 'mine' && !_isOwnerOrSuperuser && _currentUserFullName != null) {
+        convos = convos.where((c) =>
+            c.assignedTo == null || c.assignedTo == _currentUserFullName).toList();
+      }
 
       if (_filter == 'unread') {
         convos = convos.where((c) => c.unreadCount > 0).toList();
@@ -338,6 +357,66 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
       } catch (_) {}
     } finally {
       if (mounted) setState(() => _loadingMessages = false);
+    }
+  }
+
+  Future<void> _loadUserProfile() async {
+    try {
+      final userId = _supabase.auth.currentUser?.id;
+      if (userId == null) return;
+      final res = await _supabase
+          .from('profiles')
+          .select('full_name, role, business_id')
+          .eq('user_id', userId)
+          .single();
+      if (!mounted) return;
+      final role = res['role'] as String? ?? 'user';
+      final isOwner = role == 'owner';
+      final isSuperuser = AppRouter.cachedIsSuperuser == true;
+      setState(() {
+        _currentUserFullName = res['full_name'] as String?;
+        _currentUserRole = role;
+        _isOwnerOrSuperuser = isOwner || isSuperuser;
+      });
+
+      // Load team members for assignment dropdown
+      final businessId = await getActiveBusinessId();
+      if (businessId == null) return;
+      final members = await _supabase
+          .from('profiles')
+          .select('full_name, role')
+          .eq('business_id', businessId)
+          .order('full_name', ascending: true);
+      if (!mounted) return;
+      setState(() => _teamMembers = List<Map<String, dynamic>>.from(members));
+    } catch (e) {
+      debugPrint('Load user profile error: $e');
+    }
+  }
+
+  Future<void> _assignConversation(Conversation convo, String? assignee) async {
+    if (_assigningConvo) return;
+    setState(() => _assigningConvo = true);
+    try {
+      await _supabase
+          .from('conversations')
+          .update({'assigned_to': assignee}).eq('id', convo.id);
+      await _loadConversations();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(assignee != null
+                ? 'Assigned to $assignee'
+                : 'Unassigned'),
+            behavior: SnackBarBehavior.floating,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('Assign error: $e');
+    } finally {
+      if (mounted) setState(() => _assigningConvo = false);
     }
   }
 
@@ -1071,6 +1150,21 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
       ),
       child: Column(
         children: [
+          // ── Mine / All inbox toggle (non-owners only) ──
+          if (!_isOwnerOrSuperuser)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: const BoxDecoration(
+                border: Border(bottom: BorderSide(color: AppTheme.borderColor)),
+              ),
+              child: Row(
+                children: [
+                  _inboxToggleBtn('All', 'all'),
+                  const SizedBox(width: 8),
+                  _inboxToggleBtn('Mine', 'mine'),
+                ],
+              ),
+            ),
           // ── Unread / Recents / Starred / All tabs ──
           Container(
             decoration: const BoxDecoration(
@@ -1182,6 +1276,35 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                       }),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _inboxToggleBtn(String label, String value) {
+    final active = _inboxFilter == value;
+    return Clickable(
+      onTap: () {
+        setState(() => _inboxFilter = value);
+        _loadConversations();
+      },
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
+        decoration: BoxDecoration(
+          color: active ? AppTheme.brand : AppTheme.pageBg,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: active ? AppTheme.brand : AppTheme.borderColor,
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+            color: active ? Colors.white : AppTheme.textSecondary,
+          ),
+        ),
       ),
     );
   }
@@ -1613,6 +1736,34 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
           _channelBadge(c.channel),
           const SizedBox(width: 8),
           _statusDot(c.status),
+          const SizedBox(width: 8),
+          // ── Assign to dropdown ──
+          if (_teamMembers.isNotEmpty)
+            SizedBox(
+              height: 28,
+              child: _assigningConvo
+                  ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                  : DropdownButtonHideUnderline(
+                      child: DropdownButton<String?>(
+                        value: c.assignedTo,
+                        hint: const Text('Assign', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+                        icon: const Icon(Icons.keyboard_arrow_down_rounded, size: 14, color: AppTheme.textSecondary),
+                        style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary),
+                        isDense: true,
+                        items: [
+                          const DropdownMenuItem<String?>(
+                            value: null,
+                            child: Text('Unassigned', style: TextStyle(fontSize: 12)),
+                          ),
+                          ..._teamMembers.map((m) => DropdownMenuItem<String?>(
+                                value: m['full_name'] as String?,
+                                child: Text(m['full_name'] as String? ?? '', style: const TextStyle(fontSize: 12)),
+                              )),
+                        ],
+                        onChanged: (val) => _assignConversation(c, val),
+                      ),
+                    ),
+            ),
           const SizedBox(width: 8),
           MouseRegion(
             cursor: SystemMouseCursors.click,
