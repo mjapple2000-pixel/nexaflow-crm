@@ -25,6 +25,7 @@ class Conversation {
   final int unreadCount;
   final bool aiEnabled;
   final String? assignedTo;
+  final bool starred;
 
   const Conversation({
     required this.id,
@@ -39,6 +40,7 @@ class Conversation {
     required this.unreadCount,
     this.aiEnabled = true,
     this.assignedTo,
+    this.starred = false,
   });
 
   factory Conversation.fromJson(Map<String, dynamic> j) {
@@ -57,6 +59,7 @@ class Conversation {
       unreadCount: j['unread_count'] as int? ?? 0,
       aiEnabled: j['ai_enabled'] as bool? ?? true,
       assignedTo: j['assigned_to'] as String?,
+      starred: j['starred'] as bool? ?? false,
     );
   }
 
@@ -67,6 +70,7 @@ class Conversation {
     String? lastMessage,
     DateTime? lastMessageAt,
     String? assignedTo,
+    bool? starred,
   }) {
     return Conversation(
       id: id,
@@ -81,6 +85,7 @@ class Conversation {
       unreadCount: unreadCount ?? this.unreadCount,
       aiEnabled: aiEnabled ?? this.aiEnabled,
       assignedTo: assignedTo ?? this.assignedTo,
+      starred: starred ?? this.starred,
     );
   }
 
@@ -646,6 +651,22 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
     }
   }
 
+  Future<void> _toggleStar(Conversation c) async {
+    final newVal = !c.starred;
+    await _supabase
+        .from('conversations')
+        .update({'starred': newVal}).eq('id', c.id);
+    final idx = _conversations.indexWhere((x) => x.id == c.id);
+    if (idx != -1 && mounted) {
+      setState(() {
+        _conversations[idx] = c.copyWith(starred: newVal);
+        if (_selected?.id == c.id) {
+          _selected = _selected!.copyWith(starred: newVal);
+        }
+      });
+    }
+  }
+
   Future<void> _markAsUnread(Conversation c) async {
     await _supabase.from('conversations').update({'unread_count': 1}).eq('id', c.id);
     await _loadConversations();
@@ -1187,6 +1208,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                 _subTabItem('Unread', 'unread'),
                 _subTabItem('SMS', 'sms'),
                 _subTabItem('Email', 'email'),
+                _subTabItem('★', 'starred'),
                 _subTabItem('Archived', 'archived'),
               ],
             ),
@@ -1269,9 +1291,10 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                         var filtered = _subTab == 'archived'
                     ? _conversations.where((c) => c.status == 'archived').toList()
                     : _conversations.where((c) => c.status != 'archived').toList();
-                        if (_subTab == 'unread') filtered = filtered.where((c) => c.unreadCount > 0).toList();
-                        if (_subTab == 'sms')    filtered = filtered.where((c) => c.channel == 'sms').toList();
-                        if (_subTab == 'email')  filtered = filtered.where((c) => c.channel == 'email').toList();
+                        if (_subTab == 'unread')  filtered = filtered.where((c) => c.unreadCount > 0).toList();
+                        if (_subTab == 'sms')     filtered = filtered.where((c) => c.channel == 'sms').toList();
+                        if (_subTab == 'email')   filtered = filtered.where((c) => c.channel == 'email').toList();
+                        if (_subTab == 'starred') filtered = filtered.where((c) => c.starred).toList();
                         if (_searchQuery.isNotEmpty) {
                           filtered = filtered.where((c) =>
                               c.contactName.toLowerCase().contains(_searchQuery) ||
@@ -1508,6 +1531,15 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                       _channelBadge(convo.channel),
                       const SizedBox(width: 6),
                       _statusDot(convo.status),
+                      const Spacer(),
+                      GestureDetector(
+                        onTap: () => _toggleStar(convo),
+                        child: Icon(
+                          convo.starred ? Icons.star_rounded : Icons.star_outline_rounded,
+                          size: 14,
+                          color: convo.starred ? const Color(0xFFF59E0B) : AppTheme.textSecondary,
+                        ),
+                      ),
                     ],
                   ),
                 ],
