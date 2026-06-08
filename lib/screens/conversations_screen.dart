@@ -203,6 +203,8 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
   String _composeMode = 'reply'; // 'reply' or 'note'
   List<Map<String, dynamic>> _savedViews = [];
   String? _activeViewId;
+  final Set<int> _selectedConvoIds = {};
+  bool _bulkMode = false;
 
   static const String _emailWebhookUrl =
       'https://hook.us2.make.com/ap29d91tjwbus1x41a9o7c3ky86ihg6q';
@@ -781,6 +783,80 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
     } finally {
       if (mounted) setState(() => _sending = false);
     }
+  }
+
+  void _toggleBulkSelect(int id) {
+    setState(() {
+      if (_selectedConvoIds.contains(id)) {
+        _selectedConvoIds.remove(id);
+      } else {
+        _selectedConvoIds.add(id);
+      }
+      _bulkMode = _selectedConvoIds.isNotEmpty;
+    });
+  }
+
+  void _selectAll(List<Conversation> filtered) {
+    setState(() {
+      if (_selectedConvoIds.length == filtered.length) {
+        _selectedConvoIds.clear();
+        _bulkMode = false;
+      } else {
+        _selectedConvoIds.addAll(filtered.map((c) => c.id));
+        _bulkMode = true;
+      }
+    });
+  }
+
+  Future<void> _bulkMarkRead() async {
+    if (_selectedConvoIds.isEmpty) return;
+    for (final id in _selectedConvoIds) {
+      await _supabase.from('conversations').update({'unread_count': 0}).eq('id', id);
+    }
+    setState(() { _selectedConvoIds.clear(); _bulkMode = false; });
+    await _loadConversations();
+  }
+
+  Future<void> _bulkMarkUnread() async {
+    if (_selectedConvoIds.isEmpty) return;
+    for (final id in _selectedConvoIds) {
+      await _supabase.from('conversations').update({'unread_count': 1}).eq('id', id);
+    }
+    setState(() { _selectedConvoIds.clear(); _bulkMode = false; });
+    await _loadConversations();
+  }
+
+  Future<void> _bulkStar(bool star) async {
+    if (_selectedConvoIds.isEmpty) return;
+    for (final id in _selectedConvoIds) {
+      await _supabase.from('conversations').update({'starred': star}).eq('id', id);
+    }
+    setState(() { _selectedConvoIds.clear(); _bulkMode = false; });
+    await _loadConversations();
+  }
+
+  Future<void> _bulkArchive() async {
+    if (_selectedConvoIds.isEmpty) return;
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Archive Conversations', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+        content: Text('Archive ${_selectedConvoIds.length} conversation${_selectedConvoIds.length > 1 ? 's' : ''}?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Archive', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+    for (final id in _selectedConvoIds) {
+      await _supabase.from('conversations').update({'status': 'archived'}).eq('id', id);
+    }
+    setState(() { _selectedConvoIds.clear(); _bulkMode = false; });
+    await _loadConversations();
   }
 
   Future<void> _toggleStar(Conversation c) async {
@@ -1450,41 +1526,79 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
               ],
             ),
           ),
-          // ── Results count + sort ──
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
-            child: Row(
-              children: [
-                Checkbox(
-                  value: false,
-                  onChanged: (_) {},
-                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  visualDensity: VisualDensity.compact,
-                ),
-                Text(
-                  '${_conversations.length} RESULTS',
-                  style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary, fontWeight: FontWeight.w600),
-                ),
-                const Spacer(),
-                GestureDetector(
-                  onTap: _showSortDialog,
-                  child: MouseRegion(
-                    cursor: SystemMouseCursors.click,
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
+          // ── Results count + sort / Bulk toolbar ──
+          Builder(builder: (context) {
+            // compute filtered list the same way the list does
+            var filtered = _subTab == 'archived'
+                ? _conversations.where((c) => c.status == 'archived').toList()
+                : _conversations.where((c) => c.status != 'archived').toList();
+            if (_subTab == 'unread')  filtered = filtered.where((c) => c.unreadCount > 0).toList();
+            if (_subTab == 'sms')     filtered = filtered.where((c) => c.channel == 'sms').toList();
+            if (_subTab == 'email')   filtered = filtered.where((c) => c.channel == 'email').toList();
+            if (_subTab == 'starred') filtered = filtered.where((c) => c.starred).toList();
+            if (_searchQuery.isNotEmpty) {
+              filtered = filtered.where((c) =>
+                  c.contactName.toLowerCase().contains(_searchQuery) ||
+                  c.contactPhone.contains(_searchQuery) ||
+                  (c.lastMessage?.toLowerCase().contains(_searchQuery) ?? false)).toList();
+            }
+            final allSelected = filtered.isNotEmpty && _selectedConvoIds.length == filtered.length;
+            return Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+              child: _bulkMode
+                  ? Row(
                       children: [
-                        Text(
-                          _sortOrder == 'latest' ? 'Latest-All' : 'Oldest-All',
-                          style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
+                        Checkbox(
+                          value: allSelected,
+                          onChanged: (_) => _selectAll(filtered),
+                          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          visualDensity: VisualDensity.compact,
                         ),
-                        const Icon(Icons.keyboard_arrow_down_rounded, size: 14, color: AppTheme.textSecondary),
+                        Text('${_selectedConvoIds.length} selected',
+                            style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary, fontWeight: FontWeight.w600)),
+                        const Spacer(),
+                        _bulkActionBtn(Icons.mark_chat_read_outlined, 'Read', _bulkMarkRead),
+                        _bulkActionBtn(Icons.mark_chat_unread_outlined, 'Unread', _bulkMarkUnread),
+                        _bulkActionBtn(Icons.star_rounded, 'Star', () => _bulkStar(true)),
+                        _bulkActionBtn(Icons.star_outline_rounded, 'Unstar', () => _bulkStar(false)),
+                        _bulkActionBtn(Icons.archive_outlined, 'Archive', _bulkArchive),
+                        GestureDetector(
+                          onTap: () => setState(() { _selectedConvoIds.clear(); _bulkMode = false; }),
+                          child: const Icon(Icons.close_rounded, size: 16, color: AppTheme.textSecondary),
+                        ),
+                      ],
+                    )
+                  : Row(
+                      children: [
+                        Checkbox(
+                          value: false,
+                          onChanged: (_) {},
+                          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          visualDensity: VisualDensity.compact,
+                        ),
+                        Text('${filtered.length} RESULTS',
+                            style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary, fontWeight: FontWeight.w600)),
+                        const Spacer(),
+                        GestureDetector(
+                          onTap: _showSortDialog,
+                          child: MouseRegion(
+                            cursor: SystemMouseCursors.click,
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  _sortOrder == 'latest' ? 'Latest-All' : 'Oldest-All',
+                                  style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
+                                ),
+                                const Icon(Icons.keyboard_arrow_down_rounded, size: 14, color: AppTheme.textSecondary),
+                              ],
+                            ),
+                          ),
+                        ),
                       ],
                     ),
-                  ),
-                ),
-              ],
-            ),
-          ),
+            );
+          }),
           // ── List ──
           Expanded(
             child: _loadingConvos
@@ -1607,22 +1721,40 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
       ),
     );
   }
+  Widget _bulkActionBtn(IconData icon, String tooltip, VoidCallback onTap) {
+    return Tooltip(
+      message: tooltip,
+      child: GestureDetector(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4),
+          child: Icon(icon, size: 16, color: AppTheme.textSecondary),
+        ),
+      ),
+    );
+  }
+
   Widget _buildConvoTile(Conversation convo) {
     final isSelected = _selected?.id == convo.id;
     final hasUnread = convo.unreadCount > 0;
 
+    final isBulkSelected = _selectedConvoIds.contains(convo.id);
+
     return Clickable(
-      onTap: () => _selectConversation(convo),
+      onTap: () => _bulkMode ? _toggleBulkSelect(convo.id) : _selectConversation(convo),
+      onLongPress: () => _toggleBulkSelect(convo.id),
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 150),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         decoration: BoxDecoration(
-          color: isSelected
-              ? AppTheme.brand.withValues(alpha: 0.08)
-              : Colors.transparent,
+          color: isBulkSelected
+              ? AppTheme.brand.withValues(alpha: 0.12)
+              : isSelected
+                  ? AppTheme.brand.withValues(alpha: 0.08)
+                  : Colors.transparent,
           border: Border(
             left: BorderSide(
-              color: isSelected ? AppTheme.brand : Colors.transparent,
+              color: isBulkSelected || isSelected ? AppTheme.brand : Colors.transparent,
               width: 3,
             ),
             bottom: const BorderSide(color: AppTheme.borderColor),

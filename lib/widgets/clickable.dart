@@ -5,8 +5,9 @@ import 'package:flutter/material.dart';
 class Clickable extends StatelessWidget {
   final Widget child;
   final VoidCallback? onTap;
+  final VoidCallback? onLongPress;
 
-  const Clickable({super.key, required this.child, this.onTap});
+  const Clickable({super.key, required this.child, this.onTap, this.onLongPress});
 
   @override
   Widget build(BuildContext context) {
@@ -14,6 +15,7 @@ class Clickable extends StatelessWidget {
       cursor: SystemMouseCursors.click,
       child: GestureDetector(
         onTap: onTap,
+        onLongPress: onLongPress,
         child: child,
       ),
     );
