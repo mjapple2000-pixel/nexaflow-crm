@@ -201,6 +201,8 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
   List<Map<String, dynamic>> _teamMembers = [];
   bool _assigningConvo = false;
   String _composeMode = 'reply'; // 'reply' or 'note'
+  List<Map<String, dynamic>> _savedViews = [];
+  String? _activeViewId;
 
   static const String _emailWebhookUrl =
       'https://hook.us2.make.com/ap29d91tjwbus1x41a9o7c3ky86ihg6q';
@@ -213,6 +215,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
   void initState() {
     super.initState();
     _loadUserProfile();
+    _loadSavedViews();
     _loadConversations();
     _subscribeToConversations();
   }
@@ -428,6 +431,135 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
       debugPrint('Assign error: $e');
     } finally {
       if (mounted) setState(() => _assigningConvo = false);
+    }
+  }
+
+  Future<void> _loadSavedViews() async {
+    try {
+      final businessId = await getActiveBusinessId();
+      if (businessId == null) return;
+      final userId = _supabase.auth.currentUser?.id;
+      if (userId == null) return;
+      final res = await _supabase
+          .from('conversation_views')
+          .select()
+          .eq('business_id', businessId)
+          .eq('user_id', userId)
+          .order('created_at', ascending: true);
+      if (!mounted) return;
+      setState(() => _savedViews = List<Map<String, dynamic>>.from(res));
+    } catch (e) {
+      debugPrint('Load saved views error: $e');
+    }
+  }
+
+  Future<void> _saveCurrentView() async {
+    final nameCtrl = TextEditingController();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Save View', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+        content: TextField(
+          controller: nameCtrl,
+          autofocus: true,
+          decoration: const InputDecoration(
+            hintText: 'View name (e.g. Unread SMS)',
+            hintStyle: TextStyle(fontSize: 13),
+          ),
+          style: const TextStyle(fontSize: 13),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || nameCtrl.text.trim().isEmpty) return;
+
+    try {
+      final businessId = await getActiveBusinessId();
+      final userId = _supabase.auth.currentUser?.id;
+      if (businessId == null || userId == null) return;
+
+      final filters = {
+        'subTab': _subTab,
+        'filter': _filter,
+        'inboxFilter': _inboxFilter,
+        'sortOrder': _sortOrder,
+      };
+
+      final res = await _supabase
+          .from('conversation_views')
+          .insert({
+            'business_id': businessId,
+            'user_id': userId,
+            'name': nameCtrl.text.trim(),
+            'filters': filters,
+          })
+          .select()
+          .single();
+
+      if (!mounted) return;
+      setState(() {
+        _savedViews.add(res);
+        _activeViewId = res['id'].toString();
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('View "${nameCtrl.text.trim()}" saved'),
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    } catch (e) {
+      debugPrint('Save view error: $e');
+    }
+  }
+
+  void _applyView(Map<String, dynamic> view) {
+    final filters = view['filters'] as Map<String, dynamic>? ?? {};
+    setState(() {
+      _activeViewId = view['id'].toString();
+      _subTab = filters['subTab'] as String? ?? 'all';
+      _filter = filters['filter'] as String? ?? 'all';
+      _inboxFilter = filters['inboxFilter'] as String? ?? 'all';
+      _sortOrder = filters['sortOrder'] as String? ?? 'latest';
+    });
+    _loadConversations();
+  }
+
+  Future<void> _deleteView(Map<String, dynamic> view) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete View', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+        content: Text('Delete "${view['name']}"?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Delete', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+    try {
+      await _supabase
+          .from('conversation_views')
+          .delete()
+          .eq('id', view['id'] as int);
+      if (!mounted) return;
+      setState(() {
+        _savedViews.removeWhere((v) => v['id'] == view['id']);
+        if (_activeViewId == view['id'].toString()) _activeViewId = null;
+      });
+    } catch (e) {
+      debugPrint('Delete view error: $e');
     }
   }
 
@@ -1182,6 +1314,76 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
       ),
       child: Column(
         children: [
+          // ── Saved views ──
+          if (_savedViews.isNotEmpty)
+            Container(
+              height: 40,
+              decoration: const BoxDecoration(
+                border: Border(bottom: BorderSide(color: AppTheme.borderColor)),
+              ),
+              child: ListView.builder(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                itemCount: _savedViews.length + 1,
+                itemBuilder: (_, i) {
+                  if (i == _savedViews.length) {
+                    // Save current view button
+                    return Padding(
+                      padding: const EdgeInsets.only(right: 6),
+                      child: Clickable(
+                        onTap: _saveCurrentView,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: AppTheme.pageBg,
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(color: AppTheme.borderColor),
+                          ),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.add_rounded, size: 12, color: AppTheme.textSecondary),
+                              SizedBox(width: 3),
+                              Text('Save view', style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                            ],
+                          ),
+                        ),
+                      ),
+                    );
+                  }
+                  final view = _savedViews[i];
+                  final isActive = _activeViewId == view['id'].toString();
+                  return Padding(
+                    padding: const EdgeInsets.only(right: 6),
+                    child: GestureDetector(
+                      onLongPress: () => _deleteView(view),
+                      child: Clickable(
+                        onTap: () => _applyView(view),
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 150),
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: isActive ? AppTheme.brand : AppTheme.pageBg,
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(
+                              color: isActive ? AppTheme.brand : AppTheme.borderColor,
+                            ),
+                          ),
+                          child: Text(
+                            view['name'] as String,
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                              color: isActive ? Colors.white : AppTheme.textSecondary,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
           // ── Mine / All inbox toggle (non-owners only) ──
           if (!_isOwnerOrSuperuser)
             Container(
@@ -1241,6 +1443,8 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                 ),
                 const SizedBox(width: 8),
                 _iconBtn(Icons.filter_list_rounded, _showFilterDialog),
+                const SizedBox(width: 4),
+                _iconBtn(Icons.bookmark_add_outlined, _saveCurrentView),
                 const SizedBox(width: 4),
                 _iconBtn(Icons.edit_outlined, () => _showComingSoon('New Conversation')),
               ],
