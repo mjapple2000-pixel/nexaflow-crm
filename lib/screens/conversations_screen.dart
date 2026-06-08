@@ -4,6 +4,7 @@ import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme/app_theme.dart';
 import '../widgets/clickable.dart';
+import 'package:go_router/go_router.dart';
 import '../utils/business_utils.dart';
 
 // ─────────────────────────────────────────────
@@ -170,6 +171,14 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
   String _subTab = 'all';
   String _sortOrder = 'latest';
   String _sendChannel = 'sms';
+  bool _rightPanelOpen = true;
+  Map<String, dynamic>? _contactDetails;
+  Map<String, dynamic>? _leadDetails;
+  List<Map<String, dynamic>> _upcomingAppointments = [];
+  List<Map<String, dynamic>> _openDeals = [];
+  bool _loadingContact = false;
+  final _noteCtrl = TextEditingController();
+  bool _savingNote = false;
 
   static const String _emailWebhookUrl =
       'https://hook.us2.make.com/ap29d91tjwbus1x41a9o7c3ky86ihg6q';
@@ -189,6 +198,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
   void dispose() {
     _replyCtrl.dispose();
     _scrollCtrl.dispose();
+    _noteCtrl.dispose();
     _messageChannel?.unsubscribe();
     _conversationChannel?.unsubscribe();
     super.dispose();
@@ -257,7 +267,13 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
       _sendChannel = convo.channel == 'email' ? 'email' : 'sms';
       _loadingMessages = true;
       _messages = [];
+      _contactDetails = null;
+      _leadDetails = null;
+      _upcomingAppointments = [];
+      _openDeals = [];
+      _noteCtrl.clear();
     });
+    _loadContactDetails(convo);
 
     if (convo.unreadCount > 0) {
       await _supabase
@@ -322,6 +338,100 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
       } catch (_) {}
     } finally {
       if (mounted) setState(() => _loadingMessages = false);
+    }
+  }
+
+  Future<void> _loadContactDetails(Conversation convo) async {
+    setState(() => _loadingContact = true);
+    try {
+      // Look up lead by phone (primary) or name
+      Map<String, dynamic>? lead;
+      if (convo.contactPhone.isNotEmpty) {
+        final res = await _supabase
+            .from('leads')
+            .select()
+            .eq('lead_phone', convo.contactPhone)
+            .limit(1);
+        if (!mounted) return;
+        if ((res as List).isNotEmpty) lead = res.first;
+      }
+      if (lead == null && convo.contactName.isNotEmpty && convo.contactName != 'Unknown') {
+        final res = await _supabase
+            .from('leads')
+            .select()
+            .eq('lead_name', convo.contactName)
+            .limit(1);
+        if (!mounted) return;
+        if ((res as List).isNotEmpty) lead = res.first;
+      }
+
+      if (lead != null) {
+        final phone = lead['lead_phone'] as String? ?? convo.contactPhone;
+        final now = DateTime.now().toUtc().toIso8601String();
+
+        // Load upcoming appointments by lead_phone
+        final apptRes = await _supabase
+            .from('appointments')
+            .select()
+            .eq('lead_phone', phone)
+            .gte('start_date_time', now)
+            .order('start_date_time', ascending: true)
+            .limit(3);
+        if (!mounted) return;
+
+        // Load open deals by lead_id
+        final leadId = lead['id'];
+        final dealRes = await _supabase
+            .from('deals')
+            .select('id, deal_name, value, status, stage_id')
+            .eq('lead_id', leadId)
+            .neq('status', 'won')
+            .neq('status', 'lost')
+            .order('created_at', ascending: false)
+            .limit(5);
+        if (!mounted) return;
+
+        _noteCtrl.text = lead['notes'] as String? ?? '';
+        setState(() {
+          _contactDetails = lead;
+          _leadDetails = null;
+          _upcomingAppointments = List<Map<String, dynamic>>.from(apptRes);
+          _openDeals = List<Map<String, dynamic>>.from(dealRes);
+        });
+      } else {
+        setState(() {
+          _contactDetails = null;
+          _leadDetails = null;
+        });
+      }
+    } catch (e) {
+      debugPrint('Contact load error: $e');
+    } finally {
+      if (mounted) setState(() => _loadingContact = false);
+    }
+  }
+
+  Future<void> _saveNote() async {
+    if (_contactDetails == null || _savingNote) return;
+    setState(() => _savingNote = true);
+    try {
+      await _supabase
+          .from('leads')
+          .update({'notes': _noteCtrl.text.trim()})
+          .eq('id', _contactDetails!['id'] as int);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Note saved'),
+            behavior: SnackBarBehavior.floating,
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('Save note error: $e');
+    } finally {
+      if (mounted) setState(() => _savingNote = false);
     }
   }
 
@@ -504,12 +614,362 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                 _buildConversationList(),
                 Container(width: 1, color: AppTheme.borderColor),
                 Expanded(child: _buildMessagePanel()),
+                if (_selected != null) ...[
+                  Container(width: 1, color: AppTheme.borderColor),
+                  _buildRightPanel(),
+                ],
               ],
             ),
           ),
         ],
       ),
     );
+  }
+
+  Widget _buildRightPanel() {
+    // Resolve display data — prefer contact record, fall back to lead
+    final c = _contactDetails;
+
+    final displayName = c?['lead_name'] as String? ?? _selected?.contactName ?? '';
+    final displayPhone = c?['lead_phone'] as String? ?? _selected?.contactPhone ?? '';
+    final displayEmail = c?['lead_email'] as String? ?? _selected?.contactEmail ?? '';
+    final address = c?['address'] as String? ?? '';
+    final city = c?['city'] as String? ?? '';
+    final state = c?['state'] as String? ?? '';
+    final status = c?['lead_status'] as String? ?? '';
+
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 200),
+      width: _rightPanelOpen ? 280 : 36,
+      decoration: const BoxDecoration(color: AppTheme.cardBg),
+      child: Column(
+        children: [
+          // ── Header ──
+          Container(
+            height: 48,
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            decoration: const BoxDecoration(
+              border: Border(bottom: BorderSide(color: AppTheme.borderColor)),
+            ),
+            child: Row(
+              children: [
+                IconButton(
+                  onPressed: () => setState(() => _rightPanelOpen = !_rightPanelOpen),
+                  icon: Icon(
+                    _rightPanelOpen ? Icons.chevron_right_rounded : Icons.chevron_left_rounded,
+                    size: 18,
+                    color: AppTheme.textSecondary,
+                  ),
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(minWidth: 20, minHeight: 20),
+                  tooltip: _rightPanelOpen ? 'Collapse panel' : 'Expand panel',
+                ),
+                if (_rightPanelOpen) ...[
+                  const SizedBox(width: 6),
+                  const Text('Contact Details',
+                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+                  const Spacer(),
+                  if (_contactDetails != null)
+                    Clickable(
+                      onTap: () => context.go('/contacts/${_contactDetails!['id']}'),
+                      child: const Text('View',
+                          style: TextStyle(fontSize: 12, color: AppTheme.brand, fontWeight: FontWeight.w600)),
+                    ),
+                ],
+              ],
+            ),
+          ),
+
+          // ── Body ──
+          if (_rightPanelOpen)
+            Expanded(
+              child: _loadingContact
+                  ? const Center(child: CircularProgressIndicator(strokeWidth: 2))
+                  : _contactDetails == null
+                      ? _buildRightPanelEmpty()
+                      : SingleChildScrollView(
+                          padding: const EdgeInsets.all(16),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              // ── Avatar + name + status ──
+                              Center(
+                                child: Column(
+                                  children: [
+                                    Container(
+                                      width: 56,
+                                      height: 56,
+                                      decoration: BoxDecoration(
+                                        color: _avatarColor(displayName.isNotEmpty ? displayName : displayPhone),
+                                        shape: BoxShape.circle,
+                                      ),
+                                      child: Center(
+                                        child: Text(
+                                          _selected!.initials,
+                                          style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: Colors.white),
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(height: 8),
+                                    Text(
+                                      displayName.isNotEmpty ? displayName : _selected!.contactName,
+                                      style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: AppTheme.textPrimary),
+                                      textAlign: TextAlign.center,
+                                    ),
+                                    const SizedBox(height: 4),
+                                    if (status.isNotEmpty)
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                        decoration: BoxDecoration(
+                                          color: _statusColor(status).withValues(alpha: 0.12),
+                                          borderRadius: BorderRadius.circular(10),
+                                        ),
+                                        child: Text(status,
+                                            style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: _statusColor(status))),
+                                      ),
+                                  ],
+                                ),
+                              ),
+                              const SizedBox(height: 16),
+                              const Divider(color: AppTheme.borderColor),
+                              const SizedBox(height: 12),
+
+                              // ── Contact info ──
+                              _panelSectionLabel('CONTACT INFO'),
+                              const SizedBox(height: 8),
+                              if (displayPhone.isNotEmpty) _panelInfoRow(Icons.phone_outlined, displayPhone),
+                              if (displayEmail.isNotEmpty) _panelInfoRow(Icons.email_outlined, displayEmail),
+                              if (address.isNotEmpty)
+                                _panelInfoRow(
+                                  Icons.location_on_outlined,
+                                  [address, city, state].where((s) => s.isNotEmpty).join(', '),
+                                ),
+                              const SizedBox(height: 16),
+
+                              // ── Upcoming appointments ──
+                              _panelSectionLabel('UPCOMING APPOINTMENTS'),
+                              const SizedBox(height: 8),
+                              if (_upcomingAppointments.isEmpty)
+                                const Text('No upcoming appointments',
+                                    style: TextStyle(fontSize: 12, color: AppTheme.textSecondary))
+                              else
+                                ..._upcomingAppointments.map((a) => _panelAppointmentRow(a)),
+                              const SizedBox(height: 16),
+
+                              // ── Open deals ──
+                              _panelSectionLabel('OPEN DEALS'),
+                              const SizedBox(height: 8),
+                              if (_openDeals.isEmpty)
+                                const Text('No open deals',
+                                    style: TextStyle(fontSize: 12, color: AppTheme.textSecondary))
+                              else
+                                ..._openDeals.map((d) => _panelDealRow(d)),
+                              const SizedBox(height: 16),
+
+                              // ── Notes ──
+                              if (_contactDetails != null) ...[
+                                _panelSectionLabel('NOTES'),
+                                const SizedBox(height: 8),
+                                TextField(
+                                  controller: _noteCtrl,
+                                  maxLines: 4,
+                                  style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary),
+                                  decoration: InputDecoration(
+                                    hintText: 'Add a note...',
+                                    hintStyle: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+                                    filled: true,
+                                    fillColor: AppTheme.pageBg,
+                                    contentPadding: const EdgeInsets.all(10),
+                                    border: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(8),
+                                      borderSide: const BorderSide(color: AppTheme.borderColor),
+                                    ),
+                                    enabledBorder: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(8),
+                                      borderSide: const BorderSide(color: AppTheme.borderColor),
+                                    ),
+                                    focusedBorder: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(8),
+                                      borderSide: BorderSide(color: AppTheme.brand, width: 1.5),
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(height: 8),
+                                SizedBox(
+                                  width: double.infinity,
+                                  child: ElevatedButton(
+                                    onPressed: _savingNote ? null : _saveNote,
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: AppTheme.brand,
+                                      foregroundColor: Colors.white,
+                                      padding: const EdgeInsets.symmetric(vertical: 8),
+                                      textStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                    ),
+                                    child: _savingNote
+                                        ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                                        : const Text('Save Note'),
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+                        ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRightPanelEmpty() {
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        children: [
+          const SizedBox(height: 24),
+          Icon(Icons.person_search_outlined, size: 32, color: AppTheme.brand.withValues(alpha: 0.3)),
+          const SizedBox(height: 8),
+          const Text('No contact record found',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+          const SizedBox(height: 4),
+          const Text('Create a contact to see details here',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 11, color: AppTheme.textMuted)),
+        ],
+      ),
+    );
+  }
+
+  Widget _panelSectionLabel(String label) {
+    return Text(label,
+        style: const TextStyle(
+            fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 0.5));
+  }
+
+  Widget _panelInfoRow(IconData icon, String value) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 13, color: AppTheme.textSecondary),
+          const SizedBox(width: 8),
+          Expanded(child: Text(value, style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary))),
+        ],
+      ),
+    );
+  }
+
+  Widget _panelAppointmentRow(Map<String, dynamic> appt) {
+    final name = appt['appointment_name'] as String? ?? 'Appointment';
+    final start = appt['start_date_time'] != null
+        ? DateTime.tryParse(appt['start_date_time'] as String)?.toLocal()
+        : null;
+    final status = appt['status'] as String? ?? '';
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: AppTheme.pageBg,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: AppTheme.borderColor),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(name,
+              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textPrimary),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis),
+          if (start != null) ...[
+            const SizedBox(height: 3),
+            Text(
+              '${_fmtDate(start)} · ${start.hour.toString().padLeft(2, '0')}:${start.minute.toString().padLeft(2, '0')}',
+              style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
+            ),
+          ],
+          if (status.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: _apptStatusColor(status).withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Text(status,
+                  style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: _apptStatusColor(status))),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _panelDealRow(Map<String, dynamic> deal) {
+    final name = deal['deal_name'] as String? ?? 'Deal';
+    final value = deal['value'];
+    final status = deal['status'] as String? ?? '';
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: AppTheme.pageBg,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: AppTheme.borderColor),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(name,
+                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textPrimary),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis),
+                if (status.isNotEmpty)
+                  Text(status, style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+              ],
+            ),
+          ),
+          if (value != null)
+            Text(
+              '\$${(value as num).toStringAsFixed(0)}',
+              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppTheme.brand),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Color _statusColor(String status) {
+    switch (status.toLowerCase()) {
+      case 'active':
+      case 'qualified':
+        return const Color(0xFF10B981);
+      case 'hot':
+        return const Color(0xFFEF4444);
+      case 'warm':
+        return const Color(0xFFF59E0B);
+      case 'cold':
+        return const Color(0xFF6366F1);
+      default:
+        return AppTheme.textSecondary;
+    }
+  }
+
+  Color _apptStatusColor(String status) {
+    switch (status.toLowerCase()) {
+      case 'confirmed':
+        return const Color(0xFF10B981);
+      case 'pending':
+        return const Color(0xFFF59E0B);
+      case 'cancelled':
+        return const Color(0xFFEF4444);
+      default:
+        return AppTheme.textSecondary;
+    }
   }
 
   Widget _buildTopBar() {
@@ -1151,9 +1611,9 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
             ),
           ),
           _channelBadge(c.channel),
-          const SizedBox(width: 12),
+          const SizedBox(width: 8),
           _statusDot(c.status),
-          const SizedBox(width: 12),
+          const SizedBox(width: 8),
           MouseRegion(
             cursor: SystemMouseCursors.click,
             child: OutlinedButton.icon(
@@ -1161,7 +1621,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
               icon: const Icon(Icons.mark_chat_unread_outlined, size: 14),
               label: const Text('Unread', style: TextStyle(fontSize: 12)),
               style: OutlinedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                 minimumSize: Size.zero,
               ),
             ),
@@ -1179,7 +1639,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
               label: Text(c.status == 'archived' ? 'Unarchive' : 'Archive',
                   style: const TextStyle(fontSize: 12)),
               style: OutlinedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                 minimumSize: Size.zero,
               ),
             ),
@@ -1198,7 +1658,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
               label: Text(c.status == 'open' ? 'Close' : 'Reopen',
                   style: const TextStyle(fontSize: 12)),
               style: OutlinedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                 minimumSize: Size.zero,
               ),
             ),
