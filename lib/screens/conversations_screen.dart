@@ -26,6 +26,8 @@ class Conversation {
   final bool aiEnabled;
   final String? assignedTo;
   final bool starred;
+  final List<String> tags;
+  final bool dnd;
 
   const Conversation({
     required this.id,
@@ -41,6 +43,8 @@ class Conversation {
     this.aiEnabled = true,
     this.assignedTo,
     this.starred = false,
+    this.tags = const [],
+    this.dnd = false,
   });
 
   factory Conversation.fromJson(Map<String, dynamic> j) {
@@ -60,6 +64,8 @@ class Conversation {
       aiEnabled: j['ai_enabled'] as bool? ?? true,
       assignedTo: j['assigned_to'] as String?,
       starred: j['starred'] as bool? ?? false,
+      tags: (j['tags'] as List?)?.map((e) => e.toString()).toList() ?? [],
+      dnd: j['dnd'] as bool? ?? false,
     );
   }
 
@@ -71,6 +77,8 @@ class Conversation {
     DateTime? lastMessageAt,
     String? assignedTo,
     bool? starred,
+    List<String>? tags,
+    bool? dnd,
   }) {
     return Conversation(
       id: id,
@@ -86,6 +94,8 @@ class Conversation {
       aiEnabled: aiEnabled ?? this.aiEnabled,
       assignedTo: assignedTo ?? this.assignedTo,
       starred: starred ?? this.starred,
+      tags: tags ?? this.tags,
+      dnd: dnd ?? this.dnd,
     );
   }
 
@@ -192,6 +202,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
   List<Map<String, dynamic>> _upcomingAppointments = [];
   List<Map<String, dynamic>> _openDeals = [];
   bool _loadingContact = false;
+  List<Map<String, dynamic>> _activeEnrollments = [];
   final _noteCtrl = TextEditingController();
   bool _savingNote = false;
   String _inboxFilter = 'all'; // 'all' or 'mine'
@@ -201,10 +212,12 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
   List<Map<String, dynamic>> _teamMembers = [];
   bool _assigningConvo = false;
   String _composeMode = 'reply'; // 'reply' or 'note'
+  String _messageFilter = 'all'; // 'all', 'sms', 'email', 'note'
   List<Map<String, dynamic>> _savedViews = [];
   String? _activeViewId;
   final Set<int> _selectedConvoIds = {};
   bool _bulkMode = false;
+  List<Map<String, dynamic>> _snippets = [];
 
   static const String _emailWebhookUrl =
       'https://hook.us2.make.com/ap29d91tjwbus1x41a9o7c3ky86ihg6q';
@@ -219,6 +232,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
     _loadUserProfile();
     _loadSavedViews();
     _loadConversations();
+    _loadSnippets();
     _subscribeToConversations();
   }
 
@@ -307,6 +321,8 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
       _openDeals = [];
       _noteCtrl.clear();
       _composeMode = 'reply';
+      _messageFilter = 'all';
+      _activeEnrollments = [];
     });
     _loadContactDetails(convo);
 
@@ -615,12 +631,22 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
             .limit(5);
         if (!mounted) return;
 
+        // Load active automation enrollments
+        final enrollRes = await _supabase
+            .from('automation_enrollments')
+            .select('id, status, enrolled_at, automations(id, name, trigger_type)')
+            .eq('lead_id', leadId)
+            .eq('status', 'active')
+            .order('enrolled_at', ascending: false);
+        if (!mounted) return;
+
         _noteCtrl.text = lead['notes'] as String? ?? '';
         setState(() {
           _contactDetails = lead;
           _leadDetails = null;
           _upcomingAppointments = List<Map<String, dynamic>>.from(apptRes);
           _openDeals = List<Map<String, dynamic>>.from(dealRes);
+          _activeEnrollments = List<Map<String, dynamic>>.from(enrollRes);
         });
       } else {
         setState(() {
@@ -632,6 +658,29 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
       debugPrint('Contact load error: $e');
     } finally {
       if (mounted) setState(() => _loadingContact = false);
+    }
+  }
+
+  Future<void> _removeEnrollment(int enrollmentId) async {
+    try {
+      await _supabase
+          .from('automation_enrollments')
+          .update({'status': 'removed'})
+          .eq('id', enrollmentId);
+      setState(() {
+        _activeEnrollments.removeWhere((e) => e['id'] == enrollmentId);
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Removed from automation'),
+            behavior: SnackBarBehavior.floating,
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('Remove enrollment error: $e');
     }
   }
 
@@ -875,6 +924,257 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
     }
   }
 
+  Future<void> _toggleDnd(Conversation c) async {
+    final newVal = !c.dnd;
+    await _supabase
+        .from('conversations')
+        .update({'dnd': newVal}).eq('id', c.id);
+    final idx = _conversations.indexWhere((x) => x.id == c.id);
+    if (idx != -1 && mounted) {
+      setState(() {
+        _conversations[idx] = c.copyWith(dnd: newVal);
+        if (_selected?.id == c.id) {
+          _selected = _selected!.copyWith(dnd: newVal);
+        }
+      });
+    }
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(children: [
+            Icon(newVal ? Icons.block_rounded : Icons.notifications_active_outlined,
+                color: Colors.white, size: 16),
+            const SizedBox(width: 8),
+            Text(newVal
+                ? 'DND enabled — no messages will be sent to this contact'
+                : 'DND disabled — messaging resumed'),
+          ]),
+          backgroundColor: newVal ? Colors.red : const Color(0xFF10B981),
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 3),
+        ),
+      );
+    }
+  }
+
+  Future<void> _loadSnippets() async {
+    try {
+      final businessId = await getActiveBusinessId();
+      if (businessId == null) return;
+      final res = await _supabase
+          .from('snippets')
+          .select()
+          .eq('business_id', businessId)
+          .order('name', ascending: true);
+      if (!mounted) return;
+      setState(() => _snippets = List<Map<String, dynamic>>.from(res));
+    } catch (e) {
+      debugPrint('Load snippets error: $e');
+    }
+  }
+
+  void _showSnippetPicker() {
+    if (_snippets.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No snippets yet — create some in the Snippets tab'),
+          behavior: SnackBarBehavior.floating,
+          duration: Duration(seconds: 3),
+        ),
+      );
+      return;
+    }
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Insert Snippet', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+        content: SizedBox(
+          width: 360,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: _snippets.map((s) => GestureDetector(
+              onTap: () {
+                debugPrint('Snippet tapped: ${s['name']}');
+                final insertion = _replyCtrl.text.isEmpty
+                    ? s['body'] as String
+                    : '${_replyCtrl.text} ${s['body']}';
+                _replyCtrl.text = insertion;
+                Navigator.of(ctx).pop();
+              },
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                margin: const EdgeInsets.only(bottom: 6),
+                decoration: BoxDecoration(
+                  color: AppTheme.pageBg,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppTheme.borderColor),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(s['name'] as String,
+                        style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+                    const SizedBox(height: 3),
+                    Text(s['body'] as String,
+                        style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis),
+                  ],
+                ),
+              ),
+            )).toList(),
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('Cancel')),
+        ],
+      ),
+    );
+  }
+Future<void> _updateTags(Conversation c, List<String> newTags) async {
+    await _supabase
+        .from('conversations')
+        .update({'tags': newTags}).eq('id', c.id);
+    final idx = _conversations.indexWhere((x) => x.id == c.id);
+    if (idx != -1 && mounted) {
+      setState(() {
+        _conversations[idx] = c.copyWith(tags: newTags);
+        if (_selected?.id == c.id) {
+          _selected = _selected!.copyWith(tags: newTags);
+        }
+      });
+    }
+  }
+
+  void _showTagEditor(Conversation c) {
+    final commonTags = ['Hot Lead', 'Follow Up', 'Booked', 'No Answer', 'Qualified', 'Not Interested'];
+    final current = List<String>.from(c.tags);
+    final customCtrl = TextEditingController();
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setLocal) => AlertDialog(
+          title: const Text('Manage Tags', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+          content: SizedBox(
+            width: 320,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Quick tags:', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: commonTags.map((tag) {
+                    final selected = current.contains(tag);
+                    return GestureDetector(
+                      onTap: () => setLocal(() {
+                        selected ? current.remove(tag) : current.add(tag);
+                      }),
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 150),
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                        decoration: BoxDecoration(
+                          color: selected ? AppTheme.brand.withValues(alpha: 0.12) : AppTheme.pageBg,
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(
+                            color: selected ? AppTheme.brand : AppTheme.borderColor,
+                            width: selected ? 1.5 : 1,
+                          ),
+                        ),
+                        child: Text(tag,
+                            style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                                color: selected ? AppTheme.brand : AppTheme.textSecondary)),
+                      ),
+                    );
+                  }).toList(),
+                ),
+                const SizedBox(height: 16),
+                const Text('Custom tag:', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+                const SizedBox(height: 6),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: customCtrl,
+                        style: const TextStyle(fontSize: 13),
+                        decoration: InputDecoration(
+                          hintText: 'Type and press Add',
+                          hintStyle: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                          isDense: true,
+                        ),
+                        onSubmitted: (val) {
+                          final t = val.trim();
+                          if (t.isNotEmpty && !current.contains(t)) {
+                            setLocal(() { current.add(t); customCtrl.clear(); });
+                          }
+                        },
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    TextButton(
+                      onPressed: () {
+                        final t = customCtrl.text.trim();
+                        if (t.isNotEmpty && !current.contains(t)) {
+                          setLocal(() { current.add(t); customCtrl.clear(); });
+                        }
+                      },
+                      child: const Text('Add'),
+                    ),
+                  ],
+                ),
+                if (current.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  const Text('Applied:', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+                  const SizedBox(height: 6),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: current.map((tag) => GestureDetector(
+                      onTap: () => setLocal(() => current.remove(tag)),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: AppTheme.brand.withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(color: AppTheme.brand, width: 1.5),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(tag, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppTheme.brand)),
+                            const SizedBox(width: 4),
+                            const Icon(Icons.close_rounded, size: 11, color: AppTheme.brand),
+                          ],
+                        ),
+                      ),
+                    )).toList(),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('Cancel')),
+            TextButton(
+              onPressed: () {
+                Navigator.of(ctx).pop();
+                _updateTags(c, current);
+              },
+              child: const Text('Save'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
   Future<void> _markAsUnread(Conversation c) async {
     await _supabase.from('conversations').update({'unread_count': 1}).eq('id', c.id);
     await _loadConversations();
@@ -970,33 +1270,34 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
             decoration: const BoxDecoration(
               border: Border(bottom: BorderSide(color: AppTheme.borderColor)),
             ),
-            child: Row(
-              children: [
-                IconButton(
-                  onPressed: () => setState(() => _rightPanelOpen = !_rightPanelOpen),
-                  icon: Icon(
-                    _rightPanelOpen ? Icons.chevron_right_rounded : Icons.chevron_left_rounded,
-                    size: 18,
-                    color: AppTheme.textSecondary,
+            child: _rightPanelOpen
+                ? Row(
+                    children: [
+                      IconButton(
+                        onPressed: () => setState(() => _rightPanelOpen = !_rightPanelOpen),
+                        icon: const Icon(Icons.chevron_right_rounded, size: 18, color: AppTheme.textSecondary),
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(minWidth: 20, minHeight: 20),
+                        tooltip: 'Collapse panel',
+                      ),
+                      const SizedBox(width: 6),
+                      const Expanded(child: Text('Contact Details',
+                          style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
+                      if (_contactDetails != null)
+                        Clickable(
+                          onTap: () => context.go('/contacts/${_contactDetails!['id']}'),
+                          child: const Text('View',
+                              style: TextStyle(fontSize: 12, color: AppTheme.brand, fontWeight: FontWeight.w600)),
+                        ),
+                    ],
+                  )
+                : IconButton(
+                    onPressed: () => setState(() => _rightPanelOpen = !_rightPanelOpen),
+                    icon: const Icon(Icons.chevron_left_rounded, size: 18, color: AppTheme.textSecondary),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(minWidth: 20, minHeight: 20),
+                    tooltip: 'Expand panel',
                   ),
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(minWidth: 20, minHeight: 20),
-                  tooltip: _rightPanelOpen ? 'Collapse panel' : 'Expand panel',
-                ),
-                if (_rightPanelOpen) ...[
-                  const SizedBox(width: 6),
-                  const Text('Contact Details',
-                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
-                  const Spacer(),
-                  if (_contactDetails != null)
-                    Clickable(
-                      onTap: () => context.go('/contacts/${_contactDetails!['id']}'),
-                      child: const Text('View',
-                          style: TextStyle(fontSize: 12, color: AppTheme.brand, fontWeight: FontWeight.w600)),
-                    ),
-                ],
-              ],
-            ),
           ),
 
           // ── Body ──
@@ -1085,6 +1386,66 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                                 ..._openDeals.map((d) => _panelDealRow(d)),
                               const SizedBox(height: 16),
 
+                              // ── Active Automations ──
+                              _panelSectionLabel('ACTIVE AUTOMATIONS'),
+                              const SizedBox(height: 8),
+                              if (_activeEnrollments.isEmpty)
+                                const Text('No active automations',
+                                    style: TextStyle(fontSize: 12, color: AppTheme.textSecondary))
+                              else
+                                ..._activeEnrollments.map((e) {
+                                  final automation = e['automations'] as Map<String, dynamic>?;
+                                  final name = automation?['name'] as String? ?? 'Unknown';
+                                  final triggerType = automation?['trigger_type'] as String? ?? '';
+                                  final enrolledAt = e['enrolled_at'] != null
+                                      ? DateTime.tryParse(e['enrolled_at'] as String)?.toLocal()
+                                      : null;
+                                  return Container(
+                                    margin: const EdgeInsets.only(bottom: 8),
+                                    padding: const EdgeInsets.all(8),
+                                    decoration: BoxDecoration(
+                                      color: AppTheme.pageBg,
+                                      borderRadius: BorderRadius.circular(8),
+                                      border: Border.all(color: AppTheme.borderColor),
+                                    ),
+                                    child: Row(
+                                      children: [
+                                        Container(
+                                          width: 28,
+                                          height: 28,
+                                          decoration: BoxDecoration(
+                                            color: const Color(0xFF6C63FF).withValues(alpha: 0.1),
+                                            borderRadius: BorderRadius.circular(6),
+                                          ),
+                                          child: const Icon(Icons.bolt_rounded, size: 14, color: Color(0xFF6C63FF)),
+                                        ),
+                                        const SizedBox(width: 8),
+                                        Expanded(
+                                          child: Column(
+                                            crossAxisAlignment: CrossAxisAlignment.start,
+                                            children: [
+                                              Text(name,
+                                                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textPrimary),
+                                                  maxLines: 1,
+                                                  overflow: TextOverflow.ellipsis),
+                                              if (enrolledAt != null)
+                                                Text('Since ${_fmtDate(enrolledAt)}',
+                                                    style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                                            ],
+                                          ),
+                                        ),
+                                        Clickable(
+                                          onTap: () => _removeEnrollment(e['id'] as int),
+                                          child: const Padding(
+                                            padding: EdgeInsets.all(4),
+                                            child: Icon(Icons.close_rounded, size: 13, color: AppTheme.textSecondary),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  );
+                                }),
+                              const SizedBox(height: 16),
                               // ── Notes ──
                               if (_contactDetails != null) ...[
                                 _panelSectionLabel('NOTES'),
@@ -1308,7 +1669,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
               children: [
                 _topNavTab('Conversations', true),
                 _topNavTab('Manual Actions', false),
-                _topNavTab('Snippets', false),
+                _topNavTab('Snippets', false, onTap: () => context.go('/snippets')),
                 _topNavDropdown('Trigger Links'),
               ],
             ),
@@ -1318,13 +1679,13 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
     );
   }
 
- Widget _topNavTab(String label, bool active) {
+ Widget _topNavTab(String label, bool active, {VoidCallback? onTap}) {
     return Padding(
       padding: const EdgeInsets.only(right: 4),
       child: MouseRegion(
         cursor: SystemMouseCursors.click,
         child: GestureDetector(
-          onTap: active ? null : () => _showComingSoon(label),
+          onTap: active ? null : (onTap ?? () => _showComingSoon(label)),
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
             decoration: BoxDecoration(
@@ -1571,8 +1932,8 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                   : Row(
                       children: [
                         Checkbox(
-                          value: false,
-                          onChanged: (_) {},
+                          value: _bulkMode && _selectedConvoIds.length == filtered.length && filtered.isNotEmpty,
+                          onChanged: (_) => _selectAll(filtered),
                           materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                           visualDensity: VisualDensity.compact,
                         ),
@@ -1878,6 +2239,22 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                       ),
                     ],
                   ),
+                  if (convo.tags.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    Wrap(
+                      spacing: 4,
+                      runSpacing: 3,
+                      children: convo.tags.map((tag) => Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: AppTheme.brand.withValues(alpha: 0.10),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: AppTheme.brand.withValues(alpha: 0.3)),
+                        ),
+                        child: Text(tag, style: const TextStyle(fontSize: 9, fontWeight: FontWeight.w600, color: AppTheme.brand)),
+                      )).toList(),
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -1975,6 +2352,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
     return Column(
       children: [
         _buildMessageHeader(),
+        if (_selected!.dnd) _buildDndBanner(),
         if (_selected!.channel == 'sms') _buildAiBanner(),
         Expanded(child: _buildMessageList()),
         _buildReplyBox(),
@@ -2072,6 +2450,46 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
     );
   }
 
+  Widget _buildDndBanner() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.red.withValues(alpha: 0.08),
+        border: Border(
+          bottom: BorderSide(color: Colors.red.withValues(alpha: 0.2)),
+        ),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.block_rounded, size: 15, color: Colors.red),
+          const SizedBox(width: 8),
+          const Expanded(
+            child: Text(
+              'Do Not Disturb is enabled — no messages will be sent to this contact.',
+              style: TextStyle(fontSize: 12, color: Colors.red),
+            ),
+          ),
+          const SizedBox(width: 8),
+          MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: GestureDetector(
+              onTap: () => _toggleDnd(_selected!),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+                decoration: BoxDecoration(
+                  color: Colors.red,
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: const Text('Disable DND',
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.white)),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildMessageHeader() {
     final c = _selected!;
     return Container(
@@ -2112,84 +2530,135 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
               ],
             ),
           ),
-          _channelBadge(c.channel),
           const SizedBox(width: 8),
-          _statusDot(c.status),
-          const SizedBox(width: 8),
-          // ── Assign to dropdown ──
-          if (_teamMembers.isNotEmpty)
-            SizedBox(
-              height: 28,
-              child: _assigningConvo
-                  ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
-                  : DropdownButtonHideUnderline(
-                      child: DropdownButton<String?>(
-                        value: c.assignedTo,
-                        hint: const Text('Assign', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
-                        icon: const Icon(Icons.keyboard_arrow_down_rounded, size: 14, color: AppTheme.textSecondary),
-                        style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary),
-                        isDense: true,
-                        items: [
-                          const DropdownMenuItem<String?>(
-                            value: null,
-                            child: Text('Unassigned', style: TextStyle(fontSize: 12)),
-                          ),
-                          ..._teamMembers.map((m) => DropdownMenuItem<String?>(
-                                value: m['full_name'] as String?,
-                                child: Text(m['full_name'] as String? ?? '', style: const TextStyle(fontSize: 12)),
-                              )),
-                        ],
-                        onChanged: (val) => _assignConversation(c, val),
+          SizedBox(
+            width: 580,
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _channelBadge(c.channel),
+                  const SizedBox(width: 8),
+                  _statusDot(c.status),
+                  const SizedBox(width: 8),
+                  // ── DND toggle ──
+                  MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    child: OutlinedButton.icon(
+                      onPressed: () => _toggleDnd(c),
+                      icon: Icon(
+                        c.dnd ? Icons.block_rounded : Icons.notifications_active_outlined,
+                        size: 14,
+                        color: c.dnd ? Colors.red : null,
+                      ),
+                      label: Text(
+                        c.dnd ? 'DND On' : 'DND',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: c.dnd ? Colors.red : null,
+                        ),
+                      ),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        minimumSize: Size.zero,
+                        side: c.dnd ? const BorderSide(color: Colors.red) : null,
                       ),
                     ),
-            ),
-          const SizedBox(width: 8),
-          MouseRegion(
-            cursor: SystemMouseCursors.click,
-            child: OutlinedButton.icon(
-              onPressed: () => _markAsUnread(c),
-              icon: const Icon(Icons.mark_chat_unread_outlined, size: 14),
-              label: const Text('Unread', style: TextStyle(fontSize: 12)),
-              style: OutlinedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                minimumSize: Size.zero,
-              ),
-            ),
-          ),
-          const SizedBox(width: 8),
-          MouseRegion(
-            cursor: SystemMouseCursors.click,
-            child: OutlinedButton.icon(
-              onPressed: c.status == 'archived'
-                  ? () => _unarchiveConversation(c)
-                  : () => _archiveConversation(c),
-              icon: Icon(c.status == 'archived'
-                  ? Icons.unarchive_outlined
-                  : Icons.archive_outlined, size: 14),
-              label: Text(c.status == 'archived' ? 'Unarchive' : 'Archive',
-                  style: const TextStyle(fontSize: 12)),
-              style: OutlinedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                minimumSize: Size.zero,
-              ),
-            ),
-          ),
-          const SizedBox(width: 8),
-          MouseRegion(
-            cursor: SystemMouseCursors.click,
-            child: OutlinedButton.icon(
-              onPressed: () => _toggleStatus(c),
-              icon: Icon(
-                c.status == 'open'
-                    ? Icons.check_circle_outline
-                    : Icons.refresh_rounded,
-                size: 14,
-              ),
-              label: Text(c.status == 'open' ? 'Close' : 'Reopen',
-                  style: const TextStyle(fontSize: 12)),
-              style: OutlinedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                minimumSize: Size.zero,
+                  ),
+                  const SizedBox(width: 8),
+                  // ── Tags button ──
+                  MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    child: OutlinedButton.icon(
+                      onPressed: () => _showTagEditor(c),
+                      icon: const Icon(Icons.label_outline_rounded, size: 14),
+                      label: const Text('Tags', style: TextStyle(fontSize: 12)),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        minimumSize: Size.zero,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  // ── Assign to dropdown ──
+                  if (_teamMembers.isNotEmpty)
+                    SizedBox(
+                      height: 28,
+                      child: _assigningConvo
+                          ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                          : DropdownButtonHideUnderline(
+                              child: DropdownButton<String?>(
+                                value: c.assignedTo,
+                                hint: const Text('Assign', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+                                icon: const Icon(Icons.keyboard_arrow_down_rounded, size: 14, color: AppTheme.textSecondary),
+                                style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary),
+                                isDense: true,
+                                items: [
+                                  const DropdownMenuItem<String?>(
+                                    value: null,
+                                    child: Text('Unassigned', style: TextStyle(fontSize: 12)),
+                                  ),
+                                  ..._teamMembers.map((m) => DropdownMenuItem<String?>(
+                                        value: m['full_name'] as String?,
+                                        child: Text(m['full_name'] as String? ?? '', style: const TextStyle(fontSize: 12)),
+                                      )),
+                                ],
+                                onChanged: (val) => _assignConversation(c, val),
+                              ),
+                            ),
+                    ),
+                  const SizedBox(width: 8),
+                  MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    child: OutlinedButton.icon(
+                      onPressed: () => _markAsUnread(c),
+                      icon: const Icon(Icons.mark_chat_unread_outlined, size: 14),
+                      label: const Text('Unread', style: TextStyle(fontSize: 12)),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        minimumSize: Size.zero,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    child: OutlinedButton.icon(
+                      onPressed: c.status == 'archived'
+                          ? () => _unarchiveConversation(c)
+                          : () => _archiveConversation(c),
+                      icon: Icon(c.status == 'archived'
+                          ? Icons.unarchive_outlined
+                          : Icons.archive_outlined, size: 14),
+                      label: Text(c.status == 'archived' ? 'Unarchive' : 'Archive',
+                          style: const TextStyle(fontSize: 12)),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        minimumSize: Size.zero,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    child: OutlinedButton.icon(
+                      onPressed: () => _toggleStatus(c),
+                      icon: Icon(
+                        c.status == 'open'
+                            ? Icons.check_circle_outline
+                            : Icons.refresh_rounded,
+                        size: 14,
+                      ),
+                      label: Text(c.status == 'open' ? 'Close' : 'Reopen',
+                          style: const TextStyle(fontSize: 12)),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        minimumSize: Size.zero,
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
@@ -2202,38 +2671,103 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
     if (_loadingMessages) {
       return const Center(child: CircularProgressIndicator());
     }
-    if (_messages.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.forum_outlined,
-                size: 40, color: AppTheme.brand.withValues(alpha: 0.3)),
-            const SizedBox(height: 12),
-            const Text('No messages yet',
-                style:
-                    TextStyle(fontSize: 14, color: AppTheme.textSecondary)),
-          ],
-        ),
-      );
-    }
 
-    return ListView.builder(
-      controller: _scrollCtrl,
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-      itemCount: _messages.length,
-      itemBuilder: (_, i) {
-        final msg = _messages[i];
-        final prev = i > 0 ? _messages[i - 1] : null;
-        final showDate =
-            prev == null || !_sameDay(prev.createdAt, msg.createdAt);
-        return Column(
-          children: [
-            if (showDate) _dateDivider(msg.createdAt),
-            _buildBubble(msg),
-          ],
-        );
-      },
+    final filtered = _messages.where((m) {
+      switch (_messageFilter) {
+        case 'sms':   return m.channel == 'sms' && !m.isPrivate;
+        case 'email': return m.channel == 'email' && !m.isPrivate;
+        case 'note':  return m.isPrivate;
+        default:      return true;
+      }
+    }).toList();
+
+    return Column(
+      children: [
+        // ── Filter row ──
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+          decoration: const BoxDecoration(
+            border: Border(bottom: BorderSide(color: AppTheme.borderColor)),
+          ),
+          child: Row(
+            children: [
+              _msgFilterChip('All',   'all'),
+              const SizedBox(width: 6),
+              _msgFilterChip('SMS',   'sms'),
+              const SizedBox(width: 6),
+              _msgFilterChip('Email', 'email'),
+              const SizedBox(width: 6),
+              _msgFilterChip('Notes', 'note'),
+              const Spacer(),
+              Text(
+                '${filtered.length} message${filtered.length == 1 ? '' : 's'}',
+                style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
+              ),
+            ],
+          ),
+        ),
+        // ── Messages ──
+        Expanded(
+          child: filtered.isEmpty
+              ? Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.forum_outlined,
+                          size: 40, color: AppTheme.brand.withValues(alpha: 0.3)),
+                      const SizedBox(height: 12),
+                      Text(
+                        _messageFilter == 'all' ? 'No messages yet' : 'No $_messageFilter messages',
+                        style: const TextStyle(fontSize: 14, color: AppTheme.textSecondary),
+                      ),
+                    ],
+                  ),
+                )
+              : ListView.builder(
+                  controller: _scrollCtrl,
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+                  itemCount: filtered.length,
+                  itemBuilder: (_, i) {
+                    final msg = filtered[i];
+                    final prev = i > 0 ? filtered[i - 1] : null;
+                    final showDate = prev == null || !_sameDay(prev.createdAt, msg.createdAt);
+                    return Column(
+                      children: [
+                        if (showDate) _dateDivider(msg.createdAt),
+                        _buildBubble(msg),
+                      ],
+                    );
+                  },
+                ),
+        ),
+      ],
+    );
+  }
+
+  Widget _msgFilterChip(String label, String value) {
+    final active = _messageFilter == value;
+    return Clickable(
+      onTap: () => setState(() => _messageFilter = value),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        decoration: BoxDecoration(
+          color: active ? AppTheme.brand.withValues(alpha: 0.12) : Colors.transparent,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: active ? AppTheme.brand : AppTheme.borderColor,
+            width: active ? 1.5 : 1,
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 11,
+            fontWeight: active ? FontWeight.w700 : FontWeight.w400,
+            color: active ? AppTheme.brand : AppTheme.textSecondary,
+          ),
+        ),
+      ),
     );
   }
 
@@ -2491,6 +3025,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
 
   Widget _buildReplyBox() {
     final isClosed = _selected?.status == 'closed';
+    final isDnd = _selected?.dnd == true;
     final isNote = _composeMode == 'note';
 
     return Container(
@@ -2507,6 +3042,14 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                         fontSize: 13, color: AppTheme.textSecondary)),
               ),
             )
+          : isDnd
+          ? const Padding(
+              padding: EdgeInsets.all(16),
+              child: Center(
+                child: Text('DND is enabled — messaging is disabled for this contact.',
+                    style: TextStyle(fontSize: 13, color: Colors.red)),
+              ),
+            )
           : Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
@@ -2516,6 +3059,21 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                   children: [
                     _composeModeTab('Reply', 'reply', Icons.reply_rounded),
                     _composeModeTab('Note', 'note', Icons.lock_outline_rounded),
+                    const Spacer(),
+                    Clickable(
+                      onTap: _showSnippetPicker,
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.bolt_rounded, size: 13, color: AppTheme.textSecondary),
+                            const SizedBox(width: 4),
+                            const Text('Snippets', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+                          ],
+                        ),
+                      ),
+                    ),
                   ],
                 ),
                 Padding(

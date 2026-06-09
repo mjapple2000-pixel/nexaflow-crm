@@ -28,6 +28,7 @@ import '../screens/tickets_screen.dart';
 import '../screens/reset_password_screen.dart';
 import '../screens/beta_testers_screen.dart';
 import '../screens/beta_signup_screen.dart';
+import '../screens/snippets_screen.dart';
 
 class AppRouter {
   static bool? cachedIsSuperuser;
@@ -300,6 +301,11 @@ class AppRouter {
             path: '/beta-testers',
             name: 'beta-testers',
             builder: (context, state) => const BetaTestersScreen(),
+          ),
+          GoRoute(
+            path: '/snippets',
+            name: 'snippets',
+            builder: (context, state) => const SnippetsScreen(),
           ),
         ],
       ),
