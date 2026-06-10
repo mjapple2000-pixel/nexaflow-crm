@@ -331,10 +331,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ? const Center(child: CircularProgressIndicator())
                 : _error != null
                     ? _errorView()
-                    : Row(children: [
-                        _buildSidebar(),
-                        Expanded(child: _buildContent()),
-                      ]),
+                    : _buildContent(),
           ),
         ],
       ),
@@ -349,23 +346,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
         color: AppTheme.cardBg,
         border: Border(bottom: BorderSide(color: AppTheme.borderColor)),
       ),
-      child: Row(
+      child: const Row(
         children: [
-          const Text('Settings',
+          Text('Settings',
               style: TextStyle(
                   fontSize: 16,
                   fontWeight: FontWeight.w600,
                   color: AppTheme.textPrimary)),
-          const Spacer(),
-          MouseRegion(
-            cursor: SystemMouseCursors.click,
-            child: TextButton.icon(
-              onPressed: _logout,
-              icon: const Icon(Icons.logout, size: 16, color: Colors.red),
-              label: const Text('Log out',
-                  style: TextStyle(color: Colors.red, fontSize: 13)),
-            ),
-          ),
         ],
       ),
     );

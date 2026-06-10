@@ -5,6 +5,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme/app_theme.dart';
 import '../widgets/clickable.dart';
 import 'package:go_router/go_router.dart';
+import 'package:flutter/services.dart';
 import '../utils/business_utils.dart';
 import '../navigation/app_router.dart';
 
@@ -218,6 +219,19 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
   final Set<int> _selectedConvoIds = {};
   bool _bulkMode = false;
   List<Map<String, dynamic>> _snippets = [];
+
+  // ── Tab state ──
+  String _activeTab = 'conversations'; // 'conversations' | 'manual_actions' | 'trigger_links'
+
+  // ── Manual Actions state ──
+  List<Map<String, dynamic>> _manualActionTasks = [];
+  bool _loadingManualActions = false;
+  String _manualActionSort = 'due_date'; // 'due_date' | 'priority'
+
+  // ── Trigger Links state ──
+  List<Map<String, dynamic>> _triggerLinks = [];
+  List<Map<String, dynamic>> _automationsForDropdown = [];
+  bool _loadingTriggerLinks = false;
 
   static const String _emailWebhookUrl =
       'https://hook.us2.make.com/ap29d91tjwbus1x41a9o7c3ky86ihg6q';
@@ -973,6 +987,125 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
     }
   }
 
+  
+
+  Future<void> _loadManualActions() async {
+    setState(() => _loadingManualActions = true);
+    try {
+      final businessId = await getActiveBusinessId();
+      if (businessId == null) return;
+      final res = await _supabase
+          .from('tasks')
+          .select()
+          .eq('business_id', businessId)
+          .eq('status', 'open')
+          .order('due_date', ascending: true);
+      if (!mounted) return;
+      setState(() => _manualActionTasks = List<Map<String, dynamic>>.from(res));
+    } catch (e) {
+      debugPrint('Load manual actions error: $e');
+    } finally {
+      if (mounted) setState(() => _loadingManualActions = false);
+    }
+  }
+
+  Future<void> _completeTask(int taskId) async {
+    try {
+      await _supabase
+          .from('tasks')
+          .update({
+            'status': 'completed',
+            'completed_at': DateTime.now().toUtc().toIso8601String(),
+          })
+          .eq('id', taskId);
+      setState(() => _manualActionTasks.removeWhere((t) => t['id'] == taskId));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Task marked complete'),
+            behavior: SnackBarBehavior.floating,
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('Complete task error: $e');
+    }
+  }
+
+  Future<void> _loadTriggerLinks() async {
+    setState(() => _loadingTriggerLinks = true);
+    try {
+      final businessId = await getActiveBusinessId();
+      if (businessId == null) return;
+      final linksRes = await _supabase
+          .from('trigger_links')
+          .select('*, automations(id, name)')
+          .eq('business_id', businessId)
+          .order('created_at', ascending: false);
+      final autoRes = await _supabase
+          .from('automations')
+          .select('id, name')
+          .eq('business_id', businessId)
+          .eq('is_active', true)
+          .order('name', ascending: true);
+      if (!mounted) return;
+      setState(() {
+        _triggerLinks = List<Map<String, dynamic>>.from(linksRes);
+        _automationsForDropdown = List<Map<String, dynamic>>.from(autoRes);
+      });
+    } catch (e) {
+      debugPrint('Load trigger links error: $e');
+    } finally {
+      if (mounted) setState(() => _loadingTriggerLinks = false);
+    }
+  }
+
+  Future<void> _createTriggerLink(
+      String name, String redirectUrl, int? automationId) async {
+    try {
+      final businessId = await getActiveBusinessId();
+      if (businessId == null) return;
+      await _supabase.from('trigger_links').insert({
+        'business_id': businessId,
+        'name': name,
+        'redirect_url': redirectUrl,
+        'automation_id': automationId,
+      });
+      await _loadTriggerLinks();
+    } catch (e) {
+      debugPrint('Create trigger link error: $e');
+    }
+  }
+
+  Future<void> _deleteTriggerLink(int id) async {
+    try {
+      await _supabase.from('trigger_links').delete().eq('id', id);
+      setState(() => _triggerLinks.removeWhere((l) => l['id'] == id));
+    } catch (e) {
+      debugPrint('Delete trigger link error: $e');
+    }
+  }
+
+  String _buildTriggerLinkUrl(String token, {int? leadId}) {
+    final base =
+        'https://rllriopqojaraceytdno.supabase.co/functions/v1/handle-trigger-link/$token';
+    return leadId != null ? '$base/$leadId' : base;
+  }
+
+  Future<void> _copyToClipboard(String text, String label) async {
+    await Clipboard.setData(ClipboardData(text: text));
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('$label copied to clipboard'),
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
   void _showSnippetPicker() {
     if (_snippets.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1228,17 +1361,21 @@ Future<void> _updateTags(Conversation c, List<String> newTags) async {
         children: [
           _buildTopBar(),
           Expanded(
-            child: Row(
-              children: [
-                _buildConversationList(),
-                Container(width: 1, color: AppTheme.borderColor),
-                Expanded(child: _buildMessagePanel()),
-                if (_selected != null) ...[
-                  Container(width: 1, color: AppTheme.borderColor),
-                  _buildRightPanel(),
-                ],
-              ],
-            ),
+            child: _activeTab == 'manual_actions'
+                ? _buildManualActionsPanel()
+                : _activeTab == 'trigger_links'
+                    ? _buildTriggerLinksPanel()
+                    : Row(
+                        children: [
+                          _buildConversationList(),
+                          Container(width: 1, color: AppTheme.borderColor),
+                          Expanded(child: _buildMessagePanel()),
+                          if (_selected != null) ...[
+                            Container(width: 1, color: AppTheme.borderColor),
+                            _buildRightPanel(),
+                          ],
+                        ],
+                      ),
           ),
         ],
       ),
@@ -1662,15 +1799,23 @@ Future<void> _updateTags(Conversation c, List<String> newTags) async {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // ── Top nav tabs ──
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: Row(
               children: [
-                _topNavTab('Conversations', true),
-                _topNavTab('Manual Actions', false),
+                _topNavTab('Conversations', _activeTab == 'conversations',
+                    onTap: () => setState(() => _activeTab = 'conversations')),
+                _topNavTab('Manual Actions', _activeTab == 'manual_actions',
+                    onTap: () {
+                      setState(() => _activeTab = 'manual_actions');
+                      _loadManualActions();
+                    }),
                 _topNavTab('Snippets', false, onTap: () => context.go('/snippets')),
-                _topNavDropdown('Trigger Links'),
+                _topNavTab('Trigger Links', _activeTab == 'trigger_links',
+                    onTap: () {
+                      setState(() => _activeTab = 'trigger_links');
+                      _loadTriggerLinks();
+                    }),
               ],
             ),
           ),
@@ -1710,29 +1855,697 @@ Future<void> _updateTags(Conversation c, List<String> newTags) async {
     );
   }
 
-  Widget _topNavDropdown(String label) {
-    return Padding(
-      padding: const EdgeInsets.only(right: 4),
-      child: MouseRegion(
-        cursor: SystemMouseCursors.click,
-        child: GestureDetector(
-          onTap: () => _showComingSoon(label),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+  // ── Manual Actions Panel ──────────────────────────────────────────────────
+
+  Widget _buildManualActionsPanel() {
+    final sorted = List<Map<String, dynamic>>.from(_manualActionTasks);
+    if (_manualActionSort == 'priority') {
+      const order = {'high': 0, 'medium': 1, 'low': 2};
+      sorted.sort((a, b) =>
+          (order[a['priority'] ?? 'medium'] ?? 1)
+              .compareTo(order[b['priority'] ?? 'medium'] ?? 1));
+    }
+
+    return Container(
+      color: AppTheme.pageBg,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // ── Header ──
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+            decoration: const BoxDecoration(
+              color: AppTheme.cardBg,
+              border: Border(bottom: BorderSide(color: AppTheme.borderColor)),
+            ),
             child: Row(
-              mainAxisSize: MainAxisSize.min,
               children: [
-                Text(label,
-                    style: const TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w400,
-                        color: AppTheme.textSecondary)),
-                const SizedBox(width: 4),
-                const Icon(Icons.keyboard_arrow_down_rounded,
-                    size: 16, color: AppTheme.textSecondary),
+                const Icon(Icons.checklist_rounded, size: 18, color: AppTheme.brand),
+                const SizedBox(width: 10),
+                const Text('Manual Actions',
+                    style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                        color: AppTheme.textPrimary)),
+                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: AppTheme.brand.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Text('${sorted.length}',
+                      style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: AppTheme.brand)),
+                ),
+                const Spacer(),
+                // Sort toggle
+                Row(
+                  children: [
+                    const Text('Sort by:',
+                        style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+                    const SizedBox(width: 8),
+                    _sortChip('Due Date', 'due_date'),
+                    const SizedBox(width: 6),
+                    _sortChip('Priority', 'priority'),
+                  ],
+                ),
+                const SizedBox(width: 12),
+                Clickable(
+                  onTap: _loadManualActions,
+                  child: const Icon(Icons.refresh_rounded,
+                      size: 16, color: AppTheme.textSecondary),
+                ),
               ],
             ),
           ),
+          // ── Body ──
+          Expanded(
+            child: _loadingManualActions
+                ? const Center(child: CircularProgressIndicator())
+                : sorted.isEmpty
+                    ? Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.task_alt_rounded,
+                                size: 48,
+                                color: AppTheme.brand.withValues(alpha: 0.3)),
+                            const SizedBox(height: 16),
+                            const Text('No pending actions',
+                                style: TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w600,
+                                    color: AppTheme.textPrimary)),
+                            const SizedBox(height: 8),
+                            const Text(
+                                'Tasks from automations and workflows appear here',
+                                style: TextStyle(
+                                    fontSize: 13,
+                                    color: AppTheme.textSecondary)),
+                          ],
+                        ),
+                      )
+                    : ListView.separated(
+                        padding: const EdgeInsets.all(24),
+                        itemCount: sorted.length,
+                        separatorBuilder: (_, __) => const SizedBox(height: 8),
+                        itemBuilder: (_, i) => _buildTaskRow(sorted[i]),
+                      ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _sortChip(String label, String value) {
+    final active = _manualActionSort == value;
+    return Clickable(
+      onTap: () => setState(() => _manualActionSort = value),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        decoration: BoxDecoration(
+          color: active ? AppTheme.brand.withValues(alpha: 0.12) : AppTheme.pageBg,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: active ? AppTheme.brand : AppTheme.borderColor,
+            width: active ? 1.5 : 1,
+          ),
+        ),
+        child: Text(label,
+            style: TextStyle(
+                fontSize: 11,
+                fontWeight: active ? FontWeight.w600 : FontWeight.w400,
+                color: active ? AppTheme.brand : AppTheme.textSecondary)),
+      ),
+    );
+  }
+
+  Widget _buildTaskRow(Map<String, dynamic> task) {
+    final title = task['title'] as String? ?? 'Untitled Task';
+    final description = task['description'] as String? ?? '';
+    final priority = task['priority'] as String? ?? 'medium';
+    final assignedName = task['assigned_name'] as String? ?? '';
+    final contactName = task['contact_name'] as String? ?? '';
+    final dueDate = task['due_date'] != null
+        ? DateTime.tryParse(task['due_date'] as String)?.toLocal()
+        : null;
+    final isOverdue = dueDate != null && dueDate.isBefore(DateTime.now());
+
+    Color priorityColor;
+    switch (priority) {
+      case 'high':
+        priorityColor = const Color(0xFFEF4444);
+        break;
+      case 'low':
+        priorityColor = const Color(0xFF10B981);
+        break;
+      default:
+        priorityColor = const Color(0xFFF59E0B);
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppTheme.cardBg,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppTheme.borderColor),
+      ),
+      child: Row(
+        children: [
+          // Complete checkbox
+          Clickable(
+            onTap: () => _completeTask(task['id'] as int),
+            child: Container(
+              width: 22,
+              height: 22,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                border: Border.all(color: AppTheme.brand, width: 1.5),
+              ),
+              child: const Icon(Icons.check_rounded, size: 13, color: AppTheme.brand),
+            ),
+          ),
+          const SizedBox(width: 14),
+          // Content
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(title,
+                          style: const TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                              color: AppTheme.textPrimary)),
+                    ),
+                    Container(
+                      padding:
+                          const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: priorityColor.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Text(priority.toUpperCase(),
+                          style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w700,
+                              color: priorityColor)),
+                    ),
+                  ],
+                ),
+                if (description.isNotEmpty) ...[
+                  const SizedBox(height: 3),
+                  Text(description,
+                      style: const TextStyle(
+                          fontSize: 12, color: AppTheme.textSecondary),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis),
+                ],
+                const SizedBox(height: 6),
+                Wrap(
+                  spacing: 12,
+                  children: [
+                    if (contactName.isNotEmpty)
+                      _taskMeta(Icons.person_outline, contactName),
+                    if (assignedName.isNotEmpty)
+                      _taskMeta(Icons.assignment_ind_outlined, assignedName),
+                    if (dueDate != null)
+                      _taskMeta(
+                        Icons.calendar_today_outlined,
+                        _fmtDate(dueDate),
+                        color: isOverdue ? const Color(0xFFEF4444) : null,
+                      ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _taskMeta(IconData icon, String label, {Color? color}) {
+    final c = color ?? AppTheme.textSecondary;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 11, color: c),
+        const SizedBox(width: 4),
+        Text(label, style: TextStyle(fontSize: 11, color: c)),
+      ],
+    );
+  }
+
+  // ── Trigger Links Panel ───────────────────────────────────────────────────
+
+  Widget _buildTriggerLinksPanel() {
+    return Container(
+      color: AppTheme.pageBg,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // ── Header ──
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+            decoration: const BoxDecoration(
+              color: AppTheme.cardBg,
+              border: Border(bottom: BorderSide(color: AppTheme.borderColor)),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.link_rounded, size: 18, color: AppTheme.brand),
+                const SizedBox(width: 10),
+                const Text('Trigger Links',
+                    style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                        color: AppTheme.textPrimary)),
+                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: AppTheme.brand.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Text('${_triggerLinks.length}',
+                      style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: AppTheme.brand)),
+                ),
+                const Spacer(),
+                ElevatedButton.icon(
+                  onPressed: _showCreateTriggerLinkDialog,
+                  icon: const Icon(Icons.add_rounded, size: 16),
+                  label: const Text('New Link', style: TextStyle(fontSize: 13)),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppTheme.brand,
+                    foregroundColor: Colors.white,
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          // ── How-to hint ──
+          Container(
+            margin: const EdgeInsets.fromLTRB(24, 16, 24, 0),
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: AppTheme.brand.withValues(alpha: 0.06),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: AppTheme.brand.withValues(alpha: 0.2)),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.info_outline_rounded,
+                    size: 14, color: AppTheme.brand.withValues(alpha: 0.7)),
+                const SizedBox(width: 10),
+                const Expanded(
+                  child: Text(
+                    'Trigger links are trackable URLs you embed in SMS or email messages. '
+                    'When a contact clicks one, it logs the click and fires the linked automation. '
+                    'Copy the base URL and append /LEAD_ID when sending to a specific contact.',
+                    style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          // ── List ──
+          Expanded(
+            child: _loadingTriggerLinks
+                ? const Center(child: CircularProgressIndicator())
+                : _triggerLinks.isEmpty
+                    ? Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.link_off_rounded,
+                                size: 48,
+                                color: AppTheme.brand.withValues(alpha: 0.3)),
+                            const SizedBox(height: 16),
+                            const Text('No trigger links yet',
+                                style: TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w600,
+                                    color: AppTheme.textPrimary)),
+                            const SizedBox(height: 8),
+                            const Text(
+                                'Create a link and embed it in your SMS or email campaigns',
+                                style: TextStyle(
+                                    fontSize: 13,
+                                    color: AppTheme.textSecondary)),
+                            const SizedBox(height: 20),
+                            ElevatedButton.icon(
+                              onPressed: _showCreateTriggerLinkDialog,
+                              icon: const Icon(Icons.add_rounded, size: 16),
+                              label: const Text('Create First Link'),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: AppTheme.brand,
+                                foregroundColor: Colors.white,
+                                shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(8)),
+                              ),
+                            ),
+                          ],
+                        ),
+                      )
+                    : ListView.separated(
+                        padding: const EdgeInsets.all(24),
+                        itemCount: _triggerLinks.length,
+                        separatorBuilder: (_, __) => const SizedBox(height: 8),
+                        itemBuilder: (_, i) =>
+                            _buildTriggerLinkRow(_triggerLinks[i]),
+                      ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTriggerLinkRow(Map<String, dynamic> link) {
+    final name = link['name'] as String? ?? '';
+    final token = link['token'] as String? ?? '';
+    final redirectUrl = link['redirect_url'] as String? ?? '';
+    final clickCount = link['click_count'] as int? ?? 0;
+    final automation = link['automations'] as Map<String, dynamic>?;
+    final autoName = automation?['name'] as String? ?? 'No automation linked';
+    final baseUrl = _buildTriggerLinkUrl(token);
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppTheme.cardBg,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppTheme.borderColor),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 32,
+                height: 32,
+                decoration: BoxDecoration(
+                  color: AppTheme.brand.withValues(alpha: 0.10),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Icon(Icons.link_rounded, size: 16, color: AppTheme.brand),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(name,
+                        style: const TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                            color: AppTheme.textPrimary)),
+                    Text(autoName,
+                        style: const TextStyle(
+                            fontSize: 12, color: AppTheme.textSecondary)),
+                  ],
+                ),
+              ),
+              // Click count badge
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: AppTheme.pageBg,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: AppTheme.borderColor),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.mouse_outlined,
+                        size: 11, color: AppTheme.textSecondary),
+                    const SizedBox(width: 4),
+                    Text('$clickCount click${clickCount == 1 ? '' : 's'}',
+                        style: const TextStyle(
+                            fontSize: 11, color: AppTheme.textSecondary)),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              // Copy base URL
+              Clickable(
+                onTap: () => _copyToClipboard(baseUrl, 'Base URL'),
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: AppTheme.brand.withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(
+                        color: AppTheme.brand.withValues(alpha: 0.3)),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.copy_rounded, size: 12, color: AppTheme.brand),
+                      SizedBox(width: 4),
+                      Text('Copy URL',
+                          style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: AppTheme.brand)),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              // Delete
+              Clickable(
+                onTap: () async {
+                  final confirm = await showDialog<bool>(
+                    context: context,
+                    builder: (ctx) => AlertDialog(
+                      title: const Text('Delete Trigger Link',
+                          style: TextStyle(
+                              fontSize: 15, fontWeight: FontWeight.w700)),
+                      content: Text('Delete "$name"? This cannot be undone.'),
+                      actions: [
+                        TextButton(
+                            onPressed: () =>
+                                Navigator.of(ctx, rootNavigator: true).pop(false),
+                            child: const Text('Cancel')),
+                        TextButton(
+                            onPressed: () =>
+                                Navigator.of(ctx, rootNavigator: true).pop(true),
+                            child: const Text('Delete',
+                                style: TextStyle(color: Colors.red))),
+                      ],
+                    ),
+                  );
+                  if (confirm == true) {
+                    await _deleteTriggerLink(link['id'] as int);
+                  }
+                },
+                child: const Padding(
+                  padding: EdgeInsets.all(4),
+                  child: Icon(Icons.delete_outline_rounded,
+                      size: 16, color: AppTheme.textSecondary),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          // URL preview
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: AppTheme.pageBg,
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: AppTheme.borderColor),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.open_in_new_rounded,
+                    size: 11, color: AppTheme.textSecondary),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    '$baseUrl/{lead_id}',
+                    style: const TextStyle(
+                        fontSize: 11,
+                        fontFamily: 'monospace',
+                        color: AppTheme.textSecondary),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              const Icon(Icons.arrow_forward_rounded,
+                  size: 11, color: AppTheme.textSecondary),
+              const SizedBox(width: 4),
+              const Text('Redirects to: ',
+                  style:
+                      TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+              Expanded(
+                child: Text(redirectUrl,
+                    style: const TextStyle(
+                        fontSize: 11, color: AppTheme.textSecondary),
+                    overflow: TextOverflow.ellipsis),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showCreateTriggerLinkDialog() {
+    final nameCtrl = TextEditingController();
+    final urlCtrl =
+        TextEditingController(text: 'https://nexaflow-crm.web.app');
+    int? selectedAutoId;
+    bool saving = false;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setLocal) => AlertDialog(
+          title: const Text('New Trigger Link',
+              style:
+                  TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+          content: SizedBox(
+            width: 400,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Name',
+                    style: TextStyle(
+                        fontSize: 12, color: AppTheme.textSecondary)),
+                const SizedBox(height: 4),
+                TextField(
+                  controller: nameCtrl,
+                  autofocus: true,
+                  style: const TextStyle(fontSize: 13),
+                  decoration: InputDecoration(
+                    hintText: 'e.g. Webinar Registration',
+                    hintStyle: const TextStyle(fontSize: 12),
+                    contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 8),
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8)),
+                    isDense: true,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                const Text('Redirect URL',
+                    style: TextStyle(
+                        fontSize: 12, color: AppTheme.textSecondary)),
+                const SizedBox(height: 4),
+                TextField(
+                  controller: urlCtrl,
+                  style: const TextStyle(fontSize: 13),
+                  decoration: InputDecoration(
+                    hintText: 'https://yoursite.com/page',
+                    hintStyle: const TextStyle(fontSize: 12),
+                    contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 8),
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8)),
+                    isDense: true,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                const Text('Fire Automation (optional)',
+                    style: TextStyle(
+                        fontSize: 12, color: AppTheme.textSecondary)),
+                const SizedBox(height: 4),
+                DropdownButtonFormField<int?>(
+                  value: selectedAutoId,
+                  decoration: InputDecoration(
+                    hintText: 'None',
+                    hintStyle: const TextStyle(fontSize: 12),
+                    contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 8),
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8)),
+                    isDense: true,
+                  ),
+                  style: const TextStyle(
+                      fontSize: 13, color: AppTheme.textPrimary),
+                  items: [
+                    const DropdownMenuItem<int?>(
+                      value: null,
+                      child: Text('None',
+                          style: TextStyle(fontSize: 13)),
+                    ),
+                    ..._automationsForDropdown.map((a) =>
+                        DropdownMenuItem<int?>(
+                          value: a['id'] as int,
+                          child: Text(a['name'] as String? ?? '',
+                              style: const TextStyle(fontSize: 13)),
+                        )),
+                  ],
+                  onChanged: (val) => setLocal(() => selectedAutoId = val),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'When a contact clicks this link, the automation will fire for that contact.',
+                  style: TextStyle(
+                      fontSize: 11, color: AppTheme.textSecondary),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+                onPressed: () =>
+                    Navigator.of(ctx, rootNavigator: true).pop(),
+                child: const Text('Cancel')),
+            ElevatedButton(
+              onPressed: saving
+                  ? null
+                  : () async {
+                      if (nameCtrl.text.trim().isEmpty ||
+                          urlCtrl.text.trim().isEmpty) return;
+                      setLocal(() => saving = true);
+                      await _createTriggerLink(
+                        nameCtrl.text.trim(),
+                        urlCtrl.text.trim(),
+                        selectedAutoId,
+                      );
+                      if (ctx.mounted) {
+                        Navigator.of(ctx, rootNavigator: true).pop();
+                      }
+                    },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.brand,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8)),
+              ),
+              child: saving
+                  ? const SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: Colors.white))
+                  : const Text('Create Link'),
+            ),
+          ],
         ),
       ),
     );

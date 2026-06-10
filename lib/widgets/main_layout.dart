@@ -126,6 +126,35 @@ class _AppNavBarState extends State<AppNavBar> {
   Map<String, dynamic> _permissions = {};
   bool _profileLoaded = false;
 
+  // Settings nav sections (mirrors settings_screen.dart _sections)
+  static const _settingsSections = [
+    ('/settings',                          Icons.business_outlined,          'Business Profile'),
+    ('/settings?section=ai',               Icons.smart_toy_outlined,         'AI Settings'),
+    ('/settings?section=knowledge',        Icons.menu_book_outlined,         'Knowledge Base'),
+    ('/settings?section=phone',            Icons.phone_outlined,             'AI Phone Number'),
+    ('/settings?section=email',            Icons.email_outlined,             'Email Config'),
+    ('/settings?section=team',             Icons.people_outline,             'Team Members'),
+    ('/settings?section=notifications',    Icons.notifications_outlined,     'Notifications'),
+    ('/settings?section=payments',         Icons.payments_outlined,          'Payment Options'),
+    ('/settings?section=social',           Icons.share_rounded,              'Social Media'),
+    ('/settings?section=billing',          Icons.credit_card_outlined,       'Billing'),
+    ('/settings?section=mystaff',          Icons.badge_outlined,             'My Staff'),
+    ('/settings?section=pipelines',        Icons.bar_chart_rounded,          'Opportunities & Pipelines'),
+    ('/settings?section=automation',       Icons.bolt_outlined,              'Automation'),
+    ('/settings?section=calendars',        Icons.calendar_today_outlined,    'Calendars'),
+    ('/settings?section=conversation_ai',  Icons.chat_bubble_outline_rounded,'Conversation AI'),
+    ('/settings?section=voice_ai',         Icons.mic_outlined,               'Voice AI Agents'),
+    ('/settings?section=email_services',   Icons.alternate_email_rounded,    'Email Services'),
+    ('/settings?section=phone_numbers',    Icons.phone_in_talk_outlined,     'Phone Numbers'),
+    ('/settings?section=whatsapp',         Icons.message_outlined,           'WhatsApp'),
+    ('/settings?section=objects',          Icons.category_outlined,          'Objects'),
+    ('/settings?section=custom_fields',    Icons.tune_rounded,               'Custom Fields'),
+    ('/settings?section=custom_values',    Icons.data_object_rounded,        'Custom Values'),
+    ('/settings?section=scoring',          Icons.scoreboard_outlined,        'Manage Scoring'),
+    ('/settings?section=domains',          Icons.language_rounded,           'Domains'),
+    ('/settings?section=url_redirects',    Icons.alt_route_rounded,          'URL Redirects'),
+  ];
+
   @override
   void initState() {
     super.initState();
@@ -208,6 +237,140 @@ class _AppNavBarState extends State<AppNavBar> {
     return _permissions[key] == true;
   }
 
+  Widget _buildSettingsNav(BuildContext context, String location) {
+    return ListView(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      primary: false,
+      physics: const ClampingScrollPhysics(),
+      children: [
+        Clickable(
+          onTap: () => context.go('/dashboard'),
+          child: Container(
+            margin: const EdgeInsets.fromLTRB(10, 8, 10, 4),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.07),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.15)),
+            ),
+            child: const Row(
+              children: [
+                Icon(Icons.arrow_back_rounded, size: 14, color: Colors.white),
+                SizedBox(width: 8),
+                Text('Go Back',
+                    style: TextStyle(fontSize: 12.5, color: Colors.white, fontWeight: FontWeight.w500)),
+              ],
+            ),
+          ),
+        ),
+        _SectionLabel('My Business'),
+        ..._settingsSections.take(10).map((s) {
+          final isActive = location == s.$1 ||
+              (s.$1 == '/settings' && location == '/settings');
+          return Clickable(
+            onTap: () => context.go(s.$1),
+            child: Container(
+              height: 36,
+              decoration: BoxDecoration(
+                color: isActive ? AppTheme.brandActive : Colors.transparent,
+                border: Border(
+                  left: BorderSide(
+                    color: isActive ? AppTheme.brand : Colors.transparent,
+                    width: 3,
+                  ),
+                ),
+              ),
+              padding: const EdgeInsets.symmetric(horizontal: 14),
+              child: Row(
+                children: [
+                  Icon(s.$2, size: 16,
+                      color: isActive ? AppTheme.textActive : AppTheme.textNormal),
+                  const SizedBox(width: 9),
+                  Expanded(
+                    child: Text(s.$3,
+                        style: TextStyle(
+                          fontSize: 12.5,
+                          color: isActive ? AppTheme.textActive : AppTheme.textNormal,
+                        )),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }),
+        _SectionLabel('Business Services'),
+        ..._settingsSections.skip(10).take(9).map((s) {
+          final isActive = location == s.$1;
+          return Clickable(
+            onTap: () => context.go(s.$1),
+            child: Container(
+              height: 36,
+              decoration: BoxDecoration(
+                color: isActive ? AppTheme.brandActive : Colors.transparent,
+                border: Border(
+                  left: BorderSide(
+                    color: isActive ? AppTheme.brand : Colors.transparent,
+                    width: 3,
+                  ),
+                ),
+              ),
+              padding: const EdgeInsets.symmetric(horizontal: 14),
+              child: Row(
+                children: [
+                  Icon(s.$2, size: 16,
+                      color: isActive ? AppTheme.textActive : AppTheme.textNormal),
+                  const SizedBox(width: 9),
+                  Expanded(
+                    child: Text(s.$3,
+                        style: TextStyle(
+                          fontSize: 12.5,
+                          color: isActive ? AppTheme.textActive : AppTheme.textNormal,
+                        )),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }),
+        _SectionLabel('Other Settings'),
+        ..._settingsSections.skip(19).map((s) {
+          final isActive = location == s.$1 ||
+              (s.$1 == '/settings' && location == '/settings');
+          return Clickable(
+            onTap: () => context.go(s.$1),
+            child: Container(
+              height: 36,
+              decoration: BoxDecoration(
+                color: isActive ? AppTheme.brandActive : Colors.transparent,
+                border: Border(
+                  left: BorderSide(
+                    color: isActive ? AppTheme.brand : Colors.transparent,
+                    width: 3,
+                  ),
+                ),
+              ),
+              padding: const EdgeInsets.symmetric(horizontal: 14),
+              child: Row(
+                children: [
+                  Icon(s.$2, size: 16,
+                      color: isActive ? AppTheme.textActive : AppTheme.textNormal),
+                  const SizedBox(width: 9),
+                  Expanded(
+                    child: Text(s.$3,
+                        style: TextStyle(
+                          fontSize: 12.5,
+                          color: isActive ? AppTheme.textActive : AppTheme.textNormal,
+                        )),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final String location = GoRouterState.of(context).uri.toString();
@@ -257,11 +420,13 @@ class _AppNavBarState extends State<AppNavBar> {
               _SuperuserBanner(),
 
             Expanded(
-              child: ListView(
-                padding: const EdgeInsets.symmetric(vertical: 8),
-                primary: false,
-                physics: const ClampingScrollPhysics(),
-                children: [
+              child: location.startsWith('/settings')
+                  ? _buildSettingsNav(context, location)
+                  : ListView(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      primary: false,
+                      physics: const ClampingScrollPhysics(),
+                      children: [
                   // ── MAIN — always visible ──────────────────────────────
                   _SectionLabel('Main'),
                   _NavItem(
