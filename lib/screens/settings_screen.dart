@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -215,11 +216,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   final _sections = [
   ('Business Profile', Icons.business_outlined),
+  ('My Profile',       Icons.person_outline),
   ('AI Settings',      Icons.smart_toy_outlined),
   ('Knowledge Base',   Icons.menu_book_outlined),
   ('AI Phone Number',  Icons.phone_outlined),
   ('Email Config',     Icons.email_outlined),
-  ('Team Members',     Icons.people_outline),
+  ('My Staff',         Icons.people_outline),
   ('Notifications',    Icons.notifications_outlined),
   ('Payment Options',  Icons.payments_outlined),
   ('Social Media',     Icons.share_rounded),
@@ -244,16 +246,33 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   int _sectionIndexFromName(String? name) {
     switch (name) {
-      case 'ai':            return 1;
-      case 'knowledge':     return 2;
-      case 'phone':         return 3;
-      case 'email':         return 4;
-      case 'team':          return 5;
-      case 'notifications': return 6;
-      case 'payments':      return 7;
-      case 'social':        return 8;
-      case 'billing':       return 9;
-      default:              return 0;
+      case 'profile':         return 1;
+      case 'ai':              return 2;
+      case 'knowledge':       return 3;
+      case 'phone':           return 4;
+      case 'email':           return 5;
+      case 'team':            return 6;
+      case 'notifications':   return 7;
+      case 'payments':        return 8;
+      case 'social':          return 9;
+      case 'billing':         return 10;
+      // Business Services
+      case 'pipelines':       return 11;
+      case 'automation':      return 12;
+      case 'calendars':       return 13;
+      case 'conversation_ai': return 14;
+      case 'voice_ai':        return 15;
+      case 'email_services':  return 16;
+      case 'phone_numbers':   return 17;
+      case 'whatsapp':        return 18;
+      // Other Settings
+      case 'objects':         return 19;
+      case 'custom_fields':   return 20;
+      case 'custom_values':   return 21;
+      case 'scoring':         return 22;
+      case 'domains':         return 23;
+      case 'url_redirects':   return 24;
+      default:                return 0;
     }
   }
 
@@ -465,34 +484,64 @@ class _SettingsScreenState extends State<SettingsScreen> {
         return _BusinessProfileSection(
             business: _business, onSave: _updateBusiness);
       case 1:
+        return _MyProfileSection(businessId: _businessId!);
+      case 2:
         return _AISettingsSection(
             business: _business, onSave: _updateBusiness);
-      case 2:
-        return _KnowledgeBaseSection(businessId: _businessId!);
       case 3:
+        return _KnowledgeBaseSection(businessId: _businessId!);
+      case 4:
         return _AIPhoneSection(
             business: _business, onSave: _updateBusiness);
-      case 4:
+      case 5:
         return _EmailConfigSection(
             business: _business, onSave: _updateBusiness);
-      case 5:
-        return _TeamMembersSection(
+      case 6:
+        return _MyStaffSection(
           businessId: _businessId!,
           businessName:
               _business['business_name'] as String? ?? 'NexaFlow',
         );
-      case 6:
+      case 7:
         return _NotificationsSection(
             business: _business, onSave: _updateBusiness);
-      case 7:
+      case 8:
         return _PaymentOptionsSection(
             business: _business, onSave: _updateBusiness);
-      case 8:
+      case 9:
         return _SocialMediaSection(
             business: _business, onSave: _updateBusiness);
-      case 9:
+      case 10:
         return _BillingSection(
             business: _business, onRefresh: _loadBusiness);
+      case 11:
+        return _ComingSoonSection(title: 'Opportunities & Pipelines', icon: Icons.bar_chart_rounded);
+      case 12:
+        return _ComingSoonSection(title: 'Automation', icon: Icons.bolt_outlined);
+      case 13:
+        return _ComingSoonSection(title: 'Calendars', icon: Icons.calendar_today_outlined);
+      case 14:
+        return _ComingSoonSection(title: 'Conversation AI', icon: Icons.chat_bubble_outline_rounded);
+      case 15:
+        return _ComingSoonSection(title: 'Voice AI Agents', icon: Icons.mic_outlined);
+      case 16:
+        return _ComingSoonSection(title: 'Email Services', icon: Icons.alternate_email_rounded);
+      case 17:
+        return _ComingSoonSection(title: 'Phone Numbers', icon: Icons.phone_in_talk_outlined);
+      case 18:
+        return _ComingSoonSection(title: 'WhatsApp', icon: Icons.message_outlined);
+      case 19:
+        return _ComingSoonSection(title: 'Objects', icon: Icons.category_outlined);
+      case 20:
+        return _ComingSoonSection(title: 'Custom Fields', icon: Icons.tune_rounded);
+      case 21:
+        return _CustomValuesSection(businessId: _businessId!);
+      case 22:
+        return _ComingSoonSection(title: 'Manage Scoring', icon: Icons.scoreboard_outlined);
+      case 23:
+        return _ComingSoonSection(title: 'Domains', icon: Icons.language_rounded);
+      case 24:
+        return _ComingSoonSection(title: 'URL Redirects', icon: Icons.alt_route_rounded);
       default:
         return const SizedBox();
     }
@@ -1161,18 +1210,18 @@ class _DropdownField extends StatelessWidget {
 //  TEAM MEMBERS SECTION
 // ─────────────────────────────────────────────
 
-class _TeamMembersSection extends StatefulWidget {
+class _MyStaffSection extends StatefulWidget {
   final int businessId;
   final String businessName;
-  const _TeamMembersSection(
+  const _MyStaffSection(
       {required this.businessId, this.businessName = 'NexaFlow'});
 
   @override
-  State<_TeamMembersSection> createState() =>
-      _TeamMembersSectionState();
+  State<_MyStaffSection> createState() =>
+      _MyStaffSectionState();
 }
 
-class _TeamMembersSectionState extends State<_TeamMembersSection> {
+class _MyStaffSectionState extends State<_MyStaffSection> {
   final _supabase = Supabase.instance.client;
   List<Map<String, dynamic>> _members = [];
   bool _loading = true;
@@ -1308,9 +1357,9 @@ class _TeamMembersSectionState extends State<_TeamMembersSection> {
   @override
   Widget build(BuildContext context) {
     return _SectionShell(
-      title: 'Team Members',
+      title: 'My Staff',
       subtitle:
-          'Invite team members and control what they can access.',
+          'Invite and manage team members. Control their access and permissions.',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -4114,6 +4163,1888 @@ class _SquareIcon extends StatelessWidget {
     );
   }
 }
+// ─────────────────────────────────────────────
+//  MY PROFILE SECTION
+// ─────────────────────────────────────────────
+
+class _MyProfileSection extends StatefulWidget {
+  final int businessId;
+  const _MyProfileSection({required this.businessId});
+
+  @override
+  State<_MyProfileSection> createState() => _MyProfileSectionState();
+}
+
+class _MyProfileSectionState extends State<_MyProfileSection> {
+  final _supabase = Supabase.instance.client;
+
+  // Controllers
+  late final TextEditingController _firstNameCtrl;
+  late final TextEditingController _lastNameCtrl;
+  late final TextEditingController _phoneCtrl;
+  late final TextEditingController _currentPwCtrl;
+  late final TextEditingController _newPwCtrl;
+  late final TextEditingController _confirmPwCtrl;
+
+  String? _email;
+  String? _selectedTimezone;
+  bool _savingProfile = false;
+  bool _savingPassword = false;
+  String? _profileSuccess;
+  String? _profileError;
+  String? _passwordSuccess;
+  String? _passwordError;
+  bool _showCurrentPw = false;
+  bool _showNewPw = false;
+  bool _showConfirmPw = false;
+
+  // Notification prefs — stored in profiles table
+  bool _notifyConversationsEmail = true;
+  bool _notifyConversationsSms   = false;
+  bool _notifyTasksEmail         = true;
+  bool _notifyTasksSms           = false;
+  bool _notifyAppointmentsEmail  = true;
+  bool _notifyAppointmentsSms    = false;
+  bool _savingNotifications      = false;
+  String? _notificationsSuccess;
+
+  Map<String, dynamic> _profile = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _firstNameCtrl   = TextEditingController();
+    _lastNameCtrl    = TextEditingController();
+    _phoneCtrl       = TextEditingController();
+    _currentPwCtrl   = TextEditingController();
+    _newPwCtrl       = TextEditingController();
+    _confirmPwCtrl   = TextEditingController();
+    _loadProfile();
+  }
+
+  @override
+  void dispose() {
+    _firstNameCtrl.dispose();
+    _lastNameCtrl.dispose();
+    _phoneCtrl.dispose();
+    _currentPwCtrl.dispose();
+    _newPwCtrl.dispose();
+    _confirmPwCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadProfile() async {
+    final userId = _supabase.auth.currentUser?.id;
+    if (userId == null) return;
+    _email = _supabase.auth.currentUser?.email;
+    try {
+      final res = await _supabase
+          .from('profiles')
+          .select()
+          .eq('user_id', userId)
+          .eq('business_id', widget.businessId)
+          .maybeSingle();
+      if (res != null && mounted) {
+        _profile = Map<String, dynamic>.from(res);
+        final fullName = (_profile['full_name'] as String? ?? '').trim();
+        final parts = fullName.split(' ');
+        _firstNameCtrl.text = parts.isNotEmpty ? parts.first : '';
+        _lastNameCtrl.text  = parts.length > 1 ? parts.sublist(1).join(' ') : '';
+        _phoneCtrl.text     = _profile['phone'] as String? ?? '';
+        _selectedTimezone   = _profile['timezone'] as String?;
+        if (_selectedTimezone != null && !_kTimezones.contains(_selectedTimezone)) {
+          _selectedTimezone = null;
+        }
+        // Notification prefs
+        final prefs = _profile['notification_prefs'] as Map<String, dynamic>? ?? {};
+        _notifyConversationsEmail = prefs['conversations_email'] as bool? ?? true;
+        _notifyConversationsSms   = prefs['conversations_sms']   as bool? ?? false;
+        _notifyTasksEmail         = prefs['tasks_email']         as bool? ?? true;
+        _notifyTasksSms           = prefs['tasks_sms']           as bool? ?? false;
+        _notifyAppointmentsEmail  = prefs['appointments_email']  as bool? ?? true;
+        _notifyAppointmentsSms    = prefs['appointments_sms']    as bool? ?? false;
+        setState(() {});
+      }
+    } catch (e) {
+      debugPrint('Profile load error: $e');
+    }
+  }
+
+  Future<void> _saveProfile() async {
+    final userId = _supabase.auth.currentUser?.id;
+    if (userId == null) return;
+    setState(() { _savingProfile = true; _profileError = null; _profileSuccess = null; });
+    try {
+      final fullName = '${_firstNameCtrl.text.trim()} ${_lastNameCtrl.text.trim()}'.trim();
+      await _supabase
+          .from('profiles')
+          .update({
+            'full_name': fullName,
+            'phone':     _phoneCtrl.text.trim(),
+            'timezone':  _selectedTimezone,
+          })
+          .eq('user_id', userId)
+          .eq('business_id', widget.businessId);
+      setState(() { _profileSuccess = 'Profile saved.'; _savingProfile = false; });
+    } catch (e) {
+      setState(() { _profileError = e.toString(); _savingProfile = false; });
+    }
+  }
+
+  Future<void> _savePassword() async {
+    setState(() { _savingPassword = true; _passwordError = null; _passwordSuccess = null; });
+    if (_newPwCtrl.text != _confirmPwCtrl.text) {
+      setState(() { _passwordError = 'Passwords do not match.'; _savingPassword = false; });
+      return;
+    }
+    if (_newPwCtrl.text.length < 8) {
+      setState(() { _passwordError = 'Password must be at least 8 characters.'; _savingPassword = false; });
+      return;
+    }
+    try {
+      await _supabase.auth.updateUser(UserAttributes(password: _newPwCtrl.text));
+      _currentPwCtrl.clear();
+      _newPwCtrl.clear();
+      _confirmPwCtrl.clear();
+      setState(() { _passwordSuccess = 'Password updated.'; _savingPassword = false; });
+    } catch (e) {
+      setState(() { _passwordError = e.toString(); _savingPassword = false; });
+    }
+  }
+
+  Future<void> _saveNotifications() async {
+    final userId = _supabase.auth.currentUser?.id;
+    if (userId == null) return;
+    setState(() { _savingNotifications = true; _notificationsSuccess = null; });
+    try {
+      await _supabase
+          .from('profiles')
+          .update({
+            'notification_prefs': {
+              'conversations_email': _notifyConversationsEmail,
+              'conversations_sms':   _notifyConversationsSms,
+              'tasks_email':         _notifyTasksEmail,
+              'tasks_sms':           _notifyTasksSms,
+              'appointments_email':  _notifyAppointmentsEmail,
+              'appointments_sms':    _notifyAppointmentsSms,
+            }
+          })
+          .eq('user_id', userId)
+          .eq('business_id', widget.businessId);
+      setState(() { _notificationsSuccess = 'Notification preferences saved.'; _savingNotifications = false; });
+    } catch (e) {
+      setState(() { _savingNotifications = false; });
+    }
+  }
+
+  String get _initials {
+    final first = _firstNameCtrl.text.trim();
+    final last  = _lastNameCtrl.text.trim();
+    if (first.isEmpty && last.isEmpty) return '?';
+    return '${first.isNotEmpty ? first[0] : ''}${last.isNotEmpty ? last[0] : ''}'.toUpperCase();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(32),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('My Profile',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+          const SizedBox(height: 4),
+          const Text('Manage your personal account settings and notification preferences.',
+              style: TextStyle(fontSize: 13, color: AppTheme.textSecondary)),
+          const SizedBox(height: 28),
+
+          // ── Avatar + Name header ──────────────────────────────────
+          Container(
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              color: AppTheme.cardBg,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: AppTheme.borderColor),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  width: 72,
+                  height: 72,
+                  decoration: BoxDecoration(
+                    color: AppTheme.brand.withValues(alpha: 0.15),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Center(
+                    child: Text(_initials,
+                        style: TextStyle(
+                            fontSize: 26,
+                            fontWeight: FontWeight.w800,
+                            color: AppTheme.brand)),
+                  ),
+                ),
+                const SizedBox(width: 20),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '${_firstNameCtrl.text} ${_lastNameCtrl.text}'.trim().isEmpty
+                            ? 'Your Name'
+                            : '${_firstNameCtrl.text} ${_lastNameCtrl.text}'.trim(),
+                        style: const TextStyle(
+                            fontSize: 16, fontWeight: FontWeight.w700, color: AppTheme.textPrimary),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(_email ?? '', style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary)),
+                      const SizedBox(height: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: AppTheme.brand.withValues(alpha: 0.1),
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: Text(
+                          (_profile['role'] as String? ?? 'member').toUpperCase(),
+                          style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.brand),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 24),
+
+          // ── Personal Info ─────────────────────────────────────────
+          _SettingsGroup(title: 'Personal Information', children: [
+            _TwoCol(
+              left: _SettingsField(label: 'First Name', controller: _firstNameCtrl, hint: 'John'),
+              right: _SettingsField(label: 'Last Name', controller: _lastNameCtrl, hint: 'Smith'),
+            ),
+            _TwoCol(
+              left: _SettingsField(label: 'Email Address', controller: TextEditingController(text: _email ?? ''), enabled: false),
+              right: _SettingsField(label: 'Phone Number', controller: _phoneCtrl, hint: '(555) 555-5555'),
+            ),
+            _DropdownField(
+              label: 'Timezone',
+              value: _selectedTimezone,
+              items: _kTimezones,
+              hint: 'Select your timezone',
+              onChanged: (v) => setState(() => _selectedTimezone = v),
+            ),
+          ]),
+          const SizedBox(height: 12),
+          Row(children: [
+            MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: ElevatedButton(
+                onPressed: _savingProfile ? null : _saveProfile,
+                style: ElevatedButton.styleFrom(
+                    backgroundColor: AppTheme.brand,
+                    foregroundColor: Colors.white,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+                child: _savingProfile
+                    ? const SizedBox(width: 16, height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                    : const Text('Save Profile'),
+              ),
+            ),
+            if (_profileSuccess != null) ...[
+              const SizedBox(width: 12),
+              const Icon(Icons.check_circle, color: Color(0xFF10B981), size: 16),
+              const SizedBox(width: 4),
+              Text(_profileSuccess!, style: const TextStyle(color: Color(0xFF10B981), fontSize: 13)),
+            ],
+            if (_profileError != null) ...[
+              const SizedBox(width: 12),
+              Text(_profileError!, style: const TextStyle(color: Colors.red, fontSize: 13)),
+            ],
+          ]),
+          const SizedBox(height: 28),
+
+          // ── Change Password ───────────────────────────────────────
+          _SettingsGroup(title: 'Change Password', children: [
+            _PasswordField(
+              label: 'Current Password',
+              controller: _currentPwCtrl,
+              show: _showCurrentPw,
+              onToggle: () => setState(() => _showCurrentPw = !_showCurrentPw),
+            ),
+            _TwoCol(
+              left: _PasswordField(
+                label: 'New Password',
+                controller: _newPwCtrl,
+                show: _showNewPw,
+                onToggle: () => setState(() => _showNewPw = !_showNewPw),
+              ),
+              right: _PasswordField(
+                label: 'Confirm New Password',
+                controller: _confirmPwCtrl,
+                show: _showConfirmPw,
+                onToggle: () => setState(() => _showConfirmPw = !_showConfirmPw),
+              ),
+            ),
+            const Text('Password must be at least 8 characters.',
+                style: TextStyle(fontSize: 11, color: AppTheme.textMuted)),
+          ]),
+          const SizedBox(height: 12),
+          Row(children: [
+            MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: ElevatedButton(
+                onPressed: _savingPassword ? null : _savePassword,
+                style: ElevatedButton.styleFrom(
+                    backgroundColor: AppTheme.brand,
+                    foregroundColor: Colors.white,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+                child: _savingPassword
+                    ? const SizedBox(width: 16, height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                    : const Text('Update Password'),
+              ),
+            ),
+            if (_passwordSuccess != null) ...[
+              const SizedBox(width: 12),
+              const Icon(Icons.check_circle, color: Color(0xFF10B981), size: 16),
+              const SizedBox(width: 4),
+              Text(_passwordSuccess!, style: const TextStyle(color: Color(0xFF10B981), fontSize: 13)),
+            ],
+            if (_passwordError != null) ...[
+              const SizedBox(width: 12),
+              Text(_passwordError!, style: const TextStyle(color: Colors.red, fontSize: 13)),
+            ],
+          ]),
+          const SizedBox(height: 28),
+
+          // ── Notification Preferences ──────────────────────────────
+          _SettingsGroup(title: 'Notification Preferences', children: [
+            _NotifRow(
+              label: 'Conversations',
+              subtitle: 'New messages and replies',
+              emailVal: _notifyConversationsEmail,
+              smsVal:   _notifyConversationsSms,
+              onEmailChanged: (v) => setState(() => _notifyConversationsEmail = v),
+              onSmsChanged:   (v) => setState(() => _notifyConversationsSms = v),
+            ),
+            const Divider(height: 1, color: AppTheme.borderColor),
+            const SizedBox(height: 12),
+            _NotifRow(
+              label: 'Tasks',
+              subtitle: 'Task assignments and due date reminders',
+              emailVal: _notifyTasksEmail,
+              smsVal:   _notifyTasksSms,
+              onEmailChanged: (v) => setState(() => _notifyTasksEmail = v),
+              onSmsChanged:   (v) => setState(() => _notifyTasksSms = v),
+            ),
+            const Divider(height: 1, color: AppTheme.borderColor),
+            const SizedBox(height: 12),
+            _NotifRow(
+              label: 'Appointments',
+              subtitle: 'New bookings and cancellations',
+              emailVal: _notifyAppointmentsEmail,
+              smsVal:   _notifyAppointmentsSms,
+              onEmailChanged: (v) => setState(() => _notifyAppointmentsEmail = v),
+              onSmsChanged:   (v) => setState(() => _notifyAppointmentsSms = v),
+            ),
+          ]),
+          const SizedBox(height: 12),
+          Row(children: [
+            MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: ElevatedButton(
+                onPressed: _savingNotifications ? null : _saveNotifications,
+                style: ElevatedButton.styleFrom(
+                    backgroundColor: AppTheme.brand,
+                    foregroundColor: Colors.white,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+                child: _savingNotifications
+                    ? const SizedBox(width: 16, height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                    : const Text('Save Notifications'),
+              ),
+            ),
+            if (_notificationsSuccess != null) ...[
+              const SizedBox(width: 12),
+              const Icon(Icons.check_circle, color: Color(0xFF10B981), size: 16),
+              const SizedBox(width: 4),
+              Text(_notificationsSuccess!, style: const TextStyle(color: Color(0xFF10B981), fontSize: 13)),
+            ],
+          ]),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Notification row helper ───────────────────────────────────────────────────
+
+class _NotifRow extends StatelessWidget {
+  final String label;
+  final String subtitle;
+  final bool emailVal;
+  final bool smsVal;
+  final ValueChanged<bool> onEmailChanged;
+  final ValueChanged<bool> onSmsChanged;
+
+  const _NotifRow({
+    required this.label,
+    required this.subtitle,
+    required this.emailVal,
+    required this.smsVal,
+    required this.onEmailChanged,
+    required this.onSmsChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(label,
+                    style: const TextStyle(
+                        fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+                Text(subtitle,
+                    style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+              ],
+            ),
+          ),
+          const SizedBox(width: 24),
+          Column(
+            children: [
+              const Text('Email', style: TextStyle(fontSize: 10, color: AppTheme.textSecondary)),
+              const SizedBox(height: 2),
+              Switch(
+                value: emailVal,
+                onChanged: onEmailChanged,
+                activeColor: AppTheme.brand,
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+            ],
+          ),
+          const SizedBox(width: 16),
+          Column(
+            children: [
+              const Text('SMS', style: TextStyle(fontSize: 10, color: AppTheme.textSecondary)),
+              const SizedBox(height: 2),
+              Switch(
+                value: smsVal,
+                onChanged: onSmsChanged,
+                activeColor: AppTheme.brand,
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Password field helper ─────────────────────────────────────────────────────
+
+class _PasswordField extends StatelessWidget {
+  final String label;
+  final TextEditingController controller;
+  final bool show;
+  final VoidCallback onToggle;
+
+  const _PasswordField({
+    required this.label,
+    required this.controller,
+    required this.show,
+    required this.onToggle,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label,
+              style: const TextStyle(
+                  fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
+          const SizedBox(height: 6),
+          TextField(
+            controller: controller,
+            obscureText: !show,
+            style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+            decoration: InputDecoration(
+              filled: true,
+              fillColor: AppTheme.pageBg,
+              contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+              border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  borderSide: const BorderSide(color: AppTheme.borderColor)),
+              enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  borderSide: const BorderSide(color: AppTheme.borderColor)),
+              focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  borderSide: BorderSide(color: AppTheme.brand, width: 1.5)),
+              suffixIcon: MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: GestureDetector(
+                  onTap: onToggle,
+                  child: Icon(
+                    show ? Icons.visibility_off_outlined : Icons.visibility_outlined,
+                    size: 18,
+                    color: AppTheme.textSecondary,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+//  COMING SOON SECTION (temporary scaffold)
+// ─────────────────────────────────────────────
+
+class _ComingSoonSection extends StatelessWidget {
+  final String title;
+  final IconData icon;
+  const _ComingSoonSection({required this.title, required this.icon});
+
+  @override
+  Widget build(BuildContext context) {
+    return _SectionShell(
+      title: title,
+      subtitle: 'This section is being built out.',
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(48),
+        decoration: BoxDecoration(
+          color: AppTheme.cardBg,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: AppTheme.borderColor),
+        ),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Container(
+            width: 64, height: 64,
+            decoration: BoxDecoration(
+              color: AppTheme.brand.withValues(alpha: 0.1),
+              shape: BoxShape.circle,
+            ),
+            child: Icon(icon, size: 28, color: AppTheme.brand),
+          ),
+          const SizedBox(height: 16),
+          Text(title,
+              style: const TextStyle(
+                  fontSize: 16, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+          const SizedBox(height: 8),
+          const Text('Coming soon — this section is actively being built.',
+              style: TextStyle(fontSize: 13, color: AppTheme.textSecondary)),
+        ]),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+//  CUSTOM VALUES SECTION
+// ─────────────────────────────────────────────
+
+class _CustomValuesSection extends StatefulWidget {
+  final int businessId;
+  const _CustomValuesSection({required this.businessId});
+
+  @override
+  State<_CustomValuesSection> createState() => _CustomValuesSectionState();
+}
+
+class _CustomValuesSectionState extends State<_CustomValuesSection> {
+  final _supabase = Supabase.instance.client;
+  List<Map<String, dynamic>> _values = [];
+  bool _loading = true;
+  String _searchQuery = '';
+  String? _activeFolder;
+  List<String> _folders = [];
+  final Set<int> _selectedIds = {};
+  bool _bulkMode = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  static const _kDefaultValues = [
+    {'name': 'Business Name',    'value': '', 'folder': 'Business Info'},
+    {'name': 'Business Phone',   'value': '', 'folder': 'Business Info'},
+    {'name': 'Business Email',   'value': '', 'folder': 'Business Info'},
+    {'name': 'Business Address', 'value': '', 'folder': 'Business Info'},
+    {'name': 'Business Website', 'value': '', 'folder': 'Business Info'},
+    {'name': 'Owner Name',       'value': '', 'folder': 'Business Info'},
+    {'name': 'Owner Phone',      'value': '', 'folder': 'Business Info'},
+    {'name': 'Support Email',    'value': '', 'folder': 'Business Info'},
+    {'name': 'Booking Link',     'value': '', 'folder': 'Links'},
+    {'name': 'Review Link',      'value': '', 'folder': 'Links'},
+    {'name': 'Facebook Page',    'value': '', 'folder': 'Links'},
+    {'name': 'Instagram Page',   'value': '', 'folder': 'Links'},
+  ];
+
+  Future<void> _load() async {
+    setState(() => _loading = true);
+    try {
+      final res = await _supabase
+          .from('custom_values')
+          .select()
+          .eq('business_id', widget.businessId)
+          .order('folder', nullsFirst: true)
+          .order('name');
+      final list = List<Map<String, dynamic>>.from(res as List);
+
+      // Seed defaults on first load
+      if (list.isEmpty) {
+        final seeds = _kDefaultValues.map((d) => {
+          ...d,
+          'business_id': widget.businessId,
+          'created_at': DateTime.now().toUtc().toIso8601String(),
+          'updated_at': DateTime.now().toUtc().toIso8601String(),
+        }).toList();
+        await _supabase.from('custom_values').insert(seeds);
+        // Reload after seeding
+        final seeded = await _supabase
+            .from('custom_values')
+            .select()
+            .eq('business_id', widget.businessId)
+            .order('folder', nullsFirst: true)
+            .order('name');
+        final seededList = List<Map<String, dynamic>>.from(seeded as List);
+        final folderSet2 = <String>{};
+        for (final v in seededList) {
+          final f = v['folder'] as String?;
+          if (f != null && f.isNotEmpty) folderSet2.add(f);
+        }
+        setState(() {
+          _values = seededList;
+          _folders = folderSet2.toList()..sort();
+          _loading = false;
+        });
+        return;
+      }
+
+      final folderSet = <String>{};
+      for (final v in list) {
+        final f = v['folder'] as String?;
+        if (f != null && f.isNotEmpty) folderSet.add(f);
+      }
+      setState(() {
+        _values = list;
+        _folders = folderSet.toList()..sort();
+        _loading = false;
+      });
+    } catch (e) {
+      debugPrint('Custom values load error: $e');
+      setState(() => _loading = false);
+    }
+  }
+
+  List<Map<String, dynamic>> get _filtered {
+    return _values.where((v) {
+      final matchesSearch = _searchQuery.isEmpty ||
+          (v['name'] as String).toLowerCase().contains(_searchQuery.toLowerCase()) ||
+          (v['value'] as String).toLowerCase().contains(_searchQuery.toLowerCase());
+      final matchesFolder = _activeFolder == null ||
+          (v['folder'] as String?) == _activeFolder;
+      return matchesSearch && matchesFolder;
+    }).toList();
+  }
+
+  String _toToken(String name) {
+    return '{{custom_values.${name.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '_')}}}';
+  }
+
+  void _showEditor({Map<String, dynamic>? existing}) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => _CustomValueDialog(
+        businessId: widget.businessId,
+        existing: existing,
+        folders: _folders,
+        onSaved: () {
+          Navigator.of(ctx, rootNavigator: true).pop();
+          _load();
+        },
+      ),
+    );
+  }
+
+  Future<void> _delete(Map<String, dynamic> value) async {
+    bool confirmed = false;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.cardBg,
+        title: const Text('Delete Custom Value',
+            style: TextStyle(color: AppTheme.textPrimary)),
+        content: Text('Delete "${value['name']}"? This cannot be undone.',
+            style: const TextStyle(color: AppTheme.textSecondary)),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () { confirmed = true; Navigator.pop(ctx); },
+            style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red, foregroundColor: Colors.white, elevation: 0),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (!confirmed || !mounted) return;
+    await _supabase.from('custom_values').delete().eq('id', value['id']);
+    await _load();
+  }
+
+  Future<void> _copyToken(String name) async {
+    final token = _toToken(name);
+    await Clipboard.setData(ClipboardData(text: token));
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Copied: $token'),
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
+  void _showAddFolderDialog() {
+    final ctrl = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.cardBg,
+        title: const Text('New Folder', style: TextStyle(color: AppTheme.textPrimary)),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          decoration: InputDecoration(
+            hintText: 'Folder name',
+            filled: true,
+            fillColor: AppTheme.pageBg,
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                borderSide: const BorderSide(color: AppTheme.borderColor)),
+            enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                borderSide: const BorderSide(color: AppTheme.borderColor)),
+            focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                borderSide: BorderSide(color: AppTheme.brand, width: 1.5)),
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () {
+              if (ctrl.text.trim().isNotEmpty) {
+                setState(() {
+                  if (!_folders.contains(ctrl.text.trim())) {
+                    _folders.add(ctrl.text.trim());
+                    _folders.sort();
+                  }
+                  _activeFolder = ctrl.text.trim();
+                });
+              }
+              Navigator.pop(ctx);
+            },
+            style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.brand, foregroundColor: Colors.white, elevation: 0),
+            child: const Text('Create'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showRenameFolderDialog(String oldName) {
+    final ctrl = TextEditingController(text: oldName);
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.cardBg,
+        title: const Text('Rename Folder', style: TextStyle(color: AppTheme.textPrimary)),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          decoration: InputDecoration(
+            hintText: 'New folder name',
+            filled: true,
+            fillColor: AppTheme.pageBg,
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                borderSide: const BorderSide(color: AppTheme.borderColor)),
+            enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                borderSide: const BorderSide(color: AppTheme.borderColor)),
+            focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                borderSide: BorderSide(color: AppTheme.brand, width: 1.5)),
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () async {
+              final newName = ctrl.text.trim();
+              if (newName.isEmpty || newName == oldName) { Navigator.pop(ctx); return; }
+              // Update all values in this folder BEFORE popping
+              await _supabase
+                  .from('custom_values')
+                  .update({'folder': newName})
+                  .eq('folder', oldName)
+                  .eq('business_id', widget.businessId);
+              Navigator.pop(ctx);
+              if (_activeFolder == oldName) setState(() => _activeFolder = newName);
+              await _load();
+            },
+            style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.brand, foregroundColor: Colors.white, elevation: 0),
+            child: const Text('Rename'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _deleteFolderDialog(String folderName) async {
+    bool confirmed = false;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.cardBg,
+        title: const Text('Delete Folder', style: TextStyle(color: AppTheme.textPrimary)),
+        content: Text(
+          'Delete folder "$folderName"? All values inside will be moved to No Folder.',
+          style: const TextStyle(color: AppTheme.textSecondary),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () { confirmed = true; Navigator.pop(ctx); },
+            style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red, foregroundColor: Colors.white, elevation: 0),
+            child: const Text('Delete Folder'),
+          ),
+        ],
+      ),
+    );
+    if (!confirmed || !mounted) return;
+    await _supabase
+        .from('custom_values')
+        .update({'folder': null})
+        .eq('folder', folderName)
+        .eq('business_id', widget.businessId);
+    if (_activeFolder == folderName) setState(() => _activeFolder = null);
+    await _load();
+  }
+
+  void _showMoveToFolderDialog(Map<String, dynamic> value) {
+    String? targetFolder = value['folder'] as String?;
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlgState) => AlertDialog(
+          backgroundColor: AppTheme.cardBg,
+          title: const Text('Move to Folder', style: TextStyle(color: AppTheme.textPrimary)),
+          content: SizedBox(
+            width: 320,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                RadioListTile<String?>(
+                  value: null,
+                  groupValue: targetFolder,
+                  onChanged: (v) => setDlgState(() => targetFolder = v),
+                  title: const Text('No Folder', style: TextStyle(fontSize: 13, color: AppTheme.textPrimary)),
+                  activeColor: AppTheme.brand,
+                ),
+                ..._folders.map((f) => RadioListTile<String?>(
+                  value: f,
+                  groupValue: targetFolder,
+                  onChanged: (v) => setDlgState(() => targetFolder = v),
+                  title: Text(f, style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary)),
+                  activeColor: AppTheme.brand,
+                )),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+            ElevatedButton(
+              onPressed: () async {
+                Navigator.pop(ctx);
+                await _supabase
+                    .from('custom_values')
+                    .update({'folder': targetFolder})
+                    .eq('id', value['id']);
+                await _load();
+              },
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: AppTheme.brand, foregroundColor: Colors.white, elevation: 0),
+              child: const Text('Move'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showBulkMoveDialog() {
+    String? targetFolder;
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlgState) => AlertDialog(
+          backgroundColor: AppTheme.cardBg,
+          title: Text('Move ${_selectedIds.length} value${_selectedIds.length == 1 ? '' : 's'} to Folder',
+              style: const TextStyle(color: AppTheme.textPrimary)),
+          content: SizedBox(
+            width: 320,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                RadioListTile<String?>(
+                  value: null,
+                  groupValue: targetFolder,
+                  onChanged: (v) => setDlgState(() => targetFolder = v),
+                  title: const Text('No Folder', style: TextStyle(fontSize: 13, color: AppTheme.textPrimary)),
+                  activeColor: AppTheme.brand,
+                ),
+                ..._folders.map((f) => RadioListTile<String?>(
+                  value: f,
+                  groupValue: targetFolder,
+                  onChanged: (v) => setDlgState(() => targetFolder = v),
+                  title: Text(f, style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary)),
+                  activeColor: AppTheme.brand,
+                )),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+            ElevatedButton(
+              onPressed: () async {
+                Navigator.pop(ctx);
+                for (final id in _selectedIds) {
+                  await _supabase.from('custom_values').update({'folder': targetFolder}).eq('id', id);
+                }
+                setState(() { _selectedIds.clear(); _bulkMode = false; });
+                await _load();
+              },
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: AppTheme.brand, foregroundColor: Colors.white, elevation: 0),
+              child: const Text('Move'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _bulkDelete() async {
+    bool confirmed = false;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.cardBg,
+        title: const Text('Delete Selected', style: TextStyle(color: AppTheme.textPrimary)),
+        content: Text(
+          'Delete ${_selectedIds.length} custom value${_selectedIds.length == 1 ? '' : 's'}? This cannot be undone.',
+          style: const TextStyle(color: AppTheme.textSecondary),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () { confirmed = true; Navigator.pop(ctx); },
+            style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red, foregroundColor: Colors.white, elevation: 0),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (!confirmed || !mounted) return;
+    for (final id in _selectedIds) {
+      await _supabase.from('custom_values').delete().eq('id', id);
+    }
+    setState(() { _selectedIds.clear(); _bulkMode = false; });
+    await _load();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final filtered = _filtered;
+
+    return _SectionShell(
+      title: 'Custom Values',
+      subtitle: 'Reusable variables you can insert into messages, emails, and automations using tokens.',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // ── Info banner ──────────────────────────────────────────
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: AppTheme.brand.withValues(alpha: 0.05),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: AppTheme.brand.withValues(alpha: 0.2)),
+            ),
+            child: const Row(children: [
+              Icon(Icons.info_outline, size: 16, color: AppTheme.brand),
+              SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Custom values are reusable placeholders. Define them once and insert them anywhere using their token — e.g. {{custom_values.company_phone}}. Changing the value updates it everywhere automatically.',
+                  style: TextStyle(fontSize: 12, color: AppTheme.brand, height: 1.5),
+                ),
+              ),
+            ]),
+          ),
+          const SizedBox(height: 16),
+          _SystemTokensPanel(),
+          const SizedBox(height: 20),
+
+          // ── Bulk action bar ──────────────────────────────────────
+          if (_bulkMode && _selectedIds.isNotEmpty) ...[
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              decoration: BoxDecoration(
+                color: AppTheme.brand.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: AppTheme.brand.withValues(alpha: 0.3)),
+              ),
+              child: Row(children: [
+                Text('${_selectedIds.length} selected',
+                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.brand)),
+                const SizedBox(width: 16),
+                if (_folders.isNotEmpty)
+                  MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    child: OutlinedButton.icon(
+                      onPressed: _showBulkMoveDialog,
+                      icon: const Icon(Icons.drive_file_move_outlined, size: 14),
+                      label: const Text('Move to Folder'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: AppTheme.brand,
+                        side: BorderSide(color: AppTheme.brand.withValues(alpha: 0.4)),
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                      ),
+                    ),
+                  ),
+                const SizedBox(width: 8),
+                MouseRegion(
+                  cursor: SystemMouseCursors.click,
+                  child: OutlinedButton.icon(
+                    onPressed: _bulkDelete,
+                    icon: const Icon(Icons.delete_outline, size: 14),
+                    label: const Text('Delete'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.red,
+                      side: const BorderSide(color: Colors.red),
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                    ),
+                  ),
+                ),
+                const Spacer(),
+                MouseRegion(
+                  cursor: SystemMouseCursors.click,
+                  child: TextButton(
+                    onPressed: () => setState(() { _selectedIds.clear(); _bulkMode = false; }),
+                    child: const Text('Cancel'),
+                  ),
+                ),
+              ]),
+            ),
+            const SizedBox(height: 12),
+          ],
+
+          // ── Toolbar ──────────────────────────────────────────────
+          Row(children: [
+            // Search
+            Expanded(
+              child: SizedBox(
+                height: 38,
+                child: TextField(
+                  onChanged: (v) => setState(() => _searchQuery = v),
+                  style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                  decoration: InputDecoration(
+                    hintText: 'Search values...',
+                    hintStyle: const TextStyle(fontSize: 13, color: AppTheme.textSecondary),
+                    prefixIcon: const Icon(Icons.search, size: 16, color: AppTheme.textSecondary),
+                    filled: true,
+                    fillColor: AppTheme.pageBg,
+                    isDense: true,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                        borderSide: const BorderSide(color: AppTheme.borderColor)),
+                    enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                        borderSide: const BorderSide(color: AppTheme.borderColor)),
+                    focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                        borderSide: BorderSide(color: AppTheme.brand, width: 1.5)),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            // New Folder button
+            MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: OutlinedButton.icon(
+                onPressed: _showAddFolderDialog,
+                icon: const Icon(Icons.create_new_folder_outlined, size: 15),
+                label: const Text('New Folder'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppTheme.textSecondary,
+                  side: const BorderSide(color: AppTheme.borderColor),
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            // Add Value button
+            MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: ElevatedButton.icon(
+                onPressed: () => _showEditor(),
+                icon: const Icon(Icons.add, size: 16),
+                label: const Text('Add Value'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppTheme.brand,
+                  foregroundColor: Colors.white,
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+                ),
+              ),
+            ),
+          ]),
+          const SizedBox(height: 16),
+
+          // ── Folder filter chips ──────────────────────────────────
+          if (_folders.isNotEmpty) ...[
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  _FolderChip(
+                    label: 'All Values',
+                    selected: _activeFolder == null,
+                    onTap: () => setState(() => _activeFolder = null),
+                  ),
+                  ..._folders.map((f) => Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        _FolderChip(
+                          label: f,
+                          selected: _activeFolder == f,
+                          onTap: () => setState(() => _activeFolder = _activeFolder == f ? null : f),
+                          noPaddingRight: true,
+                        ),
+                        PopupMenuButton<String>(
+                          color: AppTheme.cardBg,
+                          icon: Icon(Icons.more_vert,
+                              size: 14,
+                              color: _activeFolder == f ? AppTheme.brand : AppTheme.textSecondary),
+                          padding: EdgeInsets.zero,
+                          itemBuilder: (_) => [
+                            PopupMenuItem(value: 'rename', child: Row(children: [
+                              const Icon(Icons.drive_file_rename_outline, size: 14, color: AppTheme.textSecondary),
+                              const SizedBox(width: 8),
+                              const Text('Rename Folder', style: TextStyle(fontSize: 13, color: AppTheme.textPrimary)),
+                            ])),
+                            PopupMenuItem(value: 'delete', child: Row(children: [
+                              const Icon(Icons.delete_outline, size: 14, color: Colors.red),
+                              const SizedBox(width: 8),
+                              const Text('Delete Folder', style: TextStyle(fontSize: 13, color: Colors.red)),
+                            ])),
+                          ],
+                          onSelected: (action) {
+                            if (action == 'rename') _showRenameFolderDialog(f);
+                            if (action == 'delete') _deleteFolderDialog(f);
+                          },
+                        ),
+                      ],
+                    ),
+                  )),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+          ],
+
+          // ── Values table ─────────────────────────────────────────
+          if (_loading)
+            const Center(child: CircularProgressIndicator())
+          else if (filtered.isEmpty)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(48),
+              decoration: BoxDecoration(
+                color: AppTheme.cardBg,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppTheme.borderColor),
+              ),
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                const Icon(Icons.data_object_rounded, size: 48, color: AppTheme.textMuted),
+                const SizedBox(height: 12),
+                Text(
+                  _searchQuery.isNotEmpty ? 'No values match your search.' : 'No custom values yet.',
+                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: AppTheme.textPrimary),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'Create your first custom value to start using reusable tokens across the platform.',
+                  style: TextStyle(fontSize: 13, color: AppTheme.textSecondary),
+                  textAlign: TextAlign.center,
+                ),
+                if (_searchQuery.isEmpty) ...[
+                  const SizedBox(height: 20),
+                  MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    child: ElevatedButton.icon(
+                      onPressed: () => _showEditor(),
+                      icon: const Icon(Icons.add, size: 16),
+                      label: const Text('Add your first value'),
+                      style: ElevatedButton.styleFrom(
+                          backgroundColor: AppTheme.brand,
+                          foregroundColor: Colors.white,
+                          elevation: 0,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+                    ),
+                  ),
+                ],
+              ]),
+            )
+          else
+            // Table
+            Container(
+              decoration: BoxDecoration(
+                color: AppTheme.cardBg,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: AppTheme.borderColor),
+              ),
+              child: Column(
+                children: [
+                  // Header row
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                    decoration: const BoxDecoration(
+                      border: Border(bottom: BorderSide(color: AppTheme.borderColor)),
+                    ),
+                    child: Row(children: [
+                      SizedBox(
+                        width: 32,
+                        child: Checkbox(
+                          value: _selectedIds.length == filtered.length && filtered.isNotEmpty,
+                          tristate: _selectedIds.isNotEmpty && _selectedIds.length < filtered.length,
+                          onChanged: (v) => setState(() {
+                            if (v == true) {
+                              _selectedIds.addAll(filtered.map((e) => e['id'] as int));
+                              _bulkMode = true;
+                            } else {
+                              _selectedIds.clear();
+                              _bulkMode = false;
+                            }
+                          }),
+                          activeColor: AppTheme.brand,
+                          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(3)),
+                        ),
+                      ),
+                      const Expanded(flex: 3, child: Text('NAME',
+                          style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                              color: AppTheme.textSecondary, letterSpacing: 0.8))),
+                      const Expanded(flex: 4, child: Text('VALUE',
+                          style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                              color: AppTheme.textSecondary, letterSpacing: 0.8))),
+                      const Expanded(flex: 3, child: Text('TOKEN',
+                          style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                              color: AppTheme.textSecondary, letterSpacing: 0.8))),
+                      const SizedBox(width: 2, child: Text('FOLDER',
+                          style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                              color: AppTheme.textSecondary, letterSpacing: 0.8))),
+                      const SizedBox(width: 80),
+                    ]),
+                  ),
+                  // Value rows
+                  ...filtered.asMap().entries.map((e) {
+                    final i = e.key;
+                    final v = e.value;
+                    final id = v['id'] as int;
+                    final isLast = i == filtered.length - 1;
+                    final isSelected = _selectedIds.contains(id);
+                    final token = _toToken(v['name'] as String);
+                    final folder = v['folder'] as String?;
+                    return Container(
+                      decoration: BoxDecoration(
+                        color: isSelected ? AppTheme.brand.withValues(alpha: 0.04) : null,
+                        border: isLast ? null : const Border(
+                            bottom: BorderSide(color: AppTheme.borderColor)),
+                      ),
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      child: Row(children: [
+                        // Checkbox
+                        SizedBox(
+                          width: 32,
+                          child: Checkbox(
+                            value: isSelected,
+                            onChanged: (v) => setState(() {
+                              if (v == true) { _selectedIds.add(id); _bulkMode = true; }
+                              else { _selectedIds.remove(id); if (_selectedIds.isEmpty) _bulkMode = false; }
+                            }),
+                            activeColor: AppTheme.brand,
+                            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(3)),
+                          ),
+                        ),
+                        // Name
+                        Expanded(flex: 3, child: Text(
+                          v['name'] as String,
+                          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
+                              color: AppTheme.textPrimary),
+                          overflow: TextOverflow.ellipsis,
+                        )),
+                        // Value
+                        Expanded(flex: 4, child: Text(
+                          v['value'] as String,
+                          style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary),
+                          overflow: TextOverflow.ellipsis,
+                        )),
+                        // Token
+                        Expanded(flex: 3, child: Clickable(
+                          onTap: () => _copyToken(v['name'] as String),
+                          child: Row(children: [
+                            Flexible(
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                decoration: BoxDecoration(
+                                  color: AppTheme.brand.withValues(alpha: 0.08),
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: Text(token,
+                                    style: const TextStyle(
+                                        fontSize: 10, color: AppTheme.brand,
+                                        fontFamily: 'monospace'),
+                                    overflow: TextOverflow.ellipsis),
+                              ),
+                            ),
+                            const SizedBox(width: 4),
+                            const Icon(Icons.copy_outlined, size: 12, color: AppTheme.textMuted),
+                          ]),
+                        )),
+                        // Folder badge
+                        SizedBox(
+                          width: 2,
+                          child: folder != null && folder.isNotEmpty
+                              ? Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFF6366F1).withValues(alpha: 0.1),
+                                    borderRadius: BorderRadius.circular(4),
+                                  ),
+                                  child: Text(folder,
+                                      style: const TextStyle(fontSize: 10,
+                                          color: Color(0xFF6366F1), fontWeight: FontWeight.w500)),
+                                )
+                              : const SizedBox.shrink(),
+                        ),
+                        // Three-dot menu
+                        SizedBox(
+                          width: 80,
+                          child: Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+                            PopupMenuButton<String>(
+                              color: AppTheme.cardBg,
+                              icon: const Icon(Icons.more_vert, size: 16, color: AppTheme.textSecondary),
+                              itemBuilder: (_) => [
+                                PopupMenuItem(value: 'edit', child: Row(children: [
+                                  const Icon(Icons.edit_outlined, size: 14, color: AppTheme.textSecondary),
+                                  const SizedBox(width: 8),
+                                  const Text('Edit', style: TextStyle(fontSize: 13, color: AppTheme.textPrimary)),
+                                ])),
+                                PopupMenuItem(value: 'copy', child: Row(children: [
+                                  const Icon(Icons.copy_outlined, size: 14, color: AppTheme.textSecondary),
+                                  const SizedBox(width: 8),
+                                  const Text('Copy Token', style: TextStyle(fontSize: 13, color: AppTheme.textPrimary)),
+                                ])),
+                                if (_folders.isNotEmpty)
+                                  PopupMenuItem(value: 'move', child: Row(children: [
+                                    const Icon(Icons.drive_file_move_outlined, size: 14, color: AppTheme.textSecondary),
+                                    const SizedBox(width: 8),
+                                    const Text('Move to Folder', style: TextStyle(fontSize: 13, color: AppTheme.textPrimary)),
+                                  ])),
+                                PopupMenuItem(value: 'delete', child: Row(children: [
+                                  const Icon(Icons.delete_outline, size: 14, color: Colors.red),
+                                  const SizedBox(width: 8),
+                                  const Text('Delete', style: TextStyle(fontSize: 13, color: Colors.red)),
+                                ])),
+                              ],
+                              onSelected: (action) {
+                                if (action == 'edit') _showEditor(existing: v);
+                                if (action == 'copy') _copyToken(v['name'] as String);
+                                if (action == 'move') _showMoveToFolderDialog(v);
+                                if (action == 'delete') _delete(v);
+                              },
+                            ),
+                          ]),
+                        ),
+                      ]),
+                    );
+                  }),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── System Tokens Reference Panel ────────────────────────────────────────────
+
+class _SystemTokensPanel extends StatefulWidget {
+  @override
+  State<_SystemTokensPanel> createState() => _SystemTokensPanelState();
+}
+
+class _SystemTokensPanelState extends State<_SystemTokensPanel> {
+  bool _expanded = false;
+
+  static const _groups = [
+    ('Contact', [
+      ('Full Name',    '{{contact.name}}'),
+      ('First Name',   '{{contact.first_name}}'),
+      ('Last Name',    '{{contact.last_name}}'),
+      ('Email',        '{{contact.email}}'),
+      ('Phone',        '{{contact.phone}}'),
+      ('Company',      '{{contact.company_name}}'),
+      ('Address',      '{{contact.address1}}'),
+      ('City',         '{{contact.city}}'),
+      ('State',        '{{contact.state}}'),
+      ('Postal Code',  '{{contact.postal_code}}'),
+      ('Full Address', '{{contact.full_address}}'),
+      ('Source',       '{{contact.source}}'),
+      ('Website',      '{{contact.website}}'),
+    ]),
+    ('Business', [
+      ('Business Name',    '{{location.name}}'),
+      ('Business Email',   '{{location.email}}'),
+      ('Business Phone',   '{{location.phone}}'),
+      ('Business Website', '{{location.website}}'),
+      ('Address Line 1',   '{{location.address}}'),
+      ('City',             '{{location.city}}'),
+      ('State',            '{{location.state}}'),
+      ('Postal Code',      '{{location.postal_code}}'),
+      ('Full Address',     '{{location.full_address}}'),
+      ('Logo URL',         '{{location.logo_url}}'),
+    ]),
+    ('User / Staff', [
+      ('Full Name',      '{{user.name}}'),
+      ('First Name',     '{{user.first_name}}'),
+      ('Last Name',      '{{user.last_name}}'),
+      ('Email',          '{{user.email}}'),
+      ('Phone',          '{{user.phone}}'),
+      ('Email Signature','{{user.email_signature}}'),
+      ('Calendar Link',  '{{user.calendar_link}}'),
+    ]),
+    ('Appointment', [
+      ('Start Date & Time', '{{appointment.start_time}}'),
+      ('Start Date',        '{{appointment.only_start_date}}'),
+      ('Start Time',        '{{appointment.only_start_time}}'),
+      ('End Date & Time',   '{{appointment.end_time}}'),
+      ('Timezone',          '{{appointment.timezone}}'),
+      ('Meeting Location',  '{{appointment.meeting_location}}'),
+      ('Cancel Link',       '{{appointment.cancellation_link}}'),
+      ('Reschedule Link',   '{{appointment.reschedule_link}}'),
+      ('Notes',             '{{appointment.notes}}'),
+    ]),
+    ('Date & Time', [
+      ('Current Date',  '{{right_now.middle_endian_date}}'),
+      ('Day',           '{{right_now.day}}'),
+      ('Month',         '{{right_now.month}}'),
+      ('Month (text)',  '{{right_now.month_english}}'),
+      ('Year',          '{{right_now.year}}'),
+      ('Time (12h)',    '{{right_now.hour_ampm}}'),
+      ('Time (24h)',    '{{right_now.hour}}'),
+    ]),
+  ];
+
+  Future<void> _copy(String token) async {
+    await Clipboard.setData(ClipboardData(text: token));
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Copied: $token'),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 2),
+      ));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: AppTheme.cardBg,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppTheme.borderColor),
+      ),
+      child: Column(
+        children: [
+          Clickable(
+            onTap: () => setState(() => _expanded = !_expanded),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              child: Row(children: [
+                const Icon(Icons.code_rounded, size: 16, color: AppTheme.brand),
+                const SizedBox(width: 10),
+                const Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('System Tokens Reference',
+                          style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+                      Text('Click any token to copy it. These are built-in and available everywhere.',
+                          style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                    ],
+                  ),
+                ),
+                Icon(_expanded ? Icons.expand_less : Icons.expand_more,
+                    size: 18, color: AppTheme.textSecondary),
+              ]),
+            ),
+          ),
+          if (_expanded) ...[
+            const Divider(height: 1, color: AppTheme.borderColor),
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: _groups.map((group) {
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(group.$1,
+                            style: const TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w700,
+                                color: AppTheme.textSecondary,
+                                letterSpacing: 0.8)),
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 6,
+                          runSpacing: 6,
+                          children: group.$2.map((item) => Clickable(
+                            onTap: () => _copy(item.$2),
+                            child: Tooltip(
+                              message: item.$2,
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                                decoration: BoxDecoration(
+                                  color: AppTheme.pageBg,
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(color: AppTheme.borderColor),
+                                ),
+                                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                                  Text(item.$1,
+                                      style: const TextStyle(
+                                          fontSize: 11,
+                                          color: AppTheme.textPrimary,
+                                          fontWeight: FontWeight.w500)),
+                                  const SizedBox(width: 5),
+                                  const Icon(Icons.copy_outlined, size: 10, color: AppTheme.textMuted),
+                                ]),
+                              ),
+                            ),
+                          )).toList(),
+                        ),
+                      ],
+                    ),
+                  );
+                }).toList(),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+// ── Folder chip ───────────────────────────────────────────────────────────────
+
+class _FolderChip extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+  final bool noPaddingRight;
+  const _FolderChip({required this.label, required this.selected, required this.onTap, this.noPaddingRight = false});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(right: noPaddingRight ? 0 : 8),
+      child: Clickable(
+        onTap: onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 150),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+          decoration: BoxDecoration(
+            color: selected ? AppTheme.brand : AppTheme.pageBg,
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(
+              color: selected ? AppTheme.brand : AppTheme.borderColor,
+            ),
+          ),
+          child: Text(label,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                color: selected ? Colors.white : AppTheme.textSecondary,
+              )),
+        ),
+      ),
+    );
+  }
+}
+
+// ── Custom Value Dialog ───────────────────────────────────────────────────────
+
+class _CustomValueDialog extends StatefulWidget {
+  final int businessId;
+  final Map<String, dynamic>? existing;
+  final List<String> folders;
+  final VoidCallback onSaved;
+  const _CustomValueDialog({
+    required this.businessId,
+    this.existing,
+    required this.folders,
+    required this.onSaved,
+  });
+
+  @override
+  State<_CustomValueDialog> createState() => _CustomValueDialogState();
+}
+
+class _CustomValueDialogState extends State<_CustomValueDialog> {
+  final _supabase = Supabase.instance.client;
+  final _nameCtrl  = TextEditingController();
+  final _valueCtrl = TextEditingController();
+  String? _selectedFolder;
+  bool _saving = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.existing != null) {
+      _nameCtrl.text  = widget.existing!['name'] as String? ?? '';
+      _valueCtrl.text = widget.existing!['value'] as String? ?? '';
+      _selectedFolder = widget.existing!['folder'] as String?;
+    }
+  }
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    _valueCtrl.dispose();
+    super.dispose();
+  }
+
+  String _toToken(String name) {
+    return '{{custom_values.${name.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '_')}}}';
+  }
+
+  Future<void> _save() async {
+    if (_nameCtrl.text.trim().isEmpty) {
+      setState(() => _error = 'Name is required.');
+      return;
+    }
+    setState(() { _saving = true; _error = null; });
+    try {
+      final payload = {
+        'business_id': widget.businessId,
+        'name':   _nameCtrl.text.trim(),
+        'value':  _valueCtrl.text.trim(),
+        'folder': _selectedFolder?.isEmpty == true ? null : _selectedFolder,
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      };
+      if (widget.existing != null) {
+        await _supabase.from('custom_values').update(payload).eq('id', widget.existing!['id']);
+      } else {
+        await _supabase.from('custom_values').insert(payload);
+      }
+      widget.onSaved();
+    } catch (e) {
+      setState(() { _error = e.toString(); _saving = false; });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isEdit = widget.existing != null;
+    final tokenPreview = _nameCtrl.text.trim().isNotEmpty
+        ? _toToken(_nameCtrl.text.trim())
+        : '{{custom_values.your_value_name}}';
+
+    return Dialog(
+      backgroundColor: AppTheme.cardBg,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: SizedBox(
+        width: 520,
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          // Header
+          Container(
+            padding: const EdgeInsets.fromLTRB(24, 20, 16, 20),
+            decoration: const BoxDecoration(
+                border: Border(bottom: BorderSide(color: AppTheme.borderColor))),
+            child: Row(children: [
+              const Icon(Icons.data_object_rounded, size: 20, color: AppTheme.brand),
+              const SizedBox(width: 10),
+              Text(isEdit ? 'Edit Custom Value' : 'New Custom Value',
+                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700,
+                      color: AppTheme.textPrimary)),
+              const Spacer(),
+              MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: TextButton(
+                    onPressed: () => Navigator.of(context, rootNavigator: true).pop(),
+                    child: const Text('Cancel')),
+              ),
+              const SizedBox(width: 8),
+              MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: ElevatedButton(
+                  onPressed: _saving ? null : _save,
+                  style: ElevatedButton.styleFrom(
+                      backgroundColor: AppTheme.brand, foregroundColor: Colors.white,
+                      elevation: 0, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+                  child: _saving
+                      ? const SizedBox(width: 16, height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                      : const Text('Save'),
+                ),
+              ),
+            ]),
+          ),
+          // Body
+          Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              // Name
+              const Text('Name *',
+                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600,
+                      color: AppTheme.textSecondary)),
+              const SizedBox(height: 6),
+              TextField(
+                controller: _nameCtrl,
+                onChanged: (_) => setState(() {}),
+                style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                decoration: InputDecoration(
+                  hintText: 'e.g. Company Phone',
+                  filled: true, fillColor: AppTheme.pageBg,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                      borderSide: const BorderSide(color: AppTheme.borderColor)),
+                  enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                      borderSide: const BorderSide(color: AppTheme.borderColor)),
+                  focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                      borderSide: BorderSide(color: AppTheme.brand, width: 1.5)),
+                ),
+              ),
+              const SizedBox(height: 6),
+              // Token preview
+              Row(children: [
+                const Icon(Icons.token_outlined, size: 12, color: AppTheme.textMuted),
+                const SizedBox(width: 4),
+                const Text('Token: ', style: TextStyle(fontSize: 11, color: AppTheme.textMuted)),
+                Expanded(
+                  child: Text(tokenPreview,
+                      style: const TextStyle(fontSize: 11, color: AppTheme.brand,
+                          fontFamily: 'monospace'),
+                      overflow: TextOverflow.ellipsis),
+                ),
+              ]),
+              const SizedBox(height: 16),
+              // Value
+              const Text('Value',
+                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600,
+                      color: AppTheme.textSecondary)),
+              const SizedBox(height: 6),
+              TextField(
+                controller: _valueCtrl,
+                maxLines: 3,
+                style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                decoration: InputDecoration(
+                  hintText: 'e.g. (813) 555-0100',
+                  filled: true, fillColor: AppTheme.pageBg,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                      borderSide: const BorderSide(color: AppTheme.borderColor)),
+                  enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                      borderSide: const BorderSide(color: AppTheme.borderColor)),
+                  focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                      borderSide: BorderSide(color: AppTheme.brand, width: 1.5)),
+                ),
+              ),
+              const SizedBox(height: 16),
+              // Folder
+              const Text('Folder (optional)',
+                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600,
+                      color: AppTheme.textSecondary)),
+              const SizedBox(height: 6),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14),
+                decoration: BoxDecoration(
+                  color: AppTheme.pageBg,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppTheme.borderColor),
+                ),
+                child: DropdownButtonHideUnderline(
+                  child: DropdownButton<String?>(
+                    value: _selectedFolder,
+                    hint: const Text('No folder', style: TextStyle(fontSize: 13, color: AppTheme.textSecondary)),
+                    isExpanded: true,
+                    dropdownColor: AppTheme.cardBg,
+                    style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                    items: [
+                      const DropdownMenuItem<String?>(value: null, child: Text('No folder')),
+                      ...widget.folders.map((f) => DropdownMenuItem(value: f, child: Text(f))),
+                    ],
+                    onChanged: (v) => setState(() => _selectedFolder = v),
+                  ),
+                ),
+              ),
+              if (_error != null) ...[
+                const SizedBox(height: 12),
+                Text(_error!, style: const TextStyle(color: Colors.red, fontSize: 13)),
+              ],
+            ]),
+          ),
+        ]),
+      ),
+    );
+  }
+}
+
 // ─────────────────────────────────────────────
 //  SHARED WIDGETS
 // ─────────────────────────────────────────────

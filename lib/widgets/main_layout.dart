@@ -128,17 +128,19 @@ class _AppNavBarState extends State<AppNavBar> {
 
   // Settings nav sections (mirrors settings_screen.dart _sections)
   static const _settingsSections = [
+    // MY BUSINESS (indices 0–10, .take(11))
     ('/settings',                          Icons.business_outlined,          'Business Profile'),
+    ('/settings?section=profile',          Icons.person_outline,             'My Profile'),
     ('/settings?section=ai',               Icons.smart_toy_outlined,         'AI Settings'),
     ('/settings?section=knowledge',        Icons.menu_book_outlined,         'Knowledge Base'),
     ('/settings?section=phone',            Icons.phone_outlined,             'AI Phone Number'),
     ('/settings?section=email',            Icons.email_outlined,             'Email Config'),
-    ('/settings?section=team',             Icons.people_outline,             'Team Members'),
+    ('/settings?section=team',             Icons.people_outline,             'My Staff'),
     ('/settings?section=notifications',    Icons.notifications_outlined,     'Notifications'),
     ('/settings?section=payments',         Icons.payments_outlined,          'Payment Options'),
     ('/settings?section=social',           Icons.share_rounded,              'Social Media'),
     ('/settings?section=billing',          Icons.credit_card_outlined,       'Billing'),
-    ('/settings?section=mystaff',          Icons.badge_outlined,             'My Staff'),
+    // BUSINESS SERVICES (indices 11–19, .skip(11).take(9))
     ('/settings?section=pipelines',        Icons.bar_chart_rounded,          'Opportunities & Pipelines'),
     ('/settings?section=automation',       Icons.bolt_outlined,              'Automation'),
     ('/settings?section=calendars',        Icons.calendar_today_outlined,    'Calendars'),
@@ -147,6 +149,7 @@ class _AppNavBarState extends State<AppNavBar> {
     ('/settings?section=email_services',   Icons.alternate_email_rounded,    'Email Services'),
     ('/settings?section=phone_numbers',    Icons.phone_in_talk_outlined,     'Phone Numbers'),
     ('/settings?section=whatsapp',         Icons.message_outlined,           'WhatsApp'),
+    // OTHER SETTINGS (indices 19+, .skip(19))
     ('/settings?section=objects',          Icons.category_outlined,          'Objects'),
     ('/settings?section=custom_fields',    Icons.tune_rounded,               'Custom Fields'),
     ('/settings?section=custom_values',    Icons.data_object_rounded,        'Custom Values'),
@@ -264,7 +267,7 @@ class _AppNavBarState extends State<AppNavBar> {
           ),
         ),
         _SectionLabel('My Business'),
-        ..._settingsSections.take(10).map((s) {
+        ..._settingsSections.take(11).map((s) {
           final isActive = location == s.$1 ||
               (s.$1 == '/settings' && location == '/settings');
           return Clickable(
@@ -299,7 +302,7 @@ class _AppNavBarState extends State<AppNavBar> {
           );
         }),
         _SectionLabel('Business Services'),
-        ..._settingsSections.skip(10).take(9).map((s) {
+        ..._settingsSections.skip(11).take(8).map((s) {
           final isActive = location == s.$1;
           return Clickable(
             onTap: () => context.go(s.$1),
