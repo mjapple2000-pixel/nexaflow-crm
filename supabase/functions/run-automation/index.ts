@@ -172,6 +172,62 @@ async function runAction(
       return { action: type, status: "success" };
     }
 
+    // ── send_review_request ─────────────────────────────────────────────────
+    if (type === "send_review_request") {
+      const to = payload.phone || payload.lead_phone;
+      if (!to) return { action: type, status: "skipped", error: "No phone number in payload" };
+
+      const from = business.ai_phone_number;
+      if (!from) return { action: type, status: "skipped", error: "No Twilio number configured" };
+
+      const platform = action.platform || "google";
+      const reviewLink = platform === "facebook"
+        ? (business.facebook_review_link || "")
+        : (business.google_review_link || "");
+
+      if (!reviewLink) {
+        return { action: type, status: "skipped", error: `No ${platform} review link configured for this business` };
+      }
+
+      const body = (action.message || "Hi {{name}}, thank you for choosing {{business}}! We'd love a quick review: {{review_link}}")
+        .replace("{{name}}", payload.lead_name || "there")
+        .replace("{{business}}", business.business_name || "us")
+        .replace("{{review_link}}", reviewLink);
+
+      const twilioRes = await fetch(
+        `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`,
+        {
+          method: "POST",
+          headers: {
+            "Authorization": `Basic ${btoa(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`)}`,
+            "Content-Type": "application/x-www-form-urlencoded",
+          },
+          body: new URLSearchParams({ To: to, From: from, Body: body }).toString(),
+        }
+      );
+
+      if (!twilioRes.ok) {
+        const err = await twilioRes.text();
+        return { action: type, status: "failed", error: err };
+      }
+
+      // Log to automation_logs with result_status for review tracking
+      await dbFetch("automation_logs", {
+        method: "POST",
+        body: JSON.stringify({
+          automation_id: null,
+          business_id: business.id,
+          trigger_type: "send_review_request",
+          trigger_payload: payload,
+          actions_run: [{ action: type, platform, to }],
+          status: "success",
+          result_status: "sent",
+        }),
+      }).catch(() => {}); // non-blocking
+
+      return { action: type, status: "success" };
+    }
+
     return { action: type, status: "skipped", error: "Unknown action type" };
 
   } catch (e: any) {

@@ -226,6 +226,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   ('Payment Options',  Icons.payments_outlined),
   ('Social Media',     Icons.share_rounded),
   ('Billing',          Icons.credit_card_outlined),
+  ('Reviews',          Icons.star_outline),
 ];
 
 @override
@@ -256,6 +257,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       case 'payments':        return 8;
       case 'social':          return 9;
       case 'billing':         return 10;
+      case 'reviews':         return 25;
       // Business Services
       case 'pipelines':       return 11;
       case 'automation':      return 12;
@@ -438,7 +440,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             final s = e.value;
             final isSelected = _selectedSection == i;
             return Clickable(
-              onTap: () => setState(() => _selectedSection = i),
+              onTap: () => setState(() => _selectedSection = i == 11 ? 25 : i),
               child: AnimatedContainer(
                 duration: const Duration(milliseconds: 150),
                 margin:
@@ -542,6 +544,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         return _ComingSoonSection(title: 'Domains', icon: Icons.language_rounded);
       case 24:
         return _ComingSoonSection(title: 'URL Redirects', icon: Icons.alt_route_rounded);
+      case 25:
+        return _ReviewsSection(business: _business, onSave: _updateBusiness);
       default:
         return const SizedBox();
     }
@@ -6345,6 +6349,176 @@ class _InfoRow extends StatelessWidget {
                 fontSize: 13,
                 fontWeight: FontWeight.w600,
                 color: AppTheme.textPrimary)),
+      ]),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+//  REVIEWS SECTION
+// ─────────────────────────────────────────────
+
+class _ReviewsSection extends StatefulWidget {
+  final Map<String, dynamic> business;
+  final Future<void> Function(Map<String, dynamic>) onSave;
+  const _ReviewsSection({required this.business, required this.onSave});
+
+  @override
+  State<_ReviewsSection> createState() => _ReviewsSectionState();
+}
+
+class _ReviewsSectionState extends State<_ReviewsSection> {
+  late final TextEditingController _googleCtrl;
+  late final TextEditingController _facebookCtrl;
+  int _delayMinutes = 0;
+  bool _saving = false;
+  String? _successMsg;
+  String? _error;
+
+  static const _delayOptions = [
+    (0,    'Immediately'),
+    (60,   '1 hour after'),
+    (240,  '4 hours after'),
+    (1440, '1 day after'),
+    (2880, '2 days after'),
+    (4320, '3 days after'),
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    final b = widget.business;
+    _googleCtrl   = TextEditingController(text: b['google_review_link']   ?? '');
+    _facebookCtrl = TextEditingController(text: b['facebook_review_link'] ?? '');
+    _delayMinutes = b['review_request_delay_minutes'] as int? ?? 0;
+    if (!_delayOptions.any((o) => o.$1 == _delayMinutes)) {
+      _delayMinutes = 0;
+    }
+  }
+
+  @override
+  void dispose() {
+    _googleCtrl.dispose();
+    _facebookCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    setState(() { _saving = true; _error = null; _successMsg = null; });
+    try {
+      await widget.onSave({
+        'google_review_link':            _googleCtrl.text.trim(),
+        'facebook_review_link':          _facebookCtrl.text.trim(),
+        'review_request_delay_minutes':  _delayMinutes,
+      });
+      setState(() { _successMsg = 'Review settings saved.'; _saving = false; });
+    } catch (e) {
+      setState(() { _error = e.toString(); _saving = false; });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return _SectionShell(
+      title: 'Reviews',
+      subtitle: 'Set up automatic review requests sent to customers after a job is completed.',
+      onSave: _save,
+      saving: _saving,
+      successMsg: _successMsg,
+      error: _error,
+      child: Column(children: [
+
+        // Info banner
+        Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: const Color(0xFFf59e0b).withValues(alpha: 0.06),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: const Color(0xFFf59e0b).withValues(alpha: 0.3)),
+          ),
+          child: const Row(children: [
+            Icon(Icons.star_outline, size: 16, color: Color(0xFFf59e0b)),
+            SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                'When an appointment is marked as Showed or Completed, an SMS is automatically sent to the customer with your review link. Set your links below, then create a "Send Review Request" automation in the Automations screen using the "Appointment Completed" trigger.',
+                style: TextStyle(fontSize: 12, color: Color(0xFFf59e0b), height: 1.5),
+              ),
+            ),
+          ]),
+        ),
+        const SizedBox(height: 24),
+
+        // Review links
+        _SettingsGroup(title: 'Review Links', children: [
+          _SettingsField(
+            label: 'Google Review Link',
+            controller: _googleCtrl,
+            hint: 'https://g.page/r/your-business/review',
+          ),
+          _SettingsField(
+            label: 'Facebook Review Link',
+            controller: _facebookCtrl,
+            hint: 'https://www.facebook.com/your-page/reviews',
+          ),
+        ]),
+        const SizedBox(height: 24),
+
+        // Delay setting
+        _SettingsGroup(title: 'Send Delay', children: [
+          const Text(
+            'How long after job completion before the review request SMS is sent.',
+            style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: _delayOptions.map((opt) {
+              final selected = _delayMinutes == opt.$1;
+              return Clickable(
+                onTap: () => setState(() => _delayMinutes = opt.$1),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+                  decoration: BoxDecoration(
+                    color: selected ? AppTheme.brand : AppTheme.pageBg,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: selected ? AppTheme.brand : AppTheme.borderColor),
+                  ),
+                  child: Text(opt.$2,
+                      style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w500,
+                          color: selected ? Colors.white : AppTheme.textSecondary)),
+                ),
+              );
+            }).toList(),
+          ),
+        ]),
+        const SizedBox(height: 24),
+
+        // Quick link to Automations
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: AppTheme.brand.withValues(alpha: 0.05),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: AppTheme.brand.withValues(alpha: 0.2)),
+          ),
+          child: Row(children: [
+            const Icon(Icons.bolt_outlined, size: 18, color: AppTheme.brand),
+            const SizedBox(width: 12),
+            const Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text('Automation Required',
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.brand)),
+                SizedBox(height: 2),
+                Text('Save your links above, then go to Automations → New Automation → Trigger: Appointment Completed → Action: Send Review Request.',
+                    style: TextStyle(fontSize: 12, color: AppTheme.textSecondary, height: 1.4)),
+              ]),
+            ),
+          ]),
+        ),
       ]),
     );
   }

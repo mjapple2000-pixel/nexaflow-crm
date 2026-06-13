@@ -200,6 +200,7 @@ class _AutomationCard extends StatelessWidget {
       case 'form_submitted': return 'Form Submitted';
       case 'appointment_booked': return 'Appointment Booked';
       case 'status_changed': return 'Status Changed';
+      case 'appointment_completed': return 'Appointment Completed';
       default: return type;
     }
   }
@@ -210,6 +211,7 @@ class _AutomationCard extends StatelessWidget {
       case 'form_submitted': return Icons.dynamic_form_outlined;
       case 'appointment_booked': return Icons.calendar_today_outlined;
       case 'status_changed': return Icons.swap_horiz_outlined;
+      case 'appointment_completed': return Icons.task_alt_outlined;
       default: return Icons.bolt_outlined;
     }
   }
@@ -438,6 +440,12 @@ class _AutomationBuilderViewState extends State<_AutomationBuilderView> {
           'type': 'notify_owner',
           'message': 'New activity for {{name}} — check your dashboard.',
         };
+      case 'send_review_request':
+        return {
+          'type': 'send_review_request',
+          'platform': 'google',
+          'message': 'Hi {{name}}, thank you for choosing {{business}}! We\'d love it if you left us a quick review — it means the world to us. {{review_link}}',
+        };
       default:
         return {'type': type};
     }
@@ -570,6 +578,8 @@ class _AutomationBuilderViewState extends State<_AutomationBuilderView> {
                             'Appointment Booked'),
                         ('status_changed', Icons.swap_horiz_outlined,
                             'Status Changed'),
+                        ('appointment_completed', Icons.task_alt_outlined,
+                            'Appointment Completed'),
                       ].map((t) => _TriggerOption(
                             icon: t.$2,
                             label: t.$3,
@@ -595,6 +605,8 @@ class _AutomationBuilderViewState extends State<_AutomationBuilderView> {
                             'Move Pipeline Stage'),
                         ('notify_owner', Icons.notifications_outlined,
                             'Notify Owner'),
+                        ('send_review_request', Icons.star_outline,
+                            'Send Review Request'),
                       ].map((a) => _ActionPaletteItem(
                             icon: a.$2,
                             label: a.$3,
@@ -797,6 +809,7 @@ class _TriggerNode extends StatelessWidget {
       case 'form_submitted': return 'Form Submitted';
       case 'appointment_booked': return 'Appointment Booked';
       case 'status_changed': return 'Lead Status Changed';
+      case 'appointment_completed': return 'Appointment Marked Completed';
       default: return type;
     }
   }
@@ -807,6 +820,7 @@ class _TriggerNode extends StatelessWidget {
       case 'form_submitted': return Icons.dynamic_form_outlined;
       case 'appointment_booked': return Icons.calendar_today_outlined;
       case 'status_changed': return Icons.swap_horiz_outlined;
+      case 'appointment_completed': return Icons.task_alt_outlined;
       default: return Icons.bolt_outlined;
     }
   }
@@ -1040,6 +1054,7 @@ class _ActionNodeState extends State<_ActionNode> {
       case 'add_tag': return 'Add Tag';
       case 'move_pipeline_stage': return 'Move Pipeline Stage';
       case 'notify_owner': return 'Notify Owner';
+      case 'send_review_request': return 'Send Review Request';
       default: return type;
     }
   }
@@ -1051,6 +1066,7 @@ class _ActionNodeState extends State<_ActionNode> {
       case 'add_tag': return Icons.label_outline;
       case 'move_pipeline_stage': return Icons.move_down_outlined;
       case 'notify_owner': return Icons.notifications_outlined;
+      case 'send_review_request': return Icons.star_outline;
       default: return Icons.bolt_outlined;
     }
   }
@@ -1281,6 +1297,42 @@ class _ActionNodeState extends State<_ActionNode> {
             );
     }
 
+    if (type == 'send_review_request') {
+      final platform = widget.action['platform'] ?? 'google';
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Platform:', style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+          const SizedBox(height: 8),
+          Row(children: [
+            _PlatformChip(
+              label: 'Google',
+              selected: platform == 'google',
+              onTap: () => _update({'platform': 'google'}),
+            ),
+            const SizedBox(width: 8),
+            _PlatformChip(
+              label: 'Facebook',
+              selected: platform == 'facebook',
+              onTap: () => _update({'platform': 'facebook'}),
+            ),
+          ]),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _messageCtrl,
+            maxLines: 3,
+            onChanged: (v) => _update({'message': v}),
+            decoration: InputDecoration(
+              labelText: 'Message',
+              border: const OutlineInputBorder(),
+              helperText: 'Variables: {{name}}, {{business}}, {{review_link}}',
+              helperStyle: TextStyle(color: Colors.grey[500], fontSize: 11),
+            ),
+          ),
+        ],
+      );
+    }
+
     if (type == 'notify_owner') {
       return TextField(
         controller: _messageCtrl,
@@ -1298,5 +1350,45 @@ class _ActionNodeState extends State<_ActionNode> {
 
     return Text('Unknown action type: $type',
         style: TextStyle(color: Colors.grey[500]));
+  }
+}
+
+class _PlatformChip extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _PlatformChip({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        decoration: BoxDecoration(
+          color: selected
+              ? const Color(0xFF6C63FF).withValues(alpha: 0.1)
+              : Colors.transparent,
+          border: Border.all(
+            color: selected ? const Color(0xFF6C63FF) : Colors.grey[300]!,
+          ),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 13,
+            fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+            color: selected ? const Color(0xFF6C63FF) : Colors.grey[700],
+          ),
+        ),
+      ),
+    );
   }
 }

@@ -4517,6 +4517,36 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
         if (_calendarId != null) 'calendar_id': int.tryParse(_calendarId!),
         if (_assignedTo != null) 'assigned_to': _assignedTo,
       }).eq('id', widget.appointment['id']);
+
+      // Fire appointment_completed automation trigger
+      final prevStatus = (widget.appointment['status'] ?? '').toString().toLowerCase();
+      final newStatus  = _status.toLowerCase();
+      if (newStatus == 'showed' || newStatus == 'completed') {
+        if (prevStatus != newStatus) {
+          try {
+            final businessId = widget.appointment['business_id'];
+            await http.post(
+              Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/run-automation'),
+              headers: {'Content-Type': 'application/json'},
+              body: jsonEncode({
+                'trigger_type': 'appointment_completed',
+                'business_id':  businessId,
+                'payload': {
+                  'appointment_id':   widget.appointment['id'],
+                  'appointment_name': _nameCtrl.text.trim(),
+                  'lead_name':        _leadNameCtrl.text.trim(),
+                  'lead_phone':       _leadPhoneCtrl.text.trim(),
+                  'lead_email':       _leadEmailCtrl.text.trim(),
+                  'phone':            _leadPhoneCtrl.text.trim(),
+                },
+              }),
+            );
+          } catch (e) {
+            debugPrint('Review request automation error: $e');
+          }
+        }
+      }
+
       widget.onUpdated();
     } catch (e) {
       debugPrint('Save error: $e');
