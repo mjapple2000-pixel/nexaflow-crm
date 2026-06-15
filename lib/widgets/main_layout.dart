@@ -542,6 +542,13 @@ class _AppNavBarState extends State<AppNavBar> {
                       route: '/settings',
                       active: location.startsWith('/settings'),
                     ),
+                  if (_can('settings'))
+                    _NavItem(
+                      icon: Icons.star_outline,
+                      label: 'Reviews',
+                      route: '/reviews',
+                      active: location.startsWith('/reviews'),
+                    ),
                     // ── SUPERUSER ONLY ────────────────────────────────────
                   if (AppRouter.cachedIsSuperuser == true) ...[
                     _SectionLabel('Admin'),

@@ -34,7 +34,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
   DateTime _focusDate = DateTime.now();
 
   String _statusFilter = 'All';
-  final _statuses = ['All','New','Confirmed','Showed','No-Show','Cancelled','Invalid','Rescheduled'];
+  final _statuses = ['All','New','Confirmed','Showed','No-Show','Cancelled','Completed','Invalid','Rescheduled'];
 
   int _panelTab = 0;
   final _usersSearchCtrl     = TextEditingController();
@@ -59,7 +59,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
   ];
 
   static const _appointmentStatuses = [
-    'New','Confirmed','Showed','No-Show','Cancelled','Invalid','Rescheduled',
+    'New','Confirmed','Showed','No-Show','Cancelled','Completed','Invalid','Rescheduled',
   ];
 
   @override
@@ -4521,7 +4521,7 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
       // Fire appointment_completed automation trigger
       final prevStatus = (widget.appointment['status'] ?? '').toString().toLowerCase();
       final newStatus  = _status.toLowerCase();
-      if (newStatus == 'showed' || newStatus == 'completed') {
+      if (newStatus == 'completed') {
         if (prevStatus != newStatus) {
           try {
             final businessId = widget.appointment['business_id'];

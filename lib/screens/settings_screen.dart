@@ -226,7 +226,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   ('Payment Options',  Icons.payments_outlined),
   ('Social Media',     Icons.share_rounded),
   ('Billing',          Icons.credit_card_outlined),
-  ('Reviews',          Icons.star_outline),
 ];
 
 @override
@@ -257,7 +256,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       case 'payments':        return 8;
       case 'social':          return 9;
       case 'billing':         return 10;
-      case 'reviews':         return 25;
       // Business Services
       case 'pipelines':       return 11;
       case 'automation':      return 12;
@@ -440,7 +438,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             final s = e.value;
             final isSelected = _selectedSection == i;
             return Clickable(
-              onTap: () => setState(() => _selectedSection = i == 11 ? 25 : i),
+              onTap: () => setState(() => _selectedSection = i),
               child: AnimatedContainer(
                 duration: const Duration(milliseconds: 150),
                 margin:
@@ -544,8 +542,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
         return _ComingSoonSection(title: 'Domains', icon: Icons.language_rounded);
       case 24:
         return _ComingSoonSection(title: 'URL Redirects', icon: Icons.alt_route_rounded);
-      case 25:
-        return _ReviewsSection(business: _business, onSave: _updateBusiness);
       default:
         return const SizedBox();
     }
