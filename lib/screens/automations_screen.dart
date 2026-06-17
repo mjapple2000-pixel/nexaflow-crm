@@ -77,6 +77,20 @@ class _AutomationsScreenState extends State<AutomationsScreen> {
                         fontSize: 24,
                         fontWeight: FontWeight.bold,
                         color: Color(0xFF1A1A2E))),
+                OutlinedButton.icon(
+                  onPressed: () => _createReminderTemplate(),
+                  icon: const Icon(Icons.alarm_add_outlined, size: 16),
+                  label: const Text('Appointment Reminders'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: const Color(0xFF6C63FF),
+                    side: const BorderSide(color: Color(0xFF6C63FF)),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 14),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10)),
+                  ),
+                ),
+                const SizedBox(width: 10),
                 ElevatedButton.icon(
                   onPressed: () => setState(() {
                     _editingAutomation = null;
@@ -146,6 +160,59 @@ class _AutomationsScreenState extends State<AutomationsScreen> {
         .from('automations')
         .update({'is_active': isActive}).eq('id', id);
     await _loadData();
+  }
+
+  Future<void> _createReminderTemplate() async {
+    if (_businessId == null) return;
+    final existing = await _db
+        .from('automations')
+        .select('id')
+        .eq('business_id', _businessId!)
+        .eq('name', 'Appointment Reminders')
+        .maybeSingle();
+    if (existing != null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Appointment Reminders automation already exists — edit it in the list.')),
+        );
+      }
+      return;
+    }
+    await _db.from('automations').insert({
+      'business_id': _businessId,
+      'name': 'Appointment Reminders',
+      'trigger_type': 'appointment_booked',
+      'is_active': true,
+      'actions': [
+        {
+          'type': 'delay_relative_to_appointment',
+          'offset_minutes': -1440,
+          'offset_value': 24,
+          'offset_unit': 'hours',
+          'offset_direction': 'before',
+        },
+        {
+          'type': 'send_sms',
+          'message': 'Hi {{name}}, just a reminder about your upcoming appointment with {{business}} tomorrow. See you soon!',
+        },
+        {
+          'type': 'delay_relative_to_appointment',
+          'offset_minutes': -60,
+          'offset_value': 1,
+          'offset_unit': 'hours',
+          'offset_direction': 'before',
+        },
+        {
+          'type': 'send_sms',
+          'message': 'Hi {{name}}, your appointment with {{business}} is in 1 hour. See you soon!',
+        },
+      ],
+    });
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Appointment Reminders template created — tap to edit.')),
+    );
+    _loadData();
   }
 
   Future<void> _deleteAutomation(int id) async {
@@ -395,9 +462,9 @@ class _AutomationBuilderViewState extends State<_AutomationBuilderView> {
     try {
       final stages = await _db
           .from('pipeline_stages')
-          .select('id, name')
+          .select('id, stage_name')
           .eq('business_id', widget.businessId)
-          .order('position', ascending: true);
+          .order('sort_order', ascending: true);
       setState(() {
         _pipelineStages = List<Map<String, dynamic>>.from(stages);
       });
@@ -445,6 +512,21 @@ class _AutomationBuilderViewState extends State<_AutomationBuilderView> {
           'type': 'send_review_request',
           'platform': 'google',
           'message': 'Hi {{name}}, thank you for choosing {{business}}! We\'d love it if you left us a quick review — it means the world to us. {{review_link}}',
+        };
+      case 'wait_until':
+        return {
+          'type': 'wait_until',
+          'delay_minutes': 60,
+          'delay_unit': 'hours',
+          'delay_value': 1,
+        };
+      case 'delay_relative_to_appointment':
+        return {
+          'type': 'delay_relative_to_appointment',
+          'offset_minutes': -1440,
+          'offset_value': 24,
+          'offset_unit': 'hours',
+          'offset_direction': 'before',
         };
       default:
         return {'type': type};
@@ -570,16 +652,16 @@ class _AutomationBuilderViewState extends State<_AutomationBuilderView> {
                               fontSize: 13)),
                       const SizedBox(height: 10),
                       ...[
-                        ('new_lead', Icons.person_add_outlined, 'New Lead'),
-                        ('form_submitted', Icons.dynamic_form_outlined,
-                            'Form Submitted'),
                         ('appointment_booked',
                             Icons.calendar_today_outlined,
                             'Appointment Booked'),
-                        ('status_changed', Icons.swap_horiz_outlined,
-                            'Status Changed'),
                         ('appointment_completed', Icons.task_alt_outlined,
                             'Appointment Completed'),
+                        ('form_submitted', Icons.dynamic_form_outlined,
+                            'Form Submitted'),
+                        ('new_lead', Icons.person_add_outlined, 'New Lead'),
+                        ('status_changed', Icons.swap_horiz_outlined,
+                            'Status Changed'),
                       ].map((t) => _TriggerOption(
                             icon: t.$2,
                             label: t.$3,
@@ -598,15 +680,19 @@ class _AutomationBuilderViewState extends State<_AutomationBuilderView> {
                               fontSize: 13)),
                       const SizedBox(height: 10),
                       ...[
-                        ('send_sms', Icons.sms_outlined, 'Send SMS'),
-                        ('send_email', Icons.email_outlined, 'Send Email'),
                         ('add_tag', Icons.label_outline, 'Add Tag'),
+                        ('delay_relative_to_appointment', Icons.alarm_outlined,
+                            'Delay — Relative to Appointment'),
                         ('move_pipeline_stage', Icons.move_down_outlined,
                             'Move Pipeline Stage'),
                         ('notify_owner', Icons.notifications_outlined,
                             'Notify Owner'),
+                        ('send_email', Icons.email_outlined, 'Send Email'),
                         ('send_review_request', Icons.star_outline,
                             'Send Review Request'),
+                        ('send_sms', Icons.sms_outlined, 'Send SMS'),
+                        ('wait_until', Icons.hourglass_empty_outlined,
+                            'Wait / Delay'),
                       ].map((a) => _ActionPaletteItem(
                             icon: a.$2,
                             label: a.$3,
@@ -1055,6 +1141,8 @@ class _ActionNodeState extends State<_ActionNode> {
       case 'move_pipeline_stage': return 'Move Pipeline Stage';
       case 'notify_owner': return 'Notify Owner';
       case 'send_review_request': return 'Send Review Request';
+      case 'wait_until': return 'Wait / Delay';
+      case 'delay_relative_to_appointment': return 'Wait Until — Relative to Appointment';
       default: return type;
     }
   }
@@ -1067,6 +1155,8 @@ class _ActionNodeState extends State<_ActionNode> {
       case 'move_pipeline_stage': return Icons.move_down_outlined;
       case 'notify_owner': return Icons.notifications_outlined;
       case 'send_review_request': return Icons.star_outline;
+      case 'wait_until': return Icons.hourglass_empty_outlined;
+      case 'delay_relative_to_appointment': return Icons.alarm_outlined;
       default: return Icons.bolt_outlined;
     }
   }
@@ -1282,7 +1372,7 @@ class _ActionNodeState extends State<_ActionNode> {
               items: widget.pipelineStages
                   .map((s) => DropdownMenuItem<int>(
                         value: s['id'] as int,
-                        child: Text(s['name'] ?? ''),
+                        child: Text(s['stage_name'] ?? ''),
                       ))
                   .toList(),
               onChanged: (val) {
@@ -1345,6 +1435,110 @@ class _ActionNodeState extends State<_ActionNode> {
           helperStyle:
               TextStyle(color: Colors.grey[500], fontSize: 11),
         ),
+      );
+    }
+
+    if (type == 'wait_until') {
+      final unit  = widget.action['delay_unit']  as String? ?? 'hours';
+      final value = widget.action['delay_value'] as int?    ?? 1;
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('Pause for a set amount of time before the next action.',
+              style: TextStyle(fontSize: 12, color: Colors.grey)),
+          const SizedBox(height: 12),
+          Row(children: [
+            SizedBox(
+              width: 80,
+              child: TextFormField(
+                initialValue: value.toString(),
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(labelText: 'Amount', border: OutlineInputBorder()),
+                onChanged: (v) {
+                  final parsed = int.tryParse(v) ?? 1;
+                  final minutes = unit == 'minutes' ? parsed : unit == 'hours' ? parsed * 60 : parsed * 1440;
+                  _update({'delay_value': parsed, 'delay_unit': unit, 'delay_minutes': minutes});
+                },
+              ),
+            ),
+            const SizedBox(width: 12),
+            DropdownButton<String>(
+              value: unit,
+              items: ['minutes', 'hours', 'days'].map((u) =>
+                  DropdownMenuItem(value: u, child: Text(u))).toList(),
+              onChanged: (u) {
+                if (u == null) return;
+                final minutes = u == 'minutes' ? value : u == 'hours' ? value * 60 : value * 1440;
+                _update({'delay_unit': u, 'delay_value': value, 'delay_minutes': minutes});
+              },
+            ),
+          ]),
+          const SizedBox(height: 8),
+          Text(
+            'This step will pause for $value ${unit} before continuing.',
+            style: TextStyle(fontSize: 11, color: Colors.grey[600], fontStyle: FontStyle.italic),
+          ),
+        ],
+      );
+    }
+
+    if (type == 'delay_relative_to_appointment') {
+      final direction = widget.action['offset_direction'] as String? ?? 'before';
+      final unit      = widget.action['offset_unit']      as String? ?? 'hours';
+      final value     = widget.action['offset_value']     as int?    ?? 24;
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('Send at a specific time relative to the appointment start.',
+              style: TextStyle(fontSize: 12, color: Colors.grey)),
+          const SizedBox(height: 12),
+          Row(children: [
+            SizedBox(
+              width: 80,
+              child: TextFormField(
+                initialValue: value.toString(),
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(labelText: 'Amount', border: OutlineInputBorder()),
+                onChanged: (v) {
+                  final parsed = int.tryParse(v) ?? 1;
+                  final minutes = unit == 'minutes' ? parsed : unit == 'hours' ? parsed * 60 : parsed * 1440;
+                  final offset  = direction == 'before' ? -minutes : minutes;
+                  _update({'offset_value': parsed, 'offset_unit': unit, 'offset_direction': direction, 'offset_minutes': offset});
+                },
+              ),
+            ),
+            const SizedBox(width: 12),
+            DropdownButton<String>(
+              value: unit,
+              items: ['minutes', 'hours', 'days'].map((u) =>
+                  DropdownMenuItem(value: u, child: Text(u))).toList(),
+              onChanged: (u) {
+                if (u == null) return;
+                final minutes = u == 'minutes' ? value : u == 'hours' ? value * 60 : value * 1440;
+                final offset  = direction == 'before' ? -minutes : minutes;
+                _update({'offset_unit': u, 'offset_value': value, 'offset_direction': direction, 'offset_minutes': offset});
+              },
+            ),
+            const SizedBox(width: 12),
+            DropdownButton<String>(
+              value: direction,
+              items: ['before', 'after'].map((d) =>
+                  DropdownMenuItem(value: d, child: Text(d))).toList(),
+              onChanged: (d) {
+                if (d == null) return;
+                final minutes = unit == 'minutes' ? value : unit == 'hours' ? value * 60 : value * 1440;
+                final offset  = d == 'before' ? -minutes : minutes;
+                _update({'offset_direction': d, 'offset_value': value, 'offset_unit': unit, 'offset_minutes': offset});
+              },
+            ),
+            const Text(' appointment', style: TextStyle(fontSize: 13)),
+          ]),
+          const SizedBox(height: 8),
+          Text(
+            'This step will run $value $unit $direction the appointment start time.',
+            style: TextStyle(fontSize: 11, color: Colors.grey[600], fontStyle: FontStyle.italic),
+          ),
+        ],
       );
     }
 

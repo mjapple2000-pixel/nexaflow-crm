@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme/app_theme.dart';
 import '../widgets/clickable.dart';
@@ -1546,6 +1547,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
                       final type     = cal['calendar_type'] ?? 'personal';
                       final duration = cal['duration_minutes'] as int? ?? 60;
                       final isActive = cal['is_active'] as bool? ?? true;
+                      final isPublic = cal['is_public'] as bool? ?? false;
                       final typeLabel = {'personal': 'Personal Booking', 'round_robin': 'Round Robin', 'class': 'Class Booking', 'collective': 'Collective Booking'}[type] ?? type;
                       final durationLabel = duration < 60 ? '${duration}m' : duration % 60 == 0 ? '${duration ~/ 60}h' : '${duration ~/ 60}h ${duration % 60}m';
                       return Padding(
@@ -1575,10 +1577,85 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
                                 style: TextStyle(fontSize: 11, fontWeight: FontWeight.w500,
                                     color: isActive ? AppTheme.success : AppTheme.textSecondary)),
                           )),
-                          SizedBox(width: 80, child: Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+                          Row(mainAxisSize: MainAxisSize.min, children: [
+                            // Public booking toggle
+                            Tooltip(
+                              message: isPublic ? 'Public booking on' : 'Public booking off',
+                              child: InkWell(
+                                onTap: () async {
+                                  await _db
+                                      .from('calendars')
+                                      .update({'is_public': !isPublic})
+                                      .eq('id', cal['id']);
+                                  _load();
+                                },
+                                borderRadius: BorderRadius.circular(6),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                  decoration: BoxDecoration(
+                                    color: isPublic
+                                        ? AppTheme.success.withValues(alpha: 0.1)
+                                        : AppTheme.pageBg,
+                                    borderRadius: BorderRadius.circular(6),
+                                    border: Border.all(
+                                      color: isPublic
+                                          ? AppTheme.success.withValues(alpha: 0.4)
+                                          : AppTheme.borderColor,
+                                    ),
+                                  ),
+                                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                                    Icon(
+                                      Icons.public_rounded,
+                                      size: 13,
+                                      color: isPublic ? AppTheme.success : AppTheme.textSecondary,
+                                    ),
+                                    const SizedBox(width: 4),
+                                    Text(
+                                      isPublic ? 'Public' : 'Private',
+                                      style: TextStyle(
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w500,
+                                        color: isPublic ? AppTheme.success : AppTheme.textSecondary,
+                                      ),
+                                    ),
+                                  ]),
+                                ),
+                              ),
+                            ),
+                            if (isPublic) ...[
+                              const SizedBox(width: 6),
+                              Tooltip(
+                                message: 'Copy booking link',
+                                child: InkWell(
+                                  onTap: () async {
+                                    final url = 'https://nexaflow-crm.web.app/book/${cal['id']}';
+                                    await Clipboard.setData(ClipboardData(text: url));
+                                    if (mounted) {
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        const SnackBar(
+                                          content: Text('Booking link copied'),
+                                          behavior: SnackBarBehavior.floating,
+                                          duration: Duration(seconds: 2),
+                                        ),
+                                      );
+                                    }
+                                  },
+                                  borderRadius: BorderRadius.circular(6),
+                                  child: Container(
+                                    padding: const EdgeInsets.all(6),
+                                    decoration: BoxDecoration(
+                                      color: AppTheme.pageBg,
+                                      borderRadius: BorderRadius.circular(6),
+                                      border: Border.all(color: AppTheme.borderColor),
+                                    ),
+                                    child: const Icon(Icons.copy_rounded, size: 13, color: AppTheme.textSecondary),
+                                  ),
+                                ),
+                              ),
+                            ],
                             IconButton(icon: const Icon(Icons.edit_outlined,  size: 16, color: AppTheme.textSecondary), onPressed: () => _showCreateCalendarDialog(existing: cal)),
                             IconButton(icon: const Icon(Icons.delete_outline, size: 16, color: AppTheme.error),         onPressed: () => _deleteCalendar(cal)),
-                          ])),
+                          ]),
                         ]),
                       );
                     },
@@ -2866,9 +2943,12 @@ class _CalendarFormDialogState extends State<_CalendarFormDialog> {
   int     _duration      = 60;
   int     _customDuration = 45;
   bool    _isActive      = true;
+  bool    _isPublic      = false;
   bool    _saving        = false;
   String? _error;
   Set<String> _selectedMemberIds = {};
+  late final TextEditingController _bookingTitleCtrl;
+  late final TextEditingController _bookingDescCtrl;
 
   Map<String, Map<String, dynamic>> _availability = {
     'monday':    {'enabled': true,  'start': '09:00', 'end': '17:00'},
@@ -2903,16 +2983,22 @@ class _CalendarFormDialogState extends State<_CalendarFormDialog> {
   @override
   void initState() {
     super.initState();
+    _bookingTitleCtrl = TextEditingController();
+    _bookingDescCtrl  = TextEditingController();
+
     if (widget.preselectedType != null && widget.existing == null) {
       _calType = widget.preselectedType!;
     }
     if (widget.existing != null) {
       final e = widget.existing!;
-      _nameCtrl.text = e['name']        ?? '';
-      _descCtrl.text = e['description'] ?? '';
-      _calType       = e['calendar_type']    ?? 'personal';
-      _duration      = e['duration_minutes'] as int? ?? 60;
-      _isActive      = e['is_active']        as bool? ?? true;
+      _nameCtrl.text         = e['name']                  ?? '';
+      _descCtrl.text         = e['description']           ?? '';
+      _bookingTitleCtrl.text = e['booking_page_title']    ?? '';
+      _bookingDescCtrl.text  = e['booking_page_description'] ?? '';
+      _calType               = e['calendar_type']         ?? 'personal';
+      _duration              = e['duration_minutes'] as int? ?? 60;
+      _isActive              = e['is_active']        as bool? ?? true;
+      _isPublic              = e['is_public']        as bool? ?? false;
       _selectedMemberIds = (e['team_member_ids'] as List?)
           ?.map((v) => v.toString()).toSet() ?? {};
       final ah = e['availability_hours'];
@@ -2935,6 +3021,8 @@ class _CalendarFormDialogState extends State<_CalendarFormDialog> {
   void dispose() {
     _nameCtrl.dispose();
     _descCtrl.dispose();
+    _bookingTitleCtrl.dispose();
+    _bookingDescCtrl.dispose();
     super.dispose();
   }
 
@@ -2947,15 +3035,18 @@ class _CalendarFormDialogState extends State<_CalendarFormDialog> {
     try {
       final effectiveDuration = _duration == -1 ? _customDuration : _duration;
       final payload = {
-        'business_id':       widget.businessId,
-        'name':              _nameCtrl.text.trim(),
-        'description':       _descCtrl.text.trim(),
-        'calendar_type':     _calType,
-        'duration_minutes':  effectiveDuration,
-        'availability_hours': _availability,
-        'team_member_ids':   _selectedMemberIds.toList(),
-        'is_active':         _isActive,
-        'updated_at':        DateTime.now().toIso8601String(),
+        'business_id':              widget.businessId,
+        'name':                     _nameCtrl.text.trim(),
+        'description':              _descCtrl.text.trim(),
+        'calendar_type':            _calType,
+        'duration_minutes':         effectiveDuration,
+        'availability_hours':       _availability,
+        'team_member_ids':          _selectedMemberIds.toList(),
+        'is_active':                _isActive,
+        'is_public':                _isPublic,
+        'booking_page_title':       _bookingTitleCtrl.text.trim(),
+        'booking_page_description': _bookingDescCtrl.text.trim(),
+        'updated_at':               DateTime.now().toIso8601String(),
       };
       if (widget.existing != null) {
         await _db.from('calendars').update(payload).eq('id', widget.existing!['id']);
@@ -3204,6 +3295,30 @@ class _CalendarFormDialogState extends State<_CalendarFormDialog> {
                   ]),
                 );
               }),
+              const SizedBox(height: 16),
+
+              // Public Booking
+              _label('Public Booking'),
+              const SizedBox(height: 8),
+              Row(children: [
+                Switch(
+                  value: _isPublic,
+                  onChanged: (v) => setState(() => _isPublic = v),
+                  activeColor: AppTheme.brand,
+                ),
+                const SizedBox(width: 8),
+                const Text('Enable public booking page', style: TextStyle(fontSize: 13, color: AppTheme.textPrimary)),
+              ]),
+              if (_isPublic) ...[
+                const SizedBox(height: 12),
+                _label('Booking Page Title (optional)'),
+                const SizedBox(height: 4),
+                _textField(_bookingTitleCtrl, hint: 'e.g. Book a Free Roof Inspection'),
+                const SizedBox(height: 12),
+                _label('Booking Page Description (optional)'),
+                const SizedBox(height: 4),
+                _textField(_bookingDescCtrl, hint: 'e.g. Schedule your free inspection in under 2 minutes.', maxLines: 3),
+              ],
               const SizedBox(height: 16),
 
               // Active toggle

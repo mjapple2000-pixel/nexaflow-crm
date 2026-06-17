@@ -228,6 +228,18 @@ async function runAction(
       return { action: type, status: "success" };
     }
 
+    // ── wait_until — fixed delay in minutes ─────────────────────────────────
+    if (type === "wait_until") {
+      // Handled by enrollment creation in main loop — skip here
+      return { action: type, status: "scheduled" };
+    }
+
+    // ── delay_relative_to_appointment — offset from appointment start ────────
+    if (type === "delay_relative_to_appointment") {
+      // Handled by enrollment creation in main loop — skip here
+      return { action: type, status: "scheduled" };
+    }
+
     return { action: type, status: "skipped", error: "Unknown action type" };
 
   } catch (e: any) {
@@ -267,15 +279,69 @@ serve(async (req) => {
     for (const automation of automations) {
       const actions: any[] = automation.actions || [];
       const actionsRun = [];
+      let enrollmentCreated = false;
 
-      for (const action of actions) {
+      for (let i = 0; i < actions.length; i++) {
+        const action = actions[i];
+
+        // ── Hit a wait action — create enrollment and stop executing ──────────
+        if (action.type === "wait_until" || action.type === "delay_relative_to_appointment") {
+          let nextRunAt: string | null = null;
+
+          if (action.type === "wait_until") {
+            const delayMinutes = action.delay_minutes || 0;
+            const runAt = new Date(Date.now() + delayMinutes * 60 * 1000);
+            nextRunAt = runAt.toISOString();
+          }
+
+          if (action.type === "delay_relative_to_appointment") {
+            const appointmentId = payload.appointment_id;
+            if (appointmentId) {
+              const appts = await dbFetch(`appointments?id=eq.${appointmentId}&select=start_date_time`);
+              const startTime = appts?.[0]?.start_date_time;
+              if (startTime) {
+                const offsetMinutes = action.offset_minutes || 0; // negative = before
+                const runAt = new Date(new Date(startTime).getTime() + offsetMinutes * 60 * 1000);
+                // Skip if already in the past
+                if (runAt.getTime() > Date.now()) {
+                  nextRunAt = runAt.toISOString();
+                } else {
+                  console.log(`Skipping past-due delay step at index ${i} for automation ${automation.id}`);
+                  continue;
+                }
+              }
+            }
+          }
+
+          if (nextRunAt) {
+            await dbFetch("automation_enrollments", {
+              method: "POST",
+              body: JSON.stringify({
+                business_id,
+                automation_id: automation.id,
+                lead_id: payload.lead_id || null,
+                appointment_id: payload.appointment_id || null,
+                next_action_index: i,
+                next_run_at: nextRunAt,
+                status: "active",
+                enrolled_at: new Date().toISOString(),
+              }),
+            });
+            enrollmentCreated = true;
+            actionsRun.push({ action: action.type, status: "scheduled", next_run_at: nextRunAt });
+            break; // Stop — cron job picks up from here
+          }
+          continue;
+        }
+
+        // ── Normal action — execute immediately ───────────────────────────────
         const result = await runAction(action, payload, business, trigger_type);
         actionsRun.push(result);
       }
 
       const anyFailed = actionsRun.some(a => a.status === "failed");
-      const allFailed = actionsRun.every(a => a.status === "failed");
-      const status = allFailed ? "failed" : anyFailed ? "partial" : "success";
+      const allFailed = actionsRun.length > 0 && actionsRun.every(a => a.status === "failed");
+      const status = enrollmentCreated ? "scheduled" : allFailed ? "failed" : anyFailed ? "partial" : "success";
 
       await dbFetch("automation_logs", {
         method: "POST",
@@ -285,6 +351,8 @@ serve(async (req) => {
           trigger_type,
           trigger_payload: payload,
           actions_run: actionsRun,
+          lead_id: payload.lead_id || null,
+          appointment_id: payload.appointment_id || null,
           status,
         }),
       });
