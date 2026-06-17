@@ -30,6 +30,7 @@ import '../screens/beta_testers_screen.dart';
 import '../screens/beta_signup_screen.dart';
 import '../screens/snippets_screen.dart';
 import '../screens/reviews_screen.dart';
+import '../screens/public_booking_screen.dart';
 
 class AppRouter {
   static bool? cachedIsSuperuser;
@@ -38,16 +39,22 @@ class AppRouter {
   static bool pendingError = false;
   static bool isPasswordRecovery = false;
 
+  static String _initialLocation = '/login';
+  static void setInitialLocation(String path) => _initialLocation = path;
   static GoRouter? _router;
-  static GoRouter get router => _router ??= GoRouter(
-    initialLocation: '/login',
+  static GoRouter get router => _router ??= _buildRouter();
+  static GoRouter _buildRouter() => GoRouter(
+    initialLocation: _initialLocation,
     refreshListenable: GoRouterRefreshStream(
       Supabase.instance.client.auth.onAuthStateChange,
     ),
     redirect: (context, state) async {
+      final loc = state.uri.path;
+      final realPath = Uri.base.path;
+      debugPrint('DEBUG ROUTER loc=$loc realPath=$realPath');
+      if (loc.startsWith('/book/') || realPath.startsWith('/book/')) return null;
       final session = Supabase.instance.client.auth.currentSession;
       final isLoggedIn = session != null;
-      final loc = state.matchedLocation;
       final isLoginPage = loc == '/login';
       final isSignupPage = loc == '/signup';
       final isSetupPage = loc == '/setup-account';
@@ -122,6 +129,7 @@ class AppRouter {
 
       if (isLoggedIn &&
           !isBusinessPicker &&
+          !loc.startsWith('/book/') &&
           cachedIsSuperuser == true &&
           SuperuserState.impersonatedBusinessId == null) {
         return '/business-picker';
@@ -165,6 +173,20 @@ class AppRouter {
         builder: (context, state) => BetaSignupScreen(
           token: state.uri.queryParameters['token'] ?? '',
         ),
+      ),
+      GoRoute(
+        path: '/book/:calendarId',
+        name: 'public-booking',
+        redirect: (context, state) {
+          debugPrint('DEBUG BOOK ROUTE HIT calendarId=${state.pathParameters['calendarId']}');
+          return null;
+        },
+        builder: (context, state) {
+          debugPrint('DEBUG BOOK BUILDER HIT');
+          return PublicBookingScreen(
+            calendarId: state.pathParameters['calendarId']!,
+          );
+        },
       ),
       GoRoute(
         path: '/error',
@@ -321,7 +343,6 @@ class AppRouter {
 
 class GoRouterRefreshStream extends ChangeNotifier {
   GoRouterRefreshStream(Stream<AuthState> stream) {
-    notifyListeners();
     _subscription = stream.listen((authState) {
       // When Supabase fires the passwordRecovery event, set the flag
       // and notify the router to redirect to /reset-password.

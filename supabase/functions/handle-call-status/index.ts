@@ -47,7 +47,7 @@ Deno.serve(async (req) => {
     const lookupSid = dialCallStatus ? callSid : parentCallSid;
 
     // Statuses that mean the owner didn't answer
-    const missedStatuses = ["no-answer", "busy", "failed", "canceled", "completed"];
+    const missedStatuses = ["no-answer", "busy", "failed", "canceled"];
     const wasMissed = missedStatuses.includes(dialCallStatus);
 
     // Fetch the call_log — use twilio_call_sid for deduplication
@@ -103,9 +103,18 @@ Deno.serve(async (req) => {
       return new Response("ok", { status: 200 });
     }
 
-    // Look up contact first name if available
+    // Look up name from leads table first, fall back to contacts
     let firstName = "";
-    if (callLog.contact_id) {
+    const { data: lead } = await supabase
+      .from("leads")
+      .select("lead_name")
+      .eq("business_id", callLog.business_id)
+      .eq("lead_phone", callLog.phone_number_from)
+      .maybeSingle();
+
+    if (lead?.lead_name) {
+      firstName = lead.lead_name.trim().split(/\s+/)[0] ?? "";
+    } else if (callLog.contact_id) {
       const { data: contact } = await supabase
         .from("contacts")
         .select("first_name")
@@ -120,7 +129,7 @@ Deno.serve(async (req) => {
 
     const smsBody = template
       .replace("{first_name}", firstName ? ` ${firstName}` : "")
-      .replace("{business_name}", business.name ?? "");
+      .replace("{business_name}", business.business_name ?? "");
 
     // Send the SMS
     await sendSms(
@@ -142,15 +151,26 @@ Deno.serve(async (req) => {
 
     if (existingConvo) {
       conversationId = existingConvo.id;
+      await supabase.from("conversations").update({
+        last_message:    smsBody,
+        last_message_at: new Date().toISOString(),
+      }).eq("id", existingConvo.id);
     } else {
       const { data: newConvo } = await supabase
         .from("conversations")
         .insert({
-          business_id: callLog.business_id,
-          contact_phone: callLog.phone_number_from,
-          contact_id: callLog.contact_id ?? null,
-          channel: "sms",
-          status: "open",
+          business_id:     callLog.business_id,
+          contact_phone:   callLog.phone_number_from,
+          contact_id:      callLog.contact_id ?? null,
+          contact_name:    firstName || callLog.phone_number_from,
+          lead_id:         lead?.id ?? null,
+          channel:         "sms",
+          status:          "open",
+          ai_enabled:      true,
+          last_message:    smsBody,
+          last_message_at: new Date().toISOString(),
+          unread_count:    1,
+          collecting_info: {},
         })
         .select("id")
         .single();
@@ -163,7 +183,9 @@ Deno.serve(async (req) => {
         conversation_id: conversationId,
         body: smsBody,
         direction: "outbound",
-        message_type: "sms",
+        channel: "sms",
+        status: "delivered",
+        sender_name: "AI Assistant",
         sent_via_twiml: true,
       });
     }

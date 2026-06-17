@@ -2,9 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:nexaflow/theme/app_theme.dart';
 import 'package:nexaflow/navigation/app_router.dart';
+import 'package:flutter_web_plugins/url_strategy.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  usePathUrlStrategy();
+  final initLoc = Uri.base.path.startsWith('/book/') ? Uri.base.path : '/login';
+  debugPrint('DEBUG setInitialLocation=$initLoc');
+  AppRouter.setInitialLocation(initLoc);
 
   await Supabase.initialize(
     url: 'https://rllriopqojaraceytdno.supabase.co',
@@ -21,16 +26,36 @@ Future<void> main() async {
   // recovery link is clicked — we handle routing in GoRouterRefreshStream.
   final fragment = Uri.base.fragment;
   final path = Uri.base.fragment.split('?').first;
+  debugPrint('DEBUG URL: full=${Uri.base} path=${Uri.base.path} fragment=$fragment parsedPath=$path');
   final isBetaSignup = path.contains('beta-signup');
-  if (!fragment.contains('access_token') && !isBetaSignup) {
+  final isPublicBooking = path.startsWith('/book/') || Uri.base.path.startsWith('/book/');
+  debugPrint('DEBUG isPublicBooking=$isPublicBooking');
+  if (!fragment.contains('access_token') && !isBetaSignup && !isPublicBooking) {
     await Supabase.instance.client.auth.signOut();
   }
 
-  runApp(const NexaFlowApp());
+  final initialPath = Uri.base.path;
+  runApp(NexaFlowApp(initialPath: initialPath));
 }
 
-class NexaFlowApp extends StatelessWidget {
-  const NexaFlowApp({super.key});
+class NexaFlowApp extends StatefulWidget {
+  final String initialPath;
+  const NexaFlowApp({super.key, required this.initialPath});
+
+  @override
+  State<NexaFlowApp> createState() => _NexaFlowAppState();
+}
+
+class _NexaFlowAppState extends State<NexaFlowApp> {
+  @override
+  void initState() {
+    super.initState();
+    if (widget.initialPath.startsWith('/book/')) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        AppRouter.router.go(widget.initialPath);
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
