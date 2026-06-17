@@ -40,6 +40,7 @@ class _Deal {
   final String name;
   final double value;
   String status;
+  final int? contactId;
   final String? contactName;
   final String? assignedTo;
   final String? notes;
@@ -49,9 +50,9 @@ class _Deal {
   final List<String> tags;
 
   _Deal({required this.id, required this.stageId, required this.name,
-    required this.value, required this.status, this.contactName,
-    this.assignedTo, this.notes, this.closeDate, this.createdAt,
-    this.stageMovedAt, this.tags = const []});
+    required this.value, required this.status, this.contactId,
+    this.contactName, this.assignedTo, this.notes, this.closeDate,
+    this.createdAt, this.stageMovedAt, this.tags = const []});
 
   factory _Deal.fromJson(Map<String, dynamic> j) {
     // Contact name is stored in notes as "Contact: Name\n..." 
@@ -67,7 +68,10 @@ class _Deal {
       name: j['deal_name'] as String? ?? 'Untitled',
       value: (j['value'] as num?)?.toDouble() ?? 0,
       status: j['status'] as String? ?? 'open',
-      contactName: contactName,
+      contactId: (j['lead_id'] as num?)?.toInt(),
+      contactName: j['leads'] != null
+          ? (j['leads'] as Map<String, dynamic>)['lead_name'] as String?
+          : contactName,
       assignedTo: j['assigned_to'] as String?,
       notes: j['notes'] as String?,
       closeDate: j['expected_close'] != null
@@ -175,7 +179,7 @@ class _PipelinesScreenState extends State<PipelinesScreen> {
           .order('sort_order');
       if (!mounted) return;
       final dealsData = await _db.from('deals')
-          .select('*')
+          .select('*, leads(id, lead_name)')
           .eq('business_id', _businessId!)
           .eq('pipeline_id', pipelineId ?? 0)
           .order('sort_order');
@@ -819,12 +823,14 @@ Widget _viewToggleBtn(IconData icon, String view) {
         Padding(
           padding: const EdgeInsets.all(12),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            // Deal name + value
+            // Contact name — primary (top)
             Row(children: [
-              Expanded(child: Text(deal.name, style: const TextStyle(
-                  fontSize: 13, fontWeight: FontWeight.w600,
-                  color: AppTheme.textPrimary), maxLines: 2,
-                  overflow: TextOverflow.ellipsis)),
+              const Icon(Icons.person_outline, size: 13, color: AppTheme.textPrimary),
+              const SizedBox(width: 5),
+              Expanded(child: Text(deal.contactName ?? 'No contact',
+                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700,
+                      color: AppTheme.textPrimary),
+                  maxLines: 1, overflow: TextOverflow.ellipsis)),
               const SizedBox(width: 8),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
@@ -836,17 +842,11 @@ Widget _viewToggleBtn(IconData icon, String view) {
                     fontWeight: FontWeight.w700))),
             ]),
 
-            // Contact
-            if (deal.contactName != null) ...[
-              const SizedBox(height: 6),
-              Row(children: [
-                const Icon(Icons.person_outline, size: 12, color: AppTheme.textSecondary),
-                const SizedBox(width: 4),
-                Text(deal.contactName!, style: const TextStyle(
-                    color: AppTheme.textSecondary, fontSize: 11),
-                    overflow: TextOverflow.ellipsis),
-              ]),
-            ],
+            // Opportunity name — secondary
+            const SizedBox(height: 3),
+            Text(deal.name, style: const TextStyle(
+                fontSize: 11, color: AppTheme.textSecondary),
+                maxLines: 1, overflow: TextOverflow.ellipsis),
 
             // Assigned to
             if (deal.assignedTo != null) ...[
@@ -1251,13 +1251,14 @@ class _AddDealDialogState extends State<_AddDealDialog> {
   final _nameCtrl  = TextEditingController();
   final _valueCtrl = TextEditingController();
   final _notesCtrl = TextEditingController();
-  final _assignCtrl = TextEditingController();
 
   int? _stageId;
   String _status = 'open';
   DateTime? _closeDate;
-  List<Map<String, dynamic>> _leads = [];
-  String? _selectedLeadName;
+  List<Map<String, dynamic>> _contacts = [];
+  int? _selectedContactId;
+  List<Map<String, dynamic>> _teamMembers = [];
+  String? _selectedAssignedToId;
   final List<String> _tags = [];
   final _tagCtrl = TextEditingController();
   bool _saving = false;
@@ -1267,30 +1268,46 @@ class _AddDealDialogState extends State<_AddDealDialog> {
   void initState() {
     super.initState();
     _stageId = widget.preselectedStageId;
-    _loadLeads();
+    _loadContacts();
+    _loadTeamMembers();
   }
   @override
   void dispose() {
     _nameCtrl.dispose(); _valueCtrl.dispose();
-    _notesCtrl.dispose(); _assignCtrl.dispose();
+    _notesCtrl.dispose();
     _tagCtrl.dispose();
     super.dispose();
   }
 
-  Future<void> _loadLeads() async {
+  Future<void> _loadContacts() async {
     try {
       final data = await _db.from('leads')
           .select('id, lead_name')
           .eq('business_id', widget.businessId)
           .order('lead_name');
       if (!mounted) return;
-      setState(() => _leads = List<Map<String, dynamic>>.from(data));
-    } catch (e) { debugPrint('Load leads: $e'); }
+      setState(() => _contacts = List<Map<String, dynamic>>.from(data));
+    } catch (e) { debugPrint('Load contacts: $e'); }
+  }
+
+  Future<void> _loadTeamMembers() async {
+    try {
+      final data = await _db.from('profiles')
+          .select('user_id, full_name')
+          .eq('business_id', widget.businessId)
+          .order('full_name');
+      if (!mounted) return;
+      setState(() => _teamMembers = List<Map<String, dynamic>>.from(data));
+    } catch (e) { debugPrint('Load team members: $e'); }
   }
 
   Future<void> _save() async {
+    if (_selectedContactId == null) {
+      setState(() => _error = 'Please select a contact');
+      return;
+    }
     if (_nameCtrl.text.trim().isEmpty) {
-      setState(() => _error = 'Deal name is required');
+      setState(() => _error = 'Opportunity name is required');
       return;
     }
     if (_stageId == null) {
@@ -1299,20 +1316,17 @@ class _AddDealDialogState extends State<_AddDealDialog> {
     }
     setState(() { _saving = true; _error = null; });
     try {
-      // Build notes: prepend contact name if selected
-      String? notesVal = _notesCtrl.text.trim().isEmpty ? null : _notesCtrl.text.trim();
-      if (_selectedLeadName != null && _selectedLeadName!.isNotEmpty) {
-        notesVal = notesVal != null
-            ? 'Contact: $_selectedLeadName\n$notesVal'
-            : 'Contact: $_selectedLeadName';
-      }
       await _db.from('deals').insert({
         'deal_name': _nameCtrl.text.trim(),
         'value': double.tryParse(_valueCtrl.text.trim().replaceAll(',', '')) ?? 0,
         'stage_id': _stageId,
         'status': _status,
-        'notes': notesVal,
-        'assigned_to': _assignCtrl.text.trim().isEmpty ? null : _assignCtrl.text.trim(),
+        'lead_id': _selectedContactId,
+        'notes': _notesCtrl.text.trim().isEmpty ? null : _notesCtrl.text.trim(),
+        'assigned_to': _selectedAssignedToId != null
+            ? _teamMembers.firstWhere((m) => m['user_id'] == _selectedAssignedToId,
+                orElse: () => {'full_name': _selectedAssignedToId})['full_name'] as String?
+            : null,
         'expected_close': _closeDate?.toIso8601String().split('T').first,
         'business_id': widget.businessId,
         'pipeline_id': widget.pipelineId,
@@ -1330,7 +1344,8 @@ class _AddDealDialogState extends State<_AddDealDialog> {
     return Dialog(
       backgroundColor: AppTheme.cardBg,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-      child: SizedBox(width: 500,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxWidth: 500, maxHeight: MediaQuery.of(context).size.height * 0.85),
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           // Header
           Container(
@@ -1352,7 +1367,7 @@ class _AddDealDialogState extends State<_AddDealDialog> {
           ),
 
           // Body
-          SingleChildScrollView(
+          Expanded(child: SingleChildScrollView(
             padding: const EdgeInsets.all(24),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               if (_error != null) Container(
@@ -1363,7 +1378,35 @@ class _AddDealDialogState extends State<_AddDealDialog> {
                   border: Border.all(color: AppTheme.error.withOpacity(0.3))),
                 child: Text(_error!, style: TextStyle(color: AppTheme.error, fontSize: 12))),
 
-              _field(_nameCtrl, 'Deal Name *'),
+              // Contact — required, top field
+              _label('Contact *'),
+              const SizedBox(height: 6),
+              Container(height: 44, padding: const EdgeInsets.symmetric(horizontal: 12),
+                decoration: BoxDecoration(color: AppTheme.pageBg,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: _selectedContactId == null
+                        ? AppTheme.error.withValues(alpha: 0.5)
+                        : AppTheme.borderColor)),
+                child: DropdownButtonHideUnderline(child: DropdownButton<int?>(
+                  value: _selectedContactId, isExpanded: true,
+                  dropdownColor: AppTheme.cardBg,
+                  style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13),
+                  hint: const Text('Select a contact...',
+                      style: TextStyle(color: AppTheme.textSecondary)),
+                  items: [
+                    const DropdownMenuItem<int?>(value: null,
+                        child: Text('Select a contact...',
+                            style: TextStyle(color: AppTheme.textSecondary))),
+                    ..._contacts.map((c) => DropdownMenuItem<int?>(
+                        value: (c['id'] as num).toInt(),
+                        child: Text(c['lead_name'] as String? ?? 'Unknown'))),
+                  ],
+                  onChanged: (v) => setState(() => _selectedContactId = v),
+                ))),
+              const SizedBox(height: 12),
+
+              _field(_nameCtrl, 'Opportunity Name *'),
               const SizedBox(height: 12),
 
               Row(children: [
@@ -1385,40 +1428,37 @@ class _AddDealDialogState extends State<_AddDealDialog> {
               ]),
               const SizedBox(height: 12),
 
-              Row(children: [
-                Expanded(child: _dropdownField('Status', _status,
-                  const [
-                    DropdownMenuItem(value: 'open', child: Text('Open')),
-                    DropdownMenuItem(value: 'won', child: Text('Won')),
-                    DropdownMenuItem(value: 'lost', child: Text('Lost')),
-                  ], (v) => setState(() => _status = v ?? 'open'))),
-                const SizedBox(width: 12),
-                Expanded(child: _field(_assignCtrl, 'Assigned To')),
-              ]),
-              const SizedBox(height: 12),
-
-              // Contact dropdown — links to lead for reference only
-              _label('Linked Contact (optional)'),
+              // Assigned To — dropdown from profiles
+              _label('Assigned To'),
               const SizedBox(height: 6),
               Container(height: 44, padding: const EdgeInsets.symmetric(horizontal: 12),
                 decoration: BoxDecoration(color: AppTheme.pageBg,
                   borderRadius: BorderRadius.circular(8),
                   border: Border.all(color: AppTheme.borderColor)),
-                child: DropdownButtonHideUnderline(child: DropdownButton<String>(
-                  value: _selectedLeadName, isExpanded: true,
+                child: DropdownButtonHideUnderline(child: DropdownButton<String?>(
+                  value: _selectedAssignedToId, isExpanded: true,
                   dropdownColor: AppTheme.cardBg,
                   style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13),
-                  hint: const Text('Link to a contact...',
+                  hint: const Text('Assign to team member...',
                       style: TextStyle(color: AppTheme.textSecondary)),
                   items: [
-                    const DropdownMenuItem(value: null,
-                        child: Text('None', style: TextStyle(color: AppTheme.textSecondary))),
-                    ..._leads.map((l) => DropdownMenuItem(
-                        value: l['lead_name'] as String? ?? '',
-                        child: Text(l['lead_name'] as String? ?? 'Unknown'))),
+                    const DropdownMenuItem<String?>(value: null,
+                        child: Text('Unassigned',
+                            style: TextStyle(color: AppTheme.textSecondary))),
+                    ..._teamMembers.map((m) => DropdownMenuItem<String?>(
+                        value: m['user_id'] as String?,
+                        child: Text(m['full_name'] as String? ?? 'Unknown'))),
                   ],
-                  onChanged: (v) => setState(() => _selectedLeadName = v),
+                  onChanged: (v) => setState(() => _selectedAssignedToId = v),
                 ))),
+              const SizedBox(height: 12),
+
+              _dropdownField('Status', _status,
+                const [
+                  DropdownMenuItem(value: 'open', child: Text('Open')),
+                  DropdownMenuItem(value: 'won', child: Text('Won')),
+                  DropdownMenuItem(value: 'lost', child: Text('Lost')),
+                ], (v) => setState(() => _status = v ?? 'open')),
               const SizedBox(height: 12),
 
               // Close date
@@ -1544,7 +1584,7 @@ class _AddDealDialogState extends State<_AddDealDialog> {
                 ),
               ),
             ]),
-          ),
+          )),
 
           // Footer
           Container(
@@ -1645,6 +1685,8 @@ class _DealDetailDialogState extends State<_DealDetailDialog> {
   DateTime? _closeDate;
   late List<String> _tags;
   final _tagCtrl = TextEditingController();
+  List<Map<String, dynamic>> _teamMembers = [];
+  String? _selectedAssignedToName;
 
   @override
   void initState() {
@@ -1657,6 +1699,22 @@ class _DealDetailDialogState extends State<_DealDetailDialog> {
     _status = widget.deal.status;
     _closeDate = widget.deal.closeDate;
     _tags = List<String>.from(widget.deal.tags);
+    _selectedAssignedToName = widget.deal.assignedTo;
+    _loadTeamMembers();
+  }
+
+  Future<void> _loadTeamMembers() async {
+    try {
+      final businessId = await getActiveBusinessId();
+      if (!mounted) return;
+      final data = await Supabase.instance.client
+          .from('profiles')
+          .select('user_id, full_name')
+          .eq('business_id', businessId!)
+          .order('full_name');
+      if (!mounted) return;
+      setState(() => _teamMembers = List<Map<String, dynamic>>.from(data));
+    } catch (e) { debugPrint('Load team members: $e'); }
   }
 
   @override
@@ -1677,7 +1735,7 @@ class _DealDetailDialogState extends State<_DealDetailDialog> {
         'stage_id': _stageId,
         'status': _status,
         'notes': _notesCtrl.text.trim().isEmpty ? null : _notesCtrl.text.trim(),
-        'assigned_to': _assignCtrl.text.trim().isEmpty ? null : _assignCtrl.text.trim(),
+        'assigned_to': _selectedAssignedToName,
         'expected_close': _closeDate?.toIso8601String().split('T').first,
         'tags': _tags,
         if (stageChanged) 'stage_moved_at': DateTime.now().toUtc().toIso8601String(),
@@ -1744,7 +1802,8 @@ class _DealDetailDialogState extends State<_DealDetailDialog> {
     return Dialog(
       backgroundColor: AppTheme.cardBg,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-      child: SizedBox(width: 500,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxWidth: 500, maxHeight: MediaQuery.of(context).size.height * 0.85),
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           // Header with color bar
           Container(
@@ -1782,10 +1841,10 @@ class _DealDetailDialogState extends State<_DealDetailDialog> {
           ),
 
           // Body
-          SingleChildScrollView(
+          Expanded(child: SingleChildScrollView(
             padding: const EdgeInsets.all(24),
             child: _editing ? _buildEditBody() : _buildViewBody(deal, stage),
-          ),
+          )),
 
           // Footer
           if (_editing) Container(
@@ -1939,7 +1998,28 @@ class _DealDetailDialogState extends State<_DealDetailDialog> {
           ],
           onChanged: (v) => setState(() => _status = v ?? _status)))),
       const SizedBox(height: 12),
-      _ef(_assignCtrl, 'Assigned To'),
+      _lbl('Assigned To'),
+      const SizedBox(height: 6),
+      Container(height: 44, padding: const EdgeInsets.symmetric(horizontal: 12),
+        decoration: BoxDecoration(color: AppTheme.pageBg, borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: AppTheme.borderColor)),
+        child: DropdownButtonHideUnderline(child: DropdownButton<String?>(
+          value: _teamMembers.any((m) => m['full_name'] == _selectedAssignedToName)
+              ? _selectedAssignedToName : null,
+          isExpanded: true, dropdownColor: AppTheme.cardBg,
+          style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13),
+          hint: const Text('Assign to team member...',
+              style: TextStyle(color: AppTheme.textSecondary)),
+          items: [
+            const DropdownMenuItem<String?>(value: null,
+                child: Text('Unassigned',
+                    style: TextStyle(color: AppTheme.textSecondary))),
+            ..._teamMembers.map((m) => DropdownMenuItem<String?>(
+                value: m['full_name'] as String?,
+                child: Text(m['full_name'] as String? ?? 'Unknown'))),
+          ],
+          onChanged: (v) => setState(() => _selectedAssignedToName = v),
+        ))),
       const SizedBox(height: 12),
       // Close date
       _lbl('Expected Close Date'),
