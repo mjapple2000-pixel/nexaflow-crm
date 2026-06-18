@@ -1,8 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
 import '../theme/app_theme.dart';
 import '../widgets/clickable.dart';
 import '../utils/business_utils.dart';
+import '../widgets/campaign_audience_selector.dart';
+import '../widgets/smart_lists_manager.dart';
 
 // ─────────────────────────────────────────────
 //  CAMPAIGNS SCREEN
@@ -47,6 +51,7 @@ class _CampaignsScreenState extends State<CampaignsScreen> {
           .from('campaigns')
           .select()
           .eq('business_id', _businessId!)
+          .filter('deleted_at', 'is', null)
           .order('created_at', ascending: false);
 
       setState(() {
@@ -91,6 +96,56 @@ class _CampaignsScreenState extends State<CampaignsScreen> {
     );
   }
 
+  Future<void> _deleteCampaign(Map<String, dynamic> campaign) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.cardBg,
+        title: const Text('Delete Campaign?',
+            style: TextStyle(color: AppTheme.textPrimary)),
+        content: Text(
+          'Delete "${campaign['name'] ?? 'this campaign'}"? This cannot be undone.',
+          style: const TextStyle(color: AppTheme.textSecondary),
+        ),
+        actions: [
+          MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: TextButton(
+              onPressed: () =>
+                  Navigator.of(ctx, rootNavigator: true).pop(false),
+              child: const Text('Cancel'),
+            ),
+          ),
+          MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: ElevatedButton(
+              onPressed: () =>
+                  Navigator.of(ctx, rootNavigator: true).pop(true),
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+              child: const Text('Delete'),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    try {
+      await _supabase
+          .from('campaigns')
+          .update({'deleted_at': DateTime.now().toUtc().toIso8601String()})
+          .eq('id', campaign['id']);
+      _loadCampaigns();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to delete: $e')),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -124,6 +179,30 @@ class _CampaignsScreenState extends State<CampaignsScreen> {
             ),
           ),
           const Spacer(),
+          // ── Manage Smart Lists button ──
+          MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: OutlinedButton.icon(
+              onPressed: _businessId == null
+                  ? null
+                  : () {
+                      showDialog(
+                        context: context,
+                        barrierColor: Colors.black54,
+                        builder: (_) => SmartListsManager(
+                          businessId: _businessId!,
+                        ),
+                      );
+                    },
+              icon: const Icon(Icons.list_alt_outlined, size: 16),
+              label: const Text('Smart Lists'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: AppTheme.brand,
+                side: BorderSide(color: AppTheme.brand),
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
           // ── New Campaign button with pointer cursor ──
           MouseRegion(
             cursor: SystemMouseCursors.click,
@@ -260,6 +339,7 @@ class _CampaignsScreenState extends State<CampaignsScreen> {
       itemBuilder: (_, i) => _CampaignCard(
         campaign: campaigns[i],
         onTap: () => _openCampaignDetail(campaigns[i]),
+        onDelete: () => _deleteCampaign(campaigns[i]),
       ),
     );
   }
@@ -271,13 +351,17 @@ class _CampaignsScreenState extends State<CampaignsScreen> {
 class _CampaignCard extends StatelessWidget {
   final Map<String, dynamic> campaign;
   final VoidCallback onTap;
+  final VoidCallback onDelete;
 
-  const _CampaignCard({required this.campaign, required this.onTap});
+  const _CampaignCard(
+      {required this.campaign, required this.onTap, required this.onDelete});
 
   Color _statusColor(String? status) {
     switch (status) {
       case 'sent':
         return Colors.green;
+      case 'sending':
+        return Colors.blue;
       case 'active':
         return Colors.blue;
       case 'scheduled':
@@ -307,6 +391,7 @@ class _CampaignCard extends StatelessWidget {
     final delivered = campaign['delivered_count'] ?? 0;
     final replies = campaign['reply_count'] ?? 0;
     final failed = campaign['failed_count'] ?? 0;
+    final recipientCount = campaign['recipient_count'];
 
     return Clickable(
       onTap: onTap,
@@ -338,6 +423,16 @@ class _CampaignCard extends StatelessWidget {
                 ),
                 _StatusBadge(
                     status: status, color: _statusColor(status)),
+                const SizedBox(width: 8),
+                MouseRegion(
+                  cursor: SystemMouseCursors.click,
+                  child: IconButton(
+                    icon: const Icon(Icons.delete_outline,
+                        size: 18, color: AppTheme.textSecondary),
+                    onPressed: onDelete,
+                    tooltip: 'Delete campaign',
+                  ),
+                ),
               ],
             ),
 
@@ -370,11 +465,19 @@ class _CampaignCard extends StatelessWidget {
             // Stats row
             Row(
               children: [
-                _StatChip(
-                    label: 'Total',
-                    value: total.toString(),
-                    icon: Icons.group_outlined),
-                const SizedBox(width: 12),
+                if (recipientCount != null) ...[
+                  _StatChip(
+                      label: 'Recipients',
+                      value: recipientCount.toString(),
+                      icon: Icons.people_outline),
+                  const SizedBox(width: 12),
+                ] else ...[
+                  _StatChip(
+                      label: 'Total',
+                      value: total.toString(),
+                      icon: Icons.group_outlined),
+                  const SizedBox(width: 12),
+                ],
                 _StatChip(
                     label: 'Sent',
                     value: sent.toString(),
@@ -518,6 +621,7 @@ class _CreateCampaignModalState extends State<_CreateCampaignModal> {
   DateTime? _scheduledAt;
   bool _saving = false;
   String? _error;
+  Map<String, dynamic> _filterConfig = {};
 
   @override
   void dispose() {
@@ -575,9 +679,7 @@ class _CreateCampaignModalState extends State<_CreateCampaignModal> {
         'message_body': _bodyCtrl.text.trim(),
         'subject': _type == 'email' ? _subjectCtrl.text.trim() : null,
         'scheduled_at': _scheduledAt?.toUtc().toIso8601String(),
-        'make_scenario_id': _makeScenarioCtrl.text.trim().isEmpty
-            ? null
-            : _makeScenarioCtrl.text.trim(),
+        'filter_config': _filterConfig.isEmpty ? null : _filterConfig,
         'total_contacts': 0,
         'sent_count': 0,
         'delivered_count': 0,
@@ -663,6 +765,20 @@ class _CreateCampaignModalState extends State<_CreateCampaignModal> {
               ),
               const SizedBox(height: 14),
 
+              if (_type == 'sms') ...[
+                const Divider(color: AppTheme.borderColor),
+                const SizedBox(height: 16),
+                CampaignAudienceSelector(
+                  businessId: widget.businessId,
+                  initialFilterConfig: const {},
+                  onChanged: (config) =>
+                      setState(() => _filterConfig = config),
+                ),
+                const SizedBox(height: 16),
+                const Divider(color: AppTheme.borderColor),
+                const SizedBox(height: 16),
+              ],
+
               if (_type == 'email') ...[
                 _ModalField(
                   label: 'Subject Line',
@@ -682,12 +798,7 @@ class _CreateCampaignModalState extends State<_CreateCampaignModal> {
               ),
               const SizedBox(height: 14),
 
-              _ModalField(
-                label: 'Make Scenario ID (optional)',
-                controller: _makeScenarioCtrl,
-                hint: 'Paste your Make scenario ID here',
-              ),
-              const SizedBox(height: 18),
+              const SizedBox(height: 4),
 
               // Schedule row
               Row(
@@ -804,6 +915,8 @@ class _CampaignDetailModalState extends State<_CampaignDetailModal> {
   DateTime? _scheduledAt;
   bool _saving = false;
   bool _launching = false;
+  bool _sending = false;
+  Map<String, dynamic> _filterConfig = {};
   String? _error;
   String? _successMsg;
 
@@ -898,7 +1011,7 @@ class _CampaignDetailModalState extends State<_CampaignDetailModal> {
 
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
+      builder: (ctx) => AlertDialog(
         backgroundColor: AppTheme.cardBg,
         title: const Text('Launch Campaign?',
             style: TextStyle(color: AppTheme.textPrimary)),
@@ -910,14 +1023,16 @@ class _CampaignDetailModalState extends State<_CampaignDetailModal> {
           MouseRegion(
             cursor: SystemMouseCursors.click,
             child: TextButton(
-              onPressed: () => Navigator.of(context).pop(false),
+              onPressed: () =>
+                  Navigator.of(ctx, rootNavigator: true).pop(false),
               child: const Text('Cancel'),
             ),
           ),
           MouseRegion(
             cursor: SystemMouseCursors.click,
             child: ElevatedButton(
-              onPressed: () => Navigator.of(context).pop(true),
+              onPressed: () =>
+                  Navigator.of(ctx, rootNavigator: true).pop(true),
               style:
                   ElevatedButton.styleFrom(backgroundColor: Colors.green),
               child: const Text('Yes, Launch'),
@@ -952,6 +1067,101 @@ class _CampaignDetailModalState extends State<_CampaignDetailModal> {
         _error = e.toString();
         _launching = false;
       });
+    }
+  }
+
+  Future<void> _sendNow() async {
+    if (_bodyCtrl.text.trim().isEmpty) {
+      setState(() => _error = 'Message body is required before sending.');
+      return;
+    }
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.cardBg,
+        title: const Text('Send Campaign Now?',
+            style: TextStyle(color: AppTheme.textPrimary)),
+        content: const Text(
+          'This will queue SMS messages to all matched contacts. This cannot be undone.',
+          style: TextStyle(color: AppTheme.textSecondary),
+        ),
+        actions: [
+          MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: TextButton(
+              onPressed: () =>
+                  Navigator.of(ctx, rootNavigator: true).pop(false),
+              child: const Text('Cancel'),
+            ),
+          ),
+          MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: ElevatedButton(
+              onPressed: () =>
+                  Navigator.of(ctx, rootNavigator: true).pop(true),
+              style:
+                  ElevatedButton.styleFrom(backgroundColor: Colors.green),
+              child: const Text('Yes, Send Now'),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    setState(() {
+      _sending = true;
+      _error = null;
+      _successMsg = null;
+    });
+
+    try {
+      // Save filter_config and message_body first
+      await _supabase.from('campaigns').update({
+        'message_body': _bodyCtrl.text.trim(),
+        'filter_config': _filterConfig,
+      }).eq('id', widget.campaign['id']);
+
+      final session = _supabase.auth.currentSession;
+      if (session == null) throw Exception('Not authenticated — session is null');
+      if (session.accessToken.isEmpty) throw Exception('Access token is empty');
+
+      final res = await http.post(
+        Uri.parse(
+            'https://rllriopqojaraceytdno.supabase.co/functions/v1/send-campaign'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ${session.accessToken}',
+        },
+        body: jsonEncode({'campaign_id': widget.campaign['id']}),
+      );
+
+      if (!mounted) return;
+      final data = jsonDecode(res.body);
+
+      if (res.statusCode == 200) {
+        widget.onUpdated();
+        setState(() {
+          _status = 'sending';
+          _successMsg =
+              'Campaign queued — ${data['queued']} message${data['queued'] == 1 ? '' : 's'} sending now.';
+          _sending = false;
+        });
+      } else {
+        setState(() {
+          _error = data['error'] ?? 'Failed to send campaign.';
+          _sending = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _error = e.toString();
+          _sending = false;
+        });
+      }
     }
   }
 
@@ -1058,6 +1268,22 @@ class _CampaignDetailModalState extends State<_CampaignDetailModal> {
               ),
               const SizedBox(height: 18),
 
+              // Audience selector (SMS only)
+              if (_type == 'sms' && _isEditable) ...[
+                const Divider(color: AppTheme.borderColor),
+                const SizedBox(height: 16),
+                CampaignAudienceSelector(
+                  businessId: widget.businessId,
+                  initialFilterConfig: Map<String, dynamic>.from(
+                      widget.campaign['filter_config'] ?? {}),
+                  onChanged: (config) =>
+                      setState(() => _filterConfig = config),
+                ),
+                const SizedBox(height: 16),
+                const Divider(color: AppTheme.borderColor),
+                const SizedBox(height: 16),
+              ],
+
               _ModalField(
                 label: 'Campaign Name',
                 controller: _nameCtrl,
@@ -1085,12 +1311,7 @@ class _CampaignDetailModalState extends State<_CampaignDetailModal> {
               ),
               const SizedBox(height: 14),
 
-              _ModalField(
-                label: 'Make Scenario ID',
-                controller: _makeScenarioCtrl,
-                hint: 'Your Make scenario ID',
-              ),
-              const SizedBox(height: 14),
+              const SizedBox(height: 4),
 
               // Schedule row (editable only)
               if (_isEditable)
@@ -1190,6 +1411,26 @@ class _CampaignDetailModalState extends State<_CampaignDetailModal> {
                             : const Icon(Icons.rocket_launch_outlined,
                                 size: 16),
                         label: const Text('Launch'),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    MouseRegion(
+                      cursor: SystemMouseCursors.click,
+                      child: ElevatedButton.icon(
+                        onPressed: (_sending || _status == 'sending' || _status == 'sent')
+                            ? null
+                            : _sendNow,
+                        style: ElevatedButton.styleFrom(
+                            backgroundColor: AppTheme.brand),
+                        icon: _sending
+                            ? const SizedBox(
+                                width: 14,
+                                height: 14,
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: Colors.white))
+                            : const Icon(Icons.send_outlined, size: 16),
+                        label: const Text('Send Now'),
                       ),
                     ),
                   ],
