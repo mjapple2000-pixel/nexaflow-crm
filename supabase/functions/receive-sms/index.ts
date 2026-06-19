@@ -60,54 +60,66 @@ async function findAvailableSlots(
   businessId: number,
   availability: Record<string, any>,
   slotDurationMinutes: number,
-  existingAppointments: Array<{ start_date_time: string; end_date_time: string }>
+  existingAppointments: Array<{ start_date_time: string; end_date_time: string }>,
+  timezone: string
 ): Promise<Array<{ label: string; start: string; end: string }>> {
   const slots: Array<{ label: string; start: string; end: string }> = [];
-  const now       = new Date();
-  const dayNames  = ["sunday","monday","tuesday","wednesday","thursday","friday","saturday"];
-  const dayShort  = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
-  const monthShort= ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const now      = new Date();
+  const dayNames = ["sunday","monday","tuesday","wednesday","thursday","friday","saturday"];
 
   // Look up to 14 days ahead
   for (let d = 0; d < 14 && slots.length < 3; d++) {
-    const date    = new Date(now);
-    date.setDate(now.getDate() + d);
-    const dayName = dayNames[date.getDay()];
+    const checkDate = new Date(now.getTime() + d * 24 * 60 * 60 * 1000);
+    const dateStr   = checkDate.toISOString().slice(0, 10); // anchor date only — hour math below is timezone-correct
+
+    // Weekday AS SEEN IN THE BUSINESS'S TIMEZONE, not server UTC
+    const dayName = new Date(`${dateStr}T12:00:00.000Z`)
+      .toLocaleDateString("en-US", { weekday: "long", timeZone: timezone })
+      .toLowerCase();
+
     const dayConf = availability[dayName];
     if (!dayConf || !dayConf.enabled) continue;
 
     const [startH, startM] = (dayConf.start as string).split(":").map(Number);
-    const [endH,   endM  ] = (dayConf.end   as string).split(":").map(Number);
+    const [endH, endM]     = (dayConf.end   as string).split(":").map(Number);
     const blocks: Array<{ start: string; end: string }> = dayConf.blocks ?? [];
 
-    // Generate slots for this day
-    let cursor = new Date(date);
-      cursor.setHours(startH, startM, 0, 0);
-      const dayEnd = new Date(date);
-        dayEnd.setHours(endH, endM, 0, 0);
+    // DST-safe UTC offset for this specific date in the business timezone
+    const testUtc = new Date(`${dateStr}T12:00:00.000Z`);
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: timezone, hour: "2-digit", minute: "2-digit", hour12: false,
+    }).formatToParts(testUtc);
+    const localH = parseInt(parts.find(p => p.type === "hour")!.value);
+    const localM = parseInt(parts.find(p => p.type === "minute")!.value);
+    const offsetMinutes = 12 * 60 - (localH * 60 + localM);
 
-    while (cursor < dayEnd && slots.length < 3) {
+    const dayStartUtc = new Date(`${dateStr}T00:00:00.000Z`);
+    dayStartUtc.setTime(dayStartUtc.getTime() + (startH * 60 + startM + offsetMinutes) * 60 * 1000);
+    const dayEndUtc = new Date(`${dateStr}T00:00:00.000Z`);
+    dayEndUtc.setTime(dayEndUtc.getTime() + (endH * 60 + endM + offsetMinutes) * 60 * 1000);
+
+    const cursor = new Date(dayStartUtc);
+
+    while (cursor.getTime() + slotDurationMinutes * 60 * 1000 <= dayEndUtc.getTime() && slots.length < 3) {
       const slotStart = new Date(cursor);
-      const slotEnd   = new Date(cursor);
-      slotEnd.setMinutes(slotEnd.getMinutes() + slotDurationMinutes);
+      const slotEnd   = new Date(cursor.getTime() + slotDurationMinutes * 60 * 1000);
 
-      if (slotEnd > dayEnd) break;
       // Must be at least 2 hours from now
-      if (slotStart <= new Date(now.getTime() + 2 * 60 * 60 * 1000)) {
-        cursor.setMinutes(cursor.getMinutes() + slotDurationMinutes);
+      if (slotStart.getTime() <= now.getTime() + 2 * 60 * 60 * 1000) {
+        cursor.setTime(cursor.getTime() + slotDurationMinutes * 60 * 1000);
         continue;
       }
 
-      // Check against blocked times for this day
       const blockedByDayConfig = blocks.some((b) => {
         const [bSH, bSM] = (b.start as string).split(":").map(Number);
         const [bEH, bEM] = (b.end   as string).split(":").map(Number);
-        const bStart = new Date(date); bStart.setHours(bSH + TZ_OFFSET_HOURS, bSM, 0, 0);
-        const bEnd   = new Date(date); bEnd.setHours(bEH + TZ_OFFSET_HOURS, bEM, 0, 0);
+        const bStart = new Date(`${dateStr}T00:00:00.000Z`);
+        bStart.setTime(bStart.getTime() + (bSH * 60 + bSM + offsetMinutes) * 60 * 1000);
+        const bEnd = new Date(`${dateStr}T00:00:00.000Z`);
+        bEnd.setTime(bEnd.getTime() + (bEH * 60 + bEM + offsetMinutes) * 60 * 1000);
         return slotStart < bEnd && slotEnd > bStart;
       });
 
-      // Check against existing appointments
       const blockedByAppt = existingAppointments.some((a) => {
         const aStart = new Date(a.start_date_time);
         const aEnd   = new Date(a.end_date_time);
@@ -115,22 +127,14 @@ async function findAvailableSlots(
       });
 
       if (!blockedByDayConfig && !blockedByAppt) {
-        const TZ_OFFSET_MS = -4 * 60 * 60 * 1000; // EDT = UTC-4
-        const localStart   = new Date(slotStart.getTime() + TZ_OFFSET_MS);
-        const h   = localStart.getUTCHours();
-        const m   = localStart.getUTCMinutes().toString().padStart(2, "0");
-        const hr  = h === 0 ? 12 : h > 12 ? h - 12 : h;
-        const per = h < 12 ? "AM" : "PM";
-        const dow = dayShort[localStart.getUTCDay()];
-        const mon = monthShort[localStart.getUTCMonth()];
-        const day = localStart.getUTCDate();
-        slots.push({
-          label: `${dow} ${mon} ${day} at ${hr}:${m} ${per}`,
-          start: slotStart.toISOString(),
-          end:   slotEnd.toISOString(),
-        });
+        const label = new Intl.DateTimeFormat("en-US", {
+          timeZone: timezone, weekday: "short", month: "short", day: "numeric",
+          hour: "numeric", minute: "2-digit", hour12: true,
+        }).format(slotStart).replace(",", " at");
+
+        slots.push({ label, start: slotStart.toISOString(), end: slotEnd.toISOString() });
       }
-      cursor.setMinutes(cursor.getMinutes() + slotDurationMinutes);
+      cursor.setTime(cursor.getTime() + slotDurationMinutes * 60 * 1000);
     }
   }
   return slots;
@@ -301,6 +305,29 @@ Deno.serve(async (req) => {
     if (!business) { console.error(`No business for: ${to}`); return twimlEmpty(); }
     const businessId = business.id as number;
 
+    // ── Resolve the calendar this business books AI/SMS appointments into ──────
+    let bookingCalendar: Record<string, any> | null = null;
+    if (business.default_calendar_id) {
+      const { data: cal } = await supabase
+        .from("calendars")
+        .select("id, availability_hours")
+        .eq("id", business.default_calendar_id)
+        .maybeSingle();
+      bookingCalendar = cal ?? null;
+    }
+    if (!bookingCalendar) {
+      const { data: fallbackCal } = await supabase
+        .from("calendars")
+        .select("id, availability_hours")
+        .eq("business_id", businessId)
+        .order("created_at", { ascending: true })
+        .limit(1)
+        .maybeSingle();
+      bookingCalendar = fallbackCal ?? null;
+    }
+    const bookingCalendarId = bookingCalendar?.id as number | undefined;
+    const bookingAvailability = bookingCalendar?.availability_hours ?? business.availability_hours ?? {};
+
     // ── 2. Look up lead ───────────────────────────────────────────────────────
     const { data: lead } = await supabase
       .from("leads")
@@ -434,8 +461,10 @@ Deno.serve(async (req) => {
           `[SYSTEM: The user just told you their name is "${capturedName}". Greet them warmly by their first name (${first}) and ask how you can help them today. Keep it to one friendly sentence.]`
         );
         skipNormalFlow = true;
+      } else {
+        aiReply = `Sorry, I didn't quite catch that — could you reply with your full name?`;
+        skipNormalFlow = true;
       }
-      // If it doesn't look like a name, fall through and let AI handle it naturally
 
     } else if (collectingInfo.waiting_for === "email") {
       if (looksLikeEmail(body)) {
@@ -470,9 +499,8 @@ Deno.serve(async (req) => {
               .eq("business_id", businessId)
               .gte("start_date_time", new Date().toISOString());
 
-            const availability   = business.availability_hours ?? {};
             const slotDuration   = business.slot_duration_minutes ?? 60;
-            const availableSlots = await findAvailableSlots(businessId, availability, slotDuration, existingAppts ?? []);
+            const availableSlots = await findAvailableSlots(businessId, bookingAvailability, slotDuration, existingAppts ?? [], business.timezone || "America/New_York");
 
             if (availableSlots.length === 0) {
               aiReply = `I'm sorry ${first}, I don't see any open slots in the next two weeks. I'll have someone from our team follow up with you directly.`;
@@ -487,6 +515,21 @@ Deno.serve(async (req) => {
             skipNormalFlow = true;
           }
         }
+      } else if (looksLikeAddress(body)) {
+        // They gave their address when we asked for email — save it and re-ask for email
+        const capturedAddress = body.trim();
+        await supabase.from("conversations").update({
+          collecting_info: { ...collectingInfo, address_collected: true },
+        }).eq("id", conversationId);
+        if (lead) {
+          await supabase.from("leads").update({ lead_address: capturedAddress }).eq("id", lead.id);
+        }
+        collectingInfo = { ...collectingInfo, address_collected: true };
+        aiReply = `Thanks! I'll save that. Could I also get your email address?`;
+        skipNormalFlow = true;
+      } else {
+        aiReply = `Sorry, that doesn't look like a valid email — could you resend it?`;
+        skipNormalFlow = true;
       }
     }
       else if (collectingInfo.waiting_for === "address") {
@@ -510,9 +553,8 @@ Deno.serve(async (req) => {
             .eq("business_id", businessId)
             .gte("start_date_time", new Date().toISOString());
 
-          const availability   = business.availability_hours ?? {};
           const slotDuration   = business.slot_duration_minutes ?? 60;
-          const availableSlots = await findAvailableSlots(businessId, availability, slotDuration, existingAppts ?? []);
+          const availableSlots = await findAvailableSlots(businessId, bookingAvailability, slotDuration, existingAppts ?? [], business.timezone || "America/New_York");
 
           if (availableSlots.length === 0) {
             aiReply = `I'm sorry ${first}, I don't see any open slots in the next two weeks. I'll have someone from our team follow up with you directly.`;
@@ -526,6 +568,22 @@ Deno.serve(async (req) => {
           }
           skipNormalFlow = true;
         }
+      } else if (looksLikeEmail(body)) {
+        // They gave their email when we asked for address — save it and re-ask for address
+        const capturedEmail = body.trim().toLowerCase();
+        await supabase.from("conversations").update({
+          contact_email:   capturedEmail,
+          collecting_info: { ...collectingInfo, email_collected: true },
+        }).eq("id", conversationId);
+        if (lead) {
+          await supabase.from("leads").update({ lead_email: capturedEmail }).eq("id", lead.id);
+        }
+        collectingInfo = { ...collectingInfo, email_collected: true };
+        aiReply = `Got it, thanks! Could I also get your full address?`;
+        skipNormalFlow = true;
+      } else {
+        aiReply = `Sorry, I need a full street address (with house number) — could you resend it?`;
+        skipNormalFlow = true;
       }
     }
 
@@ -590,6 +648,7 @@ Deno.serve(async (req) => {
 
               const { data: newAppt } = await supabase.from("appointments").insert({
                 business_id:      businessId,
+                calendar_id:      bookingCalendarId ?? null,
                 appointment_name: `Appointment – ${currentName}`,
                 appointment_type: "Consultation",
                 status:           "New",
@@ -665,9 +724,8 @@ Deno.serve(async (req) => {
               .eq("business_id", businessId)
               .gte("start_date_time", new Date().toISOString());
 
-            const availability    = business.availability_hours ?? {};
             const slotDuration    = business.slot_duration_minutes ?? 60;
-            const availableSlots  = await findAvailableSlots(businessId, availability, slotDuration, existingAppts ?? []);
+            const availableSlots  = await findAvailableSlots(businessId, bookingAvailability, slotDuration, existingAppts ?? [], business.timezone || "America/New_York");
 
             if (availableSlots.length === 0) {
               aiReply = `I'm sorry ${first}, I don't see any open slots in the next two weeks. I'll have someone from our team follow up with you directly to find a time that works.`;

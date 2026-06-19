@@ -180,6 +180,9 @@ const _kIndustries = [
 const String _makeEmailWebhook =
     'https://hook.us2.make.com/ap29d91tjwbus1x41a9o7c3ky86ihg6q';
 
+const String _provisionPhoneFnUrl =
+    'https://rllriopqojaraceytdno.supabase.co/functions/v1/provision-phone-number';
+
 Future<void> _sendNotificationEmail(String subject, String body) async {
   try {
     await http.post(
@@ -473,6 +476,52 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             );
           }),
+          const SizedBox(height: 8),
+          const Divider(height: 1, color: AppTheme.borderColor),
+          const SizedBox(height: 8),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: Text('BUSINESS SERVICES',
+                style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.6,
+                    color: AppTheme.textSecondary.withValues(alpha: 0.7))),
+          ),
+          const SizedBox(height: 6),
+          Clickable(
+            onTap: () => setState(() => _selectedSection = 17),
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 150),
+              margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: _selectedSection == 17
+                    ? AppTheme.brand.withValues(alpha: 0.1)
+                    : Colors.transparent,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.phone_in_talk_outlined,
+                      size: 17,
+                      color: _selectedSection == 17
+                          ? AppTheme.brand
+                          : AppTheme.textSecondary),
+                  const SizedBox(width: 10),
+                  Text('Phone Numbers',
+                      style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: _selectedSection == 17
+                              ? FontWeight.w600
+                              : FontWeight.w400,
+                          color: _selectedSection == 17
+                              ? AppTheme.brand
+                              : AppTheme.textSecondary)),
+                ],
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -527,7 +576,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       case 16:
         return _ComingSoonSection(title: 'Email Services', icon: Icons.alternate_email_rounded);
       case 17:
-        return _ComingSoonSection(title: 'Phone Numbers', icon: Icons.phone_in_talk_outlined);
+        return _PhoneNumbersSection(businessId: _businessId!);
       case 18:
         return _ComingSoonSection(title: 'WhatsApp', icon: Icons.message_outlined);
       case 19:
@@ -610,6 +659,7 @@ class _BusinessProfileSectionState
   // SMS consent
   bool _smsConsent = false;
   Map<String, dynamic> _availabilityHours = {};
+  bool _resettingCalendars = false;
 
   bool _saving = false;
   String? _successMsg;
@@ -658,13 +708,13 @@ class _BusinessProfileSectionState
       _availabilityHours = Map<String, dynamic>.from(rawHours);
     } else {
       _availabilityHours = {
-        'monday':    {'enabled': true,  'start': '08:00', 'end': '17:00'},
-        'tuesday':   {'enabled': true,  'start': '08:00', 'end': '17:00'},
-        'wednesday': {'enabled': true,  'start': '08:00', 'end': '17:00'},
-        'thursday':  {'enabled': true,  'start': '08:00', 'end': '17:00'},
-        'friday':    {'enabled': true,  'start': '08:00', 'end': '17:00'},
-        'saturday':  {'enabled': false, 'start': '09:00', 'end': '14:00'},
-        'sunday':    {'enabled': false, 'start': '09:00', 'end': '14:00'},
+        'monday':    {'enabled': true,  'start': '09:00', 'end': '17:00', 'blocks': []},
+        'tuesday':   {'enabled': true,  'start': '09:00', 'end': '17:00', 'blocks': []},
+        'wednesday': {'enabled': true,  'start': '09:00', 'end': '17:00', 'blocks': []},
+        'thursday':  {'enabled': true,  'start': '09:00', 'end': '17:00', 'blocks': []},
+        'friday':    {'enabled': true,  'start': '09:00', 'end': '17:00', 'blocks': []},
+        'saturday':  {'enabled': false, 'start': '09:00', 'end': '17:00', 'blocks': []},
+        'sunday':    {'enabled': false, 'start': '09:00', 'end': '17:00', 'blocks': []},
       };
     }
   }
@@ -722,6 +772,106 @@ class _BusinessProfileSectionState
           () { _successMsg = 'Profile saved.'; _saving = false; });
     } catch (e) {
       setState(() { _error = e.toString(); _saving = false; });
+    }
+  }
+
+  Future<void> _resetAllCalendars() async {
+    final businessId = widget.business['id'] as int?;
+    if (businessId == null) return;
+    final supabase = Supabase.instance.client;
+
+    List<dynamic> calendarRows;
+    try {
+      calendarRows = await supabase
+          .from('calendars')
+          .select('id')
+          .eq('business_id', businessId)
+          .filter('deleted_at', 'is', null);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), behavior: SnackBarBehavior.floating),
+        );
+      }
+      return;
+    }
+    final count = calendarRows.length;
+    if (count == 0) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text('No calendars to reset.'),
+              behavior: SnackBarBehavior.floating),
+        );
+      }
+      return;
+    }
+
+    bool confirmed = false;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.cardBg,
+        title: const Text('Reset All Calendars?',
+            style: TextStyle(color: AppTheme.textPrimary)),
+        content: Text(
+          'This will save your current changes as the new default, then overwrite hours on all $count calendar${count == 1 ? '' : 's'} — including any you\'ve customized individually in Calendar Settings. This cannot be undone.',
+          style: const TextStyle(color: AppTheme.textSecondary, height: 1.5),
+        ),
+        actions: [
+          MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: TextButton(
+              onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(),
+              child: const Text('Cancel'),
+            ),
+          ),
+          MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: ElevatedButton(
+              onPressed: () {
+                confirmed = true;
+                Navigator.of(ctx, rootNavigator: true).pop();
+              },
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.red,
+                  foregroundColor: Colors.white,
+                  elevation: 0),
+              child: const Text('Reset All Calendars'),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (!confirmed || !mounted) return;
+
+    setState(() => _resettingCalendars = true);
+    try {
+      // Save current hours as the new default first, so the default and
+      // the calendars being reset always end up consistent.
+      await _save();
+      if (!mounted) return;
+      await supabase
+          .from('calendars')
+          .update({'availability_hours': _availabilityHours})
+          .eq('business_id', businessId)
+          .filter('deleted_at', 'is', null);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              content: Text(
+                  'Reset hours on $count calendar${count == 1 ? '' : 's'}.'),
+              behavior: SnackBarBehavior.floating),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), behavior: SnackBarBehavior.floating),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _resettingCalendars = false);
     }
   }
 
@@ -861,9 +1011,36 @@ class _BusinessProfileSectionState
 
         // ── Availability Hours ─────────────────────────────────────
         _SettingsGroup(title: 'Business Hours', children: [
+          const Text(
+            'These hours become the default for every new calendar you create. '
+            'Editing and saving here never changes calendars you\'ve already '
+            'customized individually. Lunch breaks and other blocked windows '
+            'are set per calendar in Calendar Settings.',
+            style: TextStyle(fontSize: 12, color: AppTheme.textSecondary, height: 1.4),
+          ),
+          const SizedBox(height: 14),
           _AvailabilityHoursEditor(
             hours: _availabilityHours,
             onChanged: (updated) => setState(() => _availabilityHours = updated),
+          ),
+          const SizedBox(height: 16),
+          MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: OutlinedButton.icon(
+              onPressed: _resettingCalendars ? null : _resetAllCalendars,
+              icon: _resettingCalendars
+                  ? const SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.red))
+                  : const Icon(Icons.restart_alt_rounded, size: 16),
+              label: const Text('Reset All Calendars to Default'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Colors.red,
+                side: const BorderSide(color: Colors.red),
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+              ),
+            ),
           ),
         ]),
         const SizedBox(height: 24),
@@ -884,8 +1061,13 @@ class _BusinessProfileSectionState
 class _AvailabilityHoursEditor extends StatelessWidget {
   final Map<String, dynamic> hours;
   final ValueChanged<Map<String, dynamic>> onChanged;
+  final bool showBreaks;
 
-  const _AvailabilityHoursEditor({required this.hours, required this.onChanged});
+  const _AvailabilityHoursEditor({
+    required this.hours,
+    required this.onChanged,
+    this.showBreaks = false,
+  });
 
   static const _days = [
     ('monday',    'Monday'),
@@ -921,6 +1103,40 @@ class _AvailabilityHoursEditor extends StatelessWidget {
     onChanged(updated);
   }
 
+  void _addBlock(String day) {
+    final updated = Map<String, dynamic>.from(hours);
+    final dayMap = Map<String, dynamic>.from(updated[day] as Map? ?? {});
+    final blocks = List<dynamic>.from(dayMap['blocks'] as List? ?? []);
+    blocks.add({'start': '12:00', 'end': '13:00'});
+    dayMap['blocks'] = blocks;
+    updated[day] = dayMap;
+    onChanged(updated);
+  }
+
+  void _removeBlock(String day, int index) {
+    final updated = Map<String, dynamic>.from(hours);
+    final dayMap = Map<String, dynamic>.from(updated[day] as Map? ?? {});
+    final blocks = List<dynamic>.from(dayMap['blocks'] as List? ?? []);
+    if (index >= 0 && index < blocks.length) blocks.removeAt(index);
+    dayMap['blocks'] = blocks;
+    updated[day] = dayMap;
+    onChanged(updated);
+  }
+
+  void _updateBlock(String day, int index, String key, String value) {
+    final updated = Map<String, dynamic>.from(hours);
+    final dayMap = Map<String, dynamic>.from(updated[day] as Map? ?? {});
+    final blocks = List<dynamic>.from(dayMap['blocks'] as List? ?? []);
+    if (index >= 0 && index < blocks.length) {
+      final block = Map<String, dynamic>.from(blocks[index] as Map);
+      block[key] = value;
+      blocks[index] = block;
+    }
+    dayMap['blocks'] = blocks;
+    updated[day] = dayMap;
+    onChanged(updated);
+  }
+
   @override
   Widget build(BuildContext context) {
     return Column(
@@ -928,49 +1144,116 @@ class _AvailabilityHoursEditor extends StatelessWidget {
         final key = d.$1;
         final label = d.$2;
         final dayData = hours[key] as Map? ?? {};
-        final enabled = dayData['enabled'] as bool? ?? false;
-        final start = dayData['start'] as String? ?? '08:00';
-        final end = dayData['end'] as String? ?? '17:00';
+        final isOpen = dayData['enabled'] as bool? ?? false;
+        final openTime = dayData['start'] as String? ?? '09:00';
+        final closeTime = dayData['end'] as String? ?? '17:00';
+        final blocks = List<dynamic>.from(dayData['blocks'] as List? ?? []);
 
-        return Padding(
-          padding: const EdgeInsets.only(bottom: 10),
-          child: Row(
+        return Container(
+          margin: const EdgeInsets.only(bottom: 10),
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Switch(
-                value: enabled,
-                onChanged: (v) => _update(key, 'enabled', v),
-                activeColor: AppTheme.brand,
-                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              Row(
+                children: [
+                  Switch(
+                    value: isOpen,
+                    onChanged: (v) => _update(key, 'enabled', v),
+                    activeColor: AppTheme.brand,
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  const SizedBox(width: 8),
+                  SizedBox(
+                    width: 90,
+                    child: Text(label,
+                        style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w500,
+                            color: isOpen ? AppTheme.textPrimary : AppTheme.textSecondary)),
+                  ),
+                  const SizedBox(width: 12),
+                  if (isOpen) ...[
+                    _TimeDropdown(
+                      value: _times.contains(openTime) ? openTime : '09:00',
+                      times: _times,
+                      formatter: _fmt,
+                      onChanged: (v) => _update(key, 'start', v),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 10),
+                      child: Text('to', style: TextStyle(fontSize: 13, color: AppTheme.textSecondary)),
+                    ),
+                    _TimeDropdown(
+                      value: _times.contains(closeTime) ? closeTime : '17:00',
+                      times: _times,
+                      formatter: _fmt,
+                      onChanged: (v) => _update(key, 'end', v),
+                    ),
+                    if (showBreaks) ...[
+                      const SizedBox(width: 12),
+                      Clickable(
+                        onTap: () => _addBlock(key),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.add_circle_outline, size: 14, color: AppTheme.brand),
+                            const SizedBox(width: 4),
+                            Text('Add break',
+                                style: TextStyle(fontSize: 12, color: AppTheme.brand, fontWeight: FontWeight.w500)),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ] else
+                    Text('Closed', style: TextStyle(fontSize: 13, color: AppTheme.textMuted)),
+                ],
               ),
-              const SizedBox(width: 8),
-              SizedBox(
-                width: 90,
-                child: Text(label,
-                    style: TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w500,
-                        color: enabled ? AppTheme.textPrimary : AppTheme.textSecondary)),
-              ),
-              const SizedBox(width: 12),
-              if (enabled) ...[
-                _TimeDropdown(
-                  value: _times.contains(start) ? start : '08:00',
-                  times: _times,
-                  formatter: _fmt,
-                  onChanged: (v) => _update(key, 'start', v),
-                ),
+              if (showBreaks && isOpen && blocks.isNotEmpty) ...[
+                const SizedBox(height: 6),
                 Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 10),
-                  child: Text('to', style: TextStyle(fontSize: 13, color: AppTheme.textSecondary)),
+                  padding: const EdgeInsets.only(left: 110),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: blocks.asMap().entries.map((entry) {
+                      final i = entry.key;
+                      final block = entry.value as Map;
+                      final bStart = block['start'] as String? ?? '12:00';
+                      final bEnd = block['end'] as String? ?? '13:00';
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 6),
+                        child: Row(
+                          children: [
+                            Text('Break:', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+                            const SizedBox(width: 8),
+                            _TimeDropdown(
+                              value: _times.contains(bStart) ? bStart : '12:00',
+                              times: _times,
+                              formatter: _fmt,
+                              onChanged: (v) => _updateBlock(key, i, 'start', v),
+                            ),
+                            Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 10),
+                              child: Text('to', style: TextStyle(fontSize: 13, color: AppTheme.textSecondary)),
+                            ),
+                            _TimeDropdown(
+                              value: _times.contains(bEnd) ? bEnd : '13:00',
+                              times: _times,
+                              formatter: _fmt,
+                              onChanged: (v) => _updateBlock(key, i, 'end', v),
+                            ),
+                            const SizedBox(width: 8),
+                            Clickable(
+                              onTap: () => _removeBlock(key, i),
+                              child: const Icon(Icons.close, size: 14, color: AppTheme.textMuted),
+                            ),
+                          ],
+                        ),
+                      );
+                    }).toList(),
+                  ),
                 ),
-                _TimeDropdown(
-                  value: _times.contains(end) ? end : '17:00',
-                  times: _times,
-                  formatter: _fmt,
-                  onChanged: (v) => _update(key, 'end', v),
-                ),
-              ] else
-                Text('Closed', style: TextStyle(fontSize: 13, color: AppTheme.textMuted)),
+              ],
             ],
           ),
         );
@@ -6516,6 +6799,583 @@ class _ReviewsSectionState extends State<_ReviewsSection> {
           ]),
         ),
       ]),
+    );
+  }
+}
+// ─────────────────────────────────────────────
+//  PHONE NUMBERS SECTION
+// ─────────────────────────────────────────────
+
+class _PhoneNumbersSection extends StatefulWidget {
+  final int businessId;
+  const _PhoneNumbersSection({required this.businessId});
+
+  @override
+  State<_PhoneNumbersSection> createState() => _PhoneNumbersSectionState();
+}
+
+class _PhoneNumbersSectionState extends State<_PhoneNumbersSection> {
+  final _supabase = Supabase.instance.client;
+  List<Map<String, dynamic>> _numbers = [];
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadNumbers();
+  }
+
+  Future<void> _loadNumbers() async {
+    setState(() => _loading = true);
+    try {
+      final res = await _supabase
+          .from('phone_numbers')
+          .select()
+          .eq('business_id', widget.businessId)
+          .filter('deleted_at', 'is', null)
+          .order('created_at');
+      setState(() {
+        _numbers = List<Map<String, dynamic>>.from(res as List);
+        _loading = false;
+      });
+    } catch (e) {
+      debugPrint('Phone numbers load error: $e');
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  void _showSearchDialog() {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => _PhoneNumberSearchDialog(
+        onPurchased: () {
+          Navigator.of(context, rootNavigator: true).pop();
+          _loadNumbers();
+        },
+      ),
+    );
+  }
+
+  Future<void> _releaseNumber(Map<String, dynamic> number) async {
+    bool confirmed = false;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.cardBg,
+        title: const Text('Release Number',
+            style: TextStyle(color: AppTheme.textPrimary)),
+        content: Text(
+            'Release ${number['phone_number']}? This will permanently remove it from Twilio and it cannot be undone.',
+            style: const TextStyle(color: AppTheme.textSecondary, height: 1.5)),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(),
+              child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () {
+              confirmed = true;
+              Navigator.of(ctx, rootNavigator: true).pop();
+            },
+            style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red,
+                foregroundColor: Colors.white,
+                elevation: 0),
+            child: const Text('Release'),
+          ),
+        ],
+      ),
+    );
+    if (!confirmed || !mounted) return;
+
+    try {
+      final session = _supabase.auth.currentSession;
+      final res = await http.post(
+        Uri.parse(_provisionPhoneFnUrl),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ${session?.accessToken ?? ''}',
+        },
+        body: jsonEncode({
+          'action': 'release',
+          'phoneNumberId': number['id'],
+        }),
+      );
+      if (!mounted) return;
+      final body = jsonDecode(res.body) as Map<String, dynamic>;
+      if (res.statusCode == 200 && body['success'] == true) {
+        await _loadNumbers();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+                content: Text('Number released.'),
+                behavior: SnackBarBehavior.floating),
+          );
+        }
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+                content: Text('Failed to release: ${body['error'] ?? 'Unknown error'}'),
+                behavior: SnackBarBehavior.floating),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              content: Text('Error: $e'),
+              behavior: SnackBarBehavior.floating),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return _SectionShell(
+      title: 'Phone Numbers',
+      subtitle:
+          'Search for and purchase phone numbers for your AI SMS booking flow. Numbers are automatically wired to receive and respond to texts.',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(children: [
+            const Spacer(),
+            MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: ElevatedButton.icon(
+                onPressed: _showSearchDialog,
+                icon: const Icon(Icons.add, size: 16),
+                label: const Text('Get a Number'),
+                style: ElevatedButton.styleFrom(
+                    backgroundColor: AppTheme.brand,
+                    foregroundColor: Colors.white,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8)),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 10)),
+              ),
+            ),
+          ]),
+          const SizedBox(height: 20),
+          if (_loading)
+            const Center(child: CircularProgressIndicator())
+          else if (_numbers.isEmpty)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(40),
+              decoration: BoxDecoration(
+                color: AppTheme.cardBg,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppTheme.borderColor),
+              ),
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                const Icon(Icons.phone_disabled_outlined,
+                    size: 48, color: AppTheme.textMuted),
+                const SizedBox(height: 12),
+                const Text('No phone numbers yet',
+                    style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
+                        color: AppTheme.textPrimary)),
+                const SizedBox(height: 8),
+                const Text(
+                    'Get a number to start receiving and sending AI-powered SMS.',
+                    style: TextStyle(fontSize: 13, color: AppTheme.textSecondary),
+                    textAlign: TextAlign.center),
+                const SizedBox(height: 20),
+                MouseRegion(
+                  cursor: SystemMouseCursors.click,
+                  child: ElevatedButton.icon(
+                    onPressed: _showSearchDialog,
+                    icon: const Icon(Icons.add, size: 16),
+                    label: const Text('Get your first number'),
+                    style: ElevatedButton.styleFrom(
+                        backgroundColor: AppTheme.brand,
+                        foregroundColor: Colors.white,
+                        elevation: 0,
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8))),
+                  ),
+                ),
+              ]),
+            )
+          else
+            Column(
+              children: _numbers
+                  .map((n) => _PhoneNumberCard(
+                        number: n,
+                        onRelease: () => _releaseNumber(n),
+                      ))
+                  .toList(),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PhoneNumberCard extends StatelessWidget {
+  final Map<String, dynamic> number;
+  final VoidCallback onRelease;
+  const _PhoneNumberCard({required this.number, required this.onRelease});
+
+  @override
+  Widget build(BuildContext context) {
+    final isActive = (number['status'] as String? ?? 'active') == 'active';
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppTheme.cardBg,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppTheme.borderColor),
+      ),
+      child: Row(children: [
+        Container(
+          width: 40,
+          height: 40,
+          decoration: BoxDecoration(
+            color: AppTheme.brand.withValues(alpha: 0.12),
+            shape: BoxShape.circle,
+          ),
+          child: const Center(
+              child: Icon(Icons.phone_in_talk_outlined,
+                  size: 18, color: AppTheme.brand)),
+        ),
+        const SizedBox(width: 14),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(number['phone_number'] as String? ?? '',
+                  style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                      color: AppTheme.textPrimary)),
+              if ((number['friendly_name'] as String?)?.isNotEmpty == true)
+                Text(number['friendly_name'] as String,
+                    style: const TextStyle(
+                        fontSize: 12, color: AppTheme.textSecondary)),
+            ],
+          ),
+        ),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+          decoration: BoxDecoration(
+            color: isActive
+                ? const Color(0xFF10B981).withValues(alpha: 0.1)
+                : AppTheme.textMuted.withValues(alpha: 0.1),
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: Text(isActive ? 'Active' : 'Released',
+              style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                  color: isActive
+                      ? const Color(0xFF10B981)
+                      : AppTheme.textSecondary)),
+        ),
+        if (isActive) ...[
+          const SizedBox(width: 10),
+          Clickable(
+            onTap: onRelease,
+            child: Tooltip(
+              message: 'Release number',
+              child: Container(
+                padding: const EdgeInsets.all(6),
+                decoration: BoxDecoration(
+                  color: Colors.red.withValues(alpha: 0.06),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: Colors.red.withValues(alpha: 0.2)),
+                ),
+                child: const Icon(Icons.delete_outline,
+                    size: 15, color: Colors.red),
+              ),
+            ),
+          ),
+        ],
+      ]),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+//  PHONE NUMBER SEARCH DIALOG
+// ─────────────────────────────────────────────
+
+class _PhoneNumberSearchDialog extends StatefulWidget {
+  final VoidCallback onPurchased;
+  const _PhoneNumberSearchDialog({required this.onPurchased});
+
+  @override
+  State<_PhoneNumberSearchDialog> createState() =>
+      _PhoneNumberSearchDialogState();
+}
+
+class _PhoneNumberSearchDialogState extends State<_PhoneNumberSearchDialog> {
+  final _supabase = Supabase.instance.client;
+  final _areaCodeCtrl = TextEditingController();
+  bool _searching = false;
+  bool _purchasing = false;
+  String? _purchasingNumber;
+  String? _error;
+  List<Map<String, dynamic>> _results = [];
+
+  @override
+  void dispose() {
+    _areaCodeCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _search() async {
+    final areaCode = _areaCodeCtrl.text.trim();
+    if (areaCode.length != 3) {
+      setState(() => _error = 'Enter a valid 3-digit area code.');
+      return;
+    }
+    setState(() { _searching = true; _error = null; _results = []; });
+    try {
+      final session = _supabase.auth.currentSession;
+      final res = await http.post(
+        Uri.parse(_provisionPhoneFnUrl),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ${session?.accessToken ?? ''}',
+        },
+        body: jsonEncode({'action': 'search', 'areaCode': areaCode}),
+      );
+      final body = jsonDecode(res.body) as Map<String, dynamic>;
+      if (res.statusCode == 200) {
+        setState(() {
+          _results = List<Map<String, dynamic>>.from(body['results'] as List);
+          _searching = false;
+          if (_results.isEmpty) {
+            _error = 'No numbers currently available in area code $areaCode. Try a nearby area code instead.';
+          }
+        });
+      } else {
+        setState(() {
+          _error = body['error']?.toString() ?? 'Search failed.';
+          _searching = false;
+        });
+      }
+    } catch (e) {
+      setState(() { _error = 'Error: $e'; _searching = false; });
+    }
+  }
+
+  Future<void> _purchase(Map<String, dynamic> result) async {
+    setState(() {
+      _purchasing = true;
+      _purchasingNumber = result['phoneNumber'] as String?;
+      _error = null;
+    });
+    try {
+      final session = _supabase.auth.currentSession;
+      final res = await http.post(
+        Uri.parse(_provisionPhoneFnUrl),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ${session?.accessToken ?? ''}',
+        },
+        body: jsonEncode({
+          'action': 'purchase',
+          'phoneNumber': result['phoneNumber'],
+          'friendlyName': result['locality'] != null
+              ? '${result['locality']} Number'
+              : result['phoneNumber'],
+        }),
+      );
+      final body = jsonDecode(res.body) as Map<String, dynamic>;
+      if (!mounted) return;
+      if (res.statusCode == 200 && body['success'] == true) {
+        widget.onPurchased();
+      } else {
+        setState(() {
+          _error = body['error']?.toString() ?? 'Purchase failed.';
+          _purchasing = false;
+          _purchasingNumber = null;
+        });
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = 'Error: $e';
+        _purchasing = false;
+        _purchasingNumber = null;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: AppTheme.cardBg,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+            maxHeight: MediaQuery.of(context).size.height * 0.85),
+        child: SizedBox(
+          width: 520,
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Container(
+              padding: const EdgeInsets.fromLTRB(24, 20, 16, 20),
+              decoration: const BoxDecoration(
+                  border:
+                      Border(bottom: BorderSide(color: AppTheme.borderColor))),
+              child: Row(children: [
+                const Icon(Icons.search, size: 20, color: AppTheme.brand),
+                const SizedBox(width: 10),
+                const Text('Find a Phone Number',
+                    style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700,
+                        color: AppTheme.textPrimary)),
+                const Spacer(),
+                MouseRegion(
+                  cursor: SystemMouseCursors.click,
+                  child: TextButton(
+                      onPressed: () =>
+                          Navigator.of(context, rootNavigator: true).pop(),
+                      child: const Text('Close')),
+                ),
+              ]),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(24),
+              child: Row(children: [
+                Expanded(
+                  child: TextField(
+                    controller: _areaCodeCtrl,
+                    keyboardType: TextInputType.number,
+                    maxLength: 3,
+                    style: const TextStyle(
+                        fontSize: 13, color: AppTheme.textPrimary),
+                    decoration: InputDecoration(
+                      hintText: 'Area code, e.g. 813',
+                      counterText: '',
+                      filled: true,
+                      fillColor: AppTheme.pageBg,
+                      contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 14, vertical: 11),
+                      border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                          borderSide:
+                              const BorderSide(color: AppTheme.borderColor)),
+                      enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                          borderSide:
+                              const BorderSide(color: AppTheme.borderColor)),
+                      focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                          borderSide:
+                              BorderSide(color: AppTheme.brand, width: 1.5)),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                MouseRegion(
+                  cursor: SystemMouseCursors.click,
+                  child: ElevatedButton(
+                    onPressed: _searching ? null : _search,
+                    style: ElevatedButton.styleFrom(
+                        backgroundColor: AppTheme.brand,
+                        foregroundColor: Colors.white,
+                        elevation: 0,
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 18, vertical: 13),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8))),
+                    child: _searching
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2, color: Colors.white))
+                        : const Text('Search'),
+                  ),
+                ),
+              ]),
+            ),
+            if (_error != null)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(_error!,
+                      style: const TextStyle(color: Colors.red, fontSize: 13)),
+                ),
+              ),
+            if (_results.isNotEmpty)
+              Expanded(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(24, 12, 24, 24),
+                  child: Column(
+                    children: _results.map((r) {
+                      final number = r['phoneNumber'] as String;
+                      final isThisPurchasing =
+                          _purchasing && _purchasingNumber == number;
+                      return Container(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: AppTheme.pageBg,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: AppTheme.borderColor),
+                        ),
+                        child: Row(children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(number,
+                                    style: const TextStyle(
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.w700,
+                                        color: AppTheme.textPrimary)),
+                                Text(
+                                    '${r['locality'] ?? ''}${r['region'] != null ? ', ${r['region']}' : ''}  ·  ${r['monthlyCost'] ?? ''}/mo',
+                                    style: const TextStyle(
+                                        fontSize: 12,
+                                        color: AppTheme.textSecondary)),
+                              ],
+                            ),
+                          ),
+                          MouseRegion(
+                            cursor: SystemMouseCursors.click,
+                            child: ElevatedButton(
+                              onPressed: _purchasing ? null : () => _purchase(r),
+                              style: ElevatedButton.styleFrom(
+                                  backgroundColor: AppTheme.brand,
+                                  foregroundColor: Colors.white,
+                                  elevation: 0,
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 14, vertical: 8),
+                                  shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(8))),
+                              child: isThisPurchasing
+                                  ? const SizedBox(
+                                      width: 14,
+                                      height: 14,
+                                      child: CircularProgressIndicator(
+                                          strokeWidth: 2, color: Colors.white))
+                                  : const Text('Buy',
+                                      style: TextStyle(fontSize: 12)),
+                            ),
+                          ),
+                        ]),
+                      );
+                    }).toList(),
+                  ),
+                ),
+              ),
+          ]),
+        ),
+      ),
     );
   }
 }

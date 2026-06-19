@@ -133,7 +133,6 @@ class _AppNavBarState extends State<AppNavBar> {
     ('/settings?section=profile',          Icons.person_outline,             'My Profile'),
     ('/settings?section=ai',               Icons.smart_toy_outlined,         'AI Settings'),
     ('/settings?section=knowledge',        Icons.menu_book_outlined,         'Knowledge Base'),
-    ('/settings?section=phone',            Icons.phone_outlined,             'AI Phone Number'),
     ('/settings?section=email',            Icons.email_outlined,             'Email Config'),
     ('/settings?section=team',             Icons.people_outline,             'My Staff'),
     ('/settings?section=notifications',    Icons.notifications_outlined,     'Notifications'),
@@ -267,7 +266,7 @@ class _AppNavBarState extends State<AppNavBar> {
           ),
         ),
         _SectionLabel('My Business'),
-        ..._settingsSections.take(11).map((s) {
+        ..._settingsSections.take(10).map((s) {
           final isActive = location == s.$1 ||
               (s.$1 == '/settings' && location == '/settings');
           return Clickable(
@@ -302,7 +301,7 @@ class _AppNavBarState extends State<AppNavBar> {
           );
         }),
         _SectionLabel('Business Services'),
-        ..._settingsSections.skip(11).take(8).map((s) {
+        ..._settingsSections.skip(10).take(8).map((s) {
           final isActive = location == s.$1;
           return Clickable(
             onTap: () => context.go(s.$1),
@@ -336,7 +335,7 @@ class _AppNavBarState extends State<AppNavBar> {
           );
         }),
         _SectionLabel('Other Settings'),
-        ..._settingsSections.skip(19).map((s) {
+        ..._settingsSections.skip(18).map((s) {
           final isActive = location == s.$1 ||
               (s.$1 == '/settings' && location == '/settings');
           return Clickable(
