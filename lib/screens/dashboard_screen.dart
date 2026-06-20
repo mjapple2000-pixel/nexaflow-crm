@@ -73,6 +73,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Map<String, int>           _leadsBySource     = {};
   Map<String, int>           _leadsByStatus     = {};
 
+  bool    _hasInsightAccess        = false;
+  String? _weeklyInsightSummary;
+  String? _weeklyInsightGeneratedAt;
+
   @override
   void initState() {
     super.initState();
@@ -93,6 +97,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         _loadPipelineSnapshot(),
         _loadTodayAppointments(),
         _loadTaskStats(),
+        _loadWeeklyInsight(),
       ]);
     } catch (e) {
       debugPrint('Dashboard error: $e');
@@ -114,6 +119,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         _loadPipelineSnapshot(),
         _loadTodayAppointments(),
         _loadTaskStats(),
+        _loadWeeklyInsight(),
       ]);
     } catch (e) {
       debugPrint('Dashboard error: $e');
@@ -220,6 +226,26 @@ class _DashboardScreenState extends State<DashboardScreen> {
         .order('start_date_time');
 
     _todayAppointments = List<Map<String, dynamic>>.from(appts);
+  }
+
+  Future<void> _loadWeeklyInsight() async {
+    if (_businessId == null) return;
+    final biz = await _db
+        .from('businesses')
+        .select('is_beta, subscription_status, weekly_insight, weekly_insight_generated_at')
+        .eq('id', _businessId!)
+        .maybeSingle();
+    if (biz == null) return;
+    final isBeta = biz['is_beta'] as bool? ?? false;
+    final tier   = (biz['subscription_status'] as String?)?.toLowerCase();
+    _hasInsightAccess = isBeta || tier == 'growth' || tier == 'pro';
+    final insight = biz['weekly_insight'];
+    if (insight is Map) {
+      _weeklyInsightSummary = insight['summary'] as String?;
+    } else {
+      _weeklyInsightSummary = null;
+    }
+    _weeklyInsightGeneratedAt = biz['weekly_insight_generated_at'] as String?;
   }
 
   Future<void> _loadConversations() async {
@@ -368,6 +394,8 @@ Future<void> _loadTaskStats() async {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           _buildStatRow(),
+                          const SizedBox(height: 20),
+                          _buildWeeklyInsightCard(),
                           const SizedBox(height: 20),
                           Row(
                             crossAxisAlignment: CrossAxisAlignment.start,
@@ -519,6 +547,59 @@ Future<void> _loadTaskStats() async {
             color: const Color(0xFF10b981),
             onTap: () => context.go('/conversations')),
       ],
+    );
+  }
+
+  Widget _buildWeeklyInsightCard() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(colors: [AppTheme.brand.withValues(alpha: 0.06), AppTheme.brand.withValues(alpha: 0.01)]),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppTheme.brand.withValues(alpha: 0.15)),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Container(
+            width: 32, height: 32,
+            decoration: BoxDecoration(color: AppTheme.brand.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(8)),
+            alignment: Alignment.center,
+            child: const Icon(Icons.auto_awesome, size: 16, color: AppTheme.brand),
+          ),
+          const SizedBox(width: 10),
+          const Text('AI Weekly Insight', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+          const Spacer(),
+          if (_hasInsightAccess && _weeklyInsightGeneratedAt != null)
+            Text('Updated ${_timeAgo(_weeklyInsightGeneratedAt)}', style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+        ]),
+        const SizedBox(height: 14),
+        if (!_hasInsightAccess) ...[
+          Stack(children: [
+            Opacity(opacity: 0.4, child: IgnorePointer(child: Text(
+              'Leads up 20% this week, 3 appointments still need confirmation, and your response time improved by 12 minutes on average.',
+              style: TextStyle(fontSize: 13, color: AppTheme.textSecondary, height: 1.5),
+            ))),
+          ]),
+          const SizedBox(height: 14),
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(color: AppTheme.brand.withValues(alpha: 0.08), borderRadius: BorderRadius.circular(8)),
+            child: Row(children: [
+              const Icon(Icons.lock_outline, size: 14, color: AppTheme.brand),
+              const SizedBox(width: 8),
+              const Expanded(child: Text('Upgrade to Growth or Pro to unlock weekly AI insights',
+                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: AppTheme.brand))),
+              TextButton(onPressed: () => context.go('/settings?section=billing'), child: const Text('Upgrade', style: TextStyle(fontSize: 12))),
+            ]),
+          ),
+        ] else if (_weeklyInsightSummary == null) ...[
+          const Text('Your first weekly insight will appear here soon.',
+              style: TextStyle(fontSize: 13, color: AppTheme.textSecondary)),
+        ] else ...[
+          Text(_weeklyInsightSummary!, style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary, height: 1.5)),
+        ],
+      ]),
     );
   }
 
