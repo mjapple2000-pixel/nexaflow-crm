@@ -1,0 +1,12 @@
+[33mcommit e74eb7bbe0058273045617f93f0af026e416a9a0[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmaster[m[33m)[m
+Author: Michael Apple <vantagecaretech@gmail.com>
+Date:   Fri Jun 19 18:16:31 2026 -0400
+
+    FC-08: Business Hours - Business Profile defaults, calendar-level hours wired into AI SMS booking flow
+
+ .firebase/hosting.YnVpbGRcd2Vi.cache               |  26 [32m+[m[31m-[m
+ lib/screens/settings_screen.dart                   | 956 [32m+++++++++++++++++++[m[31m--[m
+ lib/widgets/main_layout.dart                       |   7 [32m+[m[31m-[m
+ supabase/functions/provision-phone-number/index.ts | 190 [32m++++[m
+ supabase/functions/receive-sms/index.ts            | 150 [32m+++[m[31m-[m
+ 5 files changed, 1218 insertions(+), 111 deletions(-)

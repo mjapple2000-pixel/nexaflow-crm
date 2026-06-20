@@ -41,6 +41,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
   final _usersSearchCtrl     = TextEditingController();
   final _calendarsSearchCtrl = TextEditingController();
   final _groupsSearchCtrl    = TextEditingController();
+  Set<String> _selectedCalendarIds = {};
 
   Map<String, Map<String, dynamic>> _availability = {
     'monday':    {'enabled': true,  'start': '09:00', 'end': '17:00', 'blocks': []},
@@ -107,6 +108,9 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
       _teamMembers   = List<Map<String, dynamic>>.from(results[2] as List);
       _leads         = List<Map<String, dynamic>>.from(results[3] as List);
       _calendars     = List<Map<String, dynamic>>.from(results[4] as List);
+      if (_selectedCalendarIds.isEmpty) {
+        _selectedCalendarIds = _calendars.map((c) => c['id'].toString()).toSet();
+      }
       _calendarGroups = List<Map<String, dynamic>>.from(results[5] as List);
       _serviceMenuItems = List<Map<String, dynamic>>.from(results[6] as List);
       _calendarRooms = List<Map<String, dynamic>>.from(results[7] as List);
@@ -134,6 +138,16 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
     }
   }
 
+  List<Map<String, dynamic>> get _visibleAppointments {
+    if (_selectedCalendarIds.isEmpty) return _appointments;
+    final allSelected = _selectedCalendarIds.length == _calendars.length;
+    return _appointments.where((a) {
+      final calId = a['calendar_id'];
+      if (calId == null) return allSelected; // unassigned appts show only when viewing all calendars
+      return _selectedCalendarIds.contains(calId.toString());
+    }).toList();
+  }
+
   List<Map<String, dynamic>> get _filtered {
     if (_statusFilter == 'All') return _appointments;
     return _appointments.where((a) => a['status'] == _statusFilter).toList();
@@ -141,14 +155,21 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
 
   ({int startHour, int endHour}) _visibleHourRange() {
     int? earliest; int? latest;
-    _availability.forEach((_, v) {
-      if (v['enabled'] == true) {
-        final s = _parseHour(v['start'] as String);
-        final e = _parseHour(v['end']   as String);
-        if (earliest == null || s < earliest!) earliest = s;
-        if (latest   == null || e > latest!)   latest   = e;
-      }
-    });
+    final activeCalendars = _calendars.where((c) => _selectedCalendarIds.contains(c['id'].toString()));
+    for (final cal in activeCalendars) {
+      final ah = cal['availability_hours'];
+      if (ah == null) continue;
+      final map = ah is String ? jsonDecode(ah) : ah;
+      if (map is! Map) continue;
+      map.forEach((_, v) {
+        if (v is Map && v['enabled'] == true) {
+          final s = _parseHour(v['start'] as String? ?? '09:00');
+          final e = _parseHour(v['end']   as String? ?? '17:00');
+          if (earliest == null || s < earliest!) earliest = s;
+          if (latest   == null || e > latest!)   latest   = e;
+        }
+      });
+    }
     final start = earliest ?? 8;
     final end   = latest   ?? 18;
     return (startHour: start.clamp(0, 23), endHour: (end + 1).clamp(1, 24));
@@ -403,7 +424,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
     final isToday = DateUtils.isSameDay(_focusDate, now);
     final range   = _visibleHourRange();
     final hours   = List.generate(range.endHour - range.startHour, (i) => range.startHour + i);
-    final dayAppts = _appointments.where((a) {
+    final dayAppts = _visibleAppointments.where((a) {
       final dt = DateTime.tryParse(a['start_date_time'] ?? '')?.toLocal();
       return dt != null && DateUtils.isSameDay(dt, _focusDate);
     }).toList();
@@ -495,7 +516,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
               color: DateUtils.isSameDay(d, now) ? AppTheme.brand.withValues(alpha: 0.02) : null,
             )))),
           ]))).toList()),
-          ..._appointments.where((a) {
+          ..._visibleAppointments.where((a) {
             final dt = DateTime.tryParse(a['start_date_time'] ?? '')?.toLocal();
             return dt != null && days.any((d) => DateUtils.isSameDay(d, dt));
           }).map((a) {
@@ -544,7 +565,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
           }
           final date     = DateTime(_focusDate.year, _focusDate.month, dayNum);
           final isToday  = DateUtils.isSameDay(date, now);
-          final dayAppts = _appointments.where((a) {
+          final dayAppts = _visibleAppointments.where((a) {
             final dt = DateTime.tryParse(a['start_date_time'] ?? '')?.toLocal();
             return dt != null && DateUtils.isSameDay(dt, date);
           }).toList();
@@ -695,7 +716,19 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
           children: _panelTab == 0
               ? filteredUsers.map((u) => _panelUserRow(u, AppTheme.brand)).toList()
               : _panelTab == 1
-                  ? filteredCalendars.map((c) => _panelCheckRow(c['name'] ?? 'Unnamed', const Color(0xFF6366F1))).toList()
+                  ? filteredCalendars.map((c) {
+                      final id = c['id'].toString();
+                      final checked = _selectedCalendarIds.contains(id);
+                      return _panelCheckRow(c['name'] ?? 'Unnamed', const Color(0xFF6366F1),
+                          checked: checked,
+                          onToggle: () => setState(() {
+                            if (checked) {
+                              if (_selectedCalendarIds.length > 1) _selectedCalendarIds.remove(id);
+                            } else {
+                              _selectedCalendarIds.add(id);
+                            }
+                          }));
+                    }).toList()
                   : [],
         )),
       ]),
@@ -726,13 +759,13 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
     ]));
   }
 
-  Widget _panelCheckRow(String label, Color color) {
-    return Padding(padding: const EdgeInsets.only(bottom: 8), child: Row(children: [
+  Widget _panelCheckRow(String label, Color color, {bool checked = true, VoidCallback? onToggle}) {
+    return Clickable(onTap: onToggle, child: Padding(padding: const EdgeInsets.only(bottom: 8), child: Row(children: [
       Container(width: 12, height: 12, decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(3))),
       const SizedBox(width: 8),
       Expanded(child: Text(label, style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary))),
-      Checkbox(value: true, onChanged: (_) {}, activeColor: color, materialTapTargetSize: MaterialTapTargetSize.shrinkWrap),
-    ]));
+      Checkbox(value: checked, onChanged: (_) => onToggle?.call(), activeColor: color, materialTapTargetSize: MaterialTapTargetSize.shrinkWrap),
+    ])));
   }
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -1758,6 +1791,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
     showDialog(context: context, barrierColor: Colors.black54, builder: (ctx) => _CalendarFormDialog(
       businessId: _businessId, teamMembers: _teamMembers, existing: existing,
       preselectedType: preselectedType,
+      businessDefaultHours: _business?['availability_hours'],
       onSaved: (String calendarName) {
         Navigator.of(ctx, rootNavigator: true).pop();
         _load();
@@ -2921,6 +2955,7 @@ class _CalendarFormDialog extends StatefulWidget {
  final void Function(String calendarName) onSaved;
 
   final String? preselectedType;
+  final dynamic businessDefaultHours;
 
   const _CalendarFormDialog({
     required this.businessId,
@@ -2928,6 +2963,7 @@ class _CalendarFormDialog extends StatefulWidget {
     required this.onSaved,
     this.existing,
     this.preselectedType,
+    this.businessDefaultHours,
   });
 
   @override
@@ -2988,6 +3024,21 @@ class _CalendarFormDialogState extends State<_CalendarFormDialog> {
 
     if (widget.preselectedType != null && widget.existing == null) {
       _calType = widget.preselectedType!;
+    }
+    if (widget.existing == null && widget.businessDefaultHours != null) {
+      final raw = widget.businessDefaultHours;
+      final map = raw is String ? jsonDecode(raw) : raw;
+      if (map is Map) {
+        map.forEach((day, val) {
+          if (_availability.containsKey(day) && val is Map) {
+            _availability[day] = {
+              'enabled': val['enabled'] ?? false,
+              'start':   val['start']   ?? '09:00',
+              'end':     val['end']     ?? '17:00',
+            };
+          }
+        });
+      }
     }
     if (widget.existing != null) {
       final e = widget.existing!;
