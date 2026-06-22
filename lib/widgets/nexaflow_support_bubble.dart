@@ -195,13 +195,11 @@ class _NexaFlowSupportBubbleState extends State<NexaFlowSupportBubble>
 
   // ── Knowledge base ────────────────────────────────────────────────────────
   Future<void> _loadKb() async {
-    if (_kbItems.isNotEmpty) return;
     setState(() => _kbLoading = true);
     try {
       final res = await _db
-          .from('knowledge_base')
-          .select('title, short_answer, content, category')
-          .eq('business_id', _businessId ?? 0)
+          .from('nexaflow_kb')
+          .select('title, content, category')
           .eq('is_active', true)
           .order('sort_order');
       if (mounted) {
@@ -223,9 +221,8 @@ class _NexaFlowSupportBubbleState extends State<NexaFlowSupportBubble>
           ? List.from(_kbItems)
           : _kbItems.where((item) {
               final title   = (item['title']        as String? ?? '').toLowerCase();
-              final answer  = (item['short_answer'] as String? ?? '').toLowerCase();
-              final content = (item['content']      as String? ?? '').toLowerCase();
-              return title.contains(q) || answer.contains(q) || content.contains(q);
+              final content = (item['content'] as String? ?? '').toLowerCase();
+              return title.contains(q) || content.contains(q);
             }).toList();
     });
   }
@@ -954,9 +951,8 @@ class _KbArticleTileState extends State<_KbArticleTile> {
   @override
   Widget build(BuildContext context) {
     final title   = widget.item['title']        as String? ?? '';
-    final answer  = widget.item['short_answer'] as String? ?? '';
-    final content = widget.item['content']      as String? ?? '';
-    final body    = answer.isNotEmpty ? answer : content;
+    final content = widget.item['content'] as String? ?? '';
+    final body    = content;
 
     return MouseRegion(
       cursor: SystemMouseCursors.click,
