@@ -519,19 +519,18 @@ Future<void> _loadTaskStats() async {
       children: [
         _StatCard(
             label: 'Total Contacts', value: '$_totalLeads',
-            sub: '$_newLeads new', icon: Icons.people_alt_outlined,
+            sub: '$_newLeads new this week', icon: Icons.people_alt_outlined,
             color: AppTheme.brand, onTap: () => context.go('/contacts')),
+        const SizedBox(width: 12),
+        _StatCard(
+            label: 'New Leads', value: '$_newLeads',
+            sub: 'this ${_dateRange.label.toLowerCase()}', icon: Icons.person_add_alt_1_outlined,
+            color: const Color(0xFF6366f1), onTap: () => context.go('/contacts')),
         const SizedBox(width: 12),
         _StatCard(
             label: 'Pipeline Value', value: _fmtMoney(_pipelineValue),
             sub: '$_openDeals open deals', icon: Icons.bar_chart_rounded,
             color: const Color(0xFF8b5cf6), onTap: () => context.go('/pipelines')),
-        const SizedBox(width: 12),
-        _StatCard(
-            label: 'Won Revenue', value: _fmtMoney(_wonValue),
-            sub: '${_leadsByStatus['Won'] ?? 0} won leads',
-            icon: Icons.emoji_events_outlined,
-            color: AppTheme.success, onTap: () => context.go('/pipelines')),
         const SizedBox(width: 12),
         _StatCard(
             label: 'Appts Today', value: '$_appointmentsToday',

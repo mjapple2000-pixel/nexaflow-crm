@@ -31,6 +31,7 @@ import '../screens/beta_signup_screen.dart';
 import '../screens/snippets_screen.dart';
 import '../screens/reviews_screen.dart';
 import '../screens/public_booking_screen.dart';
+import '../screens/jobs_screen.dart';
 
 class AppRouter {
   static bool? cachedIsSuperuser;
@@ -267,6 +268,11 @@ class AppRouter {
             path: '/opportunities',
             name: 'opportunities',
             builder: (context, state) => const PipelinesScreen(),
+          ),
+          GoRoute(
+            path: '/jobs',
+            name: 'jobs',
+            builder: (context, state) => const JobsScreen(),
           ),
           GoRoute(
             path: '/campaigns',

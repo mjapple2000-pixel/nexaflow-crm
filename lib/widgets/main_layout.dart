@@ -468,6 +468,13 @@ class _AppNavBarState extends State<AppNavBar> {
                       route: '/appointments',
                       active: location.startsWith('/appointments'),
                     ),
+                  if (_can('pipelines'))
+                    _NavItem(
+                      icon: Icons.work_outline_rounded,
+                      label: 'Jobs',
+                      route: '/jobs',
+                      active: location.startsWith('/jobs'),
+                    ),
                   if (_can('tasks'))
                     _NavItem(
                       icon: Icons.task_alt_outlined,
