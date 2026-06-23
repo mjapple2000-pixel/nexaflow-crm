@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import '../theme/app_theme.dart';
+import '../screens/quotes_screen.dart';
 
 class JobsScreen extends StatefulWidget {
   const JobsScreen({super.key});
@@ -31,18 +33,13 @@ class _JobsScreenState extends State<JobsScreen>
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _TopBar(),
+          _TopBar(tabController: _tabController),
           _TabBar(controller: _tabController),
           Expanded(
             child: TabBarView(
               controller: _tabController,
               children: const [
-                _ComingSoonTab(
-                  icon: Icons.request_quote_outlined,
-                  title: 'Quotes',
-                  description:
-                      'Send professional quotes to clients, track approvals, and convert to invoices in one tap.',
-                ),
+                _QuotesTab(),
                 _ComingSoonTab(
                   icon: Icons.receipt_long_outlined,
                   title: 'Invoices',
@@ -74,24 +71,66 @@ class _JobsScreenState extends State<JobsScreen>
 //  TOP BAR
 // ─────────────────────────────────────────────
 class _TopBar extends StatelessWidget {
+  final TabController tabController;
+  const _TopBar({required this.tabController});
+
   @override
   Widget build(BuildContext context) {
-    return Container(
-      height: 56,
-      padding: const EdgeInsets.symmetric(horizontal: 24),
-      decoration: const BoxDecoration(
-        color: AppTheme.cardBg,
-        border: Border(bottom: BorderSide(color: AppTheme.borderColor)),
-      ),
-      alignment: Alignment.centerLeft,
-      child: const Text(
-        'Jobs',
-        style: TextStyle(
-          fontSize: 16,
-          fontWeight: FontWeight.w600,
-          color: AppTheme.textPrimary,
-        ),
-      ),
+    return AnimatedBuilder(
+      animation: tabController,
+      builder: (context, _) {
+        final isQuotesTab = tabController.index == 0;
+        return Container(
+          height: 56,
+          padding: const EdgeInsets.symmetric(horizontal: 24),
+          decoration: const BoxDecoration(
+            color: AppTheme.cardBg,
+            border: Border(bottom: BorderSide(color: AppTheme.borderColor)),
+          ),
+          child: Row(
+            children: [
+              const Text(
+                'Jobs',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                  color: AppTheme.textPrimary,
+                ),
+              ),
+              const Spacer(),
+              if (isQuotesTab)
+                Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    child: ElevatedButton.icon(
+                      onPressed: () => context.go('/jobs/quotes/new'),
+                      icon: const Icon(Icons.add, size: 16),
+                      label: const Text('New Quote'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppTheme.brand,
+                        foregroundColor: Colors.white,
+                        elevation: 0,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                      ),
+                    ),
+                  ),
+                ),
+              MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: Tooltip(
+                  message: 'Service Library',
+                  child: IconButton(
+                    icon: const Icon(Icons.settings_outlined, size: 18, color: AppTheme.textSecondary),
+                    onPressed: () => context.go('/settings?section=service_library'),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 }
@@ -193,6 +232,14 @@ class _SoonBadge extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+class _QuotesTab extends StatelessWidget {
+  const _QuotesTab();
+
+  @override
+  Widget build(BuildContext context) {
+    return const QuotesScreen();
   }
 }
 

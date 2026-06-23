@@ -155,6 +155,8 @@ class _AppNavBarState extends State<AppNavBar> {
     ('/settings?section=scoring',          Icons.scoreboard_outlined,        'Manage Scoring'),
     ('/settings?section=domains',          Icons.language_rounded,           'Domains'),
     ('/settings?section=url_redirects',    Icons.alt_route_rounded,          'URL Redirects'),
+        // JOBS
+    ('/settings?section=service_library', Icons.inventory_2_outlined,       'Service Library'),
   ];
 
   @override
@@ -334,10 +336,46 @@ class _AppNavBarState extends State<AppNavBar> {
             ),
           );
         }),
-        _SectionLabel('Other Settings'),
-        ..._settingsSections.skip(18).map((s) {
+                _SectionLabel('Other Settings'),
+        ..._settingsSections.skip(18).take(6).map((s) {
           final isActive = location == s.$1 ||
               (s.$1 == '/settings' && location == '/settings');
+          return Clickable(
+            onTap: () => context.go(s.$1),
+            child: Container(
+              height: 36,
+              decoration: BoxDecoration(
+                color: isActive ? AppTheme.brandActive : Colors.transparent,
+                border: Border(
+                  left: BorderSide(
+                    color: isActive ? AppTheme.brand : Colors.transparent,
+                    width: 3,
+                  ),
+                ),
+              ),
+              padding: const EdgeInsets.symmetric(horizontal: 14),
+              child: Row(
+                children: [
+                  Icon(s.$2, size: 16,
+                      color: isActive ? AppTheme.textActive : AppTheme.textNormal),
+                  const SizedBox(width: 9),
+                  Expanded(
+                    child: Text(s.$3,
+                        style: TextStyle(
+                          fontSize: 12.5,
+                          color: isActive ? AppTheme.textActive : AppTheme.textNormal,
+                        )),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }),
+
+        // JOBS SECTION
+        _SectionLabel('JOBS'),
+        ..._settingsSections.skip(24).map((s) {
+          final isActive = location == s.$1;
           return Clickable(
             onTap: () => context.go(s.$1),
             child: Container(

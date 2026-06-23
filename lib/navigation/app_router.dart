@@ -32,6 +32,9 @@ import '../screens/snippets_screen.dart';
 import '../screens/reviews_screen.dart';
 import '../screens/public_booking_screen.dart';
 import '../screens/jobs_screen.dart';
+import '../screens/quotes_screen.dart';
+import '../screens/quote_detail_screen.dart';
+import '../screens/new_quote_screen.dart';
 
 class AppRouter {
   static bool? cachedIsSuperuser;
@@ -273,6 +276,18 @@ class AppRouter {
             path: '/jobs',
             name: 'jobs',
             builder: (context, state) => const JobsScreen(),
+          ),
+          GoRoute(
+            path: '/jobs/quotes/new',
+            name: 'quote-new',
+            builder: (context, state) => const NewQuoteScreen(),
+          ),
+          GoRoute(
+            path: '/jobs/quotes/:id',
+            name: 'quote-detail',
+            builder: (context, state) => QuoteDetailScreen(
+              quoteId: state.pathParameters['id']!,
+            ),
           ),
           GoRoute(
             path: '/campaigns',

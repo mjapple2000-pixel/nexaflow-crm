@@ -275,6 +275,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       case 'scoring':         return 22;
       case 'domains':         return 23;
       case 'url_redirects':   return 24;
+      case 'service_library': return 25;
       default:                return 0;
     }
   }
@@ -353,7 +354,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ? const Center(child: CircularProgressIndicator())
                 : _error != null
                     ? _errorView()
-                    : _buildContent(),
+                    : _buildContent(),   // ← Removed the Row + internal sidebar
           ),
         ],
       ),
@@ -363,7 +364,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Widget _buildTopBar() {
     return Container(
       height: 56,
-      padding: const EdgeInsets.symmetric(horizontal: 24),
+      padding: const EdgeInsets.symmetric(horizontal: 32),
       decoration: const BoxDecoration(
         color: AppTheme.cardBg,
         border: Border(bottom: BorderSide(color: AppTheme.borderColor)),
@@ -372,7 +373,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         children: [
           Text('Settings',
               style: TextStyle(
-                  fontSize: 16,
+                  fontSize: 18,
                   fontWeight: FontWeight.w600,
                   color: AppTheme.textPrimary)),
         ],
@@ -389,6 +390,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
       child: Column(
         children: [
+          Expanded(
+            child: SingleChildScrollView(
+              child: Column(
+              children: [
           Container(
             padding: const EdgeInsets.all(20),
             child: Column(
@@ -479,52 +484,91 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SizedBox(height: 8),
           const Divider(height: 1, color: AppTheme.borderColor),
           const SizedBox(height: 8),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20),
-            child: Text('BUSINESS SERVICES',
-                style: TextStyle(
-                    fontSize: 10,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: 0.6,
-                    color: AppTheme.textSecondary.withValues(alpha: 0.7))),
-          ),
-          const SizedBox(height: 6),
-          Clickable(
-            onTap: () => setState(() => _selectedSection = 17),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 150),
-              margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-              decoration: BoxDecoration(
-                color: _selectedSection == 17
-                    ? AppTheme.brand.withValues(alpha: 0.1)
-                    : Colors.transparent,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Row(
-                children: [
-                  Icon(Icons.phone_in_talk_outlined,
-                      size: 17,
-                      color: _selectedSection == 17
-                          ? AppTheme.brand
-                          : AppTheme.textSecondary),
-                  const SizedBox(width: 10),
-                  Text('Phone Numbers',
-                      style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: _selectedSection == 17
-                              ? FontWeight.w600
-                              : FontWeight.w400,
-                          color: _selectedSection == 17
-                              ? AppTheme.brand
-                              : AppTheme.textSecondary)),
-                ],
+          ..._buildSidebarGroup('BUSINESS SERVICES', [
+            (11, Icons.bar_chart_rounded,        'Pipelines'),
+            (12, Icons.bolt_outlined,             'Automation'),
+            (13, Icons.calendar_today_outlined,   'Calendars'),
+            (14, Icons.chat_bubble_outline_rounded,'Conversation AI'),
+            (15, Icons.mic_outlined,              'Voice AI'),
+            (16, Icons.alternate_email_rounded,   'Email Services'),
+            (17, Icons.phone_in_talk_outlined,    'Phone Numbers'),
+            (18, Icons.message_outlined,          'WhatsApp'),
+          ]),
+          const SizedBox(height: 8),
+          const Divider(height: 1, color: AppTheme.borderColor),
+          const SizedBox(height: 8),
+          ..._buildSidebarGroup('OTHER SETTINGS', [
+            (19, Icons.category_outlined,         'Objects'),
+            (20, Icons.tune_rounded,              'Custom Fields'),
+            (21, Icons.data_object_rounded,       'Custom Values'),
+            (22, Icons.scoreboard_outlined,       'Scoring'),
+            (23, Icons.language_rounded,          'Domains'),
+            (24, Icons.alt_route_rounded,         'URL Redirects'),
+          ]),
+          const SizedBox(height: 8),
+          const Divider(height: 1, color: AppTheme.borderColor),
+          const SizedBox(height: 8),
+          ..._buildSidebarGroup('JOBS', [
+            (25, Icons.inventory_2_outlined,      'Service Library'),
+          ]),
+        ],
               ),
             ),
           ),
         ],
       ),
     );
+  }
+
+  List<Widget> _buildSidebarGroup(
+      String label, List<(int, IconData, String)> items) {
+    return [
+      Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 20),
+        child: Text(label,
+            style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0.6,
+                color: AppTheme.textSecondary.withValues(alpha: 0.7))),
+      ),
+      const SizedBox(height: 6),
+      ...items.map((item) {
+        final idx = item.$1;
+        final icon = item.$2;
+        final name = item.$3;
+        final isSelected = _selectedSection == idx;
+        return Clickable(
+          onTap: () => setState(() => _selectedSection = idx),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 150),
+            margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              color: isSelected
+                  ? AppTheme.brand.withValues(alpha: 0.1)
+                  : Colors.transparent,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Row(children: [
+              Icon(icon,
+                  size: 17,
+                  color: isSelected ? AppTheme.brand : AppTheme.textSecondary),
+              const SizedBox(width: 10),
+              Text(name,
+                  style: TextStyle(
+                      fontSize: 13,
+                      fontWeight:
+                          isSelected ? FontWeight.w600 : FontWeight.w400,
+                      color: isSelected
+                          ? AppTheme.brand
+                          : AppTheme.textSecondary)),
+            ]),
+          ),
+        );
+      }),
+      const SizedBox(height: 8),
+    ];
   }
 
   Widget _buildContent() {
@@ -591,6 +635,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         return _ComingSoonSection(title: 'Domains', icon: Icons.language_rounded);
       case 24:
         return _ComingSoonSection(title: 'URL Redirects', icon: Icons.alt_route_rounded);
+      case 25:
+        return _ServiceLibrarySection(businessId: _businessId!);
       default:
         return const SizedBox();
     }
@@ -6327,7 +6373,610 @@ class _CustomValueDialogState extends State<_CustomValueDialog> {
     );
   }
 }
+// ─────────────────────────────────────────────
+//  SERVICE LIBRARY SECTION
+// ─────────────────────────────────────────────
 
+class _ServiceLibrarySection extends StatefulWidget {
+  final int businessId;
+  const _ServiceLibrarySection({required this.businessId});
+
+  @override
+  State<_ServiceLibrarySection> createState() => _ServiceLibrarySectionState();
+}
+
+class _ServiceLibrarySectionState extends State<_ServiceLibrarySection> {
+  final _supabase = Supabase.instance.client;
+  List<Map<String, dynamic>> _items = [];
+  bool _loading = true;
+  String _searchQuery = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() => _loading = true);
+    try {
+      final res = await _supabase
+          .from('service_library')
+          .select()
+          .eq('business_id', widget.businessId)
+          .filter('deleted_at', 'is', null)
+          .order('name');
+      setState(() {
+        _items = List<Map<String, dynamic>>.from(res as List);
+        _loading = false;
+      });
+    } catch (e) {
+      debugPrint('Service library load error: $e');
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  List<Map<String, dynamic>> get _filtered {
+    if (_searchQuery.isEmpty) return _items;
+    final q = _searchQuery.toLowerCase();
+    return _items.where((item) =>
+        (item['name'] as String? ?? '').toLowerCase().contains(q) ||
+        (item['description'] as String? ?? '').toLowerCase().contains(q)).toList();
+  }
+
+  void _showEditor({Map<String, dynamic>? existing}) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => _ServiceItemDialog(
+        businessId: widget.businessId,
+        existing: existing,
+        onSaved: () {
+          Navigator.of(ctx, rootNavigator: true).pop();
+          _load();
+        },
+      ),
+    );
+  }
+
+  Future<void> _toggleActive(Map<String, dynamic> item) async {
+    final newVal = !(item['is_active'] as bool? ?? true);
+    await _supabase
+        .from('service_library')
+        .update({'is_active': newVal})
+        .eq('id', item['id']);
+    await _load();
+  }
+
+  Future<void> _delete(Map<String, dynamic> item) async {
+    bool confirmed = false;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.cardBg,
+        title: const Text('Delete Service',
+            style: TextStyle(color: AppTheme.textPrimary)),
+        content: Text('Delete "${item['name']}"? This cannot be undone.',
+            style: const TextStyle(color: AppTheme.textSecondary)),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(),
+              child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () {
+              confirmed = true;
+              Navigator.of(ctx, rootNavigator: true).pop();
+            },
+            style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red,
+                foregroundColor: Colors.white,
+                elevation: 0),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (!confirmed || !mounted) return;
+    await _supabase
+        .from('service_library')
+        .update({'deleted_at': DateTime.now().toUtc().toIso8601String()})
+        .eq('id', item['id']);
+    await _load();
+  }
+
+  String _formatPrice(dynamic price) {
+    if (price == null) return '\$0.00';
+    final p = double.tryParse(price.toString()) ?? 0.0;
+    return '\$${p.toStringAsFixed(2)}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final filtered = _filtered;
+    return _SectionShell(
+      title: 'Service Library',
+      subtitle: 'Saved services and products you can add to quotes and invoices.',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // ── Toolbar ──────────────────────────────────────────────
+          Row(children: [
+            Expanded(
+              child: SizedBox(
+                height: 38,
+                child: TextField(
+                  onChanged: (v) => setState(() => _searchQuery = v),
+                  style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                  decoration: InputDecoration(
+                    hintText: 'Search services...',
+                    hintStyle: const TextStyle(fontSize: 13, color: AppTheme.textSecondary),
+                    prefixIcon: const Icon(Icons.search, size: 16, color: AppTheme.textSecondary),
+                    filled: true,
+                    fillColor: AppTheme.pageBg,
+                    isDense: true,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                        borderSide: const BorderSide(color: AppTheme.borderColor)),
+                    enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                        borderSide: const BorderSide(color: AppTheme.borderColor)),
+                    focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                        borderSide: BorderSide(color: AppTheme.brand, width: 1.5)),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: ElevatedButton.icon(
+                onPressed: () => _showEditor(),
+                icon: const Icon(Icons.add, size: 16),
+                label: const Text('Add Service'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppTheme.brand,
+                  foregroundColor: Colors.white,
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+                ),
+              ),
+            ),
+          ]),
+          const SizedBox(height: 20),
+
+          // ── List ─────────────────────────────────────────────────
+          if (_loading)
+            const Center(child: CircularProgressIndicator())
+          else if (filtered.isEmpty)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(48),
+              decoration: BoxDecoration(
+                color: AppTheme.cardBg,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppTheme.borderColor),
+              ),
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                const Icon(Icons.inventory_2_outlined, size: 48, color: AppTheme.textMuted),
+                const SizedBox(height: 12),
+                Text(
+                  _searchQuery.isNotEmpty
+                      ? 'No services match your search.'
+                      : 'No services yet.',
+                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600,
+                      color: AppTheme.textPrimary),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'Add your services and products here so you can quickly add them to quotes and invoices.',
+                  style: TextStyle(fontSize: 13, color: AppTheme.textSecondary),
+                  textAlign: TextAlign.center,
+                ),
+                if (_searchQuery.isEmpty) ...[
+                  const SizedBox(height: 20),
+                  MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    child: ElevatedButton.icon(
+                      onPressed: () => _showEditor(),
+                      icon: const Icon(Icons.add, size: 16),
+                      label: const Text('Add your first service'),
+                      style: ElevatedButton.styleFrom(
+                          backgroundColor: AppTheme.brand,
+                          foregroundColor: Colors.white,
+                          elevation: 0,
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(8))),
+                    ),
+                  ),
+                ],
+              ]),
+            )
+          else
+            Container(
+              decoration: BoxDecoration(
+                color: AppTheme.cardBg,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: AppTheme.borderColor),
+              ),
+              child: Column(
+                children: [
+                  // Header
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                    decoration: const BoxDecoration(
+                      border: Border(bottom: BorderSide(color: AppTheme.borderColor)),
+                    ),
+                    child: const Row(children: [
+                      Expanded(flex: 4, child: Text('NAME',
+                          style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                              color: AppTheme.textSecondary, letterSpacing: 0.8))),
+                      Expanded(flex: 3, child: Text('DESCRIPTION',
+                          style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                              color: AppTheme.textSecondary, letterSpacing: 0.8))),
+                      SizedBox(width: 100, child: Text('PRICE',
+                          style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                              color: AppTheme.textSecondary, letterSpacing: 0.8))),
+                      SizedBox(width: 80, child: Text('UNIT',
+                          style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                              color: AppTheme.textSecondary, letterSpacing: 0.8))),
+                      SizedBox(width: 100),
+                    ]),
+                  ),
+                  // Rows
+                  ...filtered.asMap().entries.map((e) {
+                    final i = e.key;
+                    final item = e.value;
+                    final isLast = i == filtered.length - 1;
+                    final isActive = item['is_active'] as bool? ?? true;
+                    return Container(
+                      decoration: BoxDecoration(
+                        color: isActive ? null : AppTheme.pageBg.withValues(alpha: 0.5),
+                        border: isLast ? null : const Border(
+                            bottom: BorderSide(color: AppTheme.borderColor)),
+                      ),
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      child: Row(children: [
+                        // Name
+                        Expanded(flex: 4, child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(item['name'] as String? ?? '',
+                                style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                    color: isActive
+                                        ? AppTheme.textPrimary
+                                        : AppTheme.textSecondary),
+                                overflow: TextOverflow.ellipsis),
+                          ],
+                        )),
+                        // Description
+                        Expanded(flex: 3, child: Text(
+                          item['description'] as String? ?? '—',
+                          style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+                          overflow: TextOverflow.ellipsis,
+                          maxLines: 1,
+                        )),
+                        // Price
+                        SizedBox(width: 100, child: Text(
+                          _formatPrice(item['default_price']),
+                          style: const TextStyle(fontSize: 13,
+                              fontWeight: FontWeight.w600, color: AppTheme.textPrimary),
+                        )),
+                        // Unit
+                        SizedBox(width: 80, child: Text(
+                          item['unit'] as String? ?? '—',
+                          style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+                          overflow: TextOverflow.ellipsis,
+                        )),
+                        // Actions
+                        SizedBox(width: 100, child: Row(
+                          mainAxisAlignment: MainAxisAlignment.end,
+                          children: [
+                            Clickable(
+                              onTap: () => _toggleActive(item),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                decoration: BoxDecoration(
+                                  color: isActive
+                                      ? AppTheme.success.withValues(alpha: 0.1)
+                                      : AppTheme.textMuted.withValues(alpha: 0.1),
+                                  borderRadius: BorderRadius.circular(99),
+                                ),
+                                child: Text(
+                                  isActive ? 'Active' : 'Inactive',
+                                  style: TextStyle(
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.w600,
+                                      color: isActive ? AppTheme.success : AppTheme.textSecondary),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            PopupMenuButton<String>(
+                              color: AppTheme.cardBg,
+                              icon: const Icon(Icons.more_vert, size: 16,
+                                  color: AppTheme.textSecondary),
+                              itemBuilder: (_) => [
+                                PopupMenuItem(value: 'edit', child: Row(children: [
+                                  const Icon(Icons.edit_outlined, size: 14,
+                                      color: AppTheme.textSecondary),
+                                  const SizedBox(width: 8),
+                                  const Text('Edit', style: TextStyle(fontSize: 13,
+                                      color: AppTheme.textPrimary)),
+                                ])),
+                                PopupMenuItem(value: 'delete', child: Row(children: [
+                                  const Icon(Icons.delete_outline, size: 14, color: Colors.red),
+                                  const SizedBox(width: 8),
+                                  const Text('Delete', style: TextStyle(fontSize: 13,
+                                      color: Colors.red)),
+                                ])),
+                              ],
+                              onSelected: (action) {
+                                if (action == 'edit') _showEditor(existing: item);
+                                if (action == 'delete') _delete(item);
+                              },
+                            ),
+                          ],
+                        )),
+                      ]),
+                    );
+                  }),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+//  SERVICE ITEM DIALOG
+// ─────────────────────────────────────────────
+
+class _ServiceItemDialog extends StatefulWidget {
+  final int businessId;
+  final Map<String, dynamic>? existing;
+  final VoidCallback onSaved;
+  const _ServiceItemDialog({
+    required this.businessId,
+    this.existing,
+    required this.onSaved,
+  });
+
+  @override
+  State<_ServiceItemDialog> createState() => _ServiceItemDialogState();
+}
+
+class _ServiceItemDialogState extends State<_ServiceItemDialog> {
+  final _supabase = Supabase.instance.client;
+  final _nameCtrl = TextEditingController();
+  final _descCtrl = TextEditingController();
+  final _priceCtrl = TextEditingController();
+  final _unitCtrl = TextEditingController();
+  bool _saving = false;
+  String? _error;
+
+  static const _unitSuggestions = [
+    'per hour', 'per unit', 'flat rate', 'per sq ft',
+    'per linear ft', 'per day', 'per visit',
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.existing != null) {
+      final e = widget.existing!;
+      _nameCtrl.text  = e['name'] as String? ?? '';
+      _descCtrl.text  = e['description'] as String? ?? '';
+      _priceCtrl.text = e['default_price']?.toString() ?? '';
+      _unitCtrl.text  = e['unit'] as String? ?? '';
+    }
+  }
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    _descCtrl.dispose();
+    _priceCtrl.dispose();
+    _unitCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    if (_nameCtrl.text.trim().isEmpty) {
+      setState(() => _error = 'Name is required.');
+      return;
+    }
+    final price = double.tryParse(_priceCtrl.text.trim()) ?? 0.0;
+    setState(() { _saving = true; _error = null; });
+    try {
+      final payload = {
+        'business_id':   widget.businessId,
+        'name':          _nameCtrl.text.trim(),
+        'description':   _descCtrl.text.trim(),
+        'default_price': price,
+        'unit':          _unitCtrl.text.trim(),
+        'is_active':     true,
+        'updated_at':    DateTime.now().toUtc().toIso8601String(),
+      };
+      if (widget.existing != null) {
+        await _supabase
+            .from('service_library')
+            .update(payload)
+            .eq('id', widget.existing!['id']);
+      } else {
+        await _supabase.from('service_library').insert(payload);
+      }
+      widget.onSaved();
+    } catch (e) {
+      setState(() { _error = e.toString(); _saving = false; });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isEdit = widget.existing != null;
+    return Dialog(
+      backgroundColor: AppTheme.cardBg,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: SizedBox(
+        width: 520,
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          // Header
+          Container(
+            padding: const EdgeInsets.fromLTRB(24, 20, 16, 20),
+            decoration: const BoxDecoration(
+                border: Border(bottom: BorderSide(color: AppTheme.borderColor))),
+            child: Row(children: [
+              const Icon(Icons.inventory_2_outlined, size: 20, color: AppTheme.brand),
+              const SizedBox(width: 10),
+              Text(isEdit ? 'Edit Service' : 'New Service',
+                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700,
+                      color: AppTheme.textPrimary)),
+              const Spacer(),
+              MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: TextButton(
+                    onPressed: () => Navigator.of(context, rootNavigator: true).pop(),
+                    child: const Text('Cancel')),
+              ),
+              const SizedBox(width: 8),
+              MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: ElevatedButton(
+                  onPressed: _saving ? null : _save,
+                  style: ElevatedButton.styleFrom(
+                      backgroundColor: AppTheme.brand,
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+                  child: _saving
+                      ? const SizedBox(width: 16, height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                      : const Text('Save'),
+                ),
+              ),
+            ]),
+          ),
+          // Body
+          Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              // Name
+              _dlgField('Name *', _nameCtrl, hint: 'e.g. Roof Inspection'),
+              const SizedBox(height: 14),
+              // Description
+              _dlgField('Description', _descCtrl,
+                  hint: 'Brief description shown on quotes and invoices', maxLines: 2),
+              const SizedBox(height: 14),
+              // Price + Unit row
+              Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Expanded(
+                  child: _dlgField('Default Price', _priceCtrl,
+                      hint: '0.00', keyboardType: TextInputType.number),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('Unit',
+                          style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600,
+                              color: AppTheme.textSecondary)),
+                      const SizedBox(height: 6),
+                      TextField(
+                        controller: _unitCtrl,
+                        style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                        decoration: InputDecoration(
+                          hintText: 'e.g. per hour',
+                          filled: true,
+                          fillColor: AppTheme.pageBg,
+                          contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 14, vertical: 11),
+                          border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(8),
+                              borderSide: const BorderSide(color: AppTheme.borderColor)),
+                          enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(8),
+                              borderSide: const BorderSide(color: AppTheme.borderColor)),
+                          focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(8),
+                              borderSide: BorderSide(color: AppTheme.brand, width: 1.5)),
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Wrap(
+                        spacing: 6,
+                        runSpacing: 4,
+                        children: _unitSuggestions.map((s) => Clickable(
+                          onTap: () => setState(() => _unitCtrl.text = s),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: _unitCtrl.text == s
+                                  ? AppTheme.brand.withValues(alpha: 0.1)
+                                  : AppTheme.pageBg,
+                              borderRadius: BorderRadius.circular(20),
+                              border: Border.all(
+                                color: _unitCtrl.text == s
+                                    ? AppTheme.brand.withValues(alpha: 0.4)
+                                    : AppTheme.borderColor,
+                              ),
+                            ),
+                            child: Text(s,
+                                style: TextStyle(
+                                    fontSize: 11,
+                                    color: _unitCtrl.text == s
+                                        ? AppTheme.brand
+                                        : AppTheme.textSecondary)),
+                          ),
+                        )).toList(),
+                      ),
+                    ],
+                  ),
+                ),
+              ]),
+              if (_error != null) ...[
+                const SizedBox(height: 12),
+                Text(_error!, style: const TextStyle(color: Colors.red, fontSize: 13)),
+              ],
+            ]),
+          ),
+        ]),
+      ),
+    );
+  }
+
+  Widget _dlgField(String label, TextEditingController ctrl,
+      {String? hint, int maxLines = 1, TextInputType? keyboardType}) {
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text(label,
+          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600,
+              color: AppTheme.textSecondary)),
+      const SizedBox(height: 6),
+      TextField(
+        controller: ctrl,
+        maxLines: maxLines,
+        keyboardType: keyboardType,
+        style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+        decoration: InputDecoration(
+          hintText: hint,
+          filled: true,
+          fillColor: AppTheme.pageBg,
+          contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+              borderSide: const BorderSide(color: AppTheme.borderColor)),
+          enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+              borderSide: const BorderSide(color: AppTheme.borderColor)),
+          focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+              borderSide: BorderSide(color: AppTheme.brand, width: 1.5)),
+        ),
+      ),
+    ]);
+  }
+}
 // ─────────────────────────────────────────────
 //  SHARED WIDGETS
 // ─────────────────────────────────────────────
