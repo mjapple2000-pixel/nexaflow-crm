@@ -2,9 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../theme/app_theme.dart';
 import '../screens/quotes_screen.dart';
+import '../screens/invoices_screen.dart';
 
 class JobsScreen extends StatefulWidget {
-  const JobsScreen({super.key});
+  final int initialTab;
+  const JobsScreen({super.key, this.initialTab = 0});
 
   @override
   State<JobsScreen> createState() => _JobsScreenState();
@@ -17,7 +19,7 @@ class _JobsScreenState extends State<JobsScreen>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 4, vsync: this);
+    _tabController = TabController(length: 4, vsync: this, initialIndex: widget.initialTab);
   }
 
   @override
@@ -40,12 +42,7 @@ class _JobsScreenState extends State<JobsScreen>
               controller: _tabController,
               children: const [
                 _QuotesTab(),
-                _ComingSoonTab(
-                  icon: Icons.receipt_long_outlined,
-                  title: 'Invoices',
-                  description:
-                      'Create and send invoices, track payment status, and collect deposits — all without leaving the app.',
-                ),
+                const _InvoicesTab(),
                 _ComingSoonTab(
                   icon: Icons.assignment_outlined,
                   title: 'Job forms',
@@ -107,6 +104,25 @@ class _TopBar extends StatelessWidget {
                       onPressed: () => context.go('/jobs/quotes/new'),
                       icon: const Icon(Icons.add, size: 16),
                       label: const Text('New Quote'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppTheme.brand,
+                        foregroundColor: Colors.white,
+                        elevation: 0,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                      ),
+                    ),
+                  ),
+                ),
+              if (tabController.index == 1)
+                Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    child: ElevatedButton.icon(
+                      onPressed: () => context.go('/jobs/invoices/new'),
+                      icon: const Icon(Icons.add, size: 16),
+                      label: const Text('New Invoice'),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: AppTheme.brand,
                         foregroundColor: Colors.white,
@@ -240,6 +256,18 @@ class _QuotesTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return const QuotesScreen();
+  }
+}
+
+// ─────────────────────────────────────────────
+//  INVOICES TAB
+// ─────────────────────────────────────────────
+class _InvoicesTab extends StatelessWidget {
+  const _InvoicesTab();
+
+  @override
+  Widget build(BuildContext context) {
+    return const InvoicesScreen();
   }
 }
 

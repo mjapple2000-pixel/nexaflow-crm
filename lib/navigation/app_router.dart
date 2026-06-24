@@ -35,6 +35,9 @@ import '../screens/jobs_screen.dart';
 import '../screens/quotes_screen.dart';
 import '../screens/quote_detail_screen.dart';
 import '../screens/new_quote_screen.dart';
+import '../screens/invoices_screen.dart';
+import '../screens/invoice_detail_screen.dart';
+import '../screens/new_invoice_screen.dart';
 
 class AppRouter {
   static bool? cachedIsSuperuser;
@@ -275,18 +278,44 @@ class AppRouter {
           GoRoute(
             path: '/jobs',
             name: 'jobs',
-            builder: (context, state) => const JobsScreen(),
+            builder: (context, state) {
+              final tab = int.tryParse(state.uri.queryParameters['tab'] ?? '0') ?? 0;
+              return JobsScreen(initialTab: tab);
+            },
           ),
           GoRoute(
             path: '/jobs/quotes/new',
             name: 'quote-new',
-            builder: (context, state) => const NewQuoteScreen(),
+            builder: (context, state) {
+              final quoteId = state.uri.queryParameters['quoteId'];
+              return NewQuoteScreen(quoteId: quoteId);
+            },
           ),
           GoRoute(
             path: '/jobs/quotes/:id',
             name: 'quote-detail',
             builder: (context, state) => QuoteDetailScreen(
               quoteId: state.pathParameters['id']!,
+            ),
+          ),
+          GoRoute(
+            path: '/jobs/invoices/new',
+            name: 'invoice-new',
+            builder: (context, state) => const NewInvoiceScreen(),
+          ),
+          GoRoute(
+            path: '/jobs/invoices/edit',
+            name: 'invoice-edit',
+            builder: (context, state) {
+              final invoiceId = state.uri.queryParameters['invoiceId'];
+              return NewInvoiceScreen(invoiceId: invoiceId);
+            },
+          ),
+          GoRoute(
+            path: '/jobs/invoices/:id',
+            name: 'invoice-detail',
+            builder: (context, state) => InvoiceDetailScreen(
+              invoiceId: state.pathParameters['id']!,
             ),
           ),
           GoRoute(

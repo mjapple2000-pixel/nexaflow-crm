@@ -4,21 +4,21 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme/app_theme.dart';
 import '../widgets/clickable.dart';
 
-class QuoteDetailScreen extends StatefulWidget {
-  final String quoteId;
-  const QuoteDetailScreen({super.key, required this.quoteId});
+class InvoiceDetailScreen extends StatefulWidget {
+  final String invoiceId;
+  const InvoiceDetailScreen({super.key, required this.invoiceId});
 
   @override
-  State<QuoteDetailScreen> createState() => _QuoteDetailScreenState();
+  State<InvoiceDetailScreen> createState() => _InvoiceDetailScreenState();
 }
 
-class _QuoteDetailScreenState extends State<QuoteDetailScreen> {
+class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
   final _db = Supabase.instance.client;
 
   bool _loading = true;
   String? _error;
 
-  Map<String, dynamic>? _quote;
+  Map<String, dynamic>? _invoice;
   Map<String, dynamic>? _lead;
   List<Map<String, dynamic>> _lineItems = [];
 
@@ -30,26 +30,24 @@ class _QuoteDetailScreenState extends State<QuoteDetailScreen> {
 
   Future<void> _load() async {
     try {
-      // Load quote + lead + check if invoice exists
-      final quoteRes = await _db
-          .from('quotes')
-          .select('*, leads(id, lead_name, lead_email, lead_phone, lead_address), invoices(id)')
-          .eq('id', widget.quoteId)
+      final invoiceRes = await _db
+          .from('invoices')
+          .select('*, leads(id, lead_name, lead_email, lead_phone, lead_address)')
+          .eq('id', widget.invoiceId)
           .single();
 
-      // Load line items
       final itemsRes = await _db
           .from('line_items')
           .select('*')
-          .eq('parent_type', 'quote')
-          .eq('parent_id', widget.quoteId)
+          .eq('parent_type', 'invoice')
+          .eq('parent_id', widget.invoiceId)
           .isFilter('deleted_at', null)
           .order('sort_order');
 
       if (!mounted) return;
       setState(() {
-        _quote = quoteRes;
-        _lead = quoteRes['leads'] as Map<String, dynamic>?;
+        _invoice = invoiceRes;
+        _lead = invoiceRes['leads'] as Map<String, dynamic>?;
         _lineItems = List<Map<String, dynamic>>.from(itemsRes);
         _loading = false;
       });
@@ -60,6 +58,14 @@ class _QuoteDetailScreenState extends State<QuoteDetailScreen> {
         _loading = false;
       });
     }
+  }
+
+  bool get _isOverdue {
+    final status = _invoice?['status'] as String? ?? '';
+    final dueDate = _invoice?['due_date'] as String?;
+    if (status != 'approved' || dueDate == null) return false;
+    final due = DateTime.tryParse(dueDate);
+    return due != null && due.isBefore(DateTime.now());
   }
 
   @override
@@ -81,6 +87,7 @@ class _QuoteDetailScreenState extends State<QuoteDetailScreen> {
   }
 
   Widget _topBar() {
+    final invoiceNum = _invoice?['invoice_number'] ?? 'Invoice Detail';
     return Container(
       height: 56,
       padding: const EdgeInsets.symmetric(horizontal: 24),
@@ -91,7 +98,7 @@ class _QuoteDetailScreenState extends State<QuoteDetailScreen> {
       child: Row(
         children: [
           Clickable(
-            onTap: () => context.go('/jobs'),
+            onTap: () => context.go('/jobs?tab=1'),
             child: const Row(
               children: [
                 Icon(Icons.arrow_back_rounded, size: 16, color: AppTheme.textSecondary),
@@ -104,7 +111,7 @@ class _QuoteDetailScreenState extends State<QuoteDetailScreen> {
           const Text('/', style: TextStyle(color: AppTheme.textMuted)),
           const SizedBox(width: 12),
           Text(
-            _quote?['quote_number'] ?? 'Quote Detail',
+            invoiceNum,
             style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: AppTheme.textPrimary),
           ),
         ],
@@ -116,7 +123,6 @@ class _QuoteDetailScreenState extends State<QuoteDetailScreen> {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Left column — client + line items + notes
         Expanded(
           flex: 3,
           child: SingleChildScrollView(
@@ -133,7 +139,6 @@ class _QuoteDetailScreenState extends State<QuoteDetailScreen> {
             ),
           ),
         ),
-        // Right panel — status, totals, actions
         Container(
           width: 280,
           decoration: const BoxDecoration(
@@ -147,14 +152,14 @@ class _QuoteDetailScreenState extends State<QuoteDetailScreen> {
               children: [
                 _statusBadge(),
                 const SizedBox(height: 16),
-                _metaRow('Quote #', _quote?['quote_number'] ?? '—'),
-                _metaRow('Created', _fmtDate(_quote?['created_at'])),
-                if (_quote?['expires_at'] != null)
-                  _metaRow('Expires', _fmtDate(_quote?['expires_at'])),
-                if (_quote?['sent_at'] != null)
-                  _metaRow('Sent', _fmtDate(_quote?['sent_at'])),
-                if (_quote?['approved_at'] != null)
-                  _metaRow('Approved', _fmtDate(_quote?['approved_at'])),
+                _metaRow('Invoice #', _invoice?['invoice_number'] ?? '—'),
+                _metaRow('Created', _fmtDate(_invoice?['created_at'])),
+                if (_invoice?['due_date'] != null)
+                  _metaRow('Due', _fmtDate(_invoice?['due_date'])),
+                if (_invoice?['paid_at'] != null)
+                  _metaRow('Paid', _fmtDate(_invoice?['paid_at'])),
+                if (_invoice?['quote_id'] != null)
+                  _sourceQuoteRow(),
                 const Divider(height: 28, color: AppTheme.borderColor),
                 _totalsSection(),
                 const SizedBox(height: 20),
@@ -227,7 +232,6 @@ class _QuoteDetailScreenState extends State<QuoteDetailScreen> {
                 color: AppTheme.textSecondary, letterSpacing: 0.8)),
           ),
           const Divider(height: 1, color: AppTheme.borderColor),
-          // Header row
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             child: Row(
@@ -329,7 +333,7 @@ class _QuoteDetailScreenState extends State<QuoteDetailScreen> {
   // ── Notes card ────────────────────────────────────────────────────────────
 
   Widget _notesCard() {
-    final notes = _quote?['notes'] as String? ?? '';
+    final notes = _invoice?['notes'] as String? ?? '';
     if (notes.isEmpty) return const SizedBox.shrink();
     return Container(
       width: double.infinity,
@@ -352,10 +356,10 @@ class _QuoteDetailScreenState extends State<QuoteDetailScreen> {
     );
   }
 
-  // ── Right panel helpers ───────────────────────────────────────────────────
+  // ── Right panel ───────────────────────────────────────────────────────────
 
   Widget _statusBadge() {
-    final status = _quote?['status'] as String? ?? 'draft';
+    final status = _isOverdue ? 'overdue' : (_invoice?['status'] as String? ?? 'draft');
     final cfg = _statusConfig(status);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -365,8 +369,7 @@ class _QuoteDetailScreenState extends State<QuoteDetailScreen> {
       ),
       child: Text(
         cfg['label'] as String,
-        style: TextStyle(
-            fontSize: 12, fontWeight: FontWeight.w700, color: cfg['color'] as Color),
+        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: cfg['color'] as Color),
       ),
     );
   }
@@ -374,23 +377,19 @@ class _QuoteDetailScreenState extends State<QuoteDetailScreen> {
   Map<String, dynamic> _statusConfig(String status) {
     switch (status) {
       case 'draft':
-        return {'label': 'Draft', 'color': AppTheme.textSecondary,
-            'bg': const Color(0xFFF0F0F5)};
+        return {'label': 'Draft', 'color': AppTheme.textSecondary, 'bg': const Color(0xFFF0F0F5)};
       case 'sent':
-        return {'label': 'Sent', 'color': const Color(0xFFC68400),
-            'bg': const Color(0xFFFFF4D6)};
+        return {'label': 'Sent', 'color': const Color(0xFFC68400), 'bg': const Color(0xFFFFF4D6)};
       case 'approved':
-        return {'label': 'Approved', 'color': AppTheme.success,
-            'bg': const Color(0xFFE6F9F0)};
-      case 'declined':
-        return {'label': 'Declined', 'color': AppTheme.error,
-            'bg': const Color(0xFFFDE8E7)};
-      case 'expired':
-        return {'label': 'Expired', 'color': AppTheme.textSecondary,
-            'bg': const Color(0xFFF0F0F5)};
+        return {'label': 'Approved', 'color': AppTheme.success, 'bg': const Color(0xFFE6F9F0)};
+      case 'overdue':
+        return {'label': 'Overdue', 'color': AppTheme.error, 'bg': const Color(0xFFFDE8E7)};
+      case 'paid':
+        return {'label': 'Paid', 'color': AppTheme.success, 'bg': const Color(0xFFE6F9F0)};
+      case 'void':
+        return {'label': 'Void', 'color': AppTheme.textSecondary, 'bg': const Color(0xFFF0F0F5)};
       default:
-        return {'label': status, 'color': AppTheme.textSecondary,
-            'bg': const Color(0xFFF0F0F5)};
+        return {'label': status, 'color': AppTheme.textSecondary, 'bg': const Color(0xFFF0F0F5)};
     }
   }
 
@@ -407,19 +406,38 @@ class _QuoteDetailScreenState extends State<QuoteDetailScreen> {
     );
   }
 
+  Widget _sourceQuoteRow() {
+    final quoteId = _invoice?['quote_id'] as String?;
+    if (quoteId == null) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          const Text('Source Quote', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+          Clickable(
+            onTap: () => context.go('/jobs/quotes/$quoteId'),
+            child: Text(
+              'View Quote →',
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.brand),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _totalsSection() {
-// Pre-discount subtotal = sum of qty * unitPrice across all line items
     double subtotal = 0;
     for (final item in _lineItems) {
       final qty       = (item['quantity']   as num?)?.toDouble() ?? 0;
       final unitPrice = (item['unit_price'] as num?)?.toDouble() ?? 0;
       subtotal += qty * unitPrice;
-    }    
-    final taxAmount = ((_quote?['tax_amount'] as num?) ?? 0).toDouble();
-    final total     = ((_quote?['total']      as num?) ?? 0).toDouble();
-    final taxRate   = ((_quote?['tax_rate']   as num?) ?? 0).toDouble();
+    }
+    final taxAmount = ((_invoice?['tax_amount'] as num?) ?? 0).toDouble();
+    final taxRate   = ((_invoice?['tax_rate']   as num?) ?? 0).toDouble();
+    final amountDue = ((_invoice?['amount_due'] as num?) ?? 0).toDouble();
 
-    // Calculate total discount from line items
     double totalDiscount = 0;
     for (final item in _lineItems) {
       final discType  = item['discount_type']  as String? ?? 'none';
@@ -438,11 +456,10 @@ class _QuoteDetailScreenState extends State<QuoteDetailScreen> {
         _totalRow('Subtotal', '\$${subtotal.toStringAsFixed(2)}', bold: false),
         if (totalDiscount > 0)
           _totalRow('Discount', '–\$${totalDiscount.toStringAsFixed(2)}', bold: false),
-        if (taxAmount > 0)
-          _totalRow('Tax (${(taxRate * 100).toStringAsFixed(1)}%)',
-              '\$${taxAmount.toStringAsFixed(2)}', bold: false),
+        _totalRow('Tax (${(taxRate * 100).toStringAsFixed(1)}%)',
+            '\$${taxAmount.toStringAsFixed(2)}', bold: false),
         const Divider(height: 16, color: AppTheme.borderColor),
-        _totalRow('Total', '\$${total.toStringAsFixed(2)}', bold: true),
+        _totalRow('Amount Due', '\$${amountDue.toStringAsFixed(2)}', bold: true),
       ],
     );
   }
@@ -468,41 +485,32 @@ class _QuoteDetailScreenState extends State<QuoteDetailScreen> {
   // ── Action buttons ────────────────────────────────────────────────────────
 
   Widget _actionButtons() {
-    final status = _quote?['status'] as String? ?? 'draft';
+    final status = _invoice?['status'] as String? ?? 'draft';
     final buttons = <Widget>[];
 
-    switch (status) {
-      case 'draft':
-        buttons.add(_btn('Send to Client', AppTheme.brand, _onSend));
-        buttons.add(const SizedBox(height: 8));
-        buttons.add(_btn('Edit Quote', null, _onEdit));
-        buttons.add(const SizedBox(height: 8));
-        buttons.add(_btn('Delete', AppTheme.error, _onDelete));
-        break;
-      case 'sent':
-        buttons.add(_btn('Mark Approved', AppTheme.success, _onMarkApproved));
-        buttons.add(const SizedBox(height: 8));
-        buttons.add(_btn('Mark Declined', AppTheme.error, _onMarkDeclined));
-        buttons.add(const SizedBox(height: 8));
-        buttons.add(_btn('Edit Quote', null, _onEdit));
-        buttons.add(const SizedBox(height: 8));
-        buttons.add(_btn('Delete', AppTheme.error, _onDelete));
-        break;
-      case 'approved':
-        final invoices = _quote?['invoices'] as List?;
-        final isConverted = invoices != null && invoices.isNotEmpty;
-        if (isConverted) {
-          buttons.add(_btn('Converted to Invoice', const Color(0xFF10B981), () {}));
-        } else {
-          buttons.add(_btn('Convert to Invoice', AppTheme.brand, _onConvert));
-        }
-        buttons.add(const SizedBox(height: 8));
-        buttons.add(_btn('Delete', AppTheme.error, _onDelete));
-        break;
-      case 'declined':
-      case 'expired':
-        buttons.add(_btn('Delete', AppTheme.error, _onDelete));
-        break;
+    if (status == 'paid' || status == 'void') {
+      // Read only — no actions
+      return const SizedBox.shrink();
+    }
+
+    if (_isOverdue || status == 'approved') {
+      buttons.add(_btn('Mark as Paid', AppTheme.success, _onMarkPaid));
+      buttons.add(const SizedBox(height: 8));
+      buttons.add(_btn('Delete', AppTheme.error, _onDelete));
+    } else if (status == 'draft') {
+      buttons.add(_btn('Send to Client', AppTheme.brand, () {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Send to client — coming soon')));
+      }));
+      buttons.add(const SizedBox(height: 8));
+      buttons.add(_btn('Edit Invoice', null, () =>
+          context.go('/jobs/invoices/edit?invoiceId=${widget.invoiceId}')));
+      buttons.add(const SizedBox(height: 8));
+      buttons.add(_btn('Delete', AppTheme.error, _onDelete));
+    } else if (status == 'sent') {
+      buttons.add(_btn('Mark as Paid', AppTheme.success, _onMarkPaid));
+      buttons.add(const SizedBox(height: 8));
+      buttons.add(_btn('Delete', AppTheme.error, _onDelete));
     }
 
     return Column(
@@ -542,151 +550,44 @@ class _QuoteDetailScreenState extends State<QuoteDetailScreen> {
     );
   }
 
-  // ── Action handlers (stubs for now) ──────────────────────────────────────
+  // ── Action handlers ───────────────────────────────────────────────────────
 
-  Future<void> _onSend() async {
-    await _updateStatus('sent');
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Quote marked as sent.'),
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
-  }
-
-  void _onEdit() {
-    context.go('/jobs/quotes/new?quoteId=${widget.quoteId}');
-  }
-
-  void _onMarkApproved() async {
-    await _updateStatus('approved');
-  }
-
-  void _onMarkDeclined() async {
-    await _updateStatus('declined');
-  }
-
-  Future<void> _onConvert() async {
+  Future<void> _onMarkPaid() async {
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Convert to Invoice?'),
-        content: const Text('This will create a new invoice from this quote.'),
+        title: const Text('Mark as Paid?'),
+        content: const Text('This will mark the invoice as paid and record today as the payment date.'),
         actions: [
           TextButton(
               onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(false),
               child: const Text('Cancel')),
           TextButton(
               onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(true),
-              child: const Text('Convert')),
+              child: const Text('Mark Paid')),
         ],
       ),
     );
     if (confirm != true) return;
-
     try {
       final now = DateTime.now().toUtc().toIso8601String();
-      final businessId = _quote!['business_id'] as int;
-
-      // Generate sequential invoice number
-      final existing = await _db
-          .from('invoices')
-          .select('invoice_number')
-          .eq('business_id', businessId)
-          .isFilter('deleted_at', null)
-          .order('created_at', ascending: false)
-          .limit(50);
+      await _db.from('invoices').update({
+        'status':     'paid',
+        'paid_at':    now,
+        'updated_at': now,
+      }).eq('id', widget.invoiceId);
       if (!mounted) return;
-
-      int maxNum = 0;
-      for (final row in existing as List) {
-        final n = row['invoice_number'] as String? ?? '';
-        final match = RegExp(r'^INV-(\d+)$').firstMatch(n);
-        if (match != null) {
-          final num = int.tryParse(match.group(1)!) ?? 0;
-          if (num > maxNum) maxNum = num;
-        }
-      }
-      final invoiceNumber = 'INV-${(maxNum + 1).toString().padLeft(3, '0')}';
-
-      final total     = ((_quote!['total']      as num?) ?? 0).toDouble();
-      final subtotal  = ((_quote!['subtotal']   as num?) ?? 0).toDouble();
-      final taxAmount = ((_quote!['tax_amount'] as num?) ?? 0).toDouble();
-      final taxRate   = ((_quote!['tax_rate']   as num?) ?? 0).toDouble();
-
-      // Insert invoice
-      final invoiceRes = await _db.from('invoices').insert({
-        'business_id':    businessId,
-        'contact_id':     _lead!['id'],
-        'quote_id':       widget.quoteId,
-        'invoice_number': invoiceNumber,
-        'job_title':      _quote!['job_title'],
-        'status':         'approved',
-        'amount_due':     total,
-        'subtotal':       subtotal,
-        'tax_amount':     taxAmount,
-        'tax_rate':       taxRate,
-        'notes':          _quote!['notes'],
-        'due_date':       DateTime.now().add(const Duration(days: 30)).toUtc().toIso8601String(),
-        'updated_at':     now,
-      }).select().single();
-      if (!mounted) return;
-
-      final invoiceId = invoiceRes['id'] as String;
-
-      // Copy line items
-      final lineItemPayloads = _lineItems.asMap().entries.map((e) => {
-        'business_id':    businessId,
-        'parent_type':    'invoice',
-        'parent_id':      invoiceId,
-        'service_item_id': e.value['service_item_id'],
-        'description':    e.value['description'],
-        'quantity':       e.value['quantity'],
-        'unit_price':     e.value['unit_price'],
-        'discount_type':  e.value['discount_type'],
-        'discount_value': e.value['discount_value'],
-        'total':          e.value['total'],
-        'sort_order':     e.key,
-        'updated_at':     now,
-      }).toList();
-
-      if (lineItemPayloads.isNotEmpty) {
-        await _db.from('line_items').insert(lineItemPayloads);
-      }
-      if (!mounted) return;
-
-      context.go('/jobs/invoices/$invoiceId');
+      await _load();
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Invoice $invoiceNumber created.'),
+        const SnackBar(
+          content: Text('Invoice marked as paid.'),
           behavior: SnackBarBehavior.floating,
-          backgroundColor: const Color(0xFF10B981),
+          backgroundColor: Color(0xFF10B981),
         ),
       );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e')));
-    }
-  }
-
-  Future<void> _updateStatus(String newStatus) async {
-    try {
-      final updates = <String, dynamic>{
-        'status': newStatus,
-        'updated_at': DateTime.now().toUtc().toIso8601String(),
-      };
-      if (newStatus == 'approved') {
-        updates['approved_at'] = DateTime.now().toUtc().toIso8601String();
-      }
-      await _db.from('quotes').update(updates).eq('id', widget.quoteId);
-      if (!mounted) return;
-      await _load();
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e')));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
     }
   }
 
@@ -694,7 +595,7 @@ class _QuoteDetailScreenState extends State<QuoteDetailScreen> {
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Delete Quote?'),
+        title: const Text('Delete Invoice?'),
         content: const Text('This cannot be undone.'),
         actions: [
           TextButton(
@@ -709,8 +610,8 @@ class _QuoteDetailScreenState extends State<QuoteDetailScreen> {
     if (confirm != true) return;
     try {
       final now = DateTime.now().toUtc().toIso8601String();
-      await _db.from('line_items').update({'deleted_at': now}).eq('parent_id', widget.quoteId);
-      await _db.from('quotes').update({'deleted_at': now}).eq('id', widget.quoteId);
+      await _db.from('line_items').update({'deleted_at': now}).eq('parent_id', widget.invoiceId);
+      await _db.from('invoices').update({'deleted_at': now}).eq('id', widget.invoiceId);
       if (!mounted) return;
       context.go('/jobs');
     } catch (e) {

@@ -48,9 +48,9 @@ class _QuotesScreenState extends State<QuotesScreen> {
 
       final res = await _supabase
           .from('quotes')
-          .select('*, leads(id, lead_name, lead_phone, lead_email)')
+          .select('*, leads(id, lead_name, lead_phone, lead_email), invoices(id)')
           .eq('business_id', _businessId!)
-          .filter('deleted_at', 'is', null)
+          .isFilter('deleted_at', null)
           .order('created_at', ascending: false);
 
       final all = List<Map<String, dynamic>>.from(res as List);
@@ -62,7 +62,10 @@ class _QuotesScreenState extends State<QuotesScreen> {
       for (final q in all) {
         final status = q['status'] as String? ?? 'draft';
         final total = double.tryParse(q['total']?.toString() ?? '0') ?? 0;
-        if (status == 'sent') { openTotal += total; awaiting++; }
+        if (status == 'draft' || status == 'sent' || status == 'approved') {
+          openTotal += total;
+        }
+        if (status == 'sent') awaiting++;
         if (status == 'approved') approved++;
         if (status == 'declined') declined++;
       }
@@ -133,9 +136,7 @@ class _QuotesScreenState extends State<QuotesScreen> {
         children: [
           _StatCard(
             label: 'Open Total',
-            value: _openTotal >= 1000
-                ? '\$${(_openTotal / 1000).toStringAsFixed(1)}K'
-                : '\$${_openTotal.toStringAsFixed(2)}',
+            value: '\$${_openTotal.toStringAsFixed(2)}',
             color: const Color(0xFF0EA5E9),
             icon: Icons.attach_money_rounded,
           ),
@@ -203,6 +204,123 @@ class _QuotesScreenState extends State<QuotesScreen> {
     );
   }
 
+  List<Widget> _cardActions(
+      BuildContext context, Map<String, dynamic> q, String status) {
+    final id = q['id'] as String;
+
+    Widget actionBtn(String label,
+        {bool destructive = false, required VoidCallback onTap}) {
+      return Padding(
+        padding: const EdgeInsets.only(left: 8),
+        child: Clickable(
+          onTap: onTap,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+            decoration: BoxDecoration(
+              color: destructive
+                  ? AppTheme.error.withValues(alpha: 0.07)
+                  : AppTheme.brand.withValues(alpha: 0.07),
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(
+                color: destructive
+                    ? AppTheme.error.withValues(alpha: 0.3)
+                    : AppTheme.brand.withValues(alpha: 0.3),
+              ),
+            ),
+            child: Text(label,
+                style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: destructive ? AppTheme.error : AppTheme.brand)),
+          ),
+        ),
+      );
+    }
+
+    switch (status) {
+      case 'draft':
+        return [
+          actionBtn('Send', onTap: () {
+            ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Send to client — coming soon')));
+          }),
+          actionBtn('Delete', destructive: true, onTap: () => _deleteQuote(id)),
+        ];
+      case 'sent':
+        return [
+          actionBtn('Remind', onTap: () {
+            ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Remind client — coming soon')));
+          }),
+          actionBtn('View', onTap: () => context.go('/jobs/quotes/$id')),
+        ];
+      case 'approved':
+        final invoices = q['invoices'] as List?;
+        final isConverted = invoices != null && invoices.isNotEmpty;
+        if (isConverted) {
+          return [
+            Padding(
+              padding: const EdgeInsets.only(left: 8),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF10B981).withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: const Color(0xFF10B981).withValues(alpha: 0.3)),
+                ),
+                child: const Text('Converted to Invoice',
+                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600,
+                        color: Color(0xFF10B981))),
+              ),
+            ),
+          ];
+        }
+        return [
+          actionBtn('Convert to Invoice',
+              onTap: () => context.go('/jobs/quotes/$id')),
+        ];
+      case 'declined':
+      case 'expired':
+        return [
+          actionBtn('View', onTap: () => context.go('/jobs/quotes/$id')),
+        ];
+      default:
+        return [
+          actionBtn('View', onTap: () => context.go('/jobs/quotes/$id')),
+        ];
+    }
+  }
+
+  Future<void> _deleteQuote(String id) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete Quote?'),
+        content: const Text('This cannot be undone.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(false),
+              child: const Text('Cancel')),
+          TextButton(
+              onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(true),
+              child: const Text('Delete', style: TextStyle(color: Colors.red))),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+    try {
+      final now = DateTime.now().toUtc().toIso8601String();
+      await _supabase.from('line_items').update({'deleted_at': now}).eq('parent_id', id);
+      await _supabase.from('quotes').update({'deleted_at': now}).eq('id', id);
+      if (!mounted) return;
+      _load();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Error: $e')));
+    }
+  }
+
   Widget _buildList() {
     final filtered = _filtered;
     if (filtered.isEmpty) {
@@ -259,61 +377,77 @@ class _QuotesScreenState extends State<QuotesScreen> {
         final statusColor = _statusColor(status);
         final statusLabel = _statusLabel(status);
 
-        return Clickable(
-          onTap: () => context.go('/jobs/quotes/${q['id']}'),
-          child: Container(
-            margin: const EdgeInsets.only(bottom: 8),
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: AppTheme.cardBg,
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: AppTheme.borderColor),
-            ),
-            child: Row(
-              children: [
-                Container(
-                  width: 40,
-                  height: 40,
-                  decoration: BoxDecoration(
-                    color: statusColor.withValues(alpha: 0.1),
-                    borderRadius: BorderRadius.circular(8),
+        final jobTitle = q['job_title'] as String? ?? '';
+        final subtitle = jobTitle.isNotEmpty
+            ? '$jobTitle · $quoteNumber'
+            : quoteNumber;
+
+        return Container(
+          margin: const EdgeInsets.only(bottom: 8),
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: AppTheme.cardBg,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: AppTheme.borderColor),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Top row: client name + total
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: Clickable(
+                      onTap: () => context.go('/jobs/quotes/${q['id']}'),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(clientName,
+                              style: const TextStyle(
+                                  fontSize: 14, fontWeight: FontWeight.w700,
+                                  color: AppTheme.textPrimary)),
+                          const SizedBox(height: 2),
+                          Text(subtitle,
+                              style: const TextStyle(
+                                  fontSize: 12, color: AppTheme.textSecondary)),
+                        ],
+                      ),
+                    ),
                   ),
-                  child: Icon(Icons.request_quote_outlined, size: 18, color: statusColor),
-                ),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(clientName,
-                          style: const TextStyle(
-                              fontSize: 14, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
-                      const SizedBox(height: 2),
-                      Text('Quote $quoteNumber · $dateStr',
-                          style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
-                    ],
+                  Clickable(
+                    onTap: () => context.go('/jobs/quotes/${q['id']}'),
+                    child: Text(
+                      '\$${total.toStringAsFixed(2)}',
+                      style: const TextStyle(
+                          fontSize: 15, fontWeight: FontWeight.w700,
+                          color: AppTheme.textPrimary),
+                    ),
                   ),
-                ),
-                Text(
-                  '\$${total.toStringAsFixed(2)}',
-                  style: const TextStyle(
-                      fontSize: 15, fontWeight: FontWeight.w700, color: AppTheme.textPrimary),
-                ),
-                const SizedBox(width: 16),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: statusColor.withValues(alpha: 0.1),
-                    borderRadius: BorderRadius.circular(20),
+                ],
+              ),
+              const SizedBox(height: 12),
+              const Divider(height: 1, color: AppTheme.borderColor),
+              const SizedBox(height: 10),
+              // Bottom row: status badge + action buttons
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: statusColor.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Text(statusLabel,
+                        style: TextStyle(
+                            fontSize: 11, fontWeight: FontWeight.w600,
+                            color: statusColor)),
                   ),
-                  child: Text(statusLabel,
-                      style: TextStyle(
-                          fontSize: 11, fontWeight: FontWeight.w600, color: statusColor)),
-                ),
-                const SizedBox(width: 8),
-                const Icon(Icons.chevron_right_rounded, size: 18, color: AppTheme.textMuted),
-              ],
-            ),
+                  const Spacer(),
+                  ..._cardActions(context, q, status),
+                ],
+              ),
+            ],
           ),
         );
       },

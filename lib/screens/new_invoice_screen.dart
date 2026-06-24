@@ -5,40 +5,34 @@ import '../theme/app_theme.dart';
 import '../utils/business_utils.dart';
 import '../widgets/clickable.dart';
 
-class NewQuoteScreen extends StatefulWidget {
-  final String? quoteId;
-  const NewQuoteScreen({super.key, this.quoteId});
+class NewInvoiceScreen extends StatefulWidget {
+  final String? invoiceId;
+  const NewInvoiceScreen({super.key, this.invoiceId});
 
   @override
-  State<NewQuoteScreen> createState() => _NewQuoteScreenState();
+  State<NewInvoiceScreen> createState() => _NewInvoiceScreenState();
 }
 
-class _NewQuoteScreenState extends State<NewQuoteScreen> {
+class _NewInvoiceScreenState extends State<NewInvoiceScreen> {
   final _supabase = Supabase.instance.client;
   int? _businessId;
   bool _saving = false;
   String? _error;
 
-  // Client
   Map<String, dynamic>? _selectedLead;
   final _clientSearchCtrl = TextEditingController();
   List<Map<String, dynamic>> _clientResults = [];
   bool _searchingClients = false;
 
-  // Quote fields
   final _jobTitleCtrl = TextEditingController();
   final _notesCtrl = TextEditingController();
-  DateTime? _expiresAt;
+  DateTime? _dueDate;
   double _taxRate = 0.0;
 
-  // Line items
   final List<_LineItemRow> _lineItems = [];
-
-  // Service library
   List<Map<String, dynamic>> _serviceLibrary = [];
 
-  // Edit mode
-  bool get _isEditing => widget.quoteId != null;
+  bool get _isEditing => widget.invoiceId != null;
 
   @override
   void initState() {
@@ -61,18 +55,14 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
     _businessId = await getActiveBusinessId();
     if (!mounted) return;
 
-    // Load business default tax rate
     final biz = await _supabase
         .from('businesses')
         .select('default_tax_rate')
         .eq('id', _businessId!)
         .maybeSingle();
     if (!mounted) return;
-    final defaultTax = double.tryParse(
-            biz?['default_tax_rate']?.toString() ?? '0') ??
-        0.0;
+    final defaultTax = double.tryParse(biz?['default_tax_rate']?.toString() ?? '0') ?? 0.0;
 
-    // Load service library
     final lib = await _supabase
         .from('service_library')
         .select()
@@ -83,20 +73,18 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
     if (!mounted) return;
 
     if (_isEditing) {
-      // Load existing quote
-      final quote = await _supabase
-          .from('quotes')
+      final invoice = await _supabase
+          .from('invoices')
           .select('*, leads(id, lead_name, lead_email, lead_phone, lead_address)')
-          .eq('id', widget.quoteId!)
+          .eq('id', widget.invoiceId!)
           .single();
       if (!mounted) return;
 
-      // Load existing line items
       final items = await _supabase
           .from('line_items')
           .select('*')
-          .eq('parent_type', 'quote')
-          .eq('parent_id', widget.quoteId!)
+          .eq('parent_type', 'invoice')
+          .eq('parent_id', widget.invoiceId!)
           .isFilter('deleted_at', null)
           .order('sort_order');
       if (!mounted) return;
@@ -112,19 +100,19 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
         return row;
       }).toList();
 
-      final lead = quote['leads'] as Map<String, dynamic>?;
-      DateTime? expiry;
-      if (quote['expires_at'] != null) {
-        expiry = DateTime.tryParse(quote['expires_at'] as String);
+      final lead = invoice['leads'] as Map<String, dynamic>?;
+      DateTime? due;
+      if (invoice['due_date'] != null) {
+        due = DateTime.tryParse(invoice['due_date'] as String);
       }
 
       setState(() {
         _serviceLibrary = List<Map<String, dynamic>>.from(lib as List);
         _selectedLead = lead;
-        _jobTitleCtrl.text = quote['job_title'] as String? ?? '';
-        _notesCtrl.text = quote['notes'] as String? ?? '';
-        _expiresAt = expiry;
-        _taxRate = (quote['tax_rate'] as num?)?.toDouble() ?? defaultTax;
+        _jobTitleCtrl.text = invoice['job_title'] as String? ?? '';
+        _notesCtrl.text = invoice['notes'] as String? ?? '';
+        _dueDate = due;
+        _taxRate = (invoice['tax_rate'] as num?)?.toDouble() ?? defaultTax;
         _lineItems.addAll(existingItems.isEmpty ? [_LineItemRow()] : existingItems);
       });
     } else {
@@ -132,6 +120,7 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
         _taxRate = defaultTax;
         _serviceLibrary = List<Map<String, dynamic>>.from(lib as List);
         _lineItems.add(_LineItemRow());
+        _dueDate = DateTime.now().add(const Duration(days: 30));
       });
     }
   }
@@ -159,35 +148,25 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
     }
   }
 
-  double get _subtotal {
-    return _lineItems.fold(0.0, (sum, item) => sum + item.lineTotal);
-  }
+  double get _subtotal =>
+      _lineItems.fold(0.0, (sum, item) => sum + (item.quantity * item.unitPrice));
 
-  double get _taxAmount => _subtotal * _taxRate;
-  double get _total => _subtotal + _taxAmount;
-
-  List<Widget> _discountRows() {
-    final rows = <Widget>[];
-    for (final item in _lineItems) {
-      if (item.discountType == 'none' || item.discountValue == 0) continue;
+  double get _discountTotal {
+    return _lineItems.fold(0.0, (sum, item) {
       final base = item.quantity * item.unitPrice;
-      final discAmt = item.discountType == 'fixed'
-          ? item.discountValue
-          : base * (item.discountValue / 100);
-      if (discAmt <= 0) continue;
-      final label = item.discountType == 'percent'
-          ? 'Discount (${item.discountValue.toStringAsFixed(0)}%)'
-          : 'Discount';
-      rows.add(const SizedBox(height: 8));
-      rows.add(_TotalRow(label: label, value: '–\$${discAmt.toStringAsFixed(2)}'));
-    }
-    return rows;
+      if (item.discountType == 'fixed') return sum + item.discountValue;
+      if (item.discountType == 'percent') return sum + base * (item.discountValue / 100);
+      return sum;
+    });
   }
 
-  Future<String> _nextQuoteNumber() async {
+  double get _taxAmount => (_subtotal - _discountTotal) * _taxRate;
+  double get _total => _subtotal - _discountTotal + _taxAmount;
+
+  Future<String> _nextInvoiceNumber() async {
     final res = await _supabase
-        .from('quotes')
-        .select('quote_number')
+        .from('invoices')
+        .select('invoice_number')
         .eq('business_id', _businessId!)
         .isFilter('deleted_at', null)
         .order('created_at', ascending: false)
@@ -195,18 +174,17 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
 
     int maxNum = 0;
     for (final row in res as List) {
-      final qn = row['quote_number'] as String? ?? '';
-      final match = RegExp(r'^Q-(\d+)$').firstMatch(qn);
+      final n = row['invoice_number'] as String? ?? '';
+      final match = RegExp(r'^INV-(\d+)$').firstMatch(n);
       if (match != null) {
-        final n = int.tryParse(match.group(1)!) ?? 0;
-        if (n > maxNum) maxNum = n;
+        final num = int.tryParse(match.group(1)!) ?? 0;
+        if (num > maxNum) maxNum = num;
       }
     }
-    final next = (maxNum + 1).toString().padLeft(3, '0');
-    return 'Q-$next';
+    return 'INV-${(maxNum + 1).toString().padLeft(3, '0')}';
   }
 
-  Future<void> _save({bool asDraft = true}) async {
+  Future<void> _save() async {
     if (_selectedLead == null) {
       setState(() => _error = 'Please select a client.');
       return;
@@ -218,81 +196,75 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
     setState(() { _saving = true; _error = null; });
     try {
       final now = DateTime.now().toUtc().toIso8601String();
-      final status = asDraft ? 'draft' : 'sent';
-      late String quoteId;
+      late String invoiceId;
 
       if (_isEditing) {
-        // Update existing quote
-        quoteId = widget.quoteId!;
-        await _supabase.from('quotes').update({
+        invoiceId = widget.invoiceId!;
+        await _supabase.from('invoices').update({
           'contact_id': _selectedLead!['id'],
-          'job_title': _jobTitleCtrl.text.trim(),
-          'expires_at': _expiresAt?.toUtc().toIso8601String(),
-          'notes': _notesCtrl.text.trim(),
-          'tax_rate': _taxRate,
-          'subtotal': _subtotal,
+          'job_title':  _jobTitleCtrl.text.trim(),
+          'notes':      _notesCtrl.text.trim(),
+          'due_date':   _dueDate?.toUtc().toIso8601String(),
+          'tax_rate':   _taxRate,
           'tax_amount': _taxAmount,
-          'total': _total,
+          'subtotal':   _subtotal,
+          'amount_due': _total,
           'updated_at': now,
-        }).eq('id', quoteId);
+        }).eq('id', invoiceId);
 
-        // Soft delete old line items, then re-insert
         await _supabase.from('line_items')
             .update({'deleted_at': now})
-            .eq('parent_id', quoteId);
+            .eq('parent_id', invoiceId);
       } else {
-        // Insert new quote
-        final quoteRes = await _supabase.from('quotes').insert({
-          'business_id': _businessId,
-          'contact_id': _selectedLead!['id'],
-          'quote_number': await _nextQuoteNumber(),
-          'status': status,
-          'job_title': _jobTitleCtrl.text.trim(),
-          'expires_at': _expiresAt?.toUtc().toIso8601String(),
-          'notes': _notesCtrl.text.trim(),
-          'tax_rate': _taxRate,
-          'subtotal': _subtotal,
-          'tax_amount': _taxAmount,
-          'total': _total,
-          'sent_at': asDraft ? null : now,
-          'updated_at': now,
+        final invoiceNumber = await _nextInvoiceNumber();
+        if (!mounted) return;
+
+        final invoiceRes = await _supabase.from('invoices').insert({
+          'business_id':    _businessId,
+          'contact_id':     _selectedLead!['id'],
+          'invoice_number': invoiceNumber,
+          'job_title':      _jobTitleCtrl.text.trim(),
+          'status':         'draft',
+          'amount_due':     _total,
+          'subtotal':       _subtotal,
+          'tax_amount':     _taxAmount,
+          'tax_rate':       _taxRate,
+          'notes':          _notesCtrl.text.trim(),
+          'due_date':       _dueDate?.toUtc().toIso8601String(),
+          'updated_at':     now,
         }).select().single();
-        quoteId = quoteRes['id'] as String;
+        if (!mounted) return;
+        invoiceId = invoiceRes['id'] as String;
       }
 
-      // Insert line items
       final lineItemPayloads = <Map<String, dynamic>>[];
       for (int i = 0; i < _lineItems.length; i++) {
         final item = _lineItems[i];
         if (item.description.trim().isEmpty) continue;
         lineItemPayloads.add({
-          'business_id': _businessId,
-          'parent_type': 'quote',
-          'parent_id': quoteId,
+          'business_id':    _businessId,
+          'parent_type':    'invoice',
+          'parent_id':      invoiceId,
           'service_item_id': item.serviceItemId,
-          'description': item.description.trim(),
-          'quantity': item.quantity,
-          'unit_price': item.unitPrice,
-          'discount_type': item.discountType,
+          'description':    item.description.trim(),
+          'quantity':       item.quantity,
+          'unit_price':     item.unitPrice,
+          'discount_type':  item.discountType,
           'discount_value': item.discountValue,
-          'total': item.lineTotal,
-          'sort_order': i,
-          'updated_at': now,
+          'total':          item.lineTotal,
+          'sort_order':     i,
+          'updated_at':     now,
         });
       }
       if (lineItemPayloads.isNotEmpty) {
         await _supabase.from('line_items').insert(lineItemPayloads);
       }
-
       if (!mounted) return;
-      if (_isEditing) {
-        context.go('/jobs/quotes/${widget.quoteId}');
-      } else {
-        context.go('/jobs');
-      }
+
+      context.go('/jobs/invoices/$invoiceId');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(_isEditing ? 'Quote updated.' : asDraft ? 'Quote saved as draft.' : 'Quote sent to client.'),
+          content: Text(_isEditing ? 'Invoice updated.' : 'Invoice created.'),
           behavior: SnackBarBehavior.floating,
           backgroundColor: const Color(0xFF10B981),
         ),
@@ -365,9 +337,9 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
                 try {
                   final res = await _supabase.from('leads').insert({
                     'business_id': _businessId,
-                    'lead_name': nameCtrl.text.trim(),
-                    'lead_phone': phoneCtrl.text.trim(),
-                    'lead_email': emailCtrl.text.trim(),
+                    'lead_name':   nameCtrl.text.trim(),
+                    'lead_phone':  phoneCtrl.text.trim(),
+                    'lead_email':  emailCtrl.text.trim(),
                     'lead_address': addressCtrl.text.trim(),
                     'lead_status': 'new',
                   }).select().single();
@@ -421,16 +393,24 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
     );
   }
 
-  Future<void> _pickExpiry() async {
+  Future<void> _pickDueDate() async {
     final picked = await showDatePicker(
       context: context,
-      initialDate: DateTime.now().add(const Duration(days: 30)),
+      initialDate: _dueDate ?? DateTime.now().add(const Duration(days: 30)),
       firstDate: DateTime.now(),
       lastDate: DateTime.now().add(const Duration(days: 365 * 2)),
     );
     if (picked != null && mounted) {
-      setState(() => _expiresAt = picked);
+      setState(() => _dueDate = picked);
     }
+  }
+
+  List<Widget> _discountRows() {
+    if (_discountTotal <= 0) return [];
+    return [
+      const SizedBox(height: 8),
+      _TotalRow(label: 'Discount', value: '–\$${_discountTotal.toStringAsFixed(2)}'),
+    ];
   }
 
   @override
@@ -444,7 +424,6 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Main content
                 Expanded(
                   child: SingleChildScrollView(
                     padding: const EdgeInsets.all(24),
@@ -477,7 +456,6 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
                     ),
                   ),
                 ),
-                // Right panel — totals + actions
                 _buildRightPanel(),
               ],
             ),
@@ -498,7 +476,7 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
       child: Row(
         children: [
           Clickable(
-            onTap: () => context.go('/jobs'),
+            onTap: () => context.go('/jobs?tab=1'),
             child: const Row(
               children: [
                 Icon(Icons.arrow_back_rounded, size: 16, color: AppTheme.textSecondary),
@@ -510,31 +488,18 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
           const SizedBox(width: 12),
           const Text('/', style: TextStyle(color: AppTheme.textMuted)),
           const SizedBox(width: 12),
-          Text(_isEditing ? 'Edit Quote' : 'New Quote',
+          Text(_isEditing ? 'Edit Invoice' : 'New Invoice',
               style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
           const Spacer(),
           MouseRegion(
             cursor: SystemMouseCursors.click,
-            child: OutlinedButton(
-              onPressed: _saving ? null : () => _save(asDraft: true),
-              style: OutlinedButton.styleFrom(
-                foregroundColor: AppTheme.textSecondary,
-                side: const BorderSide(color: AppTheme.borderColor),
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              ),
-              child: const Text('Save as Draft'),
-            ),
-          ),
-          const SizedBox(width: 10),
-          MouseRegion(
-            cursor: SystemMouseCursors.click,
             child: ElevatedButton.icon(
-              onPressed: _saving ? null : () => _save(asDraft: false),
+              onPressed: _saving ? null : _save,
               icon: _saving
                   ? const SizedBox(width: 14, height: 14,
                       child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                  : const Icon(Icons.send_outlined, size: 16),
-              label: const Text('Send to Client'),
+                  : const Icon(Icons.check, size: 16),
+              label: const Text('Save Invoice'),
               style: ElevatedButton.styleFrom(
                 backgroundColor: AppTheme.brand,
                 foregroundColor: Colors.white,
@@ -579,9 +544,6 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
                               style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
                         if ((_selectedLead!['lead_email'] as String?)?.isNotEmpty == true)
                           Text(_selectedLead!['lead_email'] as String,
-                              style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
-                        if ((_selectedLead!['lead_address'] as String?)?.isNotEmpty == true)
-                          Text(_selectedLead!['lead_address'] as String,
                               style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
                       ],
                     ),
@@ -675,7 +637,7 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
             ],
             const SizedBox(height: 12),
             Clickable(
-              onTap: () => _showNewClientDialog(),
+              onTap: _showNewClientDialog,
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                 decoration: BoxDecoration(
@@ -762,7 +724,6 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
           : null,
       child: Column(
         children: [
-          // Header row
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
             decoration: const BoxDecoration(
@@ -789,16 +750,12 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
               ],
             ),
           ),
-          // Line item rows
-          ...List.generate(_lineItems.length, (i) {
-            return _LineItemRowWidget(
-              key: ValueKey(i),
-              item: _lineItems[i],
-              onChanged: () => setState(() {}),
-              onRemove: () => _removeLineItem(i),
-            );
-          }),
-          // Add row button
+          ...List.generate(_lineItems.length, (i) => _LineItemRowWidget(
+            key: ValueKey(i),
+            item: _lineItems[i],
+            onChanged: () => setState(() {}),
+            onRemove: () => _removeLineItem(i),
+          )),
           const SizedBox(height: 8),
           Clickable(
             onTap: () => _addLineItem(),
@@ -834,7 +791,7 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
         maxLines: 4,
         style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
         decoration: InputDecoration(
-          hintText: 'Add any notes or terms for the client...',
+          hintText: 'Add any notes or payment terms...',
           hintStyle: const TextStyle(fontSize: 13, color: AppTheme.textSecondary),
           filled: true,
           fillColor: AppTheme.pageBg,
@@ -852,9 +809,9 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
 
   Widget _buildRightPanel() {
     const months = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-    final expiryStr = _expiresAt != null
-        ? '${months[_expiresAt!.month]} ${_expiresAt!.day}, ${_expiresAt!.year}'
-        : 'No expiry set';
+    final dueDateStr = _dueDate != null
+        ? '${months[_dueDate!.month]} ${_dueDate!.day}, ${_dueDate!.year}'
+        : 'No due date set';
 
     return Container(
       width: 280,
@@ -867,13 +824,12 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Expiry date
-            const Text('Expiry Date',
+            const Text('Due Date',
                 style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600,
                     color: AppTheme.textSecondary)),
             const SizedBox(height: 8),
             Clickable(
-              onTap: _pickExpiry,
+              onTap: _pickDueDate,
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                 decoration: BoxDecoration(
@@ -885,15 +841,13 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
                   children: [
                     const Icon(Icons.calendar_today_outlined, size: 14, color: AppTheme.textSecondary),
                     const SizedBox(width: 8),
-                    Text(expiryStr,
+                    Text(dueDateStr,
                         style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary)),
                   ],
                 ),
               ),
             ),
             const SizedBox(height: 24),
-
-            // Tax rate
             const Text('Tax Rate (%)',
                 style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600,
                     color: AppTheme.textSecondary)),
@@ -921,8 +875,6 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
             const SizedBox(height: 24),
             const Divider(color: AppTheme.borderColor),
             const SizedBox(height: 16),
-
-            // Totals
             _TotalRow(label: 'Subtotal', value: '\$${_subtotal.toStringAsFixed(2)}'),
             ..._discountRows(),
             const SizedBox(height: 8),
@@ -947,14 +899,12 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
             const SizedBox(height: 24),
             const Divider(color: AppTheme.borderColor),
             const SizedBox(height: 16),
-
-            // Action buttons
             SizedBox(
               width: double.infinity,
               child: ElevatedButton.icon(
-                onPressed: _saving ? null : () => _save(asDraft: false),
-                icon: const Icon(Icons.send_outlined, size: 16),
-                label: const Text('Send to Client'),
+                onPressed: _saving ? null : _save,
+                icon: const Icon(Icons.check, size: 16),
+                label: const Text('Save Invoice'),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: AppTheme.brand,
                   foregroundColor: Colors.white,
@@ -962,20 +912,6 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                   padding: const EdgeInsets.symmetric(vertical: 12),
                 ),
-              ),
-            ),
-            const SizedBox(height: 8),
-            SizedBox(
-              width: double.infinity,
-              child: OutlinedButton(
-                onPressed: _saving ? null : () => _save(asDraft: true),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: AppTheme.textSecondary,
-                  side: const BorderSide(color: AppTheme.borderColor),
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                ),
-                child: const Text('Save as Draft'),
               ),
             ),
           ],
@@ -1087,7 +1023,6 @@ class _LineItemRowWidgetState extends State<_LineItemRowWidget> {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Description
           Expanded(
             flex: 5,
             child: TextField(
@@ -1097,7 +1032,6 @@ class _LineItemRowWidgetState extends State<_LineItemRowWidget> {
             ),
           ),
           const SizedBox(width: 8),
-          // Quantity
           SizedBox(
             width: 72,
             child: TextField(
@@ -1108,7 +1042,6 @@ class _LineItemRowWidgetState extends State<_LineItemRowWidget> {
             ),
           ),
           const SizedBox(width: 8),
-          // Unit price
           SizedBox(
             width: 92,
             child: TextField(
@@ -1119,7 +1052,6 @@ class _LineItemRowWidgetState extends State<_LineItemRowWidget> {
             ),
           ),
           const SizedBox(width: 8),
-          // Discount
           SizedBox(
             width: 112,
             child: Row(
@@ -1163,7 +1095,6 @@ class _LineItemRowWidgetState extends State<_LineItemRowWidget> {
             ),
           ),
           const SizedBox(width: 8),
-          // Total
           SizedBox(
             width: 82,
             child: Padding(
@@ -1175,7 +1106,6 @@ class _LineItemRowWidgetState extends State<_LineItemRowWidget> {
               ),
             ),
           ),
-          // Remove
           SizedBox(
             width: 40,
             child: widget.onRemove != null
