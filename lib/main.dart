@@ -7,8 +7,13 @@ import 'package:flutter_web_plugins/url_strategy.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   usePathUrlStrategy();
-  final initLoc = Uri.base.path.startsWith('/book/') ? Uri.base.path : '/login';
+  debugPrint('DEBUG RAW URI BEFORE INITLOC: ${Uri.base.toString()}');
+  debugPrint('DEBUG RAW PATH BEFORE INITLOC: ${Uri.base.path}');
+  final initLoc = (Uri.base.path.startsWith('/book/') || Uri.base.path.startsWith('/client/'))
+      ? Uri.base.path
+      : '/login';
   debugPrint('DEBUG setInitialLocation=$initLoc');
+  AppRouter.resetRouter();
   AppRouter.setInitialLocation(initLoc);
 
   await Supabase.initialize(
@@ -27,10 +32,14 @@ Future<void> main() async {
   final fragment = Uri.base.fragment;
   final path = Uri.base.fragment.split('?').first;
   debugPrint('DEBUG URL: full=${Uri.base} path=${Uri.base.path} fragment=$fragment parsedPath=$path');
+  debugPrint('DEBUG FULL URI BASE: ${Uri.base.toString()}');
+  debugPrint('DEBUG PATH ONLY: ${Uri.base.path}');
+  debugPrint('DEBUG STARTS WITH CLIENT: ${Uri.base.path.startsWith('/client/')}');
   final isBetaSignup = path.contains('beta-signup');
   final isPublicBooking = path.startsWith('/book/') || Uri.base.path.startsWith('/book/');
+  final isClientPortal = Uri.base.path.startsWith('/client/');
   debugPrint('DEBUG isPublicBooking=$isPublicBooking');
-  if (!fragment.contains('access_token') && !isBetaSignup && !isPublicBooking) {
+  if (!fragment.contains('access_token') && !isBetaSignup && !isPublicBooking && !isClientPortal) {
     await Supabase.instance.client.auth.signOut();
   }
 
@@ -50,7 +59,7 @@ class _NexaFlowAppState extends State<NexaFlowApp> {
   @override
   void initState() {
     super.initState();
-    if (widget.initialPath.startsWith('/book/')) {
+    if (widget.initialPath.startsWith('/book/') || widget.initialPath.startsWith('/client/')) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         AppRouter.router.go(widget.initialPath);
       });

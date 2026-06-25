@@ -51,6 +51,7 @@ class AppRouter {
   static void setInitialLocation(String path) => _initialLocation = path;
   static GoRouter? _router;
   static GoRouter get router => _router ??= _buildRouter();
+  static void resetRouter() => _router = null;
   static GoRouter _buildRouter() => GoRouter(
     initialLocation: _initialLocation,
     refreshListenable: GoRouterRefreshStream(
@@ -63,6 +64,7 @@ class AppRouter {
       if (loc.startsWith('/book/') || realPath.startsWith('/book/')) return null;
       if (loc.startsWith('/client/') || realPath.startsWith('/client/')) return null;
       if (loc.startsWith('/client')) return null;
+      if (realPath.contains('/client/')) return null;
       final session = Supabase.instance.client.auth.currentSession;
       final isLoggedIn = session != null;
       final isLoginPage = loc == '/login';

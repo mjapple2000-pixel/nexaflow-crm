@@ -38,7 +38,7 @@ serve(async (req) => {
     // Business info
     const { data: business } = await adminClient
       .from('businesses')
-      .select('business_name, logo_url')
+      .select('business_name')
       .eq('id', businessId)
       .single()
 
@@ -87,7 +87,7 @@ serve(async (req) => {
         },
         business: {
           name: business?.business_name ?? '',
-          logo_url: business?.logo_url ?? null,
+          logo_url: null,
         },
         appointments: appointments ?? [],
         quotes: quotes ?? [],
