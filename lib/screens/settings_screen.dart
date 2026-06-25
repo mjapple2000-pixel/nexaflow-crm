@@ -4137,7 +4137,6 @@ class _PaymentOptionsSection extends StatefulWidget {
 
 class _PaymentOptionsSectionState
     extends State<_PaymentOptionsSection> {
-  late bool _stripeConnected;
   late bool _paypalConnected;
   late bool _venmoConnected;
   late bool _squareConnected;
@@ -4145,21 +4144,107 @@ class _PaymentOptionsSectionState
   String? _successMsg;
   String? _error;
 
+  // Stripe Connect state
+  bool _stripeLoading = true;
+  bool _stripeOnboardingComplete = false;
+  bool _stripeChargesEnabled = false;
+  bool _stripePayoutsEnabled = false;
+  bool _stripeOnboardingStarted = false;
+  String? _stripeAccountId;
+  bool _stripeConnecting = false;
+
   @override
   void initState() {
     super.initState();
     final b = widget.business;
-    _stripeConnected = b['connected_stripe'] as bool? ?? false;
     _paypalConnected = b['connected_paypal'] as bool? ?? false;
     _venmoConnected  = b['connected_venmo']  as bool? ?? false;
     _squareConnected = b['connected_square'] as bool? ?? false;
+    _stripeOnboardingStarted =
+        b['stripe_connect_onboarding_started_at'] != null;
+    _loadStripeConnect();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final uri = GoRouterState.of(context).uri;
+    final stripeParam = uri.queryParameters['stripe'];
+    if (stripeParam == 'success' || stripeParam == 'refresh') {
+      _loadStripeConnect();
+    }
+  }
+
+  Future<void> _loadStripeConnect() async {
+    setState(() => _stripeLoading = true);
+    try {
+      final businessId = widget.business['id'] as int?;
+      if (businessId == null) return;
+      final res = await Supabase.instance.client
+          .from('stripe_connect_accounts')
+          .select()
+          .eq('business_id', businessId)
+          .filter('deleted_at', 'is', null)
+          .maybeSingle();
+      if (res != null) {
+        _stripeAccountId         = res['stripe_account_id'] as String?;
+        _stripeOnboardingComplete = res['onboarding_complete'] as bool? ?? false;
+        _stripeChargesEnabled    = res['charges_enabled'] as bool? ?? false;
+        _stripePayoutsEnabled    = res['payouts_enabled'] as bool? ?? false;
+      }
+    } catch (e) {
+      debugPrint('Stripe Connect load error: $e');
+    } finally {
+      if (mounted) setState(() => _stripeLoading = false);
+    }
+  }
+
+  Future<void> _connectStripe() async {
+    setState(() => _stripeConnecting = true);
+    try {
+      final session = Supabase.instance.client.auth.currentSession;
+      final res = await http.post(
+        Uri.parse(
+            'https://rllriopqojaraceytdno.supabase.co/functions/v1/stripe-connect-onboard'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ${session?.accessToken ?? ''}',
+        },
+        body: jsonEncode({}),
+      );
+      if (!mounted) return;
+      final body = jsonDecode(res.body) as Map<String, dynamic>;
+      if (res.statusCode == 200 && body['url'] != null) {
+        final uri = Uri.parse(body['url'] as String);
+        if (await canLaunchUrl(uri)) {
+          await launchUrl(uri, mode: LaunchMode.externalApplication);
+        }
+        // Reload after returning — user may have completed onboarding
+        await _loadStripeConnect();
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(body['error']?.toString() ?? 'Failed to start Stripe setup.'),
+            behavior: SnackBarBehavior.floating,
+          ));
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Error: $e'),
+          behavior: SnackBarBehavior.floating,
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _stripeConnecting = false);
+    }
   }
 
   Future<void> _save() async {
     setState(() { _saving = true; _error = null; _successMsg = null; });
     try {
       await widget.onSave({
-        'connected_stripe': _stripeConnected,
         'connected_paypal': _paypalConnected,
         'connected_venmo':  _venmoConnected,
         'connected_square': _squareConnected,
@@ -4197,36 +4282,32 @@ class _PaymentOptionsSectionState
             decoration: BoxDecoration(
               color: AppTheme.brand.withValues(alpha: 0.05),
               borderRadius: BorderRadius.circular(10),
-              border: Border.all(
-                  color: AppTheme.brand.withValues(alpha: 0.2)),
+              border: Border.all(color: AppTheme.brand.withValues(alpha: 0.2)),
             ),
             child: const Row(children: [
               Icon(Icons.info_outline, size: 16, color: AppTheme.brand),
               SizedBox(width: 10),
               Expanded(
                 child: Text(
-                  'Connect a payment processor to accept payments directly from leads. '
-                  'Toggle the switch to mark an integration as connected.',
-                  style: TextStyle(
-                      fontSize: 12, color: AppTheme.brand, height: 1.5),
+                  'Connect a payment processor so your customers can pay invoices directly through NexaFlow.',
+                  style: TextStyle(fontSize: 12, color: AppTheme.brand, height: 1.5),
                 ),
               ),
             ]),
           ),
           const SizedBox(height: 24),
 
-          // Stripe
-          _PaymentCard(
-            name: 'Stripe',
-            description:
-                'Accept credit cards, debit cards, and more. The most powerful payment platform for businesses.',
-            note:
-                'Recommended for high-volume businesses. Supports invoicing, subscriptions, and one-time payments.',
-            color: const Color(0xFF635BFF),
-            icon: _StripeIcon(),
-            isConnected: _stripeConnected,
-            onToggle: (v) => setState(() => _stripeConnected = v),
-            onConnect: () => _showComingSoon('Stripe Connect'),
+          // ── Stripe Connect card ──────────────────────────────────
+          _StripeConnectCard(
+            loading: _stripeLoading,
+            connecting: _stripeConnecting,
+            onboardingComplete: _stripeOnboardingComplete,
+            chargesEnabled: _stripeChargesEnabled,
+            payoutsEnabled: _stripePayoutsEnabled,
+            onboardingStarted: _stripeOnboardingStarted,
+            accountId: _stripeAccountId,
+            onConnect: _connectStripe,
+            onRefresh: _loadStripeConnect,
           ),
           const SizedBox(height: 16),
 
@@ -4275,6 +4356,268 @@ class _PaymentOptionsSectionState
           ),
         ],
       ),
+    );
+  }
+}
+
+// ── Stripe Connect Card ───────────────────────────────────────────────────────
+
+class _StripeConnectCard extends StatelessWidget {
+  final bool loading;
+  final bool connecting;
+  final bool onboardingComplete;
+  final bool chargesEnabled;
+  final bool payoutsEnabled;
+  final bool onboardingStarted;
+  final String? accountId;
+  final VoidCallback onConnect;
+  final VoidCallback onRefresh;
+
+  const _StripeConnectCard({
+    required this.loading,
+    required this.connecting,
+    required this.onboardingComplete,
+    required this.chargesEnabled,
+    required this.payoutsEnabled,
+    required this.onboardingStarted,
+    required this.accountId,
+    required this.onConnect,
+    required this.onRefresh,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    const stripeColor = Color(0xFF635BFF);
+
+    Widget statusBadge() {
+      if (chargesEnabled) {
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+          decoration: BoxDecoration(
+            color: const Color(0xFF10B981).withValues(alpha: 0.1),
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: const Row(mainAxisSize: MainAxisSize.min, children: [
+            Icon(Icons.check_circle, size: 11, color: Color(0xFF10B981)),
+            SizedBox(width: 4),
+            Text('Connected', style: TextStyle(
+                fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFF10B981))),
+          ]),
+        );
+      }
+      if (onboardingStarted && !onboardingComplete) {
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+          decoration: BoxDecoration(
+            color: Colors.orange.withValues(alpha: 0.1),
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: const Row(mainAxisSize: MainAxisSize.min, children: [
+            Icon(Icons.hourglass_top_rounded, size: 11, color: Colors.orange),
+            SizedBox(width: 4),
+            Text('Setup in progress', style: TextStyle(
+                fontSize: 11, fontWeight: FontWeight.w600, color: Colors.orange)),
+          ]),
+        );
+      }
+      return const SizedBox.shrink();
+    }
+
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 200),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: AppTheme.cardBg,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: chargesEnabled
+              ? stripeColor.withValues(alpha: 0.4)
+              : AppTheme.borderColor,
+          width: chargesEnabled ? 1.5 : 1,
+        ),
+        boxShadow: chargesEnabled
+            ? [BoxShadow(color: stripeColor.withValues(alpha: 0.08), blurRadius: 12)]
+            : null,
+      ),
+      child: loading
+          ? const Center(
+              child: Padding(
+                padding: EdgeInsets.all(16),
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ))
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(children: [
+                  Container(
+                    width: 52, height: 52,
+                    decoration: BoxDecoration(
+                      color: stripeColor.withValues(alpha: 0.08),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: stripeColor.withValues(alpha: 0.15)),
+                    ),
+                    child: Center(child: _StripeIcon()),
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Row(children: [
+                        const Text('Stripe',
+                            style: TextStyle(fontSize: 15,
+                                fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+                        const SizedBox(width: 10),
+                        statusBadge(),
+                      ]),
+                      const SizedBox(height: 3),
+                      Text(
+                        chargesEnabled
+                            ? 'Your Stripe account is active. Customers can pay invoices online.'
+                            : onboardingStarted
+                                ? 'Stripe setup is in progress. Complete verification to start accepting payments.'
+                                : 'Accept credit cards and debit cards directly from your customers.',
+                        style: const TextStyle(
+                            fontSize: 12, color: AppTheme.textSecondary, height: 1.4),
+                      ),
+                    ]),
+                  ),
+                  const SizedBox(width: 16),
+                  MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    child: IconButton(
+                      onPressed: onRefresh,
+                      icon: const Icon(Icons.refresh_rounded,
+                          size: 18, color: AppTheme.textSecondary),
+                      tooltip: 'Refresh status',
+                    ),
+                  ),
+                ]),
+
+                if (chargesEnabled) ...[
+                  const SizedBox(height: 16),
+                  Container(
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: AppTheme.pageBg,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: AppTheme.borderColor),
+                    ),
+                    child: Column(children: [
+                      Row(children: [
+                        const Icon(Icons.credit_card_outlined,
+                            size: 14, color: AppTheme.textSecondary),
+                        const SizedBox(width: 8),
+                        const Text('Charges',
+                            style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+                        const Spacer(),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF10B981).withValues(alpha: 0.1),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: const Text('Enabled',
+                              style: TextStyle(fontSize: 11,
+                                  fontWeight: FontWeight.w600, color: Color(0xFF10B981))),
+                        ),
+                      ]),
+                      const SizedBox(height: 8),
+                      Row(children: [
+                        const Icon(Icons.account_balance_outlined,
+                            size: 14, color: AppTheme.textSecondary),
+                        const SizedBox(width: 8),
+                        const Text('Payouts',
+                            style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+                        const Spacer(),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: payoutsEnabled
+                                ? const Color(0xFF10B981).withValues(alpha: 0.1)
+                                : Colors.orange.withValues(alpha: 0.1),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            payoutsEnabled ? 'Enabled' : 'Pending',
+                            style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: payoutsEnabled
+                                    ? const Color(0xFF10B981)
+                                    : Colors.orange),
+                          ),
+                        ),
+                      ]),
+                    ]),
+                  ),
+                  const SizedBox(height: 12),
+                  MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    child: OutlinedButton.icon(
+                      onPressed: onConnect,
+                      icon: const Icon(Icons.open_in_new_rounded, size: 14),
+                      label: const Text('Manage in Stripe'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: stripeColor,
+                        side: BorderSide(color: stripeColor.withValues(alpha: 0.4)),
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                      ),
+                    ),
+                  ),
+                ] else ...[
+                  const SizedBox(height: 16),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: AppTheme.pageBg,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: AppTheme.borderColor),
+                    ),
+                    child: Row(children: [
+                      Icon(Icons.lightbulb_outline, size: 13, color: stripeColor),
+                      const SizedBox(width: 8),
+                      const Expanded(
+                        child: Text(
+                          'Recommended for home service businesses. Funds deposit directly to your bank account.',
+                          style: TextStyle(fontSize: 11,
+                              color: AppTheme.textSecondary, height: 1.4),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      MouseRegion(
+                        cursor: SystemMouseCursors.click,
+                        child: GestureDetector(
+                          onTap: connecting ? null : onConnect,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 12, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: stripeColor.withValues(alpha: 0.1),
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(
+                                  color: stripeColor.withValues(alpha: 0.3)),
+                            ),
+                            child: connecting
+                                ? SizedBox(
+                                    width: 14, height: 14,
+                                    child: CircularProgressIndicator(
+                                        strokeWidth: 2, color: stripeColor))
+                                : Text(
+                                    onboardingStarted
+                                        ? 'Continue Setup'
+                                        : 'Connect Stripe',
+                                    style: TextStyle(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w600,
+                                        color: stripeColor)),
+                          ),
+                        ),
+                      ),
+                    ]),
+                  ),
+                ],
+              ],
+            ),
     );
   }
 }
