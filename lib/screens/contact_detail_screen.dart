@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
 import '../theme/app_theme.dart';
 
 class ContactDetailScreen extends StatefulWidget {
@@ -36,6 +38,10 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
   String _editStatus = 'New';
   String _editSource = 'Manual';
   List<String> _editTags = [];
+
+  // Portal state
+  bool _sendingPortalLink = false;
+  String? _portalLastSent;
 
   static const _suggestedTags = [
     'Hot Lead', 'Follow Up', 'VIP', 'Cold', 'Booked',
@@ -113,6 +119,7 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
         _lead = lead;
         _messages = msgs;
         _appointments = appts;
+        _portalLastSent = lead['client_portal_last_sent_at'] as String?;
         _populateEditors();
       });
     } catch (e) {
@@ -278,6 +285,40 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
   void _snack(String msg) => ScaffoldMessenger.of(context).showSnackBar(
     SnackBar(content: Text(msg), backgroundColor: AppTheme.brand,
         duration: const Duration(seconds: 2)));
+
+  Future<void> _sendPortalLink() async {
+    setState(() => _sendingPortalLink = true);
+    try {
+      final session = _db.auth.currentSession;
+      if (session == null) return;
+      final id = int.tryParse(widget.leadId) ?? 0;
+      final res = await http.post(
+        Uri.parse(
+            'https://rllriopqojaraceytdno.supabase.co/functions/v1/generate-client-portal-link'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ${session.accessToken}',
+        },
+        body: jsonEncode({'lead_id': id}),
+      );
+      if (!mounted) return;
+      if (res.statusCode == 200) {
+        final body = jsonDecode(res.body) as Map<String, dynamic>;
+        final url = body['portal_url'] as String;
+        await Clipboard.setData(ClipboardData(text: url));
+        setState(() => _portalLastSent = DateTime.now().toIso8601String());
+        _snack('Portal link sent via SMS and copied to clipboard.');
+      } else {
+        final body = jsonDecode(res.body) as Map<String, dynamic>;
+        _snack('Error: ${body['error'] ?? 'Failed to send portal link'}');
+      }
+    } catch (e) {
+      if (!mounted) return;
+      _snack('Error sending portal link: $e');
+    } finally {
+      if (mounted) setState(() => _sendingPortalLink = false);
+    }
+  }
 
   // ── HELPERS ───────────────────────────────────────────────────────────────
 
@@ -677,6 +718,53 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
             _sideMeta('Last Activity', _timeAgo(_lead!['last_message_at'] as String?)),
             if (_lead!['last_ai_interaction_at'] != null)
               _sideMeta('Last AI Chat', _timeAgo(_lead!['last_ai_interaction_at'] as String?)),
+
+            const SizedBox(height: 16),
+            const Divider(color: AppTheme.borderColor, height: 1),
+            const SizedBox(height: 16),
+
+            // Client Portal
+            const Text('CLIENT PORTAL',
+                style: TextStyle(
+                    color: AppTheme.textSecondary,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.8)),
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: _sendingPortalLink ? null : _sendPortalLink,
+                icon: _sendingPortalLink
+                    ? const SizedBox(
+                        width: 13,
+                        height: 13,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: Colors.white))
+                    : const Icon(Icons.link_rounded, size: 15),
+                label: Text(
+                    _sendingPortalLink ? 'Sending...' : 'Send Portal Link'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppTheme.brand,
+                  foregroundColor: Colors.white,
+                  elevation: 0,
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8)),
+                  textStyle: const TextStyle(
+                      fontSize: 12, fontWeight: FontWeight.w600),
+                ),
+              ),
+            ),
+            if (_portalLastSent != null) ...[
+              const SizedBox(height: 6),
+              Text(
+                'Last sent: ${_timeAgo(_portalLastSent)}',
+                style: const TextStyle(
+                    color: AppTheme.textSecondary, fontSize: 11),
+              ),
+            ],
           ]),
         ),
       ),

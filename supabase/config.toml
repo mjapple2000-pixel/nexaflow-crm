@@ -53,3 +53,9 @@ entrypoint = "./functions/bulk-email/index.ts"
 # Specifies static files to be bundled with the function. Supports glob patterns.
 # For example, if you want to serve static HTML pages in your function:
 # static_files = [ "./functions/bulk-email/*.html" ]
+
+[functions.check-plan-feature]
+enabled = true
+verify_jwt = true
+import_map = "./functions/check-plan-feature/deno.json"
+entrypoint = "./functions/check-plan-feature/index.ts"

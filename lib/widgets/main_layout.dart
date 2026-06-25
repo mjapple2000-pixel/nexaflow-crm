@@ -492,6 +492,13 @@ class _AppNavBarState extends State<AppNavBar> {
                       route: '/contacts',
                       active: location.startsWith('/contacts'),
                     ),
+                  if (_can('contacts'))
+                    _NavItem(
+                      icon: Icons.person_search_outlined,
+                      label: 'Leads',
+                      route: '/leads',
+                      active: location.startsWith('/leads'),
+                    ),
                   if (_can('pipelines'))
                     _NavItem(
                       icon: Icons.bar_chart_rounded,

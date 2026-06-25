@@ -12,13 +12,48 @@ const supabase = createClient(
   Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
 )
 
+// Maps Stripe Price IDs to internal plan names — never change these IDs
 const PRICE_TO_PLAN: Record<string, string> = {
   'price_1TJJoyGpSG6sxQ0SW1kd9uoW': 'starter',
   'price_1TJJvYGpSG6sxQ0SlTuyLur8': 'growth',
   'price_1TJJy9GpSG6sxQ0SDBgCgpgH': 'pro',
 }
 
+// Maps Stripe subscription.status to our subscription_status values
+const STRIPE_STATUS_MAP: Record<string, string> = {
+  'active':             'active',
+  'trialing':           'trialing',
+  'past_due':           'past_due',
+  'canceled':           'cancelled',   // Stripe spells it without the 'l'
+  'unpaid':             'unpaid',
+  'incomplete':         'incomplete',
+  'incomplete_expired': 'cancelled',
+}
+
 serve(async (req) => {
+  // ── Manual cancel action from Flutter UI ──────────────────────────────
+  // The Flutter cancel button calls this function directly with { action: 'cancel' }
+  if (req.method === 'POST') {
+    const contentType = req.headers.get('content-type') ?? ''
+    if (contentType.includes('application/json')) {
+      const body = await req.json().catch(() => null)
+      if (body?.action === 'cancel' && body?.subscription_id) {
+        try {
+          await stripe.subscriptions.cancel(body.subscription_id)
+          return new Response(JSON.stringify({ ok: true }), {
+            headers: { 'Content-Type': 'application/json' },
+          })
+        } catch (err) {
+          return new Response(JSON.stringify({ error: String(err) }), {
+            status: 400,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+      }
+    }
+  }
+
+  // ── Stripe webhook signature verification ─────────────────────────────
   const signature = req.headers.get('stripe-signature')
   const body = await req.text()
 
@@ -33,9 +68,11 @@ serve(async (req) => {
     return new Response(`Webhook signature failed: ${err}`, { status: 400 })
   }
 
+  // ── checkout.session.completed ────────────────────────────────────────
+  // Sets is_paid, client_id, subscription_id only.
+  // Plan name is set by customer.subscription.updated which fires immediately after.
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object as Stripe.Checkout.Session
-
     const customerEmail = session.customer_details?.email ?? ''
     const customerId = session.customer as string
     const subscriptionId = session.subscription as string
@@ -47,8 +84,6 @@ serve(async (req) => {
       .maybeSingle()
 
     if (business) {
-      // Only set is_paid and IDs here — plan name set by customer.subscription.updated
-      // which fires immediately after and has the correct price ID
       await supabase
         .from('businesses')
         .update({
@@ -58,7 +93,7 @@ serve(async (req) => {
         })
         .eq('id', business.id)
 
-      // Fire welcome email via Make
+      // Welcome email via Make
       await fetch('https://hook.us2.make.com/217vu6f50oluiu9e01thnx4dutehbdne', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -70,6 +105,31 @@ serve(async (req) => {
     }
   }
 
+  // ── customer.subscription.updated ────────────────────────────────────
+  // Writes plan name and subscription lifecycle status separately.
+  // This is the source of truth for both columns going forward.
+  if (event.type === 'customer.subscription.updated') {
+    const subscription = event.data.object as Stripe.Subscription
+    const customerId = subscription.customer as string
+    const priceId = subscription.items.data[0]?.price?.id ?? ''
+    const planName = PRICE_TO_PLAN[priceId] ?? 'starter'
+    const stripeStatus = subscription.status          // Stripe's lifecycle value
+    const mappedStatus = STRIPE_STATUS_MAP[stripeStatus] ?? 'active'
+    const isActive = ['active', 'trialing'].includes(mappedStatus)
+
+    await supabase
+      .from('businesses')
+      .update({
+        plan: planName,                  // e.g. 'growth'  — never 'cancelled'
+        subscription_status: mappedStatus, // e.g. 'active', 'trialing', 'past_due'
+        is_paid: isActive,
+      })
+      .eq('client_id', customerId)
+  }
+
+  // ── customer.subscription.deleted ────────────────────────────────────
+  // Marks the subscription as cancelled and clears payment state.
+  // Does NOT touch `plan` — we keep the last known plan for analytics/win-back.
   if (event.type === 'customer.subscription.deleted') {
     const subscription = event.data.object as Stripe.Subscription
     const customerId = subscription.customer as string
@@ -80,22 +140,7 @@ serve(async (req) => {
         is_paid: false,
         subscription_status: 'cancelled',
         subscription_id: null,
-      })
-      .eq('client_id', customerId)
-  }
-
-  if (event.type === 'customer.subscription.updated') {
-    const subscription = event.data.object as Stripe.Subscription
-    const customerId = subscription.customer as string
-    const priceId = subscription.items.data[0]?.price?.id ?? ''
-    const planName = PRICE_TO_PLAN[priceId] ?? 'starter'
-    const isActive = subscription.status === 'active'
-
-    await supabase
-      .from('businesses')
-      .update({
-        is_paid: isActive,
-        subscription_status: isActive ? planName : 'cancelled',
+        // plan is intentionally NOT cleared here
       })
       .eq('client_id', customerId)
   }

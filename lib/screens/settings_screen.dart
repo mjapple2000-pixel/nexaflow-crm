@@ -51,7 +51,7 @@ const _kPlans = [
   ),
   _StripePlan(
     name: 'Growth',
-    price: '\$197',
+    price: '\$297',
     priceId: 'price_1TJJvYGpSG6sxQ0SlTuyLur8',
     paymentLink: 'https://buy.stripe.com/5kQ5kDdru4VVgY37v28og09',
     features: [
@@ -3257,7 +3257,7 @@ class _BillingSectionState extends State<_BillingSection> {
   bool _cancelling = false;
 
   String get _currentPlan =>
-      widget.business['subscription_status'] as String? ?? '';
+    widget.business['plan'] as String? ?? '';
   bool get _isBeta =>
       widget.business['is_beta'] as bool? ?? false;
   bool get _isPaid =>
