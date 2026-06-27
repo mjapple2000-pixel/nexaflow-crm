@@ -1,5 +1,8 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme/app_theme.dart';
 import '../widgets/clickable.dart';
@@ -21,6 +24,10 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
   Map<String, dynamic>? _invoice;
   Map<String, dynamic>? _lead;
   List<Map<String, dynamic>> _lineItems = [];
+
+  bool _chargesEnabled = false;
+  Map<String, dynamic>? _paymentLink;
+  bool _sendingPaymentLink = false;
 
   @override
   void initState() {
@@ -44,11 +51,38 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
           .isFilter('deleted_at', null)
           .order('sort_order');
 
+      // Load Stripe Connect status
+      final businessId = invoiceRes['business_id'] as int?;
+      bool chargesEnabled = false;
+      Map<String, dynamic>? paymentLink;
+
+      if (businessId != null) {
+        final connectRes = await _db
+            .from('businesses')
+            .select('stripe_connect_ready')
+            .eq('id', businessId)
+            .maybeSingle();
+        chargesEnabled = connectRes?['stripe_connect_ready'] == true;
+      }
+
+      // Load existing payment link if present
+      final paymentLinkId = invoiceRes['payment_link_id'];
+      if (paymentLinkId != null) {
+        final plRes = await _db
+            .from('payment_links')
+            .select('*')
+            .eq('id', paymentLinkId)
+            .maybeSingle();
+        paymentLink = plRes;
+      }
+
       if (!mounted) return;
       setState(() {
         _invoice = invoiceRes;
         _lead = invoiceRes['leads'] as Map<String, dynamic>?;
         _lineItems = List<Map<String, dynamic>>.from(itemsRes);
+        _chargesEnabled = chargesEnabled;
+        _paymentLink = paymentLink;
         _loading = false;
       });
     } catch (e) {
@@ -160,6 +194,8 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
                   _metaRow('Paid', _fmtDate(_invoice?['paid_at'])),
                 if (_invoice?['quote_id'] != null)
                   _sourceQuoteRow(),
+                if (_paymentLink != null)
+                  _paymentLinkStatusRow(),
                 const Divider(height: 28, color: AppTheme.borderColor),
                 _totalsSection(),
                 const SizedBox(height: 20),
@@ -406,6 +442,47 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
     );
   }
 
+  Widget _paymentLinkStatusRow() {
+    final status = _paymentLink?['status'] as String? ?? 'pending';
+    final Color color;
+    final String label;
+    switch (status) {
+      case 'paid':
+        color = const Color(0xFF10B981);
+        label = 'Paid Online';
+        break;
+      case 'expired':
+        color = AppTheme.textSecondary;
+        label = 'Link Expired';
+        break;
+      case 'cancelled':
+        color = AppTheme.error;
+        label = 'Cancelled';
+        break;
+      default:
+        color = const Color(0xFFF59E0B);
+        label = 'Payment Link Sent';
+    }
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          const Text('Payment Link', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Text(label,
+                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: color)),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _sourceQuoteRow() {
     final quoteId = _invoice?['quote_id'] as String?;
     if (quoteId == null) return const SizedBox.shrink();
@@ -494,7 +571,11 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
     }
 
     if (_isOverdue || status == 'approved') {
-      buttons.add(_btn('Mark as Paid', AppTheme.success, _onMarkPaid));
+      if (_chargesEnabled && _paymentLink == null) {
+        buttons.add(_sendPaymentLinkButton());
+        buttons.add(const SizedBox(height: 8));
+      }
+      buttons.add(_btn('Mark as Paid Manually', AppTheme.success, _onMarkPaid));
       buttons.add(const SizedBox(height: 8));
       buttons.add(_btn('Delete', AppTheme.error, _onDelete));
     } else if (status == 'draft') {
@@ -517,6 +598,135 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: buttons,
     );
+  }
+
+  Widget _sendPaymentLinkButton() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const Text('Send Payment Link',
+            style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600,
+                color: AppTheme.textSecondary)),
+        const SizedBox(height: 6),
+        Row(
+          children: [
+            Expanded(
+              child: SizedBox(
+                height: 38,
+                child: TextButton(
+                  onPressed: _sendingPaymentLink ? null : () => _onSendPaymentLink('sms'),
+                  style: TextButton.styleFrom(
+                    backgroundColor: const Color(0xFF6366F1),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  child: _sendingPaymentLink
+                      ? const SizedBox(width: 16, height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                      : const Text('via SMS',
+                          style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
+                              color: Colors.white)),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: SizedBox(
+                height: 38,
+                child: TextButton(
+                  onPressed: _sendingPaymentLink ? null : () => _onSendPaymentLink('email'),
+                  style: TextButton.styleFrom(
+                    backgroundColor: const Color(0xFF6366F1),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  child: _sendingPaymentLink
+                      ? const SizedBox(width: 16, height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                      : const Text('via Email',
+                          style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
+                              color: Colors.white)),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Future<void> _onSendPaymentLink(String channel) async {
+    final businessId = _invoice?['business_id'] as int?;
+    if (businessId == null) return;
+
+    final amountDue = ((_invoice?['amount_due'] as num?) ?? 0).toDouble();
+    final amountCents = (amountDue * 100).round();
+    final invoiceNum = _invoice?['invoice_number'] as String? ?? 'Invoice';
+    final customerEmail = _lead?['lead_email'] as String? ?? '';
+
+    if (amountCents <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Invoice amount must be greater than zero.'),
+        behavior: SnackBarBehavior.floating,
+      ));
+      return;
+    }
+
+    if (customerEmail.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Customer email is required to send a payment link.'),
+        behavior: SnackBarBehavior.floating,
+      ));
+      return;
+    }
+
+    setState(() => _sendingPaymentLink = true);
+    try {
+      final anonKey = Supabase.instance.client.auth.currentSession?.accessToken ?? '';
+
+      final res = await http.post(
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/create-invoice-payment'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $anonKey',
+        },
+        body: jsonEncode({
+          'business_id': businessId,
+          'amount_cents': amountCents,
+          'description': invoiceNum,
+          'customer_email': customerEmail,
+        }),
+      );
+
+      if (!mounted) return;
+
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      if (res.statusCode == 200 && data['url'] != null) {
+        final uri = Uri.parse(data['url'] as String);
+        if (await canLaunchUrl(uri)) {
+          await launchUrl(uri, mode: LaunchMode.externalApplication);
+        }
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Stripe Checkout opened — share the link with your customer.'),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: Color(0xFF10B981),
+        ));
+      } else {
+        final err = data['error'] as String? ?? 'Unknown error';
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Error: $err'),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: AppTheme.error,
+        ));
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Error: $e'),
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: AppTheme.error,
+      ));
+    } finally {
+      if (mounted) setState(() => _sendingPaymentLink = false);
+    }
   }
 
   Widget _btn(String label, Color? color, VoidCallback onTap) {

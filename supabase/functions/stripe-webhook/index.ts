@@ -149,3 +149,53 @@ serve(async (req) => {
     headers: { 'Content-Type': 'application/json' },
   })
 })
+
+// ── V2 Connect thin event handler (separate export) ───────────────────────
+// Handles account requirement and capability updates from connected accounts.
+// Uses a separate webhook secret from NexaFlow's own billing webhook above.
+Deno.serve(async (req: Request) => {
+  const signature = req.headers.get('stripe-signature')
+  const body = await req.text()
+
+  let event: any
+  try {
+    event = stripe.webhooks.constructEvent(
+      body,
+      signature ?? '',
+      Deno.env.get('STRIPE_CONNECT_WEBHOOK_SECRET') ?? '',
+    )
+  } catch (err) {
+    return new Response(`Connect webhook signature failed: ${err}`, { status: 400 })
+  }
+
+  // v2.core.account[requirements].updated — flip onboarded boolean
+  if (event.type === 'v2.core.account[requirements].updated') {
+    const accountId = event.related_object?.id ?? event.data?.object?.id
+    if (accountId) {
+      const account = await stripe.accounts.retrieve(accountId)
+      const onboarded = account.details_submitted === true && account.charges_enabled === true
+      await supabase
+        .from('businesses')
+        .update({ stripe_connect_onboarded: onboarded })
+        .eq('stripe_connect_id', accountId)
+    }
+  }
+
+  // v2.core.account[configuration.merchant].capability_status_updated — flip ready boolean
+  if (event.type === 'v2.core.account[configuration.merchant].capability_status_updated') {
+    const accountId = event.related_object?.id ?? event.data?.object?.id
+    if (accountId) {
+      const account = await stripe.accounts.retrieve(accountId)
+      const ready =
+        account.capabilities?.card_payments === 'active' && account.charges_enabled === true
+      await supabase
+        .from('businesses')
+        .update({ stripe_connect_ready: ready })
+        .eq('stripe_connect_id', accountId)
+    }
+  }
+
+  return new Response(JSON.stringify({ received: true }), {
+    headers: { 'Content-Type': 'application/json' },
+  })
+})

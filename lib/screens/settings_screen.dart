@@ -4147,11 +4147,11 @@ class _PaymentOptionsSectionState
   // Stripe Connect state
   bool _stripeLoading = true;
   bool _stripeOnboardingComplete = false;
-  bool _stripeChargesEnabled = false;
-  bool _stripePayoutsEnabled = false;
+  bool _stripeReady = false;
   bool _stripeOnboardingStarted = false;
   String? _stripeAccountId;
   bool _stripeConnecting = false;
+  bool _stripeManaging = false;
 
   @override
   void initState() {
@@ -4180,17 +4180,35 @@ class _PaymentOptionsSectionState
     try {
       final businessId = widget.business['id'] as int?;
       if (businessId == null) return;
-      final res = await Supabase.instance.client
-          .from('stripe_connect_accounts')
-          .select()
-          .eq('business_id', businessId)
-          .filter('deleted_at', 'is', null)
+
+      // Load connect_id and local booleans from businesses table
+      final biz = await Supabase.instance.client
+          .from('businesses')
+          .select('stripe_connect_id, stripe_connect_onboarded, stripe_connect_ready')
+          .eq('id', businessId)
           .maybeSingle();
-      if (res != null) {
-        _stripeAccountId         = res['stripe_account_id'] as String?;
-        _stripeOnboardingComplete = res['onboarding_complete'] as bool? ?? false;
-        _stripeChargesEnabled    = res['charges_enabled'] as bool? ?? false;
-        _stripePayoutsEnabled    = res['payouts_enabled'] as bool? ?? false;
+
+      if (biz != null) {
+        _stripeAccountId = biz['stripe_connect_id'] as String?;
+        _stripeOnboardingStarted = _stripeAccountId != null;
+
+        if (_stripeAccountId != null) {
+          // Call get-connect-status for live Stripe status
+          final session = Supabase.instance.client.auth.currentSession;
+          final res = await http.post(
+            Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/get-connect-status'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer ${session?.accessToken ?? ''}',
+            },
+            body: jsonEncode({'business_id': businessId}),
+          );
+          if (mounted && res.statusCode == 200) {
+            final body = jsonDecode(res.body) as Map<String, dynamic>;
+            _stripeOnboardingComplete = body['onboarding_complete'] as bool? ?? false;
+            _stripeReady = body['ready_to_charge'] as bool? ?? false;
+          }
+        }
       }
     } catch (e) {
       debugPrint('Stripe Connect load error: $e');
@@ -4199,18 +4217,64 @@ class _PaymentOptionsSectionState
     }
   }
 
-  Future<void> _connectStripe() async {
-    setState(() => _stripeConnecting = true);
+  Future<void> _manageStripe() async {
+    setState(() => _stripeManaging = true);
     try {
       final session = Supabase.instance.client.auth.currentSession;
+      final businessId = widget.business['id'] as int?;
       final res = await http.post(
         Uri.parse(
-            'https://rllriopqojaraceytdno.supabase.co/functions/v1/stripe-connect-onboard'),
+            'https://rllriopqojaraceytdno.supabase.co/functions/v1/get-express-dashboard-link'),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer ${session?.accessToken ?? ''}',
         },
-        body: jsonEncode({}),
+        body: jsonEncode({'business_id': businessId}),
+      );
+      if (!mounted) return;
+      final body = jsonDecode(res.body) as Map<String, dynamic>;
+      if (res.statusCode == 200 && body['url'] != null) {
+        final uri = Uri.parse(body['url'] as String);
+        if (await canLaunchUrl(uri)) {
+          await launchUrl(uri, mode: LaunchMode.externalApplication);
+        }
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(body['error']?.toString() ?? 'Failed to open Stripe dashboard.'),
+          behavior: SnackBarBehavior.floating,
+        ));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Error: $e'),
+          behavior: SnackBarBehavior.floating,
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _stripeManaging = false);
+    }
+  }
+
+  Future<void> _connectStripe() async {
+    setState(() => _stripeConnecting = true);
+    try {
+      final session = Supabase.instance.client.auth.currentSession;
+      final businessId = widget.business['id'] as int?;
+      final ownerName = widget.business['owner_name'] as String? ?? '';
+      final ownerEmail = widget.business['owner_email'] as String? ?? '';
+      final res = await http.post(
+        Uri.parse(
+            'https://rllriopqojaraceytdno.supabase.co/functions/v1/create-connect-account'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ${session?.accessToken ?? ''}',
+        },
+        body: jsonEncode({
+          'business_id': businessId,
+          'owner_name': ownerName,
+          'owner_email': ownerEmail,
+        }),
       );
       if (!mounted) return;
       final body = jsonDecode(res.body) as Map<String, dynamic>;
@@ -4302,11 +4366,13 @@ class _PaymentOptionsSectionState
             loading: _stripeLoading,
             connecting: _stripeConnecting,
             onboardingComplete: _stripeOnboardingComplete,
-            chargesEnabled: _stripeChargesEnabled,
-            payoutsEnabled: _stripePayoutsEnabled,
+            chargesEnabled: _stripeReady,
+            payoutsEnabled: _stripeReady,
             onboardingStarted: _stripeOnboardingStarted,
             accountId: _stripeAccountId,
             onConnect: _connectStripe,
+            onManage: _manageStripe,
+            managing: _stripeManaging,
             onRefresh: _loadStripeConnect,
           ),
           const SizedBox(height: 16),
@@ -4371,6 +4437,8 @@ class _StripeConnectCard extends StatelessWidget {
   final bool onboardingStarted;
   final String? accountId;
   final VoidCallback onConnect;
+  final VoidCallback onManage;
+  final bool managing;
   final VoidCallback onRefresh;
 
   const _StripeConnectCard({
@@ -4382,6 +4450,8 @@ class _StripeConnectCard extends StatelessWidget {
     required this.onboardingStarted,
     required this.accountId,
     required this.onConnect,
+    required this.onManage,
+    required this.managing,
     required this.onRefresh,
   });
 
@@ -4553,8 +4623,13 @@ class _StripeConnectCard extends StatelessWidget {
                   MouseRegion(
                     cursor: SystemMouseCursors.click,
                     child: OutlinedButton.icon(
-                      onPressed: onConnect,
-                      icon: const Icon(Icons.open_in_new_rounded, size: 14),
+                      onPressed: managing ? null : onManage,
+                      icon: managing
+                          ? SizedBox(
+                              width: 14, height: 14,
+                              child: CircularProgressIndicator(
+                                  strokeWidth: 2, color: stripeColor))
+                          : const Icon(Icons.open_in_new_rounded, size: 14),
                       label: const Text('Manage in Stripe'),
                       style: OutlinedButton.styleFrom(
                         foregroundColor: stripeColor,

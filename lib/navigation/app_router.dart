@@ -94,6 +94,8 @@ class AppRouter {
       if (isErrorPage) return null;
       if (isResetPassword) return null;
       if (loc == '/beta-signup') return null; // Never redirect away from reset screen
+      if (loc == '/payment-success') return null;
+      if (loc == '/payment-cancelled') return null;
       if (isRootPage) return '/login';
       if (isSetupPage) return isLoggedIn ? null : '/login';
       if (isBusinessPicker) return isLoggedIn ? null : '/login';
@@ -250,6 +252,134 @@ class AppRouter {
                           borderRadius: BorderRadius.circular(8)),
                     ),
                     child: const Text('Back to Login'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+      GoRoute(
+        path: '/payment-success',
+        name: 'payment-success',
+        builder: (context, state) => Scaffold(
+          backgroundColor: AppTheme.pageBg,
+          body: Center(
+            child: Container(
+              width: 420,
+              padding: const EdgeInsets.all(40),
+              decoration: BoxDecoration(
+                color: AppTheme.cardBg,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: AppTheme.borderColor),
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 64, height: 64,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF10B981).withValues(alpha: 0.1),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(Icons.check_circle_outline_rounded,
+                        size: 36, color: Color(0xFF10B981)),
+                  ),
+                  const SizedBox(height: 20),
+                  const Text('Payment Successful',
+                      style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.w700,
+                          color: AppTheme.textPrimary)),
+                  const SizedBox(height: 8),
+                  const Text(
+                      'Your payment has been received. You will receive a confirmation shortly.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                          fontSize: 13,
+                          color: AppTheme.textSecondary,
+                          height: 1.5)),
+                  const SizedBox(height: 28),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      onPressed: () => context.go('/dashboard'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppTheme.brand,
+                        foregroundColor: Colors.white,
+                        elevation: 0,
+                        padding: const EdgeInsets.symmetric(vertical: 13),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8)),
+                      ),
+                      child: const Text('Done',
+                          style: TextStyle(
+                              fontSize: 14, fontWeight: FontWeight.w600)),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+      GoRoute(
+        path: '/payment-cancelled',
+        name: 'payment-cancelled',
+        builder: (context, state) => Scaffold(
+          backgroundColor: AppTheme.pageBg,
+          body: Center(
+            child: Container(
+              width: 420,
+              padding: const EdgeInsets.all(40),
+              decoration: BoxDecoration(
+                color: AppTheme.cardBg,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: AppTheme.borderColor),
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 64, height: 64,
+                    decoration: BoxDecoration(
+                      color: Colors.orange.withValues(alpha: 0.1),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(Icons.cancel_outlined,
+                        size: 36, color: Colors.orange),
+                  ),
+                  const SizedBox(height: 20),
+                  const Text('Payment Cancelled',
+                      style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.w700,
+                          color: AppTheme.textPrimary)),
+                  const SizedBox(height: 8),
+                  const Text(
+                      'Your payment was not completed. No charges were made.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                          fontSize: 13,
+                          color: AppTheme.textSecondary,
+                          height: 1.5)),
+                  const SizedBox(height: 28),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      onPressed: () => context.go('/dashboard'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppTheme.brand,
+                        foregroundColor: Colors.white,
+                        elevation: 0,
+                        padding: const EdgeInsets.symmetric(vertical: 13),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8)),
+                      ),
+                      child: const Text('Back to Dashboard',
+                          style: TextStyle(
+                              fontSize: 14, fontWeight: FontWeight.w600)),
+                    ),
                   ),
                 ],
               ),
