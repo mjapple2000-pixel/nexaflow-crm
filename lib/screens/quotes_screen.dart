@@ -240,18 +240,12 @@ class _QuotesScreenState extends State<QuotesScreen> {
     switch (status) {
       case 'draft':
         return [
-          actionBtn('Send', onTap: () {
-            ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Send to client — coming soon')));
-          }),
+          actionBtn('Send', onTap: () => context.go('/jobs/quotes/$id')),
           actionBtn('Delete', destructive: true, onTap: () => _deleteQuote(id)),
         ];
       case 'sent':
         return [
-          actionBtn('Remind', onTap: () {
-            ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Remind client — coming soon')));
-          }),
+          actionBtn('Remind', onTap: () => context.go('/jobs/quotes/$id')),
           actionBtn('View', onTap: () => context.go('/jobs/quotes/$id')),
         ];
       case 'approved':

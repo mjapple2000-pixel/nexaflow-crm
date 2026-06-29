@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:url_launcher/url_launcher.dart';
 import 'dart:convert';
 import '../theme/app_theme.dart';
 
@@ -63,7 +64,45 @@ class _ClientHubScreenState extends State<ClientHubScreen> {
     }
   }
 
-  Future<void> _quoteAction(int quoteId, String actionType) async {
+  Future<void> _invoiceAction(String invoiceId) async {
+    try {
+      final res = await http.post(
+        Uri.parse('$_fnBase/client-portal-action'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'token': widget.token,
+          'action_type': 'pay_invoice',
+          'target_id': invoiceId,
+        }),
+      );
+      if (!mounted) return;
+
+      final body = jsonDecode(res.body) as Map<String, dynamic>;
+      if (res.statusCode == 200 && body['url'] != null) {
+        final uri = Uri.parse(body['url'] as String);
+        if (await canLaunchUrl(uri)) {
+          await launchUrl(uri, mode: LaunchMode.externalApplication);
+        }
+      } else {
+        final errMsg = body['error'] as String? ?? 'Something went wrong.';
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Error: $errMsg'),
+          backgroundColor: AppTheme.error,
+          duration: const Duration(seconds: 6),
+        ));
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Network error: $e'),
+        backgroundColor: AppTheme.error,
+        duration: const Duration(seconds: 6),
+      ));
+    }
+  }
+
+  Future<void> _quoteAction(String quoteId, String actionType) async {
     try {
       final res = await http.post(
         Uri.parse('$_fnBase/client-portal-action'),
@@ -75,29 +114,33 @@ class _ClientHubScreenState extends State<ClientHubScreen> {
         }),
       );
       if (!mounted) return;
+
+      final body = jsonDecode(res.body) as Map<String, dynamic>;
+      final approved = actionType == 'approve_quote';
+
       if (res.statusCode == 200) {
-        // Refresh data so status updates inline
-        await _load();
-        if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(actionType == 'approve_quote'
+          content: Text(approved
               ? 'Quote approved — we\'ll be in touch soon!'
               : 'Quote declined.'),
-          backgroundColor:
-              actionType == 'approve_quote' ? Colors.green[700] : AppTheme.error,
+          backgroundColor: approved ? Colors.green[700] : AppTheme.error,
+          duration: const Duration(seconds: 3),
         ));
+        await _load();
       } else {
-        final body = jsonDecode(res.body);
+        final errMsg = body['error'] as String? ?? 'Status ${res.statusCode}: ${res.body}';
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(body['error'] ?? 'Something went wrong.'),
+          content: Text('Error: $errMsg'),
           backgroundColor: AppTheme.error,
+          duration: const Duration(seconds: 6),
         ));
       }
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Network error — please try again.'),
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Network error: $e'),
         backgroundColor: AppTheme.error,
+        duration: const Duration(seconds: 6),
       ));
     }
   }
@@ -210,9 +253,9 @@ class _ClientHubScreenState extends State<ClientHubScreen> {
                               .map((q) => _QuoteRow(
                                     quote: q,
                                     onApprove: () => _quoteAction(
-                                        (q['id'] as num).toInt(), 'approve_quote'),
+                                        q['id'] as String, 'approve_quote'),
                                     onDecline: () => _quoteAction(
-                                        (q['id'] as num).toInt(), 'decline_quote'),
+                                        q['id'] as String, 'decline_quote'),
                                   ))
                               .toList(),
                         ),
@@ -227,7 +270,11 @@ class _ClientHubScreenState extends State<ClientHubScreen> {
                       ? _emptyState('No invoices on file.')
                       : Column(
                           children: invoices
-                              .map((i) => _InvoiceRow(invoice: i))
+                              .map((i) => _InvoiceRow(
+                                    invoice: i,
+                                    stripeReady: ((_data!['business'] as Map<String, dynamic>)['stripe_connect_ready'] as bool?) ?? false,
+                                    onPay: () => _invoiceAction(i['id'] as String),
+                                  ))
                               .toList(),
                         ),
                 ),
@@ -412,7 +459,7 @@ class _AppointmentRow extends StatelessWidget {
 
 // ── Quote row ─────────────────────────────────────────────────────────────────
 
-class _QuoteRow extends StatelessWidget {
+class _QuoteRow extends StatefulWidget {
   final Map<String, dynamic> quote;
   final VoidCallback onApprove;
   final VoidCallback onDecline;
@@ -422,11 +469,20 @@ class _QuoteRow extends StatelessWidget {
       required this.onDecline});
 
   @override
+  State<_QuoteRow> createState() => _QuoteRowState();
+}
+
+class _QuoteRowState extends State<_QuoteRow> {
+  bool _expanded = false;
+
+  @override
   Widget build(BuildContext context) {
+    final quote = widget.quote;
     final status = quote['status'] as String? ?? '';
     final number = quote['quote_number'] as String? ?? '';
     final jobTitle = quote['job_title'] as String?;
-    final total = (quote['total'] as num?)?.toDouble() ?? 0.0;
+    final total = double.tryParse(quote['total']?.toString() ?? '0') ?? 0.0;
+    final lineItems = List<Map<String, dynamic>>.from(quote['line_items'] ?? []);
     final canAct = status == 'sent';
 
     return Padding(
@@ -434,31 +490,127 @@ class _QuoteRow extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(children: [
-            Expanded(
-              child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      jobTitle != null ? '$jobTitle · $number' : number,
-                      style: const TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
-                          color: AppTheme.textPrimary),
-                    ),
-                    const SizedBox(height: 2),
-                    Text('\$${total.toStringAsFixed(2)}',
+          GestureDetector(
+            onTap: () => setState(() => _expanded = !_expanded),
+            child: Row(children: [
+              Expanded(
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        jobTitle != null ? '$jobTitle · $number' : number,
                         style: const TextStyle(
-                            fontSize: 13, color: AppTheme.textSecondary)),
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: AppTheme.textPrimary),
+                      ),
+                      const SizedBox(height: 2),
+                      Text('\$${total.toStringAsFixed(2)}',
+                          style: const TextStyle(
+                              fontSize: 13, color: AppTheme.textSecondary)),
+                    ]),
+              ),
+              _StatusBadge(status: status),
+              const SizedBox(width: 8),
+              Icon(
+                _expanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
+                size: 18,
+                color: AppTheme.textSecondary,
+              ),
+            ]),
+          ),
+          if (_expanded && lineItems.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            Container(
+              decoration: BoxDecoration(
+                color: AppTheme.pageBg,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: AppTheme.borderColor),
+              ),
+              child: Column(children: [
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  child: Row(children: const [
+                    Expanded(flex: 4, child: Text('Description',
+                        style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600,
+                            color: AppTheme.textSecondary))),
+                    SizedBox(width: 8),
+                    SizedBox(width: 40, child: Text('Qty',
+                        textAlign: TextAlign.right,
+                        style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600,
+                            color: AppTheme.textSecondary))),
+                    SizedBox(width: 8),
+                    SizedBox(width: 60, child: Text('Price',
+                        textAlign: TextAlign.right,
+                        style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600,
+                            color: AppTheme.textSecondary))),
+                    SizedBox(width: 8),
+                    SizedBox(width: 60, child: Text('Total',
+                        textAlign: TextAlign.right,
+                        style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600,
+                            color: AppTheme.textSecondary))),
                   ]),
+                ),
+                const Divider(height: 1, color: AppTheme.borderColor),
+                ...lineItems.map((item) {
+                  final desc = item['description'] as String? ?? '—';
+                  final qty = double.tryParse(item['quantity']?.toString() ?? '0') ?? 0;
+                  final unitPrice = double.tryParse(item['unit_price']?.toString() ?? '0') ?? 0;
+                  final itemTotal = double.tryParse(item['total']?.toString() ?? '0') ?? 0;
+                  final discType = item['discount_type'] as String? ?? 'none';
+                  final discValue = double.tryParse(item['discount_value']?.toString() ?? '0') ?? 0;
+                  String discStr = '';
+                  if (discType == 'fixed' && discValue > 0) discStr = '–\$${discValue.toStringAsFixed(2)} off';
+                  if (discType == 'percent' && discValue > 0) discStr = '–${discValue.toStringAsFixed(0)}% off';
+                  return Column(children: [
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        Expanded(flex: 4, child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(desc, style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary)),
+                            if (discStr.isNotEmpty)
+                              Text(discStr, style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                          ],
+                        )),
+                        const SizedBox(width: 8),
+                        SizedBox(width: 40, child: Text(
+                            qty % 1 == 0 ? qty.toInt().toString() : qty.toStringAsFixed(2),
+                            textAlign: TextAlign.right,
+                            style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary))),
+                        const SizedBox(width: 8),
+                        SizedBox(width: 60, child: Text('\$${unitPrice.toStringAsFixed(2)}',
+                            textAlign: TextAlign.right,
+                            style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary))),
+                        const SizedBox(width: 8),
+                        SizedBox(width: 60, child: Text('\$${itemTotal.toStringAsFixed(2)}',
+                            textAlign: TextAlign.right,
+                            style: const TextStyle(fontSize: 12,
+                                fontWeight: FontWeight.w600, color: AppTheme.textPrimary))),
+                      ]),
+                    ),
+                    const Divider(height: 1, color: AppTheme.borderColor),
+                  ]);
+                }),
+                Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                    const Text('Total', style: TextStyle(fontSize: 13,
+                        fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+                    Text('\$${total.toStringAsFixed(2)}', style: const TextStyle(fontSize: 13,
+                        fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+                  ]),
+                ),
+              ]),
             ),
-            _StatusBadge(status: status),
-          ]),
+            const SizedBox(height: 12),
+          ],
           if (canAct) ...[
             const SizedBox(height: 10),
             Row(children: [
               ElevatedButton(
-                onPressed: onApprove,
+                onPressed: widget.onApprove,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.green[700],
                   foregroundColor: Colors.white,
@@ -474,7 +626,7 @@ class _QuoteRow extends StatelessWidget {
               ),
               const SizedBox(width: 8),
               OutlinedButton(
-                onPressed: onDecline,
+                onPressed: widget.onDecline,
                 style: OutlinedButton.styleFrom(
                   foregroundColor: AppTheme.error,
                   side: const BorderSide(color: AppTheme.error),
@@ -499,52 +651,245 @@ class _QuoteRow extends StatelessWidget {
 
 // ── Invoice row ───────────────────────────────────────────────────────────────
 
-class _InvoiceRow extends StatelessWidget {
+class _InvoiceRow extends StatefulWidget {
   final Map<String, dynamic> invoice;
-  const _InvoiceRow({required this.invoice});
+  final bool stripeReady;
+  final VoidCallback onPay;
+  const _InvoiceRow({required this.invoice, required this.stripeReady, required this.onPay});
+
+  @override
+  State<_InvoiceRow> createState() => _InvoiceRowState();
+}
+
+class _InvoiceRowState extends State<_InvoiceRow> {
+  bool _expanded = false;
 
   @override
   Widget build(BuildContext context) {
+    final invoice = widget.invoice;
     final status = invoice['status'] as String? ?? '';
     final number = invoice['invoice_number'] as String? ?? '';
     final jobTitle = invoice['job_title'] as String?;
-    final total = (invoice['total'] as num?)?.toDouble() ?? 0.0;
+    final total = double.tryParse(invoice['amount_due']?.toString() ?? '0') ?? 0.0;
     final dueDate = invoice['due_date'] != null
         ? DateTime.parse(invoice['due_date'] as String).toLocal()
         : null;
+    final notes = invoice['notes'] as String? ?? '';
+    final lineItems = List<Map<String, dynamic>>.from(invoice['line_items'] ?? []);
+    final taxRate = double.tryParse(invoice['tax_rate']?.toString() ?? '0') ?? 0.0;
+    final taxAmount = double.tryParse(invoice['tax_amount']?.toString() ?? '0') ?? 0.0;
 
-    // Client-side overdue detection — mirrors JG-01 logic
     final isOverdue = (status == 'approved' || status == 'sent') &&
         dueDate != null &&
         dueDate.isBefore(DateTime.now());
     final displayStatus = isOverdue ? 'overdue' : status;
+    final canPay = status == 'approved' || status == 'sent' || isOverdue;
 
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8),
-      child: Row(children: [
-        Expanded(
-          child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  jobTitle != null ? '$jobTitle · $number' : number,
-                  style: const TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                      color: AppTheme.textPrimary),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Header row — tappable to expand
+          GestureDetector(
+            onTap: () => setState(() => _expanded = !_expanded),
+            child: Row(children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      jobTitle != null ? '$jobTitle · $number' : number,
+                      style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: AppTheme.textPrimary),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      dueDate != null
+                          ? '\$${total.toStringAsFixed(2)} · Due ${_formatDate(dueDate)}'
+                          : '\$${total.toStringAsFixed(2)}',
+                      style: const TextStyle(
+                          fontSize: 12, color: AppTheme.textSecondary),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 2),
-                Text(
-                  dueDate != null
-                      ? '\$${total.toStringAsFixed(2)} · Due ${_formatDate(dueDate)}'
-                      : '\$${total.toStringAsFixed(2)}',
-                  style: const TextStyle(
-                      fontSize: 12, color: AppTheme.textSecondary),
+              ),
+              _StatusBadge(status: displayStatus),
+              const SizedBox(width: 8),
+              Icon(
+                _expanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
+                size: 18,
+                color: AppTheme.textSecondary,
+              ),
+            ]),
+          ),
+
+          // Expanded detail
+          if (_expanded) ...[
+            const SizedBox(height: 12),
+            // Line items
+            if (lineItems.isNotEmpty) ...[
+              Container(
+                decoration: BoxDecoration(
+                  color: AppTheme.pageBg,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppTheme.borderColor),
                 ),
-              ]),
-        ),
-        _StatusBadge(status: displayStatus),
-      ]),
+                child: Column(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      child: Row(children: const [
+                        Expanded(flex: 4, child: Text('Description',
+                            style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600,
+                                color: AppTheme.textSecondary))),
+                        SizedBox(width: 8),
+                        SizedBox(width: 40, child: Text('Qty',
+                            textAlign: TextAlign.right,
+                            style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600,
+                                color: AppTheme.textSecondary))),
+                        SizedBox(width: 8),
+                        SizedBox(width: 60, child: Text('Price',
+                            textAlign: TextAlign.right,
+                            style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600,
+                                color: AppTheme.textSecondary))),
+                        SizedBox(width: 8),
+                        SizedBox(width: 60, child: Text('Total',
+                            textAlign: TextAlign.right,
+                            style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600,
+                                color: AppTheme.textSecondary))),
+                      ]),
+                    ),
+                    const Divider(height: 1, color: AppTheme.borderColor),
+                    ...lineItems.map((item) {
+                      final desc = item['description'] as String? ?? '—';
+                      final qty = double.tryParse(item['quantity']?.toString() ?? '0') ?? 0;
+                      final unitPrice = double.tryParse(item['unit_price']?.toString() ?? '0') ?? 0;
+                      final itemTotal = double.tryParse(item['total']?.toString() ?? '0') ?? 0;
+                      final discType = item['discount_type'] as String? ?? 'none';
+                      final discValue = double.tryParse(item['discount_value']?.toString() ?? '0') ?? 0;
+                      String discStr = '';
+                      if (discType == 'fixed' && discValue > 0) discStr = '–\$${discValue.toStringAsFixed(2)} off';
+                      if (discType == 'percent' && discValue > 0) discStr = '–${discValue.toStringAsFixed(0)}% off';
+
+                      return Column(children: [
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                          child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                            Expanded(flex: 4, child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(desc, style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary)),
+                                if (discStr.isNotEmpty)
+                                  Text(discStr, style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                              ],
+                            )),
+                            const SizedBox(width: 8),
+                            SizedBox(width: 40, child: Text(
+                                qty % 1 == 0 ? qty.toInt().toString() : qty.toStringAsFixed(2),
+                                textAlign: TextAlign.right,
+                                style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary))),
+                            const SizedBox(width: 8),
+                            SizedBox(width: 60, child: Text('\$${unitPrice.toStringAsFixed(2)}',
+                                textAlign: TextAlign.right,
+                                style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary))),
+                            const SizedBox(width: 8),
+                            SizedBox(width: 60, child: Text('\$${itemTotal.toStringAsFixed(2)}',
+                                textAlign: TextAlign.right,
+                                style: const TextStyle(fontSize: 12,
+                                    fontWeight: FontWeight.w600, color: AppTheme.textPrimary))),
+                          ]),
+                        ),
+                        const Divider(height: 1, color: AppTheme.borderColor),
+                      ]);
+                    }),
+                    // Totals
+                    Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Column(children: [
+                        if (taxAmount > 0)
+                          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                            Text('Tax (${(taxRate * 100).toStringAsFixed(1)}%)',
+                                style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+                            Text('\$${taxAmount.toStringAsFixed(2)}',
+                                style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+                          ]),
+                        const SizedBox(height: 4),
+                        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                          const Text('Amount Due',
+                              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700,
+                                  color: AppTheme.textPrimary)),
+                          Text('\$${total.toStringAsFixed(2)}',
+                              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700,
+                                  color: AppTheme.textPrimary)),
+                        ]),
+                      ]),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+
+            if (notes.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: AppTheme.pageBg,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppTheme.borderColor),
+                ),
+                child: Text(notes,
+                    style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary, height: 1.5)),
+              ),
+            ],
+
+            const SizedBox(height: 12),
+
+            // Pay button or contact message
+            if (canPay && status != 'paid') ...[
+              if (widget.stripeReady)
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: widget.onPay,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppTheme.brand,
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    ),
+                    child: const Text('Pay Now',
+                        style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+                  ),
+                )
+              else
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFFF4D6),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: const Color(0xFFC68400).withValues(alpha: 0.3)),
+                  ),
+                  child: const Text(
+                    'To pay this invoice, please contact us directly.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 13, color: Color(0xFFC68400),
+                        fontWeight: FontWeight.w500),
+                  ),
+                ),
+            ],
+          ],
+
+          const SizedBox(height: 8),
+          const Divider(color: AppTheme.borderColor, height: 1),
+        ],
+      ),
     );
   }
 

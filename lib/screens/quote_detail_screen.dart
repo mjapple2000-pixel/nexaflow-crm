@@ -1,5 +1,7 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme/app_theme.dart';
 import '../widgets/clickable.dart';
@@ -21,6 +23,7 @@ class _QuoteDetailScreenState extends State<QuoteDetailScreen> {
   Map<String, dynamic>? _quote;
   Map<String, dynamic>? _lead;
   List<Map<String, dynamic>> _lineItems = [];
+  bool _sendingToClient = false;
 
   @override
   void initState() {
@@ -473,13 +476,15 @@ class _QuoteDetailScreenState extends State<QuoteDetailScreen> {
 
     switch (status) {
       case 'draft':
-        buttons.add(_btn('Send to Client', AppTheme.brand, _onSend));
+        buttons.add(_sendToClientButton());
         buttons.add(const SizedBox(height: 8));
         buttons.add(_btn('Edit Quote', null, _onEdit));
         buttons.add(const SizedBox(height: 8));
         buttons.add(_btn('Delete', AppTheme.error, _onDelete));
         break;
       case 'sent':
+        buttons.add(_sendToClientButton());
+        buttons.add(const SizedBox(height: 8));
         buttons.add(_btn('Mark Approved', AppTheme.success, _onMarkApproved));
         buttons.add(const SizedBox(height: 8));
         buttons.add(_btn('Mark Declined', AppTheme.error, _onMarkDeclined));
@@ -543,6 +548,130 @@ class _QuoteDetailScreenState extends State<QuoteDetailScreen> {
   }
 
   // ── Action handlers (stubs for now) ──────────────────────────────────────
+
+  Widget _sendToClientButton() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const Text('Send to Client',
+            style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600,
+                color: AppTheme.textSecondary)),
+        const SizedBox(height: 6),
+        Row(
+          children: [
+            Expanded(
+              child: SizedBox(
+                height: 38,
+                child: TextButton(
+                  onPressed: _sendingToClient ? null : () => _onSendToClient('sms'),
+                  style: TextButton.styleFrom(
+                    backgroundColor: AppTheme.brand,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  child: _sendingToClient
+                      ? const SizedBox(width: 16, height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                      : const Text('via SMS',
+                          style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
+                              color: Colors.white)),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: SizedBox(
+                height: 38,
+                child: TextButton(
+                  onPressed: _sendingToClient ? null : () => _onSendToClient('email'),
+                  style: TextButton.styleFrom(
+                    backgroundColor: AppTheme.brand,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  child: _sendingToClient
+                      ? const SizedBox(width: 16, height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                      : const Text('via Email',
+                          style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
+                              color: Colors.white)),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Future<void> _onSendToClient(String channel) async {
+    final businessId = _quote?['business_id'] as int?;
+    if (businessId == null) return;
+
+    final leadPhone = _lead?['lead_phone'] as String? ?? '';
+    final leadEmail = _lead?['lead_email'] as String? ?? '';
+
+    if (channel == 'sms' && leadPhone.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Customer has no phone number on file.'),
+        behavior: SnackBarBehavior.floating,
+      ));
+      return;
+    }
+    if (channel == 'email' && leadEmail.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Customer has no email address on file.'),
+        behavior: SnackBarBehavior.floating,
+      ));
+      return;
+    }
+
+    setState(() => _sendingToClient = true);
+    try {
+      final token = Supabase.instance.client.auth.currentSession?.accessToken ?? '';
+
+      final res = await http.post(
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/send-quote'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $token',
+        },
+        body: jsonEncode({
+          'quote_id':    widget.quoteId,
+          'business_id': businessId,
+          'channel':     channel,
+        }),
+      );
+
+      if (!mounted) return;
+
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      if (res.statusCode == 200) {
+        await _load();
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(channel == 'sms'
+              ? 'Quote sent via SMS.'
+              : 'Quote sent via email.'),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: const Color(0xFF10B981),
+        ));
+      } else {
+        final err = data['error'] as String? ?? 'Unknown error';
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Error: $err'),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: AppTheme.error,
+        ));
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Error: $e'),
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: AppTheme.error,
+      ));
+    } finally {
+      if (mounted) setState(() => _sendingToClient = false);
+    }
+  }
 
   Future<void> _onSend() async {
     await _updateStatus('sent');

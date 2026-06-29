@@ -28,6 +28,7 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
   bool _chargesEnabled = false;
   Map<String, dynamic>? _paymentLink;
   bool _sendingPaymentLink = false;
+  bool _sendingToClient = false;
 
   @override
   void initState() {
@@ -571,25 +572,32 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
     }
 
     if (_isOverdue || status == 'approved') {
+      buttons.add(_sendToClientButton());
+      buttons.add(const SizedBox(height: 8));
       if (_chargesEnabled && _paymentLink == null) {
         buttons.add(_sendPaymentLinkButton());
         buttons.add(const SizedBox(height: 8));
       }
       buttons.add(_btn('Mark as Paid Manually', AppTheme.success, _onMarkPaid));
       buttons.add(const SizedBox(height: 8));
+      buttons.add(_btn('Edit Invoice', null, () =>
+          context.go('/jobs/invoices/edit?invoiceId=${widget.invoiceId}')));
+      buttons.add(const SizedBox(height: 8));
       buttons.add(_btn('Delete', AppTheme.error, _onDelete));
     } else if (status == 'draft') {
-      buttons.add(_btn('Send to Client', AppTheme.brand, () {
-        ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Send to client — coming soon')));
-      }));
+      buttons.add(_sendToClientButton());
       buttons.add(const SizedBox(height: 8));
       buttons.add(_btn('Edit Invoice', null, () =>
           context.go('/jobs/invoices/edit?invoiceId=${widget.invoiceId}')));
       buttons.add(const SizedBox(height: 8));
       buttons.add(_btn('Delete', AppTheme.error, _onDelete));
     } else if (status == 'sent') {
-      buttons.add(_btn('Mark as Paid', AppTheme.success, _onMarkPaid));
+      buttons.add(_sendToClientButton());
+      buttons.add(const SizedBox(height: 8));
+      buttons.add(_btn('Mark as Paid Manually', AppTheme.success, _onMarkPaid));
+      buttons.add(const SizedBox(height: 8));
+      buttons.add(_btn('Edit Invoice', null, () =>
+          context.go('/jobs/invoices/edit?invoiceId=${widget.invoiceId}')));
       buttons.add(const SizedBox(height: 8));
       buttons.add(_btn('Delete', AppTheme.error, _onDelete));
     }
@@ -651,6 +659,130 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
         ),
       ],
     );
+  }
+
+  Widget _sendToClientButton() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const Text('Send to Client',
+            style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600,
+                color: AppTheme.textSecondary)),
+        const SizedBox(height: 6),
+        Row(
+          children: [
+            Expanded(
+              child: SizedBox(
+                height: 38,
+                child: TextButton(
+                  onPressed: _sendingToClient ? null : () => _onSendToClient('sms'),
+                  style: TextButton.styleFrom(
+                    backgroundColor: AppTheme.brand,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  child: _sendingToClient
+                      ? const SizedBox(width: 16, height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                      : const Text('via SMS',
+                          style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
+                              color: Colors.white)),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: SizedBox(
+                height: 38,
+                child: TextButton(
+                  onPressed: _sendingToClient ? null : () => _onSendToClient('email'),
+                  style: TextButton.styleFrom(
+                    backgroundColor: AppTheme.brand,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  child: _sendingToClient
+                      ? const SizedBox(width: 16, height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                      : const Text('via Email',
+                          style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
+                              color: Colors.white)),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Future<void> _onSendToClient(String channel) async {
+    final businessId = _invoice?['business_id'] as int?;
+    if (businessId == null) return;
+
+    final leadPhone = _lead?['lead_phone'] as String? ?? '';
+    final leadEmail = _lead?['lead_email'] as String? ?? '';
+
+    if (channel == 'sms' && leadPhone.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Customer has no phone number on file.'),
+        behavior: SnackBarBehavior.floating,
+      ));
+      return;
+    }
+    if (channel == 'email' && leadEmail.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Customer has no email address on file.'),
+        behavior: SnackBarBehavior.floating,
+      ));
+      return;
+    }
+
+    setState(() => _sendingToClient = true);
+    try {
+      final token = Supabase.instance.client.auth.currentSession?.accessToken ?? '';
+
+      final res = await http.post(
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/send-invoice'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $token',
+        },
+        body: jsonEncode({
+          'invoice_id':  widget.invoiceId,
+          'business_id': businessId,
+          'channel':     channel,
+        }),
+      );
+
+      if (!mounted) return;
+
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      if (res.statusCode == 200) {
+        await _load();
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(channel == 'sms'
+              ? 'Invoice sent via SMS.'
+              : 'Invoice sent via email.'),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: const Color(0xFF10B981),
+        ));
+      } else {
+        final err = data['error'] as String? ?? 'Unknown error';
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Error: $err'),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: AppTheme.error,
+        ));
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Error: $e'),
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: AppTheme.error,
+      ));
+    } finally {
+      if (mounted) setState(() => _sendingToClient = false);
+    }
   }
 
   Future<void> _onSendPaymentLink(String channel) async {

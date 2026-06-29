@@ -431,15 +431,13 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
     }
     if (isOverdue || status == 'approved') {
       return [
-        btn('Remind', onTap: () => ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Remind client — coming soon')))),
+        btn('Remind', onTap: () => context.go('/jobs/invoices/$id')),
         btn('View', onTap: () => context.go('/jobs/invoices/$id')),
       ];
     }
     if (status == 'draft') {
       return [
-        btn('Send', onTap: () => ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Send to client — coming soon')))),
+        btn('Send', onTap: () => context.go('/jobs/invoices/$id')),
         btn('Delete', destructive: true, onTap: () => _deleteInvoice(id)),
       ];
     }
