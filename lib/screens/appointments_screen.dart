@@ -4599,6 +4599,12 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
   bool _saving = false;
   bool _deleting = false;
 
+  // Job Costs state
+  List<Map<String, dynamic>> _jobExpenses = [];
+  bool _loadingExpenses = false;
+  bool _jobCostsSectionExpanded = true;
+  String? _expenseError;
+
   late final TextEditingController _nameCtrl;
   late final TextEditingController _locationCtrl;
   late final TextEditingController _leadNameCtrl;
@@ -4649,6 +4655,8 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
 
     _calendarId = a['calendar_id']?.toString();
     _assignedTo = a['assigned_to'] as String?;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) => _loadExpenses());
   }
 
   @override
@@ -4662,6 +4670,55 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
     _sourceCtrl.dispose();
     _adminEmailCtrl.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadExpenses() async {
+    if (!mounted) return;
+    setState(() => _loadingExpenses = true);
+    try {
+      final apptId = widget.appointment['id'] as int;
+      final data = await _db
+          .from('job_expenses')
+          .select()
+          .eq('appointment_id', apptId)
+          .filter('deleted_at', 'is', null)
+          .order('logged_at', ascending: true);
+      if (!mounted) return;
+      setState(() => _jobExpenses = List<Map<String, dynamic>>.from(data));
+    } catch (e) {
+      debugPrint('Load expenses error: $e');
+    } finally {
+      if (mounted) setState(() => _loadingExpenses = false);
+    }
+  }
+
+  Future<void> _softDeleteExpense(int expenseId) async {
+    try {
+      await _db
+          .from('job_expenses')
+          .update({'deleted_at': DateTime.now().toUtc().toIso8601String()})
+          .eq('id', expenseId);
+      await _loadExpenses();
+    } catch (e) {
+      debugPrint('Delete expense error: $e');
+    }
+  }
+
+  void _showAddExpenseSheet(BuildContext context, {Map<String, dynamic>? existing}) {
+    final apptId = widget.appointment['id'] as int;
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _AddExpenseSheet(
+        appointmentId: apptId,
+        existing: existing,
+        onSaved: () {
+          Navigator.pop(context);
+          _loadExpenses();
+        },
+      ),
+    );
   }
 
   Future<void> _save() async {
@@ -4903,6 +4960,10 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
           _field('Notes', _notesCtrl, hint: 'Any notes...', maxLines: 3),
           const SizedBox(height: 24),
 
+          // ── Job Costs ─────────────────────────────────────────────────
+          if (!blocked) _buildJobCostsSection(context),
+          if (!blocked) const SizedBox(height: 24),
+
           // ── Save button ───────────────────────────────────────────────
           SizedBox(
             width: double.infinity, height: 44,
@@ -4920,6 +4981,155 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
         ]),
       ),
     );
+  }
+
+  Widget _buildJobCostsSection(BuildContext context) {
+    final totalCents = _jobExpenses.fold<int>(0, (s, e) => s + ((e['amount_cents'] as int?) ?? 0));
+    final totalDollars = totalCents / 100.0;
+
+    final typeColor = {
+      'labor':        const Color(0xFF6366F1),
+      'material':     const Color(0xFF10B981),
+      'subcontractor': const Color(0xFFF59E0B),
+      'other':        const Color(0xFF94A3B8),
+    };
+    final typeLabel = {
+      'labor': 'Labor', 'material': 'Material',
+      'subcontractor': 'Sub', 'other': 'Other',
+    };
+
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      // Header row
+      Row(children: [
+        Expanded(child: GestureDetector(
+          onTap: () => setState(() => _jobCostsSectionExpanded = !_jobCostsSectionExpanded),
+          child: Row(children: [
+            const Text('JOB COSTS', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700,
+                color: AppTheme.textSecondary, letterSpacing: 0.5)),
+            const SizedBox(width: 6),
+            Icon(_jobCostsSectionExpanded ? Icons.expand_less : Icons.expand_more,
+                size: 16, color: AppTheme.textSecondary),
+          ]),
+        )),
+        if (totalCents > 0)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+            decoration: BoxDecoration(
+              color: AppTheme.brand.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(99),
+            ),
+            child: Text('\$${totalDollars.toStringAsFixed(2)} total',
+                style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppTheme.brand)),
+          ),
+        const SizedBox(width: 8),
+        GestureDetector(
+          onTap: () => _showAddExpenseSheet(context),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              color: AppTheme.brand,
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: const Row(mainAxisSize: MainAxisSize.min, children: [
+              Icon(Icons.add, size: 12, color: Colors.white),
+              SizedBox(width: 4),
+              Text('Add', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.white)),
+            ]),
+          ),
+        ),
+      ]),
+      const SizedBox(height: 8),
+
+      if (_jobCostsSectionExpanded) ...[
+        if (_loadingExpenses)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 12),
+            child: Center(child: SizedBox(width: 20, height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2))),
+          )
+        else if (_jobExpenses.isEmpty)
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: AppTheme.pageBg,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: AppTheme.borderColor),
+            ),
+            child: const Row(children: [
+              Icon(Icons.receipt_long_outlined, size: 16, color: AppTheme.textMuted),
+              SizedBox(width: 8),
+              Text('No expenses logged yet',
+                  style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+            ]),
+          )
+        else
+          Container(
+            decoration: BoxDecoration(
+              color: AppTheme.pageBg,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: AppTheme.borderColor),
+            ),
+            child: Column(children: [
+              ..._jobExpenses.asMap().entries.map((entry) {
+                final i = entry.key;
+                final exp = entry.value;
+                final cents = (exp['amount_cents'] as int?) ?? 0;
+                final dollars = cents / 100.0;
+                final type = exp['expense_type'] as String? ?? 'other';
+                final color = typeColor[type] ?? const Color(0xFF94A3B8);
+                final label = typeLabel[type] ?? type;
+                final desc = exp['description'] as String? ?? '';
+                return Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  decoration: BoxDecoration(
+                    border: i < _jobExpenses.length - 1
+                        ? const Border(bottom: BorderSide(color: AppTheme.borderColor))
+                        : null,
+                  ),
+                  child: Row(children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: color.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(label, style: TextStyle(fontSize: 10,
+                          fontWeight: FontWeight.w600, color: color)),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(child: Text(
+                      desc.isNotEmpty ? desc : label,
+                      style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary),
+                      overflow: TextOverflow.ellipsis,
+                    )),
+                    Text('\$${dollars.toStringAsFixed(2)}',
+                        style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
+                            color: AppTheme.textPrimary)),
+                    const SizedBox(width: 4),
+                    GestureDetector(
+                      onTap: () => _showAddExpenseSheet(context, existing: exp),
+                      child: const Padding(
+                        padding: EdgeInsets.all(4),
+                        child: Icon(Icons.edit_outlined, size: 13, color: AppTheme.textSecondary),
+                      ),
+                    ),
+                    GestureDetector(
+                      onTap: () async {
+                        final id = exp['id'] as int?;
+                        if (id != null) await _softDeleteExpense(id);
+                      },
+                      child: const Padding(
+                        padding: EdgeInsets.all(4),
+                        child: Icon(Icons.close, size: 13, color: AppTheme.error),
+                      ),
+                    ),
+                  ]),
+                );
+              }),
+            ]),
+          ),
+      ],
+    ]);
   }
 
   Widget _sectionLabel(String text) => Padding(
@@ -4987,6 +5197,217 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
     ]);
   }
 }
+// ══════════════════════════════════════════════════════════════════════════════
+//  ADD / EDIT EXPENSE SHEET
+// ══════════════════════════════════════════════════════════════════════════════
+
+class _AddExpenseSheet extends StatefulWidget {
+  final int appointmentId;
+  final Map<String, dynamic>? existing;
+  final VoidCallback onSaved;
+
+  const _AddExpenseSheet({
+    required this.appointmentId,
+    required this.onSaved,
+    this.existing,
+  });
+
+  @override
+  State<_AddExpenseSheet> createState() => _AddExpenseSheetState();
+}
+
+class _AddExpenseSheetState extends State<_AddExpenseSheet> {
+  final _amountCtrl = TextEditingController();
+  final _descCtrl   = TextEditingController();
+  String  _expenseType = 'labor';
+  bool    _saving      = false;
+  String? _error;
+
+  static const _types = ['labor', 'material', 'subcontractor', 'other'];
+  static const _typeLabels = ['Labor', 'Material', 'Subcontractor', 'Other'];
+  static const _typeIcons  = [Icons.people_outline, Icons.inventory_2_outlined,
+      Icons.handshake_outlined, Icons.more_horiz];
+  static const _typeColors = [Color(0xFF6366F1), Color(0xFF10B981),
+      Color(0xFFF59E0B), Color(0xFF94A3B8)];
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.existing != null) {
+      final e = widget.existing!;
+      _expenseType = e['expense_type'] as String? ?? 'labor';
+      final cents  = (e['amount_cents'] as int?) ?? 0;
+      _amountCtrl.text = (cents / 100.0).toStringAsFixed(2);
+      _descCtrl.text   = e['description'] as String? ?? '';
+    }
+  }
+
+  @override
+  void dispose() {
+    _amountCtrl.dispose();
+    _descCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    final amountText = _amountCtrl.text.trim().replaceAll(',', '');
+    final dollars    = double.tryParse(amountText);
+    if (dollars == null || dollars <= 0) {
+      setState(() => _error = 'Enter a valid amount');
+      return;
+    }
+    final amountCents = (dollars * 100).round();
+    setState(() { _saving = true; _error = null; });
+
+    try {
+      final db    = Supabase.instance.client;
+      final token = db.auth.currentSession?.accessToken;
+      if (token == null) throw Exception('Not authenticated');
+
+      final body = <String, dynamic>{
+        'appointment_id': widget.appointmentId,
+        'expense_type':   _expenseType,
+        'amount_cents':   amountCents,
+        'description':    _descCtrl.text.trim().isEmpty ? null : _descCtrl.text.trim(),
+        if (widget.existing != null) 'expense_id': widget.existing!['id'],
+      };
+
+      final resp = await http.post(
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/log-job-expense'),
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode(body),
+      );
+
+      if (!mounted) return;
+      final data = jsonDecode(resp.body);
+      if (resp.statusCode == 403 && data['error'] == 'upgrade_required') {
+        setState(() { _error = 'Job Costing requires the Growth plan. Upgrade in Settings → Billing.'; _saving = false; });
+        return;
+      }
+      if (resp.statusCode != 200 || data['success'] != true) {
+        throw Exception(data['error'] ?? 'Failed to save expense');
+      }
+      widget.onSaved();
+    } catch (e) {
+      if (mounted) setState(() { _error = e.toString(); _saving = false; });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        color: AppTheme.cardBg,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      padding: EdgeInsets.fromLTRB(24, 16, 24, MediaQuery.of(context).viewInsets.bottom + 32),
+      child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Center(child: Container(width: 40, height: 4,
+            decoration: BoxDecoration(color: AppTheme.borderColor, borderRadius: BorderRadius.circular(2)))),
+        const SizedBox(height: 16),
+        Text(widget.existing != null ? 'Edit Expense' : 'Add Expense',
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+        const SizedBox(height: 20),
+
+        // Type selector
+        const Text('Type', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
+        const SizedBox(height: 8),
+        Row(children: List.generate(_types.length, (i) {
+          final sel = _expenseType == _types[i];
+          return Expanded(child: Padding(
+            padding: EdgeInsets.only(right: i < _types.length - 1 ? 8 : 0),
+            child: GestureDetector(
+              onTap: () => setState(() => _expenseType = _types[i]),
+              child: Container(
+                padding: const EdgeInsets.symmetric(vertical: 10),
+                decoration: BoxDecoration(
+                  color: sel ? _typeColors[i].withValues(alpha: 0.12) : AppTheme.pageBg,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: sel ? _typeColors[i] : AppTheme.borderColor,
+                    width: sel ? 1.5 : 1,
+                  ),
+                ),
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  Icon(_typeIcons[i], size: 16,
+                      color: sel ? _typeColors[i] : AppTheme.textSecondary),
+                  const SizedBox(height: 4),
+                  Text(_typeLabels[i], style: TextStyle(
+                      fontSize: 10, fontWeight: FontWeight.w600,
+                      color: sel ? _typeColors[i] : AppTheme.textSecondary)),
+                ]),
+              ),
+            ),
+          ));
+        })),
+        const SizedBox(height: 16),
+
+        // Amount
+        const Text('Amount', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
+        const SizedBox(height: 4),
+        TextField(
+          controller: _amountCtrl,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: AppTheme.textPrimary),
+          decoration: InputDecoration(
+            prefixText: '\$ ',
+            prefixStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: AppTheme.textSecondary),
+            hintText: '0.00',
+            hintStyle: const TextStyle(fontSize: 16, color: AppTheme.textMuted),
+            filled: true, fillColor: AppTheme.pageBg,
+            contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+            border:        OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
+            enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
+            focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.brand, width: 2)),
+          ),
+        ),
+        const SizedBox(height: 12),
+
+        // Description
+        const Text('Description (optional)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
+        const SizedBox(height: 4),
+        TextField(
+          controller: _descCtrl,
+          maxLines: 2,
+          style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+          decoration: InputDecoration(
+            hintText: 'e.g. 3hrs crew labor, 2 bundles shingles...',
+            hintStyle: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+            filled: true, fillColor: AppTheme.pageBg,
+            contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            border:        OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
+            enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
+            focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.brand, width: 2)),
+          ),
+        ),
+
+        if (_error != null) ...[
+          const SizedBox(height: 10),
+          Text(_error!, style: const TextStyle(fontSize: 12, color: AppTheme.error)),
+        ],
+        const SizedBox(height: 20),
+        SizedBox(
+          width: double.infinity, height: 44,
+          child: ElevatedButton(
+            onPressed: _saving ? null : _save,
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.brand, foregroundColor: Colors.white, elevation: 0,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            child: _saving
+                ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                : Text(widget.existing != null ? 'Save Changes' : 'Add Expense',
+                    style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+          ),
+        ),
+      ]),
+    );
+  }
+}
+
 // ════════════════════════════ END OF PART 4 ════════════════════════════════
 // Assemble final file: Part1 + Part2 + Part3 + Part4
 // Remove all comment lines starting with // ═══ before saving

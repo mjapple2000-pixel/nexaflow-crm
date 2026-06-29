@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
 import '../theme/app_theme.dart';
 import '../widgets/clickable.dart';
 import '../utils/business_utils.dart';
@@ -41,6 +43,14 @@ class _ReportingScreenState extends State<ReportingScreen> {
 
   // Date range filter
   String _range = '30'; // 7 | 30 | 90
+
+  // Job Costing report data
+  bool _loadingJobCosting = false;
+  bool _jobCostingUpgradeRequired = false;
+  List<Map<String, dynamic>> _profitByJobType = [];
+  List<Map<String, dynamic>> _profitByCalendar = [];
+  List<Map<String, dynamic>> _topJobs = [];
+  List<Map<String, dynamic>> _bottomJobs = [];
 
   @override
   void initState() {
@@ -198,11 +208,43 @@ class _ReportingScreenState extends State<ReportingScreen> {
       _leadsByStatus = statusMap;
 
       setState(() => _loading = false);
+      _loadJobCostingData();
     } catch (e) {
       setState(() {
         _error = e.toString();
         _loading = false;
       });
+    }
+  }
+
+  Future<void> _loadJobCostingData() async {
+    if (_businessId == null) return;
+    setState(() { _loadingJobCosting = true; _jobCostingUpgradeRequired = false; });
+    try {
+      final token = _supabase.auth.currentSession?.accessToken;
+      if (token == null) return;
+      final resp = await http.get(
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/get-job-costing-report?date_range_days=$_range'),
+        headers: {'Authorization': 'Bearer $token'},
+      );
+      if (!mounted) return;
+      final data = jsonDecode(resp.body);
+      if (resp.statusCode == 403 && data['error'] == 'upgrade_required') {
+        setState(() => _jobCostingUpgradeRequired = true);
+        return;
+      }
+      if (resp.statusCode == 200 && data['success'] == true) {
+        setState(() {
+          _profitByJobType  = List<Map<String, dynamic>>.from(data['profit_by_job_type']  ?? []);
+          _profitByCalendar = List<Map<String, dynamic>>.from(data['profit_by_calendar']  ?? []);
+          _topJobs          = List<Map<String, dynamic>>.from(data['top_jobs']             ?? []);
+          _bottomJobs       = List<Map<String, dynamic>>.from(data['bottom_jobs']          ?? []);
+        });
+      }
+    } catch (e) {
+      debugPrint('Job costing report error: $e');
+    } finally {
+      if (mounted) setState(() => _loadingJobCosting = false);
     }
   }
 
@@ -339,6 +381,14 @@ class _ReportingScreenState extends State<ReportingScreen> {
         _sectionTitle('Recent Campaign Performance'),
         const SizedBox(height: 12),
         _buildCampaignTable(),
+        const SizedBox(height: 28),
+
+        _sectionTitle('Job Costing'),
+        const SizedBox(height: 4),
+        const Text('Profitability tracking across jobs and calendars.',
+            style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+        const SizedBox(height: 12),
+        _buildJobCostingSection(),
         const SizedBox(height: 24),
       ],
     );
@@ -803,6 +853,229 @@ class _ReportingScreenState extends State<ReportingScreen> {
           }),
         ],
       ),
+    );
+  }
+
+  // ── Job Costing Section ───────────────────
+
+  Widget _buildJobCostingSection() {
+    if (_jobCostingUpgradeRequired) {
+      return Container(
+        padding: const EdgeInsets.all(24),
+        decoration: _cardDecoration(),
+        child: Row(children: [
+          Container(
+            width: 40, height: 40,
+            decoration: BoxDecoration(
+              color: AppTheme.brand.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: const Icon(Icons.lock_outline, size: 20, color: AppTheme.brand),
+          ),
+          const SizedBox(width: 16),
+          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            const Text('Job Costing is a Growth Plan feature',
+                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+            const SizedBox(height: 4),
+            const Text('Upgrade to Growth to see profitability by job type, calendar, and individual jobs.',
+                style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+          ])),
+          const SizedBox(width: 16),
+          ElevatedButton(
+            onPressed: () {},
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.brand, foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            child: const Text('Upgrade'),
+          ),
+        ]),
+      );
+    }
+
+    if (_loadingJobCosting) {
+      return Container(
+        height: 120,
+        decoration: _cardDecoration(),
+        child: const Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    if (_profitByJobType.isEmpty && _profitByCalendar.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.all(24),
+        decoration: _cardDecoration(),
+        child: Column(children: [
+          const Icon(Icons.receipt_long_outlined, size: 40, color: AppTheme.textMuted),
+          const SizedBox(height: 12),
+          const Text('No job cost data yet',
+              style: TextStyle(fontSize: 14, color: AppTheme.textSecondary)),
+          const SizedBox(height: 6),
+          const Text('Add expenses to appointments or deals to start tracking profitability.',
+              style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+              textAlign: TextAlign.center),
+        ]),
+      );
+    }
+
+    String _fmtCents(int? cents) {
+      if (cents == null) return '—';
+      final dollars = cents / 100.0;
+      if (dollars >= 1000) return '\$${(dollars / 1000).toStringAsFixed(1)}k';
+      return '\$${dollars.toStringAsFixed(0)}';
+    }
+
+    return Column(children: [
+      // Card 1 — Profitability by Job Type
+      if (_profitByJobType.isNotEmpty) ...[
+        Container(
+          decoration: _cardDecoration(),
+          child: Column(children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+              decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: AppTheme.borderColor))),
+              child: const Row(children: [
+                Expanded(flex: 3, child: Text('JOB TYPE', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 0.5))),
+                Expanded(child: Text('JOBS', textAlign: TextAlign.center, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 0.5))),
+                Expanded(child: Text('AVG REVENUE', textAlign: TextAlign.center, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 0.5))),
+                Expanded(child: Text('AVG COST', textAlign: TextAlign.center, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 0.5))),
+                Expanded(child: Text('AVG PROFIT', textAlign: TextAlign.center, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 0.5))),
+                Expanded(child: Text('MARGIN', textAlign: TextAlign.center, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 0.5))),
+              ]),
+            ),
+            ..._profitByJobType.map((row) {
+              final profit = row['avg_profit_cents'] as int? ?? 0;
+              final margin = row['avg_margin_pct'];
+              final profitColor = profit >= 0 ? const Color(0xFF10B981) : AppTheme.error;
+              return Container(
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: AppTheme.borderColor))),
+                child: Row(children: [
+                  Expanded(flex: 3, child: Text(row['job_type'] as String? ?? 'Uncategorized',
+                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: AppTheme.textPrimary))),
+                  Expanded(child: Text('${row['jobs_count'] ?? 0}', textAlign: TextAlign.center,
+                      style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary))),
+                  Expanded(child: Text(_fmtCents(row['avg_revenue_cents'] as int?), textAlign: TextAlign.center,
+                      style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary))),
+                  Expanded(child: Text(_fmtCents(row['avg_expenses_cents'] as int?), textAlign: TextAlign.center,
+                      style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary))),
+                  Expanded(child: Text(_fmtCents(row['avg_profit_cents'] as int?), textAlign: TextAlign.center,
+                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: profitColor))),
+                  Expanded(child: Text(
+                    margin != null ? '${(margin as num).toStringAsFixed(1)}%' : '—',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: profitColor),
+                  )),
+                ]),
+              );
+            }),
+          ]),
+        ),
+        const SizedBox(height: 16),
+      ],
+
+      // Card 2 — Profitability by Calendar
+      if (_profitByCalendar.isNotEmpty) ...[
+        Container(
+          decoration: _cardDecoration(),
+          child: Column(children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+              decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: AppTheme.borderColor))),
+              child: const Row(children: [
+                Expanded(flex: 3, child: Text('CALENDAR', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 0.5))),
+                Expanded(child: Text('JOBS', textAlign: TextAlign.center, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 0.5))),
+                Expanded(child: Text('REVENUE', textAlign: TextAlign.center, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 0.5))),
+                Expanded(child: Text('COSTS', textAlign: TextAlign.center, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 0.5))),
+                Expanded(child: Text('PROFIT', textAlign: TextAlign.center, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 0.5))),
+              ]),
+            ),
+            ..._profitByCalendar.map((row) {
+              final profit = row['total_profit_cents'] as int? ?? 0;
+              final profitColor = profit >= 0 ? const Color(0xFF10B981) : AppTheme.error;
+              return Container(
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: AppTheme.borderColor))),
+                child: Row(children: [
+                  Expanded(flex: 3, child: Text(row['calendar_name'] as String? ?? '—',
+                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: AppTheme.textPrimary))),
+                  Expanded(child: Text('${row['jobs_count'] ?? 0}', textAlign: TextAlign.center,
+                      style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary))),
+                  Expanded(child: Text(_fmtCents(row['total_revenue_cents'] as int?), textAlign: TextAlign.center,
+                      style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary))),
+                  Expanded(child: Text(_fmtCents(row['total_expenses_cents'] as int?), textAlign: TextAlign.center,
+                      style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary))),
+                  Expanded(child: Text(_fmtCents(row['total_profit_cents'] as int?), textAlign: TextAlign.center,
+                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: profitColor))),
+                ]),
+              );
+            }),
+          ]),
+        ),
+        const SizedBox(height: 16),
+      ],
+
+      // Card 3 — Top & Bottom Jobs
+      if (_topJobs.isNotEmpty || _bottomJobs.isNotEmpty)
+        Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          // Top 5
+          Expanded(child: Container(
+            decoration: _cardDecoration(),
+            child: Column(children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: AppTheme.borderColor))),
+                child: const Row(children: [
+                  Icon(Icons.trending_up_rounded, size: 14, color: Color(0xFF10B981)),
+                  SizedBox(width: 6),
+                  Text('Most Profitable Jobs', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+                ]),
+              ),
+              ..._topJobs.map((job) => _jobProfitRow(job, positive: true)),
+            ]),
+          )),
+          const SizedBox(width: 16),
+          // Bottom 5
+          Expanded(child: Container(
+            decoration: _cardDecoration(),
+            child: Column(children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: AppTheme.borderColor))),
+                child: const Row(children: [
+                  Icon(Icons.trending_down_rounded, size: 14, color: AppTheme.error),
+                  SizedBox(width: 6),
+                  Text('Least Profitable Jobs', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+                ]),
+              ),
+              ..._bottomJobs.map((job) => _jobProfitRow(job, positive: false)),
+            ]),
+          )),
+        ]),
+    ]);
+  }
+
+  Widget _jobProfitRow(Map<String, dynamic> job, {required bool positive}) {
+    final cents = job['gross_profit_cents'] as int? ?? 0;
+    final dollars = cents / 100.0;
+    final color = positive ? const Color(0xFF10B981) : AppTheme.error;
+    final name = job['job_name'] as String? ?? 'Untitled';
+    final jobType = job['job_type'] as String? ?? '';
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: AppTheme.borderColor))),
+      child: Row(children: [
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(name, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: AppTheme.textPrimary),
+              overflow: TextOverflow.ellipsis),
+          if (jobType.isNotEmpty)
+            Text(jobType, style: const TextStyle(fontSize: 10, color: AppTheme.textSecondary)),
+        ])),
+        Text(
+          dollars >= 0 ? '\$${dollars.toStringAsFixed(0)}' : '-\$${dollars.abs().toStringAsFixed(0)}',
+          style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: color),
+        ),
+      ]),
     );
   }
 
