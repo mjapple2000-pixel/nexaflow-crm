@@ -276,6 +276,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       case 'domains':         return 23;
       case 'url_redirects':   return 24;
       case 'service_library': return 25;
+      case 'job_types':       return 26;
       default:                return 0;
     }
   }
@@ -510,6 +511,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SizedBox(height: 8),
           ..._buildSidebarGroup('JOBS', [
             (25, Icons.inventory_2_outlined,      'Service Library'),
+            (26, Icons.category_outlined,         'Job Types'),
           ]),
         ],
               ),
@@ -637,6 +639,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         return _ComingSoonSection(title: 'URL Redirects', icon: Icons.alt_route_rounded);
       case 25:
         return _ServiceLibrarySection(businessId: _businessId!);
+      case 26:
+        return _JobTypesSection(businessId: _businessId!);
       default:
         return const SizedBox();
     }
@@ -704,6 +708,7 @@ class _BusinessProfileSectionState
   String? _selectedIndustry;
   // SMS consent
   bool _smsConsent = false;
+  bool _requireLocationOnClock = false;
   Map<String, dynamic> _availabilityHours = {};
   bool _resettingCalendars = false;
 
@@ -749,6 +754,7 @@ class _BusinessProfileSectionState
     }
 
     _smsConsent = b['sms_consent'] as bool? ?? false;
+    _requireLocationOnClock = b['require_location_on_clock'] as bool? ?? false;
     final rawHours = b['availability_hours'];
     if (rawHours is Map) {
       _availabilityHours = Map<String, dynamic>.from(rawHours);
@@ -811,8 +817,9 @@ class _BusinessProfileSectionState
         'tax_id':           _taxIdCtrl.text.trim(),
         'timezone':         _selectedTimezone,
         'industry':         _selectedIndustry,
-        'sms_consent':      _smsConsent,
-        'availability_hours': _availabilityHours,
+        'sms_consent':               _smsConsent,
+        'require_location_on_clock': _requireLocationOnClock,
+        'availability_hours':        _availabilityHours,
       });
       setState(
           () { _successMsg = 'Profile saved.'; _saving = false; });
@@ -1087,6 +1094,17 @@ class _BusinessProfileSectionState
                 padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
               ),
             ),
+          ),
+        ]),
+        const SizedBox(height: 24),
+
+        // ── Time Tracking ──────────────────────────────────────────
+        _SettingsGroup(title: 'Time Tracking', children: [
+          _ToggleRow(
+            label: 'Require Location on Clock-In/Out',
+            subtitle: 'Team members must allow location access when clocking in or out. Coordinates are stored per entry so you can verify on-site presence.',
+            value: _requireLocationOnClock,
+            onChanged: (v) => setState(() => _requireLocationOnClock = v),
           ),
         ]),
         const SizedBox(height: 24),
@@ -7393,6 +7411,465 @@ class _ServiceItemDialogState extends State<_ServiceItemDialog> {
         ),
       ),
     ]);
+  }
+}
+// ─────────────────────────────────────────────
+//  JOB TYPES SECTION
+// ─────────────────────────────────────────────
+
+class _JobTypesSection extends StatefulWidget {
+  final int businessId;
+  const _JobTypesSection({required this.businessId});
+
+  @override
+  State<_JobTypesSection> createState() => _JobTypesSectionState();
+}
+
+class _JobTypesSectionState extends State<_JobTypesSection> {
+  final _supabase = Supabase.instance.client;
+  List<Map<String, dynamic>> _items = [];
+  bool _loading = true;
+  String _searchQuery = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() => _loading = true);
+    try {
+      final res = await _supabase
+          .from('job_types')
+          .select()
+          .eq('business_id', widget.businessId)
+          .filter('deleted_at', 'is', null)
+          .order('name');
+      setState(() {
+        _items = List<Map<String, dynamic>>.from(res as List);
+        _loading = false;
+      });
+    } catch (e) {
+      debugPrint('Job types load error: $e');
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  List<Map<String, dynamic>> get _filtered {
+    if (_searchQuery.isEmpty) return _items;
+    final q = _searchQuery.toLowerCase();
+    return _items.where((item) =>
+        (item['name'] as String? ?? '').toLowerCase().contains(q)).toList();
+  }
+
+  void _showEditor({Map<String, dynamic>? existing}) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => _JobTypeItemDialog(
+        businessId: widget.businessId,
+        existing: existing,
+        onSaved: () {
+          Navigator.of(ctx, rootNavigator: true).pop();
+          _load();
+        },
+      ),
+    );
+  }
+
+  Future<void> _toggleActive(Map<String, dynamic> item) async {
+    final newVal = !(item['is_active'] as bool? ?? true);
+    await _supabase
+        .from('job_types')
+        .update({'is_active': newVal})
+        .eq('id', item['id']);
+    await _load();
+  }
+
+  Future<void> _delete(Map<String, dynamic> item) async {
+    bool confirmed = false;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.cardBg,
+        title: const Text('Delete Job Type',
+            style: TextStyle(color: AppTheme.textPrimary)),
+        content: Text('Delete "${item['name']}"? This cannot be undone.',
+            style: const TextStyle(color: AppTheme.textSecondary)),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(),
+              child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () {
+              confirmed = true;
+              Navigator.of(ctx, rootNavigator: true).pop();
+            },
+            style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red,
+                foregroundColor: Colors.white,
+                elevation: 0),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (!confirmed || !mounted) return;
+    await _supabase
+        .from('job_types')
+        .update({'deleted_at': DateTime.now().toUtc().toIso8601String()})
+        .eq('id', item['id']);
+    await _load();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final filtered = _filtered;
+    return _SectionShell(
+      title: 'Job Types',
+      subtitle: 'Define the job types used to categorize appointments and track profitability in reporting.',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(children: [
+            Expanded(
+              child: SizedBox(
+                height: 38,
+                child: TextField(
+                  onChanged: (v) => setState(() => _searchQuery = v),
+                  style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                  decoration: InputDecoration(
+                    hintText: 'Search job types...',
+                    hintStyle: const TextStyle(fontSize: 13, color: AppTheme.textSecondary),
+                    prefixIcon: const Icon(Icons.search, size: 16, color: AppTheme.textSecondary),
+                    filled: true,
+                    fillColor: AppTheme.pageBg,
+                    isDense: true,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                        borderSide: const BorderSide(color: AppTheme.borderColor)),
+                    enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                        borderSide: const BorderSide(color: AppTheme.borderColor)),
+                    focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                        borderSide: BorderSide(color: AppTheme.brand, width: 1.5)),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: ElevatedButton.icon(
+                onPressed: () => _showEditor(),
+                icon: const Icon(Icons.add, size: 16),
+                label: const Text('Add Job Type'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppTheme.brand,
+                  foregroundColor: Colors.white,
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+                ),
+              ),
+            ),
+          ]),
+          const SizedBox(height: 20),
+
+          if (_loading)
+            const Center(child: CircularProgressIndicator())
+          else if (filtered.isEmpty)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(48),
+              decoration: BoxDecoration(
+                color: AppTheme.cardBg,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppTheme.borderColor),
+              ),
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                const Icon(Icons.category_outlined, size: 48, color: AppTheme.textMuted),
+                const SizedBox(height: 12),
+                Text(
+                  _searchQuery.isNotEmpty
+                      ? 'No job types match your search.'
+                      : 'No job types yet.',
+                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600,
+                      color: AppTheme.textPrimary),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'Add job types like "Roof Replacement" or "HVAC Tune-Up" to categorize appointments and track profitability by job type in reporting.',
+                  style: TextStyle(fontSize: 13, color: AppTheme.textSecondary),
+                  textAlign: TextAlign.center,
+                ),
+                if (_searchQuery.isEmpty) ...[
+                  const SizedBox(height: 20),
+                  MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    child: ElevatedButton.icon(
+                      onPressed: () => _showEditor(),
+                      icon: const Icon(Icons.add, size: 16),
+                      label: const Text('Add your first job type'),
+                      style: ElevatedButton.styleFrom(
+                          backgroundColor: AppTheme.brand,
+                          foregroundColor: Colors.white,
+                          elevation: 0,
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(8))),
+                    ),
+                  ),
+                ],
+              ]),
+            )
+          else
+            Container(
+              decoration: BoxDecoration(
+                color: AppTheme.cardBg,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: AppTheme.borderColor),
+              ),
+              child: Column(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                    decoration: const BoxDecoration(
+                      border: Border(bottom: BorderSide(color: AppTheme.borderColor)),
+                    ),
+                    child: const Row(children: [
+                      Expanded(flex: 4, child: Text('NAME',
+                          style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                              color: AppTheme.textSecondary, letterSpacing: 0.8))),
+                      Expanded(flex: 2, child: Text('STATUS',
+                          style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                              color: AppTheme.textSecondary, letterSpacing: 0.8))),
+                      SizedBox(width: 100),
+                    ]),
+                  ),
+                  ...filtered.asMap().entries.map((e) {
+                    final i = e.key;
+                    final item = e.value;
+                    final isLast = i == filtered.length - 1;
+                    final isActive = item['is_active'] as bool? ?? true;
+                    return Container(
+                      decoration: BoxDecoration(
+                        color: isActive ? null : AppTheme.pageBg.withValues(alpha: 0.5),
+                        border: isLast ? null : const Border(
+                            bottom: BorderSide(color: AppTheme.borderColor)),
+                      ),
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      child: Row(children: [
+                        Expanded(flex: 4, child: Text(
+                          item['name'] as String? ?? '',
+                          style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: isActive
+                                  ? AppTheme.textPrimary
+                                  : AppTheme.textSecondary),
+                          overflow: TextOverflow.ellipsis,
+                        )),
+                        Expanded(flex: 2, child: Clickable(
+                          onTap: () => _toggleActive(item),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: isActive
+                                  ? AppTheme.success.withValues(alpha: 0.1)
+                                  : AppTheme.textMuted.withValues(alpha: 0.1),
+                              borderRadius: BorderRadius.circular(99),
+                            ),
+                            child: Text(
+                              isActive ? 'Active' : 'Inactive',
+                              style: TextStyle(
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w600,
+                                  color: isActive ? AppTheme.success : AppTheme.textSecondary),
+                            ),
+                          ),
+                        )),
+                        SizedBox(width: 100, child: Row(
+                          mainAxisAlignment: MainAxisAlignment.end,
+                          children: [
+                            PopupMenuButton<String>(
+                              color: AppTheme.cardBg,
+                              icon: const Icon(Icons.more_vert, size: 16,
+                                  color: AppTheme.textSecondary),
+                              itemBuilder: (_) => [
+                                PopupMenuItem(value: 'edit', child: Row(children: [
+                                  const Icon(Icons.edit_outlined, size: 14,
+                                      color: AppTheme.textSecondary),
+                                  const SizedBox(width: 8),
+                                  const Text('Edit', style: TextStyle(fontSize: 13,
+                                      color: AppTheme.textPrimary)),
+                                ])),
+                                PopupMenuItem(value: 'delete', child: Row(children: [
+                                  const Icon(Icons.delete_outline, size: 14, color: Colors.red),
+                                  const SizedBox(width: 8),
+                                  const Text('Delete', style: TextStyle(fontSize: 13,
+                                      color: Colors.red)),
+                                ])),
+                              ],
+                              onSelected: (action) {
+                                if (action == 'edit') _showEditor(existing: item);
+                                if (action == 'delete') _delete(item);
+                              },
+                            ),
+                          ],
+                        )),
+                      ]),
+                    );
+                  }),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+//  JOB TYPE ITEM DIALOG
+// ─────────────────────────────────────────────
+
+class _JobTypeItemDialog extends StatefulWidget {
+  final int businessId;
+  final Map<String, dynamic>? existing;
+  final VoidCallback onSaved;
+  const _JobTypeItemDialog({
+    required this.businessId,
+    this.existing,
+    required this.onSaved,
+  });
+
+  @override
+  State<_JobTypeItemDialog> createState() => _JobTypeItemDialogState();
+}
+
+class _JobTypeItemDialogState extends State<_JobTypeItemDialog> {
+  final _supabase = Supabase.instance.client;
+  final _nameCtrl = TextEditingController();
+  bool _saving = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.existing != null) {
+      _nameCtrl.text = widget.existing!['name'] as String? ?? '';
+    }
+  }
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    if (_nameCtrl.text.trim().isEmpty) {
+      setState(() => _error = 'Name is required.');
+      return;
+    }
+    setState(() { _saving = true; _error = null; });
+    try {
+      final payload = {
+        'business_id': widget.businessId,
+        'name':        _nameCtrl.text.trim(),
+        'is_active':   true,
+        'updated_at':  DateTime.now().toUtc().toIso8601String(),
+      };
+      if (widget.existing != null) {
+        await _supabase
+            .from('job_types')
+            .update(payload)
+            .eq('id', widget.existing!['id']);
+      } else {
+        await _supabase.from('job_types').insert(payload);
+      }
+      widget.onSaved();
+    } catch (e) {
+      setState(() { _error = e.toString(); _saving = false; });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isEdit = widget.existing != null;
+    return Dialog(
+      backgroundColor: AppTheme.cardBg,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: SizedBox(
+        width: 480,
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Container(
+            padding: const EdgeInsets.fromLTRB(24, 20, 16, 20),
+            decoration: const BoxDecoration(
+                border: Border(bottom: BorderSide(color: AppTheme.borderColor))),
+            child: Row(children: [
+              const Icon(Icons.category_outlined, size: 20, color: AppTheme.brand),
+              const SizedBox(width: 10),
+              Text(isEdit ? 'Edit Job Type' : 'New Job Type',
+                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700,
+                      color: AppTheme.textPrimary)),
+              const Spacer(),
+              MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: TextButton(
+                    onPressed: () => Navigator.of(context, rootNavigator: true).pop(),
+                    child: const Text('Cancel')),
+              ),
+              const SizedBox(width: 8),
+              MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: ElevatedButton(
+                  onPressed: _saving ? null : _save,
+                  style: ElevatedButton.styleFrom(
+                      backgroundColor: AppTheme.brand,
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+                  child: _saving
+                      ? const SizedBox(width: 16, height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                      : const Text('Save'),
+                ),
+              ),
+            ]),
+          ),
+          Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Text('Name *',
+                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600,
+                      color: AppTheme.textSecondary)),
+              const SizedBox(height: 6),
+              TextField(
+                controller: _nameCtrl,
+                style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                decoration: InputDecoration(
+                  hintText: 'e.g. Roof Replacement, HVAC Tune-Up',
+                  filled: true,
+                  fillColor: AppTheme.pageBg,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                      borderSide: const BorderSide(color: AppTheme.borderColor)),
+                  enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                      borderSide: const BorderSide(color: AppTheme.borderColor)),
+                  focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                      borderSide: BorderSide(color: AppTheme.brand, width: 1.5)),
+                ),
+              ),
+              if (_error != null) ...[
+                const SizedBox(height: 12),
+                Text(_error!, style: const TextStyle(color: Colors.red, fontSize: 13)),
+              ],
+            ]),
+          ),
+        ]),
+      ),
+    );
   }
 }
 // ─────────────────────────────────────────────

@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:geolocator/geolocator.dart';
 import '../theme/app_theme.dart';
 import '../widgets/clickable.dart';
 import 'package:http/http.dart' as http;
@@ -27,6 +29,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
   List<Map<String, dynamic>> _calendarEquipment = [];
   List<Map<String, dynamic>> _teamMembers  = [];
   List<Map<String, dynamic>> _leads        = [];
+  List<Map<String, dynamic>> _jobTypes     = [];
   int? _businessId;
   Map<String, dynamic>? _business;
 
@@ -102,6 +105,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
         _db.from('service_menu_items').select().eq('business_id', _businessId!).order('created_at', ascending: true),
         _db.from('calendar_rooms').select().eq('business_id', _businessId!).order('created_at', ascending: true),
         _db.from('calendar_equipment').select().eq('business_id', _businessId!).order('created_at', ascending: true),
+        _db.from('job_types').select().eq('business_id', _businessId!).filter('deleted_at', 'is', null).eq('is_active', true).order('name', ascending: true),
       ]);
       _appointments  = List<Map<String, dynamic>>.from(results[0] as List);
       _business      = results[1] as Map<String, dynamic>?;
@@ -115,6 +119,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
       _serviceMenuItems = List<Map<String, dynamic>>.from(results[6] as List);
       _calendarRooms = List<Map<String, dynamic>>.from(results[7] as List);
       _calendarEquipment = List<Map<String, dynamic>>.from(results[8] as List);
+      _jobTypes = List<Map<String, dynamic>>.from(results[9] as List);
       if (_business != null) {
         final ah = _business!['availability_hours'];
         if (ah != null) {
@@ -1850,6 +1855,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
     showDialog(context: context, barrierColor: Colors.black54, builder: (ctx) => _NewAppointmentDialog(
       appointmentTypes: _appointmentTypes, appointmentStatuses: _appointmentStatuses,
       teamMembers: _teamMembers, leads: _leads, calendars: _calendars, businessId: _businessId,
+      jobTypes: _jobTypes,
       onSaved: () { Navigator.of(ctx, rootNavigator: true).pop(); _load(); },
     ));
   }
@@ -1862,6 +1868,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
         colorFn: _statusColor,
         calendars: _calendars,
         teamMembers: _teamMembers,
+        jobTypes: _jobTypes,
         onUpdated: () { Navigator.pop(context); _load(); },
       ));
   }
@@ -3459,6 +3466,7 @@ class _NewAppointmentDialog extends StatefulWidget {
   final List<Map<String, dynamic>> teamMembers;
   final List<Map<String, dynamic>> leads;
   final List<Map<String, dynamic>> calendars;
+  final List<Map<String, dynamic>> jobTypes;
   final int? businessId;
   final VoidCallback onSaved;
 
@@ -3468,6 +3476,7 @@ class _NewAppointmentDialog extends StatefulWidget {
     required this.teamMembers,
     required this.leads,
     required this.calendars,
+    required this.jobTypes,
     required this.businessId,
     required this.onSaved,
   });
@@ -3550,6 +3559,7 @@ class _NewAppointmentDialogState extends State<_NewAppointmentDialog>
                 teamMembers:         widget.teamMembers,
                 leads:               widget.leads,
                 calendars:           widget.calendars,
+                jobTypes:            widget.jobTypes,
                 businessId:          widget.businessId,
                 onSaved:             widget.onSaved,
               ),
@@ -3576,6 +3586,7 @@ class _AppointmentFormTab extends StatefulWidget {
   final List<Map<String, dynamic>> teamMembers;
   final List<Map<String, dynamic>> leads;
   final List<Map<String, dynamic>> calendars;
+  final List<Map<String, dynamic>> jobTypes;
   final int? businessId;
   final VoidCallback onSaved;
 
@@ -3585,6 +3596,7 @@ class _AppointmentFormTab extends StatefulWidget {
     required this.teamMembers,
     required this.leads,
     required this.calendars,
+    required this.jobTypes,
     required this.businessId,
     required this.onSaved,
   });
@@ -3606,6 +3618,7 @@ class _AppointmentFormTabState extends State<_AppointmentFormTab> {
   String   _type       = 'Consultation';
   String   _status     = 'New';
   String?  _teamMember;
+  int?     _selectedJobTypeId;
   DateTime _startDt    = DateTime.now().add(const Duration(hours: 1));
   DateTime _endDt      = DateTime.now().add(const Duration(hours: 2));
   bool     _saving     = false;
@@ -3714,6 +3727,7 @@ class _AppointmentFormTabState extends State<_AppointmentFormTab> {
         'is_recurring':     false,
         if (_calendarId != null) 'calendar_id': int.tryParse(_calendarId!),
         if (_teamMember != null) 'assigned_to':  _teamMember,
+        if (_selectedJobTypeId != null) 'job_type': widget.jobTypes.firstWhere((j) => j['id'] == _selectedJobTypeId)['name'],
       };
       final newAppt = await _db.from('appointments').insert(payload).select().maybeSingle();
       try {
@@ -3811,6 +3825,30 @@ class _AppointmentFormTabState extends State<_AppointmentFormTab> {
           ])),
         ]),
         const SizedBox(height: 14),
+
+        // Job Type
+        if (widget.jobTypes.isNotEmpty) ...[
+          _label('Job Type (optional)'),
+          const SizedBox(height: 4),
+          _dropdownWidget(
+            items: ['None', ...widget.jobTypes.map((j) => j['name']?.toString() ?? 'Unnamed')],
+            value: _selectedJobTypeId == null
+                ? 'None'
+                : widget.jobTypes.firstWhere(
+                    (j) => j['id'] == _selectedJobTypeId,
+                    orElse: () => {'name': 'None'},
+                  )['name']?.toString() ?? 'None',
+            onChanged: (v) {
+              if (v == null || v == 'None') {
+                setState(() => _selectedJobTypeId = null);
+                return;
+              }
+              final match = widget.jobTypes.firstWhere((j) => j['name'] == v, orElse: () => {});
+              setState(() => _selectedJobTypeId = match['id'] as int?);
+            },
+          ),
+          const SizedBox(height: 14),
+        ],
 
         // Team Member
         _label('Team Member'),
@@ -4580,6 +4618,7 @@ class _AppointmentDetailSheet extends StatefulWidget {
   final Color Function(String) colorFn;
   final List<Map<String, dynamic>> calendars;
   final List<Map<String, dynamic>> teamMembers;
+  final List<Map<String, dynamic>> jobTypes;
 
   const _AppointmentDetailSheet({
     required this.appointment,
@@ -4588,6 +4627,7 @@ class _AppointmentDetailSheet extends StatefulWidget {
     required this.colorFn,
     this.calendars = const [],
     this.teamMembers = const [],
+    this.jobTypes = const [],
   });
 
   @override
@@ -4598,6 +4638,12 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
   final _db = Supabase.instance.client;
   bool _saving = false;
   bool _deleting = false;
+
+  Map<String, dynamic>? _activeTimeEntry;
+  bool _loadingClock = false;
+  bool _clockActionInProgress = false;
+  Timer? _clockTimer;
+  Duration _elapsed = Duration.zero;
 
   // Job Costs state
   List<Map<String, dynamic>> _jobExpenses = [];
@@ -4620,6 +4666,7 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
   late DateTime _endDt;
   String? _calendarId;
   String? _assignedTo;
+  String? _selectedJobType;
 
   static const _appointmentTypes = [
     'Consultation','Discovery Call','Demo','Strategy Session','Follow-Up',
@@ -4655,8 +4702,12 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
 
     _calendarId = a['calendar_id']?.toString();
     _assignedTo = a['assigned_to'] as String?;
+    _selectedJobType = a['job_type'] as String?;
 
-    WidgetsBinding.instance.addPostFrameCallback((_) => _loadExpenses());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _loadExpenses();
+      _loadActiveTimeEntry();
+    });
   }
 
   @override
@@ -4669,6 +4720,7 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
     _notesCtrl.dispose();
     _sourceCtrl.dispose();
     _adminEmailCtrl.dispose();
+    _clockTimer?.cancel();
     super.dispose();
   }
 
@@ -4690,6 +4742,128 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
     } finally {
       if (mounted) setState(() => _loadingExpenses = false);
     }
+  }
+
+  Future<void> _loadActiveTimeEntry() async {
+    if (!mounted) return;
+    setState(() => _loadingClock = true);
+    try {
+      final userId = _db.auth.currentUser?.id;
+      if (userId == null) return;
+      final entry = await _db
+          .from('time_entries')
+          .select()
+          .eq('user_id', userId)
+          .eq('status', 'active')
+          .filter('deleted_at', 'is', null)
+          .maybeSingle();
+      if (!mounted) return;
+      setState(() => _activeTimeEntry = entry);
+      _startOrStopTicker();
+    } catch (e) {
+      debugPrint('Load active time entry error: $e');
+    } finally {
+      if (mounted) setState(() => _loadingClock = false);
+    }
+  }
+
+  void _startOrStopTicker() {
+    _clockTimer?.cancel();
+    if (_activeTimeEntry == null) return;
+    final clockedInAt = DateTime.tryParse(_activeTimeEntry!['clocked_in_at'] ?? '');
+    if (clockedInAt == null) return;
+    void tick() {
+      if (!mounted) return;
+      setState(() => _elapsed = DateTime.now().toUtc().difference(clockedInAt.toUtc()));
+    }
+    tick();
+    _clockTimer = Timer.periodic(const Duration(seconds: 1), (_) => tick());
+  }
+
+  Future<Position?> _getLocation() async {
+    try {
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) return null;
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) return null;
+      }
+      if (permission == LocationPermission.deniedForever) return null;
+      return await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      );
+    } catch (e) {
+      debugPrint('Location error: $e');
+      return null;
+    }
+  }
+
+  Future<void> _toggleClock() async {
+    setState(() => _clockActionInProgress = true);
+    try {
+      await _db.auth.refreshSession();
+      final token = _db.auth.currentSession?.accessToken;
+      if (token == null) throw Exception('Not authenticated');
+      final action = _activeTimeEntry == null ? 'clock_in' : 'clock_out';
+      final position = await _getLocation();
+      final body = <String, dynamic>{'action': action};
+      if (action == 'clock_in') {
+        body['appointment_id'] = widget.appointment['id'];
+      }
+      if (position != null) {
+        body['lat'] = position.latitude;
+        body['lng'] = position.longitude;
+      }
+      final resp = await http.post(
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/clock-in-out'),
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode(body),
+      );
+      final data = jsonDecode(resp.body);
+      if (!mounted) return;
+      if (resp.statusCode != 200 || data['success'] != true) {
+        final errCode = data['error'] as String?;
+        if (errCode == 'location_required') {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Location is required by your business. Please allow location access and try again.'),
+              backgroundColor: Colors.orange,
+              duration: Duration(seconds: 4),
+            ),
+          );
+          return;
+        }
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(data['error'] ?? 'Clock action failed'), backgroundColor: Colors.red),
+        );
+        return;
+      }
+      _clockTimer?.cancel();
+      setState(() {
+        _activeTimeEntry = action == 'clock_in' ? data['entry'] : null;
+        _elapsed = Duration.zero;
+      });
+      _startOrStopTicker();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _clockActionInProgress = false);
+    }
+  }
+
+  String _formatElapsed(Duration d) {
+    final h = d.inHours.toString().padLeft(2, '0');
+    final m = (d.inMinutes % 60).toString().padLeft(2, '0');
+    final s = (d.inSeconds % 60).toString().padLeft(2, '0');
+    return '$h:$m:$s';
   }
 
   Future<void> _softDeleteExpense(int expenseId) async {
@@ -4739,6 +4913,7 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
         'admin_email':      _adminEmailCtrl.text.trim(),
         if (_calendarId != null) 'calendar_id': int.tryParse(_calendarId!),
         if (_assignedTo != null) 'assigned_to': _assignedTo,
+        'job_type': _selectedJobType,
       }).eq('id', widget.appointment['id']);
 
       // Fire appointment_completed automation trigger
@@ -4882,6 +5057,12 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
           ]),
           const SizedBox(height: 20),
 
+          // ── Clock In / Out ───────────────────────────────────────────
+          if (!blocked) ...[
+            _buildClockSection(),
+            const SizedBox(height: 20),
+          ],
+
           // ── Appointment Info ──────────────────────────────────────────
           _sectionLabel('Appointment Info'),
           const SizedBox(height: 8),
@@ -4921,6 +5102,19 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
                 final match = widget.calendars.firstWhere((c) => c['name'] == v, orElse: () => widget.calendars.first);
                 setState(() => _calendarId = match['id'].toString());
               },
+            ),
+          ],
+
+          if (widget.jobTypes.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            _dropdownField(
+              label: 'Job Type',
+              value: (_selectedJobType != null &&
+                      widget.jobTypes.any((j) => j['name'] == _selectedJobType))
+                  ? _selectedJobType!
+                  : 'None',
+              items: ['None', ...widget.jobTypes.map((j) => j['name']?.toString() ?? 'Unnamed')],
+              onChanged: (v) => setState(() => _selectedJobType = (v == 'None') ? null : v),
             ),
           ],
 
@@ -4980,6 +5174,55 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
           ),
         ]),
       ),
+    );
+  }
+
+  Widget _buildClockSection() {
+    final isClockedIn = _activeTimeEntry != null;
+    final isClockedInToThis = isClockedIn &&
+        _activeTimeEntry!['appointment_id']?.toString() == widget.appointment['id']?.toString();
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: isClockedIn ? AppTheme.success.withValues(alpha: 0.06) : AppTheme.pageBg,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: isClockedIn ? AppTheme.success.withValues(alpha: 0.3) : AppTheme.borderColor),
+      ),
+      child: Row(children: [
+        Icon(isClockedIn ? Icons.timer : Icons.timer_outlined,
+            size: 18, color: isClockedIn ? AppTheme.success : AppTheme.textSecondary),
+        const SizedBox(width: 10),
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(
+            _loadingClock
+                ? 'Checking status...'
+                : isClockedIn
+                    ? (isClockedInToThis ? 'Clocked in on this job' : 'Clocked in on another job')
+                    : 'Not clocked in',
+            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600,
+                color: isClockedIn ? AppTheme.success : AppTheme.textPrimary),
+          ),
+          if (isClockedIn)
+            Text(_formatElapsed(_elapsed), style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+        ])),
+        SizedBox(
+          height: 34,
+          child: ElevatedButton(
+            onPressed: (_loadingClock || _clockActionInProgress) ? null : _toggleClock,
+            style: ElevatedButton.styleFrom(
+              backgroundColor: isClockedIn ? AppTheme.error : AppTheme.brand,
+              foregroundColor: Colors.white,
+              elevation: 0,
+              padding: const EdgeInsets.symmetric(horizontal: 14),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            child: _clockActionInProgress
+                ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                : Text(isClockedIn ? 'Clock Out' : 'Clock In', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+          ),
+        ),
+      ]),
     );
   }
 

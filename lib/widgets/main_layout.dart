@@ -121,6 +121,9 @@ class _AppNavBarState extends State<AppNavBar> {
   int _unreadCount = 0;
   RealtimeChannel? _unreadChannel;
 
+  Map<String, dynamic>? _activeTimeEntry;
+  Timer? _clockCheckTimer;
+
   // Profile state
   String _role        = 'member';
   Map<String, dynamic> _permissions = {};
@@ -157,6 +160,7 @@ class _AppNavBarState extends State<AppNavBar> {
     ('/settings?section=url_redirects',    Icons.alt_route_rounded,          'URL Redirects'),
         // JOBS
     ('/settings?section=service_library', Icons.inventory_2_outlined,       'Service Library'),
+    ('/settings?section=job_types',        Icons.category_outlined,         'Job Types'),
   ];
 
   @override
@@ -165,12 +169,32 @@ class _AppNavBarState extends State<AppNavBar> {
     _loadProfile();
     _loadUnreadCount();
     _subscribeToUnread();
+    _checkActiveTimeEntry();
+    _clockCheckTimer = Timer.periodic(const Duration(seconds: 60), (_) => _checkActiveTimeEntry());
   }
 
   @override
   void dispose() {
     _unreadChannel?.unsubscribe();
+    _clockCheckTimer?.cancel();
     super.dispose();
+  }
+
+  Future<void> _checkActiveTimeEntry() async {
+    try {
+      final userId = _supabase.auth.currentUser?.id;
+      if (userId == null) return;
+      final entry = await _supabase
+          .from('time_entries')
+          .select()
+          .eq('user_id', userId)
+          .eq('status', 'active')
+          .filter('deleted_at', 'is', null)
+          .maybeSingle();
+      if (mounted) setState(() => _activeTimeEntry = entry);
+    } catch (e) {
+      debugPrint('Clock status check error: $e');
+    }
   }
 
   // ── Load role + permissions + unread in one query ─────────────────────────
@@ -459,6 +483,9 @@ class _AppNavBarState extends State<AppNavBar> {
             if (AppRouter.cachedIsSuperuser == true)
               _SuperuserBanner(),
 
+            if (_activeTimeEntry != null)
+              _ClockedInBanner(clockedInAt: _activeTimeEntry!['clocked_in_at'] as String?),
+
             Expanded(
               child: location.startsWith('/settings')
                   ? _buildSettingsNav(context, location)
@@ -512,6 +539,13 @@ class _AppNavBarState extends State<AppNavBar> {
                       label: 'Calendars',
                       route: '/appointments',
                       active: location.startsWith('/appointments'),
+                    ),
+                  if (_can('appointments'))
+                    _NavItem(
+                      icon: Icons.access_time_outlined,
+                      label: 'Timesheets',
+                      route: '/timesheets',
+                      active: location.startsWith('/timesheets'),
                     ),
                   if (_can('pipelines'))
                     _NavItem(
@@ -942,6 +976,67 @@ class _ResultTile extends StatelessWidget {
     );
   }
 }
+class _ClockedInBanner extends StatefulWidget {
+  final String? clockedInAt;
+  const _ClockedInBanner({required this.clockedInAt});
+
+  @override
+  State<_ClockedInBanner> createState() => _ClockedInBannerState();
+}
+
+class _ClockedInBannerState extends State<_ClockedInBanner> {
+  Timer? _ticker;
+  Duration _elapsed = Duration.zero;
+
+  @override
+  void initState() {
+    super.initState();
+    final clockedInAt = DateTime.tryParse(widget.clockedInAt ?? '');
+    if (clockedInAt != null) {
+      void tick() {
+        if (!mounted) return;
+        setState(() => _elapsed = DateTime.now().toUtc().difference(clockedInAt.toUtc()));
+      }
+      tick();
+      _ticker = Timer.periodic(const Duration(seconds: 1), (_) => tick());
+    }
+  }
+
+  @override
+  void dispose() {
+    _ticker?.cancel();
+    super.dispose();
+  }
+
+  String _format(Duration d) {
+    final h = d.inHours.toString().padLeft(2, '0');
+    final m = (d.inMinutes % 60).toString().padLeft(2, '0');
+    final s = (d.inSeconds % 60).toString().padLeft(2, '0');
+    return '$h:$m:$s';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: AppTheme.success.withValues(alpha: 0.12),
+        border: Border(bottom: BorderSide(color: AppTheme.success.withValues(alpha: 0.3))),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      child: Row(children: [
+        const Icon(Icons.timer, size: 12, color: AppTheme.success),
+        const SizedBox(width: 6),
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Text('Clocked In',
+              style: TextStyle(color: AppTheme.success, fontSize: 9, fontWeight: FontWeight.w700, letterSpacing: 0.6)),
+          Text(_format(_elapsed),
+              style: const TextStyle(color: Colors.white, fontSize: 11.5, fontWeight: FontWeight.w600)),
+        ])),
+      ]),
+    );
+  }
+}
+
 class _SuperuserBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
