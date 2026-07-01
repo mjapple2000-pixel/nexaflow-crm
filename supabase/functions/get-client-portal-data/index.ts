@@ -38,7 +38,7 @@ serve(async (req) => {
     // Business info + Stripe status
     const { data: business } = await adminClient
       .from('businesses')
-      .select('business_name, stripe_connect_ready')
+      .select('business_name, business_phone, stripe_connect_ready')
       .eq('id', businessId)
       .single()
 
@@ -128,6 +128,7 @@ serve(async (req) => {
         },
         business: {
           name: business?.business_name ?? '',
+          phone: business?.business_phone ?? '',
           logo_url: null,
           stripe_connect_ready: business?.stripe_connect_ready === true,
         },

@@ -273,6 +273,8 @@ class _ClientHubScreenState extends State<ClientHubScreen> {
                               .map((i) => _InvoiceRow(
                                     invoice: i,
                                     stripeReady: ((_data!['business'] as Map<String, dynamic>)['stripe_connect_ready'] as bool?) ?? false,
+                                    businessName: (_data!['business'] as Map<String, dynamic>)['name'] as String? ?? '',
+                                    businessPhone: (_data!['business'] as Map<String, dynamic>)['phone'] as String? ?? '',
                                     onPay: () => _invoiceAction(i['id'] as String),
                                   ))
                               .toList(),
@@ -654,8 +656,10 @@ class _QuoteRowState extends State<_QuoteRow> {
 class _InvoiceRow extends StatefulWidget {
   final Map<String, dynamic> invoice;
   final bool stripeReady;
+  final String businessName;
+  final String businessPhone;
   final VoidCallback onPay;
-  const _InvoiceRow({required this.invoice, required this.stripeReady, required this.onPay});
+  const _InvoiceRow({required this.invoice, required this.stripeReady, required this.businessName, required this.businessPhone, required this.onPay});
 
   @override
   State<_InvoiceRow> createState() => _InvoiceRowState();
@@ -682,7 +686,7 @@ class _InvoiceRowState extends State<_InvoiceRow> {
     final isOverdue = (status == 'approved' || status == 'sent') &&
         dueDate != null &&
         dueDate.isBefore(DateTime.now());
-    final displayStatus = isOverdue ? 'overdue' : status;
+    final displayStatus = isOverdue ? 'overdue' : (status == 'sent' ? 'unpaid' : status);
     final canPay = status == 'approved' || status == 'sent' || isOverdue;
 
     return Padding(
@@ -876,10 +880,12 @@ class _InvoiceRowState extends State<_InvoiceRow> {
                     borderRadius: BorderRadius.circular(8),
                     border: Border.all(color: const Color(0xFFC68400).withValues(alpha: 0.3)),
                   ),
-                  child: const Text(
-                    'To pay this invoice, please contact us directly.',
+                  child: Text(
+                    widget.businessPhone.isNotEmpty
+                        ? 'Contact ${widget.businessName} at ${widget.businessPhone} to make a payment.'
+                        : 'Contact ${widget.businessName} to make a payment.',
                     textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 13, color: Color(0xFFC68400),
+                    style: const TextStyle(fontSize: 13, color: Color(0xFFC68400),
                         fontWeight: FontWeight.w500),
                   ),
                 ),
@@ -1091,6 +1097,7 @@ class _StatusBadge extends StatelessWidget {
     final (label, bg, fg) = switch (status) {
       'draft' => ('Draft', const Color(0xFF374151), Colors.white),
       'sent' => ('Pending Approval', const Color(0xFF1D4ED8), Colors.white),
+      'unpaid' => ('Unpaid', const Color(0xFF1D4ED8), Colors.white),
       'approved' => ('Approved', Colors.green[700]!, Colors.white),
       'declined' => ('Declined', AppTheme.error, Colors.white),
       'expired' => ('Expired', const Color(0xFF6B7280), Colors.white),
