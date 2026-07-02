@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../theme/app_theme.dart';
 import '../widgets/clickable.dart';
 
@@ -110,8 +111,6 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
 
   Future<Position?> _getLocation() async {
     try {
-      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
-      if (!serviceEnabled) return null;
       LocationPermission permission = await Geolocator.checkPermission();
       if (permission == LocationPermission.denied) {
         permission = await Geolocator.requestPermission();
@@ -221,6 +220,49 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
       else         _filterEnd   = picked;
     });
     _load();
+  }
+
+  void _showEntryDetail(Map<String, dynamic> entry) {
+    showDialog(
+      context: context,
+      builder: (_) => _TimeEntryDetailDialog(
+        entry: entry,
+        isOwner: _isOwner,
+        onForceClockOut: () => _forceClockOut(entry['id'] as int),
+      ),
+    );
+  }
+
+  Future<void> _forceClockOut(int entryId) async {
+    try {
+      await _db.auth.refreshSession();
+      final token = _db.auth.currentSession?.accessToken;
+      if (token == null) throw Exception('Not authenticated');
+
+      final resp = await http.post(
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/force-clock-out'),
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({'entry_id': entryId}),
+      );
+      if (!mounted) return;
+      final data = jsonDecode(resp.body);
+      if (resp.statusCode != 200 || data['success'] != true) {
+        throw Exception(data['error'] ?? 'Failed to force clock out');
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Team member clocked out.')),
+      );
+      await _load();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
   }
 
   @override
@@ -589,7 +631,9 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
               statusLabel = 'Completed';
             }
 
-            return Container(
+            return Clickable(
+              onTap: () => _showEntryDetail(e),
+              child: Container(
               color: isStale ? AppTheme.error.withValues(alpha: 0.04) : null,
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
               child: Row(children: [
@@ -614,11 +658,17 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
                   style: TextStyle(fontSize: 12,
                       color: isActive ? AppTheme.textMuted : AppTheme.textPrimary),
                 )),
-                Expanded(flex: 2, child: Text(
-                  isActive ? _formatElapsed(_elapsed) : _formatDuration(e['duration_minutes'] as int?),
-                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
-                      color: isActive ? AppTheme.success : AppTheme.textPrimary),
-                )),
+                Expanded(flex: 2, child: isActive
+                    ? _LiveDuration(
+                        clockedInAt: e['clocked_in_at'] as String?,
+                        style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
+                            color: AppTheme.success),
+                      )
+                    : Text(
+                        _formatDuration(e['duration_minutes'] as int?),
+                        style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
+                            color: AppTheme.textPrimary),
+                      )),
                 Expanded(flex: 2, child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                   decoration: BoxDecoration(
@@ -637,10 +687,266 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
                         )
                       : const SizedBox(width: 24),
               ]),
+              ),
             );
           },
         ),
       ]),
+    );
+  }
+}
+
+class _LiveDuration extends StatefulWidget {
+  final String? clockedInAt;
+  final TextStyle style;
+  const _LiveDuration({required this.clockedInAt, required this.style});
+
+  @override
+  State<_LiveDuration> createState() => _LiveDurationState();
+}
+
+class _LiveDurationState extends State<_LiveDuration> {
+  Timer? _ticker;
+  Duration _elapsed = Duration.zero;
+
+  @override
+  void initState() {
+    super.initState();
+    final clockedInAt = DateTime.tryParse(widget.clockedInAt ?? '');
+    if (clockedInAt != null) {
+      void tick() {
+        if (!mounted) return;
+        setState(() => _elapsed = DateTime.now().toUtc().difference(clockedInAt.toUtc()));
+      }
+      tick();
+      _ticker = Timer.periodic(const Duration(seconds: 1), (_) => tick());
+    }
+  }
+
+  @override
+  void dispose() {
+    _ticker?.cancel();
+    super.dispose();
+  }
+
+  String _format(Duration d) {
+    final h = d.inHours.toString().padLeft(2, '0');
+    final m = (d.inMinutes % 60).toString().padLeft(2, '0');
+    final s = (d.inSeconds % 60).toString().padLeft(2, '0');
+    return '$h:$m:$s';
+  }
+
+  @override
+  Widget build(BuildContext context) => Text(_format(_elapsed), style: widget.style);
+}
+
+class _TimeEntryDetailDialog extends StatelessWidget {
+  final Map<String, dynamic> entry;
+  final bool isOwner;
+  final VoidCallback onForceClockOut;
+
+  const _TimeEntryDetailDialog({
+    required this.entry,
+    required this.isOwner,
+    required this.onForceClockOut,
+  });
+
+  String _formatDateTime(String? raw) {
+    if (raw == null) return '—';
+    final dt = DateTime.tryParse(raw)?.toLocal();
+    if (dt == null) return '—';
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    final h = dt.hour == 0 ? 12 : dt.hour > 12 ? dt.hour - 12 : dt.hour;
+    final m = dt.minute.toString().padLeft(2, '0');
+    final ampm = dt.hour < 12 ? 'AM' : 'PM';
+    return '${months[dt.month - 1]} ${dt.day} · $h:$m $ampm';
+  }
+
+  String _formatDuration(int? minutes) {
+    if (minutes == null || minutes == 0) return '—';
+    final h = minutes ~/ 60;
+    final m = minutes % 60;
+    if (h == 0) return '${m}m';
+    if (m == 0) return '${h}h';
+    return '${h}h ${m}m';
+  }
+
+  Widget _mapOrPlaceholder(double? lat, double? lng) {
+    if (lat == null || lng == null) {
+      return Container(
+        height: 100,
+        decoration: BoxDecoration(
+          color: AppTheme.pageBg,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: AppTheme.borderColor),
+        ),
+        alignment: Alignment.center,
+        child: const Text('No location recorded',
+            style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+      );
+    }
+    final mapsUrl = 'https://www.google.com/maps?q=$lat,$lng';
+    return InkWell(
+      onTap: () async {
+        final uri = Uri.parse(mapsUrl);
+        if (await canLaunchUrl(uri)) {
+          await launchUrl(uri, mode: LaunchMode.externalApplication);
+        }
+      },
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        height: 100,
+        decoration: BoxDecoration(
+          color: AppTheme.brand.withValues(alpha: 0.05),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: AppTheme.brand.withValues(alpha: 0.2)),
+        ),
+        alignment: Alignment.center,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.location_on_outlined, size: 24, color: AppTheme.brand),
+            const SizedBox(height: 6),
+            Text('${lat.toStringAsFixed(5)}, ${lng.toStringAsFixed(5)}',
+                style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+            const SizedBox(height: 4),
+            const Text('Tap to view on map',
+                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.brand)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final status = entry['status'] as String? ?? 'completed';
+    final isActive = status == 'active';
+    final name = entry['full_name'] as String? ?? 'Unknown';
+    final notes = entry['notes'] as String?;
+
+    final clockInLat = (entry['clock_in_lat'] as num?)?.toDouble();
+    final clockInLng = (entry['clock_in_lng'] as num?)?.toDouble();
+    final clockOutLat = (entry['clock_out_lat'] as num?)?.toDouble();
+    final clockOutLng = (entry['clock_out_lng'] as num?)?.toDouble();
+
+    return Dialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 560),
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(children: [
+                  Expanded(
+                    child: Text(name,
+                        style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700,
+                            color: AppTheme.textPrimary)),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: isActive
+                          ? AppTheme.success.withValues(alpha: 0.1)
+                          : AppTheme.borderColor.withValues(alpha: 0.3),
+                      borderRadius: BorderRadius.circular(99),
+                    ),
+                    child: Text(isActive ? 'Clocked In' : 'Completed',
+                        style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600,
+                            color: isActive ? AppTheme.success : AppTheme.textSecondary)),
+                  ),
+                ]),
+                const SizedBox(height: 16),
+                Row(children: [
+                  Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    const Text('Clocked In', style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                    const SizedBox(height: 2),
+                    Text(_formatDateTime(entry['clocked_in_at'] as String?),
+                        style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+                  ])),
+                  Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    const Text('Clocked Out', style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                    const SizedBox(height: 2),
+                    Text(isActive ? '—' : _formatDateTime(entry['clocked_out_at'] as String?),
+                        style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+                  ])),
+                  Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    const Text('Duration', style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                    const SizedBox(height: 2),
+                    Text(isActive ? 'In progress' : _formatDuration(entry['duration_minutes'] as int?),
+                        style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+                  ])),
+                ]),
+                const SizedBox(height: 20),
+                const Text('Clock-In Location',
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+                const SizedBox(height: 8),
+                _mapOrPlaceholder(clockInLat, clockInLng),
+                const SizedBox(height: 16),
+                const Text('Clock-Out Location',
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+                const SizedBox(height: 8),
+                _mapOrPlaceholder(clockOutLat, clockOutLng),
+                if (notes != null && notes.trim().isNotEmpty) ...[
+                  const SizedBox(height: 16),
+                  const Text('Notes',
+                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+                  const SizedBox(height: 6),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: AppTheme.pageBg,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: AppTheme.borderColor),
+                    ),
+                    child: Text(notes,
+                        style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary, height: 1.4)),
+                  ),
+                ],
+                const SizedBox(height: 24),
+                Row(children: [
+                  if (isOwner && isActive) ...[
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: () {
+                          Navigator.of(context, rootNavigator: true).pop();
+                          onForceClockOut();
+                        },
+                        icon: const Icon(Icons.stop_circle_outlined, size: 16, color: AppTheme.error),
+                        label: const Text('Force Clock Out'),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: AppTheme.error,
+                          side: const BorderSide(color: AppTheme.error),
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                  ],
+                  Expanded(
+                    child: ElevatedButton(
+                      onPressed: () => Navigator.of(context, rootNavigator: true).pop(),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppTheme.brand,
+                        foregroundColor: Colors.white,
+                        elevation: 0,
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      ),
+                      child: const Text('Close'),
+                    ),
+                  ),
+                ]),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

@@ -1573,6 +1573,7 @@ class _MyStaffSectionState extends State<_MyStaffSection> {
   List<Map<String, dynamic>> _members = [];
   bool _loading = true;
   String? _currentUserId;
+  String _searchQuery = '';
 
   @override
   void initState() {
@@ -1627,20 +1628,80 @@ class _MyStaffSectionState extends State<_MyStaffSection> {
 
   Future<void> _resendInvite(Map<String, dynamic> member) async {
     try {
-      await _supabase.auth.admin
-          .inviteUserByEmail(member['email'] as String);
+      final session = _supabase.auth.currentSession;
+      final response = await http.post(
+        Uri.parse(
+            'https://rllriopqojaraceytdno.supabase.co/functions/v1/resend-invite'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ${session?.accessToken}',
+        },
+        body: jsonEncode({'profile_id': member['id']}),
+      );
+      final body = jsonDecode(response.body);
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content: Text('Invite resent.'),
-              behavior: SnackBarBehavior.floating),
-        );
+        if (response.statusCode == 200) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+                content: Text('Invite resent.'),
+                behavior: SnackBarBehavior.floating),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+                content:
+                    Text('Failed to resend: ${body['error'] ?? 'Unknown error'}'),
+                behavior: SnackBarBehavior.floating),
+          );
+        }
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
               content: Text('Failed to resend: $e'),
+              behavior: SnackBarBehavior.floating),
+        );
+      }
+    }
+  }
+
+  Future<void> _resendHubLink(Map<String, dynamic> member) async {
+    try {
+      final session = _supabase.auth.currentSession;
+      final response = await http.post(
+        Uri.parse(
+            'https://rllriopqojaraceytdno.supabase.co/functions/v1/resend-employee-hub-link'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ${session?.accessToken}',
+        },
+        body: jsonEncode({'profile_id': member['id']}),
+      );
+
+      final body = jsonDecode(response.body);
+
+      if (mounted) {
+        if (response.statusCode == 200) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+                content: Text('Hub link resent.'),
+                behavior: SnackBarBehavior.floating),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+                content: Text(
+                    'Failed to resend: ${body['error'] ?? 'Unknown error'}'),
+                behavior: SnackBarBehavior.floating),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              content: Text('Error: $e'),
               behavior: SnackBarBehavior.floating),
         );
       }
@@ -1656,10 +1717,10 @@ class _MyStaffSectionState extends State<_MyStaffSection> {
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: AppTheme.cardBg,
-        title: const Text('Remove Team Member',
+        title: const Text('Deactivate Team Member',
             style: TextStyle(color: AppTheme.textPrimary)),
         content: Text(
-            'Remove $name from this account? They will lose all access immediately.',
+            'Deactivate $name? They will lose all access immediately. Their record and work history stay saved, and they can be reactivated later.',
             style: const TextStyle(
                 color: AppTheme.textSecondary, height: 1.5)),
         actions: [
@@ -1675,19 +1736,19 @@ class _MyStaffSectionState extends State<_MyStaffSection> {
                 backgroundColor: Colors.red,
                 foregroundColor: Colors.white,
                 elevation: 0),
-            child: const Text('Remove'),
+            child: const Text('Deactivate'),
           ),
         ],
       ),
     );
     if (!confirmed || !mounted) return;
     try {
-      await _supabase.from('profiles').delete().eq('id', member['id']);
+      await _supabase.from('profiles').update({'status': 'inactive'}).eq('id', member['id']);
       await _loadMembers();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-              content: Text('Team member removed.'),
+              content: Text('Team member deactivated.'),
               behavior: SnackBarBehavior.floating),
         );
       }
@@ -1701,8 +1762,52 @@ class _MyStaffSectionState extends State<_MyStaffSection> {
     }
   }
 
+  Future<void> _reactivateMember(Map<String, dynamic> member) async {
+    try {
+      await _supabase.from('profiles').update({'status': 'active'}).eq('id', member['id']);
+      await _loadMembers();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text('Team member reactivated.'),
+              behavior: SnackBarBehavior.floating),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'),
+              behavior: SnackBarBehavior.floating),
+        );
+      }
+    }
+  }
+
+  List<Map<String, dynamic>> get _filteredMembers {
+    if (_searchQuery.trim().isEmpty) return _members;
+    final q = _searchQuery.trim().toLowerCase();
+    return _members.where((m) {
+      final name = (m['full_name'] as String? ?? '').toLowerCase();
+      final email = (m['email'] as String? ?? '').toLowerCase();
+      return name.contains(q) || email.contains(q);
+    }).toList();
+  }
+
+  String _sortKey(Map<String, dynamic> m) {
+    final name = (m['full_name'] as String? ?? '').trim();
+    return (name.isNotEmpty ? name : (m['email'] as String? ?? '')).toLowerCase();
+  }
+
   @override
   Widget build(BuildContext context) {
+    final activeMembers = _filteredMembers
+        .where((m) => (m['status'] as String?) != 'inactive')
+        .toList()
+      ..sort((a, b) => _sortKey(a).compareTo(_sortKey(b)));
+    final inactiveMembers = _filteredMembers
+        .where((m) => (m['status'] as String?) == 'inactive')
+        .toList()
+      ..sort((a, b) => _sortKey(a).compareTo(_sortKey(b)));
     return _SectionShell(
       title: 'My Staff',
       subtitle:
@@ -1737,23 +1842,92 @@ class _MyStaffSectionState extends State<_MyStaffSection> {
             const Center(child: CircularProgressIndicator())
           else if (_members.isEmpty)
             _emptyState()
-          else
-            Column(
-              children: _members
-                  .map((member) => _MemberCard(
+          else ...[
+            SizedBox(
+              height: 38,
+              child: TextField(
+                onChanged: (v) => setState(() => _searchQuery = v),
+                style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                decoration: InputDecoration(
+                  hintText: 'Search team members...',
+                  hintStyle: const TextStyle(fontSize: 13, color: AppTheme.textSecondary),
+                  prefixIcon: const Icon(Icons.search, size: 16, color: AppTheme.textSecondary),
+                  filled: true,
+                  fillColor: AppTheme.pageBg,
+                  isDense: true,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                      borderSide: const BorderSide(color: AppTheme.borderColor)),
+                  enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                      borderSide: const BorderSide(color: AppTheme.borderColor)),
+                  focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                      borderSide: BorderSide(color: AppTheme.brand, width: 1.5)),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            if (activeMembers.isEmpty && inactiveMembers.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 24),
+                child: Center(
+                  child: Text('No team members match "$_searchQuery".',
+                      style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary)),
+                ),
+              )
+            else
+              Column(
+                children: [
+                  ...activeMembers.map((member) => _MemberCard(
                         member: member,
                         isCurrentUser: (member['user_id'] as String?) ==
                             _currentUserId,
                         onEditPermissions: () =>
                             _showPermissionsDialog(member),
                         onRemove: () => _removeMember(member),
+                        onReactivate: null,
                         onResendInvite:
                             (member['status'] as String?) == 'pending'
                                 ? () => _resendInvite(member)
                                 : null,
-                      ))
-                  .toList(),
-            ),
+                        onResendHubLink:
+                            (member['phone'] as String?)?.isNotEmpty == true
+                                ? () => _resendHubLink(member)
+                                : null,
+                      )),
+                  if (activeMembers.isNotEmpty && inactiveMembers.isNotEmpty)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 12),
+                      child: Row(children: [
+                        Expanded(child: Divider(color: AppTheme.borderColor)),
+                        Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 10),
+                          child: Text('INACTIVE',
+                              style: TextStyle(
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w700,
+                                  letterSpacing: 0.6,
+                                  color: AppTheme.textSecondary)),
+                        ),
+                        Expanded(child: Divider(color: AppTheme.borderColor)),
+                      ]),
+                    ),
+                  ...inactiveMembers.map((member) => _MemberCard(
+                        member: member,
+                        isCurrentUser: (member['user_id'] as String?) ==
+                            _currentUserId,
+                        onEditPermissions: () =>
+                            _showPermissionsDialog(member),
+                        onRemove: () => _removeMember(member),
+                        onReactivate: () => _reactivateMember(member),
+                        onResendInvite: null,
+                        onResendHubLink:
+                            (member['phone'] as String?)?.isNotEmpty == true
+                                ? () => _resendHubLink(member)
+                                : null,
+                      )),
+                ],
+              ),
+          ],
           const SizedBox(height: 24),
           Container(
             padding: const EdgeInsets.all(14),
@@ -1836,6 +2010,8 @@ class _MemberCard extends StatelessWidget {
   final VoidCallback onEditPermissions;
   final VoidCallback onRemove;
   final VoidCallback? onResendInvite;
+  final VoidCallback? onResendHubLink;
+  final VoidCallback? onReactivate;
 
   const _MemberCard({
     required this.member,
@@ -1843,6 +2019,8 @@ class _MemberCard extends StatelessWidget {
     required this.onEditPermissions,
     required this.onRemove,
     this.onResendInvite,
+    this.onResendHubLink,
+    this.onReactivate,
   });
 
   @override
@@ -1853,6 +2031,7 @@ class _MemberCard extends StatelessWidget {
     final status = member['status'] as String? ?? 'active';
     final isOwner = role == 'owner';
     final isPending = status == 'pending';
+    final isInactive = status == 'inactive';
 
     final displayName = name.isNotEmpty ? name : email;
     final initials = name.isNotEmpty
@@ -1942,7 +2121,28 @@ class _MemberCard extends StatelessWidget {
                   color:
                       isOwner ? AppTheme.brand : const Color(0xFF6366F1)),
               const SizedBox(width: 8),
-              _StatusBadge(isPending: isPending),
+              isInactive
+                  ? Clickable(
+                      onTap: onReactivate,
+                      child: Tooltip(
+                        message: 'Click to reactivate',
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: AppTheme.textMuted.withValues(alpha: 0.1),
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(color: AppTheme.textMuted.withValues(alpha: 0.3)),
+                          ),
+                          child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                            Icon(Icons.refresh_rounded, size: 11, color: AppTheme.textSecondary),
+                            SizedBox(width: 4),
+                            Text('Inactive',
+                                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
+                          ]),
+                        ),
+                      ),
+                    )
+                  : _StatusBadge(isPending: isPending),
               if (!isOwner && !isCurrentUser) ...[
                 const SizedBox(width: 8),
                 Clickable(
@@ -1984,24 +2184,47 @@ class _MemberCard extends StatelessWidget {
                     ),
                   ),
                 ],
-                const SizedBox(width: 6),
-                Clickable(
-                  onTap: onRemove,
-                  child: Tooltip(
-                    message: 'Remove member',
-                    child: Container(
-                      padding: const EdgeInsets.all(6),
-                      decoration: BoxDecoration(
-                        color: Colors.red.withValues(alpha: 0.06),
-                        borderRadius: BorderRadius.circular(6),
-                        border: Border.all(
-                            color: Colors.red.withValues(alpha: 0.2)),
+                if (onResendHubLink != null) ...[
+                  const SizedBox(width: 6),
+                  Clickable(
+                    onTap: onResendHubLink,
+                    child: Tooltip(
+                      message: 'Resend hub link',
+                      child: Container(
+                        padding: const EdgeInsets.all(6),
+                        decoration: BoxDecoration(
+                          color: AppTheme.brand.withValues(alpha: 0.06),
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(
+                              color: AppTheme.brand
+                                  .withValues(alpha: 0.2)),
+                        ),
+                        child: const Icon(Icons.phone_iphone_outlined,
+                            size: 15, color: AppTheme.brand),
                       ),
-                      child: const Icon(Icons.person_remove_outlined,
-                          size: 15, color: Colors.red),
                     ),
                   ),
-                ),
+                ],
+                if (!isInactive) ...[
+                  const SizedBox(width: 6),
+                  Clickable(
+                    onTap: onRemove,
+                    child: Tooltip(
+                      message: 'Deactivate member',
+                      child: Container(
+                        padding: const EdgeInsets.all(6),
+                        decoration: BoxDecoration(
+                          color: Colors.red.withValues(alpha: 0.06),
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(
+                              color: Colors.red.withValues(alpha: 0.2)),
+                        ),
+                        child: const Icon(Icons.person_off_outlined,
+                            size: 15, color: Colors.red),
+                      ),
+                    ),
+                  ),
+                ],
               ],
             ],
           ),

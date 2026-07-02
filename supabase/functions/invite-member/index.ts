@@ -1,19 +1,18 @@
-import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
-
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-const MAKE_INVITE_WEBHOOK = Deno.env.get('MAKE_INVITE_WEBHOOK') ?? ''
+const MAILGUN_API_KEY = Deno.env.get('MAILGUN_API_KEY') ?? ''
+const MAILGUN_DOMAIN = Deno.env.get('MAILGUN_DOMAIN') ?? 'mail.vantagecaretech.com'
 
-serve(async (req) => {
+Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
   }
 
   try {
-    const { email, full_name, role, permissions, business_id, business_name } = await req.json()
+    const { email, full_name, phone, role, permissions, business_id, business_name } = await req.json()
 
     if (!email || !business_id) {
       return new Response(
@@ -73,12 +72,13 @@ serve(async (req) => {
         'Content-Type': 'application/json',
         'apikey': serviceRoleKey,
         'Authorization': `Bearer ${serviceRoleKey}`,
-        'Prefer': 'return=minimal',
+        'Prefer': 'return=representation',
       },
       body: JSON.stringify({
         business_id,
         email,
         full_name: full_name ?? '',
+        phone: phone ?? '',
         role: role ?? 'member',
         permissions: permissions ?? {
           launchpad: false,
@@ -106,19 +106,84 @@ serve(async (req) => {
       )
     }
 
-    // ── Step 3: Call Make webhook ─────────────────────────────────────────────
-    if (MAKE_INVITE_WEBHOOK) {
-      await fetch(MAKE_INVITE_WEBHOOK, {
+    const profileRows = await profileRes.json()
+    const newProfileId = profileRows?.[0]?.id ?? null
+
+    // ── Step 3: Generate employee hub token + text it to the new member ───────
+    let hubLink = ''
+    if (newProfileId && phone) {
+      const hubToken = crypto.randomUUID()
+
+      const tokenRes = await fetch(`${supabaseUrl}/rest/v1/employee_hub_tokens`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': serviceRoleKey,
+          'Authorization': `Bearer ${serviceRoleKey}`,
+          'Prefer': 'return=minimal',
+        },
         body: JSON.stringify({
-          to: email,
-          full_name: full_name ?? '',
-          invite_link: inviteLink,
-          business_name: business_name ?? 'NexaFlow',
-          role: role ?? 'member',
+          token: hubToken,
+          profile_id: newProfileId,
+          business_id,
         }),
       })
+
+      if (tokenRes.ok) {
+        hubLink = `https://nexaflow-crm.web.app/hub/${hubToken}`
+
+        const accountSid = Deno.env.get('TWILIO_ACCOUNT_SID')!
+        const authToken   = Deno.env.get('TWILIO_AUTH_TOKEN')!
+        const fromPhone   = '+18135500158'
+
+        try {
+          await fetch(
+            `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages.json`,
+            {
+              method: 'POST',
+              headers: {
+                'Authorization': 'Basic ' + btoa(`${accountSid}:${authToken}`),
+                'Content-Type': 'application/x-www-form-urlencoded',
+              },
+              body: new URLSearchParams({
+                From: fromPhone,
+                To: phone,
+                Body: `Welcome to ${business_name ?? 'the team'}! Use this link to clock in/out on the go: ${hubLink}`,
+              }).toString(),
+            }
+          )
+        } catch (smsErr) {
+          console.error('Employee hub SMS send error:', smsErr)
+        }
+      } else {
+        console.error('Failed to create employee hub token:', await tokenRes.text())
+      }
+    }
+
+    // ── Step 4: Send invite email directly via Mailgun ─────────────────────────
+    if (MAILGUN_API_KEY && inviteLink) {
+      try {
+        const mgForm = new URLSearchParams()
+        mgForm.append('from', `${business_name ?? 'NexaFlow'} <no-reply@${MAILGUN_DOMAIN}>`)
+        mgForm.append('to', email)
+        mgForm.append('subject', `You've been invited to join ${business_name ?? 'NexaFlow'}`)
+        mgForm.append('html', `
+          <p>Hi ${full_name ?? 'there'},</p>
+          <p>You've been invited to join <strong>${business_name ?? 'NexaFlow'}</strong> as a ${role ?? 'member'}.</p>
+          <p><a href="${inviteLink}">Click here to set up your account</a></p>
+        `)
+
+        await fetch(`https://api.mailgun.net/v3/${MAILGUN_DOMAIN}/messages`, {
+          method: 'POST',
+          headers: {
+            'Authorization': 'Basic ' + btoa(`api:${MAILGUN_API_KEY}`),
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
+          body: mgForm.toString(),
+        })
+      } catch (mgErr) {
+        console.error('Mailgun invite send error:', mgErr)
+      }
     }
 
     return new Response(

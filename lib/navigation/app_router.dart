@@ -39,6 +39,7 @@ import '../screens/invoices_screen.dart';
 import '../screens/invoice_detail_screen.dart';
 import '../screens/new_invoice_screen.dart';
 import '../screens/client_hub_screen.dart';
+import '../screens/employee_hub_screen.dart';
 import '../screens/timesheets_screen.dart';
 
 class AppRouter {
@@ -66,6 +67,9 @@ class AppRouter {
       if (loc.startsWith('/client/') || realPath.startsWith('/client/')) return null;
       if (loc.startsWith('/client')) return null;
       if (realPath.contains('/client/')) return null;
+      if (loc.startsWith('/hub/') || realPath.startsWith('/hub/')) return null;
+      if (loc.startsWith('/hub')) return null;
+      if (realPath.contains('/hub/')) return null;
       final session = Supabase.instance.client.auth.currentSession;
       final isLoggedIn = session != null;
       final isLoginPage = loc == '/login';
@@ -207,6 +211,13 @@ class AppRouter {
         path: '/client/:token',
         name: 'client-hub',
         builder: (context, state) => ClientHubScreen(
+          token: state.pathParameters['token']!,
+        ),
+      ),
+      GoRoute(
+        path: '/hub/:token',
+        name: 'employee-hub',
+        builder: (context, state) => EmployeeHubScreen(
           token: state.pathParameters['token']!,
         ),
       ),

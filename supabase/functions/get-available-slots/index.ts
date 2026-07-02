@@ -34,10 +34,10 @@ serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
     )
 
-    // Fetch calendar — must be public and active, join business for timezone and name
+    // Fetch calendar — must be public and active
     const { data: calendar, error: calendarError } = await supabase
       .from('calendars')
-      .select('id, business_id, name, duration_minutes, availability_hours, is_public, is_active, booking_page_title, booking_page_description, businesses(business_name, timezone)')
+      .select('id, business_id, name, duration_minutes, availability_hours, is_public, is_active, booking_page_title, booking_page_description')
       .eq('id', calendar_id)
       .eq('is_public', true)
       .eq('is_active', true)
@@ -50,9 +50,15 @@ serve(async (req) => {
       )
     }
 
-    const businessData = calendar.businesses as any
-    const timezone = businessData?.timezone || 'America/New_York'
-    const businessName = businessData?.business_name || ''
+    // Fetch business separately — avoids embedded-relationship lookup
+    const { data: business } = await supabase
+      .from('businesses')
+      .select('business_name, timezone')
+      .eq('id', calendar.business_id)
+      .maybeSingle()
+
+    const timezone = business?.timezone || 'America/New_York'
+    const businessName = business?.business_name || ''
 
     // Get the day of week for the requested date in the business's timezone
     const dateInTz = new Date(`${date}T12:00:00.000Z`)

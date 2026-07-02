@@ -31,6 +31,7 @@ class _InviteMemberDialogState extends State<InviteMemberDialog> {
 
   final _nameController = TextEditingController();
   final _emailController = TextEditingController();
+  final _phoneController = TextEditingController();
 
   String _selectedRole = 'member'; // 'member' or 'admin'
   bool _isLoading = false;
@@ -70,6 +71,7 @@ class _InviteMemberDialogState extends State<InviteMemberDialog> {
   void dispose() {
     _nameController.dispose();
     _emailController.dispose();
+    _phoneController.dispose();
     super.dispose();
   }
 
@@ -117,6 +119,7 @@ class _InviteMemberDialogState extends State<InviteMemberDialog> {
 
     final name = _nameController.text.trim();
     final email = _emailController.text.trim();
+    final phone = _phoneController.text.trim();
 
     try {
       // Call Edge Function — uses service role key server-side
@@ -126,6 +129,7 @@ class _InviteMemberDialogState extends State<InviteMemberDialog> {
         body: jsonEncode({
           'email':         email,
           'full_name':     name,
+          'phone':         phone,
           'role':          _selectedRole,
           'business_id':   widget.businessId,
           'business_name': widget.businessName,
@@ -197,6 +201,7 @@ class _InviteMemberDialogState extends State<InviteMemberDialog> {
                       _IdentityRow(
                         nameController: _nameController,
                         emailController: _emailController,
+                        phoneController: _phoneController,
                         selectedRole: _selectedRole,
                         onRoleChanged: _onRoleChanged,
                         colorScheme: colorScheme,
@@ -352,6 +357,7 @@ class _SectionLabel extends StatelessWidget {
 class _IdentityRow extends StatelessWidget {
   final TextEditingController nameController;
   final TextEditingController emailController;
+  final TextEditingController phoneController;
   final String selectedRole;
   final ValueChanged<String?> onRoleChanged;
   final ColorScheme colorScheme;
@@ -359,6 +365,7 @@ class _IdentityRow extends StatelessWidget {
   const _IdentityRow({
     required this.nameController,
     required this.emailController,
+    required this.phoneController,
     required this.selectedRole,
     required this.onRoleChanged,
     required this.colorScheme,
@@ -396,6 +403,23 @@ class _IdentityRow extends StatelessWidget {
         textInputAction: TextInputAction.next,
       );
 
+      final phoneField = TextFormField(
+        controller: phoneController,
+        decoration: const InputDecoration(
+          labelText: 'Phone Number',
+          prefixIcon: Icon(Icons.phone_outlined, size: 20),
+        ),
+        keyboardType: TextInputType.phone,
+        validator: (v) {
+          if (v == null || v.trim().isEmpty) return 'Phone is required';
+          if (v.trim().replaceAll(RegExp(r'\D'), '').length < 7) {
+            return 'Enter a valid phone number';
+          }
+          return null;
+        },
+        textInputAction: TextInputAction.next,
+      );
+
       final roleField = _RoleSelector(
         selectedRole: selectedRole,
         onRoleChanged: onRoleChanged,
@@ -411,6 +435,8 @@ class _IdentityRow extends StatelessWidget {
                 Expanded(child: nameField),
                 const SizedBox(width: 12),
                 Expanded(child: emailField),
+                const SizedBox(width: 12),
+                Expanded(child: phoneField),
               ],
             ),
             const SizedBox(height: 12),
@@ -423,6 +449,8 @@ class _IdentityRow extends StatelessWidget {
             nameField,
             const SizedBox(height: 12),
             emailField,
+            const SizedBox(height: 12),
+            phoneField,
             const SizedBox(height: 12),
             roleField,
           ],

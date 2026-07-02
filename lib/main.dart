@@ -9,7 +9,9 @@ Future<void> main() async {
   usePathUrlStrategy();
   debugPrint('DEBUG RAW URI BEFORE INITLOC: ${Uri.base.toString()}');
   debugPrint('DEBUG RAW PATH BEFORE INITLOC: ${Uri.base.path}');
-  final initLoc = (Uri.base.path.startsWith('/book/') || Uri.base.path.startsWith('/client/'))
+  final initLoc = (Uri.base.path.startsWith('/book/') ||
+          Uri.base.path.startsWith('/client/') ||
+          Uri.base.path.startsWith('/hub/'))
       ? Uri.base.path
       : '/login';
   debugPrint('DEBUG setInitialLocation=$initLoc');
@@ -38,8 +40,9 @@ Future<void> main() async {
   final isBetaSignup = path.contains('beta-signup');
   final isPublicBooking = path.startsWith('/book/') || Uri.base.path.startsWith('/book/');
   final isClientPortal = Uri.base.path.startsWith('/client/');
+  final isEmployeeHub = Uri.base.path.startsWith('/hub/');
   debugPrint('DEBUG isPublicBooking=$isPublicBooking');
-  if (!fragment.contains('access_token') && !isBetaSignup && !isPublicBooking && !isClientPortal) {
+  if (!fragment.contains('access_token') && !isBetaSignup && !isPublicBooking && !isClientPortal && !isEmployeeHub) {
     await Supabase.instance.client.auth.signOut();
   }
 
@@ -59,7 +62,9 @@ class _NexaFlowAppState extends State<NexaFlowApp> {
   @override
   void initState() {
     super.initState();
-    if (widget.initialPath.startsWith('/book/') || widget.initialPath.startsWith('/client/')) {
+    if (widget.initialPath.startsWith('/book/') ||
+        widget.initialPath.startsWith('/client/') ||
+        widget.initialPath.startsWith('/hub/')) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         AppRouter.router.go(widget.initialPath);
       });
