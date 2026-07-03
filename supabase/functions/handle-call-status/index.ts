@@ -107,7 +107,7 @@ Deno.serve(async (req) => {
     let firstName = "";
     const { data: lead } = await supabase
       .from("leads")
-      .select("lead_name")
+      .select("id, lead_name")
       .eq("business_id", callLog.business_id)
       .eq("lead_phone", callLog.phone_number_from)
       .maybeSingle();
@@ -139,21 +139,37 @@ Deno.serve(async (req) => {
     );
 
     // Log to messages table so it appears in Conversations inbox
-    // First find or create the conversation
+    // First find or create the conversation — key by lead_id when a lead is
+    // known (the permanent identity), phone only as a fallback for unknown
+    // callers. Ordered + limited to 1 so it's resilient even if duplicate
+    // rows exist, instead of .maybeSingle() (which silently returns null on
+    // multiple matches and would create yet another duplicate).
     let conversationId: number | null = null;
 
-    const { data: existingConvo } = await supabase
-      .from("conversations")
-      .select("id")
-      .eq("business_id", callLog.business_id)
-      .eq("contact_phone", callLog.phone_number_from)
-      .maybeSingle();
+    const { data: existingConvoMatches } = lead?.id
+      ? await supabase
+          .from("conversations")
+          .select("id")
+          .eq("business_id", callLog.business_id)
+          .eq("lead_id", lead.id)
+          .order("last_message_at", { ascending: false })
+          .limit(1)
+      : await supabase
+          .from("conversations")
+          .select("id")
+          .eq("business_id", callLog.business_id)
+          .eq("contact_phone", callLog.phone_number_from)
+          .order("last_message_at", { ascending: false })
+          .limit(1);
+
+    const existingConvo = existingConvoMatches?.[0] ?? null;
 
     if (existingConvo) {
       conversationId = existingConvo.id;
       await supabase.from("conversations").update({
         last_message:    smsBody,
         last_message_at: new Date().toISOString(),
+        lead_id:         lead?.id ?? null,
       }).eq("id", existingConvo.id);
     } else {
       const { data: newConvo } = await supabase
