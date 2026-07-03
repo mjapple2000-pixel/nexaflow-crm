@@ -1,4 +1,3 @@
-import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
 const corsHeaders = {
@@ -74,7 +73,7 @@ const PLAN_FEATURES: Record<string, string[]> = {
   ],
 }
 
-serve(async (req) => {
+Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
   }
@@ -136,9 +135,13 @@ serve(async (req) => {
     }
 
     // ── Load the business record ───────────────────────────────────────────
+    // Beta/paid/subscription-status logic now lives entirely inside
+    // check_plan_feature() in Postgres — this is the single source of
+    // truth, also usable directly from RLS policies and other functions.
+    // Only 'plan' is still needed here, for the response payload.
     const { data: business } = await supabase
       .from('businesses')
-      .select('plan, subscription_status, is_paid, is_beta')
+      .select('plan')
       .eq('id', businessId)
       .maybeSingle()
 
@@ -149,45 +152,16 @@ serve(async (req) => {
       )
     }
 
-    // ── Beta users get full access to everything ───────────────────────────
-    if (business.is_beta === true) {
-      return new Response(
-        JSON.stringify({ allowed: true, plan: 'beta', feature: featureName }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
-      )
-    }
+    // ── Check feature via the canonical Postgres function ──────────────────
+    // check-plan-feature no longer maintains its own copy of the feature
+    // matrix — check_plan_feature() in Postgres is the single source of
+    // truth, also usable directly from RLS policies and other functions.
+    const { data: allowed, error: rpcError } = await supabase
+      .rpc('check_plan_feature', { p_business_id: businessId, p_feature: featureName })
 
-    // ── Non-paying businesses: no gated features ──────────────────────────
-    if (!business.is_paid) {
-      return new Response(
-        JSON.stringify({
-          allowed: false,
-          reason: 'No active subscription',
-          plan: null,
-          feature: featureName,
-        }),
-        { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
-      )
-    }
+    if (rpcError) throw rpcError
 
-    // ── Cancelled / past_due subscriptions: block gated features ──────────
-    const activeStatuses = ['active', 'trialing']
-    if (!activeStatuses.includes(business.subscription_status ?? '')) {
-      return new Response(
-        JSON.stringify({
-          allowed: false,
-          reason: `Subscription is ${business.subscription_status}`,
-          plan: business.plan,
-          feature: featureName,
-        }),
-        { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
-      )
-    }
-
-    // ── Check feature against plan matrix ─────────────────────────────────
     const plan: string = business.plan ?? 'starter'
-    const allowedFeatures = PLAN_FEATURES[plan] ?? PLAN_FEATURES['starter']
-    const allowed = allowedFeatures.includes(featureName)
 
     return new Response(
       JSON.stringify({
