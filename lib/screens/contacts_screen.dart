@@ -304,11 +304,70 @@ class _ContactsScreenState extends State<ContactsScreen> {
 
   Future<void> _bulkDelete() async {
     if (_selected.isEmpty) return;
-    final ok = await showDialog<bool>(context: context, builder: (ctx) => _confirmDialog(
-      ctx, 'Delete ${_selected.length} contacts?', 'This cannot be undone.'));
-    if (ok != true) return;
-    await _db.from('leads').delete().inFilter('id', _selected.toList());
-    _clearSelection(); _loadLeads();
+    final count = _selected.length;
+    final step1 = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.cardBg,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        title: Row(children: [
+          const Icon(Icons.warning_amber_rounded, color: Color(0xFFF59E0B), size: 22),
+          const SizedBox(width: 8),
+          Text('Delete $count contacts?',
+            style: const TextStyle(color: AppTheme.textPrimary, fontWeight: FontWeight.w700)),
+        ]),
+        content: const Text(
+          'This will permanently remove all their data including messages, appointments, and history.',
+          style: TextStyle(color: AppTheme.textSecondary, fontSize: 14, height: 1.5)),
+        actions: [
+          TextButton(onPressed: () => ctx.pop(false),
+            child: const Text('Cancel', style: TextStyle(color: AppTheme.textSecondary))),
+          ElevatedButton(
+            onPressed: () => ctx.pop(true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFF59E0B), foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+            child: const Text('Continue')),
+        ],
+      ),
+    );
+    if (step1 != true) return;
+
+    final step2 = await showDialog<bool>(
+      context: context,
+      builder: (ctx2) => AlertDialog(
+        backgroundColor: AppTheme.cardBg,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        title: const Row(children: [
+          Icon(Icons.delete_forever, color: AppTheme.error, size: 22),
+          SizedBox(width: 8),
+          Text('Are you absolutely sure?',
+            style: TextStyle(color: AppTheme.error, fontWeight: FontWeight.w700)),
+        ]),
+        content: const Text(
+          'This action CANNOT be undone. The contacts will be permanently deleted.',
+          style: TextStyle(color: AppTheme.textSecondary, fontSize: 14, height: 1.5)),
+        actions: [
+          TextButton(onPressed: () => ctx2.pop(false),
+            child: const Text('No, Keep Contacts', style: TextStyle(color: AppTheme.textSecondary))),
+          ElevatedButton(
+            onPressed: () => ctx2.pop(true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.error, foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+            child: const Text('Permanently Delete')),
+        ],
+      ),
+    );
+    if (step2 != true) return;
+
+    try {
+      await _db.from('leads').delete().inFilter('id', _selected.toList());
+      _clearSelection(); _loadLeads();
+      if (mounted) _snack('$count contacts permanently deleted.');
+    } catch (e) {
+      if (mounted) _snack('Error: $e');
+    }
   }
 
   // ── BULK TAG ─────────────────────────────
