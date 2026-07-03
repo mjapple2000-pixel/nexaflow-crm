@@ -1,5 +1,3 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const TWILIO_ACCOUNT_SID = Deno.env.get("TWILIO_ACCOUNT_SID")!;
@@ -220,7 +218,7 @@ async function processEnrollment(enrollment: any): Promise<void> {
   }).catch((e: any) => console.error("Log write failed:", e.message));
 }
 
-serve(async (_req) => {
+Deno.serve(async (_req) => {
   try {
     const now = new Date().toISOString();
 
