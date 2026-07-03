@@ -337,13 +337,21 @@ Deno.serve(async (req) => {
       .maybeSingle();
 
     // ── 3. Find or create conversation ────────────────────────────────────────
-    let { data: conversation } = await supabase
-      .from("conversations")
-      .select("*")
-      .eq("business_id", businessId)
-      .eq("contact_phone", from)
-      .eq("channel", "sms")
-      .maybeSingle();
+    let { data: conversation } = lead?.id
+      ? await supabase
+          .from("conversations")
+          .select("*")
+          .eq("business_id", businessId)
+          .eq("lead_id", lead.id)
+          .eq("channel", "sms")
+          .maybeSingle()
+      : await supabase
+          .from("conversations")
+          .select("*")
+          .eq("business_id", businessId)
+          .eq("contact_phone", from)
+          .eq("channel", "sms")
+          .maybeSingle();
 
     const isNewConvo = !conversation;
 
@@ -382,6 +390,7 @@ Deno.serve(async (req) => {
         last_message_at: new Date().toISOString(),
         unread_count:    (conversation.unread_count ?? 0) + 1,
         status:          "open",
+        lead_id:         conversation.lead_id ?? lead?.id ?? null,
       }).eq("id", conversation.id);
     }
 
