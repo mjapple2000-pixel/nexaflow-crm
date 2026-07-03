@@ -1,4 +1,3 @@
-import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
 const corsHeaders = {
@@ -6,7 +5,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-serve(async (req) => {
+Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
 
   try {
@@ -67,13 +66,19 @@ serve(async (req) => {
           continue
         }
 
-        // Find or create conversation
-        let { data: conv } = await supabase
+        // Find or create conversation — match by lead_id, the lead's permanent
+        // identity. Phone numbers can change or be shared and are not reliable.
+        // Ordered + limited to 1 so this never breaks if duplicate rows exist —
+        // it picks the most recently active one as canonical instead of
+        // silently returning null (which would create yet another duplicate).
+        const { data: convMatches } = await supabase
           .from('conversations')
           .select('id')
-          .eq('lead_id', lead.id)
           .eq('business_id', business_id)
-          .maybeSingle()
+          .eq('lead_id', lead.id)
+          .order('last_message_at', { ascending: false })
+          .limit(1)
+        let conv = convMatches?.[0] ?? null
 
         if (!conv) {
           const { data: newConv } = await supabase
@@ -81,8 +86,11 @@ serve(async (req) => {
             .insert({
               lead_id: lead.id,
               business_id,
+              contact_name: lead.lead_name,
+              contact_phone: lead.lead_phone,
               channel: 'sms',
               status: 'open',
+              last_message: message,
               last_message_at: new Date().toISOString(),
             })
             .select('id')
@@ -91,20 +99,31 @@ serve(async (req) => {
         }
 
         if (conv) {
-          // Insert message record
+          // Insert message record — sent_via_twiml: true prevents the
+          // outbound_messages webhook from re-sending via send-sms, since
+          // this function already sent the SMS directly via Twilio above.
           await supabase.from('messages').insert({
             conversation_id: conv.id,
             business_id,
             direction: 'outbound',
             channel: 'sms',
             body: message,
-            sent_at: new Date().toISOString(),
+            status: 'delivered',
+            sender_name: 'You',
+            sent_via_twiml: true,
           })
 
-          // Update conversation last_message_at
+          // Update conversation — also backfill contact_name/contact_phone in case
+          // this row was created by an older version of this function, or any
+          // other path, without those fields set.
           await supabase
             .from('conversations')
-            .update({ last_message_at: new Date().toISOString() })
+            .update({
+              last_message: message,
+              last_message_at: new Date().toISOString(),
+              contact_name: lead.lead_name,
+              contact_phone: lead.lead_phone,
+            })
             .eq('id', conv.id)
         }
 
