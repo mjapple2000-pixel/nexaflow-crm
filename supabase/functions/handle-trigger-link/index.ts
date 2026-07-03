@@ -1,4 +1,3 @@
-import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
 const corsHeaders = {
@@ -6,7 +5,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-serve(async (req) => {
+Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
   }
@@ -157,23 +156,44 @@ async function _executeAction(
       const messageBody: string = action.message ?? ''
       if (!messageBody) break
 
-      // Look up lead phone
+      // Look up lead name/phone
       const { data: lead } = await supabase
         .from('leads')
-        .select('lead_phone')
+        .select('lead_name, lead_phone')
         .eq('id', leadId)
         .single()
       if (!lead?.lead_phone) break
 
-      // Find or create conversation
-      const { data: conv } = await supabase
+      // Find conversation — key by lead_id, the lead's permanent identity.
+      // Ordered + limited to 1 so it's resilient even if duplicate rows exist.
+      const { data: convMatches } = await supabase
         .from('conversations')
         .select('id')
-        .eq('lead_phone', lead.lead_phone)
         .eq('business_id', businessId)
-        .single()
+        .eq('lead_id', leadId)
+        .order('last_message_at', { ascending: false })
+        .limit(1)
 
-      const convId = conv?.id ?? null
+      let convId = convMatches?.[0]?.id ?? null
+
+      if (!convId) {
+        // No conversation exists yet for this lead — create one so the
+        // automation SMS isn't silently dropped.
+        const { data: newConv } = await supabase
+          .from('conversations')
+          .insert({
+            business_id: businessId,
+            lead_id: leadId,
+            contact_name: lead.lead_name,
+            contact_phone: lead.lead_phone,
+            channel: 'sms',
+            status: 'open',
+            last_message_at: new Date().toISOString(),
+          })
+          .select('id')
+          .single()
+        convId = newConv?.id ?? null
+      }
 
       if (convId) {
         // Insert outbound message — Twilio realtime function will pick this up
