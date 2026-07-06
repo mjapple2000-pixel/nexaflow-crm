@@ -48,7 +48,7 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
     'No Answer', 'Left Voicemail', 'Interested', 'Not Interested',
   ];
 
-  static const _statuses = ['New', 'In Conversation', 'Qualified', 'Won', 'Lost', 'Unqualified'];
+  static const _statuses = ['New', 'In Conversation', 'Qualified', 'Won', 'Lost', 'Unqualified', 'booked', 'new', 'In Converation'];
   static const _sources  = ['Manual', 'SMS', 'Email', 'Web Form', 'Import', 'Direct', 'Other'];
 
   @override
@@ -107,9 +107,9 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
       try {
         final apptData = await _db
             .from('appointments')
-            .select('id, scheduled_at, status, notes, appointment_type')
+            .select('id, start_date_time, status, notes, appointment_type')
             .eq('lead_id', id)
-            .order('scheduled_at', ascending: false);
+            .order('start_date_time', ascending: false);
         appts = List<Map<String, dynamic>>.from(apptData);
       } catch (e) {
         debugPrint('Appointments load: $e');
@@ -161,10 +161,11 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
           .select('business_id')
           .eq('user_id', _db.auth.currentUser!.id)
           .maybeSingle();
-      if (profile == null) return;
+      final businessId = profile?['business_id'];
+      if (businessId == null) return;
       final biz = await _db.from('businesses')
           .select('business_name')
-          .eq('id', (profile['business_id'] as num).toInt())
+          .eq('id', (businessId as num).toInt())
           .maybeSingle();
       if (biz != null && mounted) {
         setState(() => _bizCtrl.text = biz['business_name'] as String? ?? '');
@@ -1354,8 +1355,13 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
     );
   }
 
-  Widget _editDropdown(String label, String value, List<String> items,
+  Widget _editDropdown(String label, String value, List<String> baseItems,
       ValueChanged<String?> onChange) {
+    // Make sure the current value is always in the dropdown
+    final items = baseItems.contains(value)
+        ? baseItems
+        : [...baseItems, value];
+
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Text(label, style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12)),
       const SizedBox(height: 6),

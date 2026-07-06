@@ -232,13 +232,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (_businessId == null) return;
     final biz = await _db
         .from('businesses')
-        .select('is_beta, subscription_status, weekly_insight, weekly_insight_generated_at')
+        .select('is_beta, plan, subscription_status, weekly_insight, weekly_insight_generated_at')
         .eq('id', _businessId!)
         .maybeSingle();
     if (biz == null) return;
     final isBeta = biz['is_beta'] as bool? ?? false;
-    final tier   = (biz['subscription_status'] as String?)?.toLowerCase();
-    _hasInsightAccess = isBeta || tier == 'growth' || tier == 'pro';
+    final plan   = (biz['plan'] as String?)?.toLowerCase();
+    final status = (biz['subscription_status'] as String?)?.toLowerCase();
+    final isActiveSubscription = status == 'active' || status == 'trialing';
+    _hasInsightAccess = isBeta || (isActiveSubscription && (plan == 'growth' || plan == 'pro'));
     final insight = biz['weekly_insight'];
     if (insight is Map) {
       _weeklyInsightSummary = insight['summary'] as String?;

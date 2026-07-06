@@ -3750,6 +3750,27 @@ class _AppointmentFormTabState extends State<_AppointmentFormTab> {
       } catch (e) {
         debugPrint('Automation error: $e');
       }
+      final locationText = _locationCtrl.text.trim();
+      if (locationText.isNotEmpty && newAppt?['id'] != null) {
+        try {
+          final token = _db.auth.currentSession?.accessToken;
+          if (token != null) {
+            await http.post(
+              Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/geocode-location'),
+              headers: {
+                'Authorization': 'Bearer $token',
+                'Content-Type': 'application/json',
+              },
+              body: jsonEncode({
+                'appointment_id': newAppt!['id'],
+                'address': locationText,
+              }),
+            );
+          }
+        } catch (e) {
+          debugPrint('Geocode error: $e');
+        }
+      }
       widget.onSaved();
     } catch (e) {
       setState(() => _error = 'Failed to save: $e');
@@ -4645,6 +4666,9 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
   Timer? _clockTimer;
   Duration _elapsed = Duration.zero;
 
+  bool _sendingOnMyWay = false;
+  String? _onMyWaySentAt;
+
   // Job Costs state
   List<Map<String, dynamic>> _jobExpenses = [];
   bool _loadingExpenses = false;
@@ -4703,6 +4727,7 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
     _calendarId = a['calendar_id']?.toString();
     _assignedTo = a['assigned_to'] as String?;
     _selectedJobType = a['job_type'] as String?;
+    _onMyWaySentAt = a['on_my_way_sent_at'] as String?;
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _loadExpenses();
@@ -4866,6 +4891,52 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
     return '$h:$m:$s';
   }
 
+  Future<void> _sendOnMyWay() async {
+    setState(() => _sendingOnMyWay = true);
+    try {
+      final token = _db.auth.currentSession?.accessToken;
+      if (token == null) throw Exception('Not authenticated');
+      final resp = await http.post(
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/send-on-my-way-sms'),
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({'appointment_id': widget.appointment['id']}),
+      );
+      if (!mounted) return;
+      final data = jsonDecode(resp.body);
+      if (resp.statusCode == 200 && data['success'] == true) {
+        setState(() => _onMyWaySentAt = data['sent_at'] as String?);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Text sent to ${_leadNameCtrl.text.trim().isEmpty ? 'customer' : _leadNameCtrl.text.trim()}')),
+        );
+        return;
+      }
+      if (resp.statusCode == 409 && data['error'] == 'already_sent') {
+        setState(() => _onMyWaySentAt = data['sent_at'] as String?);
+        return;
+      }
+      if (resp.statusCode == 403 && data['error'] == 'upgrade_required') {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(data['message'] ?? 'This feature requires the Growth plan.'), backgroundColor: Colors.orange),
+        );
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(data['error'] ?? 'Failed to send text'), backgroundColor: Colors.red),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _sendingOnMyWay = false);
+    }
+  }
+
   Future<void> _softDeleteExpense(int expenseId) async {
     try {
       await _db
@@ -4942,6 +5013,28 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
           } catch (e) {
             debugPrint('Review request automation error: $e');
           }
+        }
+      }
+
+      final locationText = _locationCtrl.text.trim();
+      if (locationText.isNotEmpty) {
+        try {
+          final token = _db.auth.currentSession?.accessToken;
+          if (token != null) {
+            await http.post(
+              Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/geocode-location'),
+              headers: {
+                'Authorization': 'Bearer $token',
+                'Content-Type': 'application/json',
+              },
+              body: jsonEncode({
+                'appointment_id': widget.appointment['id'],
+                'address': locationText,
+              }),
+            );
+          }
+        } catch (e) {
+          debugPrint('Geocode error: $e');
         }
       }
 
@@ -5060,6 +5153,8 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
           // ── Clock In / Out ───────────────────────────────────────────
           if (!blocked) ...[
             _buildClockSection(),
+            const SizedBox(height: 12),
+            _buildOnMyWaySection(),
             const SizedBox(height: 20),
           ],
 
@@ -5220,6 +5315,49 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
             child: _clockActionInProgress
                 ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
                 : Text(isClockedIn ? 'Clock Out' : 'Clock In', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+          ),
+        ),
+      ]),
+    );
+  }
+
+  Widget _buildOnMyWaySection() {
+    final hasPhone = _leadPhoneCtrl.text.trim().isNotEmpty;
+    final alreadySent = _onMyWaySentAt != null;
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: alreadySent ? AppTheme.success.withValues(alpha: 0.06) : AppTheme.pageBg,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: alreadySent ? AppTheme.success.withValues(alpha: 0.3) : AppTheme.borderColor),
+      ),
+      child: Row(children: [
+        Icon(Icons.directions_car_filled_outlined,
+            size: 18, color: alreadySent ? AppTheme.success : AppTheme.textSecondary),
+        const SizedBox(width: 10),
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(
+            alreadySent ? 'On My Way text sent' : "Let the customer know you're on the way",
+            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600,
+                color: alreadySent ? AppTheme.success : AppTheme.textPrimary),
+          ),
+          if (!hasPhone)
+            const Text('No phone number on file', style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+        ])),
+        SizedBox(
+          height: 34,
+          child: ElevatedButton(
+            onPressed: (!hasPhone || _sendingOnMyWay) ? null : _sendOnMyWay,
+            style: ElevatedButton.styleFrom(
+              backgroundColor: alreadySent ? AppTheme.borderColor : AppTheme.brand,
+              foregroundColor: alreadySent ? AppTheme.textSecondary : Colors.white,
+              elevation: 0,
+              padding: const EdgeInsets.symmetric(horizontal: 14),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            child: _sendingOnMyWay
+                ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                : Text(alreadySent ? 'Sent' : 'On My Way', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
           ),
         ),
       ]),

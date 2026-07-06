@@ -38,22 +38,6 @@ serve(async (req) => {
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    const { data: profile, error: profileError } = await supabase
-      .from("profiles")
-      .select("business_id, role, full_name")
-      .eq("user_id", callerUserId)
-      .single();
-
-    if (profileError || !profile?.business_id) {
-      return new Response(JSON.stringify({ error: "No business association found" }), {
-        status: 403,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-
-    const businessId = profile.business_id;
-    const isOwner = profile.role === "owner" || profile.role === "admin";
-
     let body: Record<string, string> = {};
     try {
       body = await req.json();
@@ -61,7 +45,39 @@ serve(async (req) => {
       // no body is fine
     }
 
-    const { start_date, end_date, user_id_filter } = body;
+    const { start_date, end_date, user_id_filter, business_id: requestedBusinessId } = body;
+
+    const { data: profile, error: profileError } = await supabase
+      .from("profiles")
+      .select("business_id, role, full_name")
+      .eq("user_id", callerUserId)
+      .maybeSingle();
+
+    let businessId: number;
+    let isOwner: boolean;
+
+    if (profile?.business_id) {
+      businessId = profile.business_id;
+      isOwner = profile.role === "owner" || profile.role === "admin";
+    } else {
+      // No profile row — check if caller is a verified superuser before
+      // trusting any business_id from the request body.
+      const { data: superuserRow } = await supabase
+        .from("superusers")
+        .select("user_id")
+        .eq("user_id", callerUserId)
+        .maybeSingle();
+
+      if (!superuserRow || !requestedBusinessId) {
+        return new Response(JSON.stringify({ error: "No business association found" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      businessId = Number(requestedBusinessId);
+      isOwner = true; // superuser sees the full team view
+    }
 
     // ── Fetch active entry for the caller ─────────────────────────────────
     const { data: myActiveEntry } = await supabase

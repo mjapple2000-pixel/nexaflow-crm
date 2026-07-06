@@ -209,13 +209,18 @@ class _AppNavBarState extends State<AppNavBar> {
           .eq('user_id', userId)
           .maybeSingle();
 
-      if (profile != null && mounted) {
+      if (!mounted) return;
+      if (profile != null) {
         setState(() {
           _role        = profile['role'] as String? ?? 'member';
           _permissions = Map<String, dynamic>.from(
               (profile['permissions'] as Map?)  ?? {});
           _profileLoaded = true;
         });
+      } else {
+        // No profile row (e.g. superuser) — still mark loaded so the
+        // sidebar renders; _can() already bypasses via cachedIsSuperuser.
+        setState(() => _profileLoaded = true);
       }
     } catch (e) {
       debugPrint('Profile load error: $e');
@@ -261,6 +266,7 @@ class _AppNavBarState extends State<AppNavBar> {
   // ── Owners see everything. Members only see permitted pages. ──────────────
   // Launchpad and Dashboard are always visible to everyone.
   bool _can(String key) {
+    if (AppRouter.cachedIsSuperuser == true) return true;
     if (_role == 'owner' || _role == 'admin') return true;
     return _permissions[key] == true;
   }

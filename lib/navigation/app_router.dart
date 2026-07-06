@@ -107,6 +107,14 @@ class AppRouter {
 
       if (isLoginPage || isSignupPage) {
         if (isLoggedIn) {
+          if (cachedIsSuperuser == null) {
+            // Superuser check still in flight (set by LoginScreen._signIn) —
+            // stay put and let that flow's own navigation take over once resolved.
+            return null;
+          }
+          if (cachedIsSuperuser == true && SuperuserState.impersonatedBusinessId == null) {
+            return '/business-picker';
+          }
           try {
             final userId = Supabase.instance.client.auth.currentUser?.id;
             if (userId != null) {

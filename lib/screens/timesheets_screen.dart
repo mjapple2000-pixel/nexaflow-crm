@@ -7,6 +7,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../theme/app_theme.dart';
 import '../widgets/clickable.dart';
+import '../utils/business_utils.dart';
 
 class TimesheetsScreen extends StatefulWidget {
   const TimesheetsScreen({super.key});
@@ -62,6 +63,9 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
       if (_filterStart != null) body['start_date'] = _filterStart!.toIso8601String().substring(0, 10);
       if (_filterEnd != null)   body['end_date']   = _filterEnd!.toIso8601String().substring(0, 10);
       if (_filterUserId != null) body['user_id_filter'] = _filterUserId;
+
+      final activeBusinessId = await getActiveBusinessId();
+      if (activeBusinessId != null) body['business_id'] = activeBusinessId;
 
       final resp = await http.post(
         Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/get-timesheets'),

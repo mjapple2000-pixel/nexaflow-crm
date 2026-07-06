@@ -52,6 +52,17 @@ serve(async (req) => {
     }
     const businessId = profile.business_id;
 
+    const { data: allowed, error: gateErr } = await supabase
+      .rpc("check_plan_feature", { p_business_id: businessId, p_feature: "time_tracking" });
+    if (gateErr) throw gateErr;
+    if (!allowed) {
+      return new Response(JSON.stringify({
+        error: "upgrade_required",
+        message: "Time tracking is available on the Growth plan and above.",
+        upgrade_url: "https://nexaflow-crm.web.app/settings?section=billing",
+      }), { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+
     const body = await req.json();
     const { action, appointment_id, lat, lng, notes } = body;
 

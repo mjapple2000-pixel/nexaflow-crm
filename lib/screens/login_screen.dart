@@ -89,6 +89,7 @@ class _LoginScreenState extends State<LoginScreen> {
       }
 
       // ── Superuser check ──────────────────────────────────────────
+      AppRouter.cachedIsSuperuser = null;
       final superRes = await http.post(
         Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/check-superuser'),
         headers: {
@@ -102,6 +103,7 @@ class _LoginScreenState extends State<LoginScreen> {
       if (superRes.statusCode == 200) {
         final body = jsonDecode(superRes.body);
         AppRouter.cachedIsSuperuser = body['is_superuser'] == true;
+        if (!mounted) return;
         if (AppRouter.cachedIsSuperuser == true) {
           context.go('/business-picker');
           return;

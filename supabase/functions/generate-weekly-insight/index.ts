@@ -13,14 +13,17 @@ Deno.serve(async (_req) => {
     // ── 1. Fetch all eligible businesses (Growth, Pro, or beta) ──────────────
     const { data: businesses, error: bizErr } = await supabase
       .from("businesses")
-      .select("id, business_name, timezone, subscription_status, is_beta");
+      .select("id, business_name, timezone, plan, subscription_status, is_beta");
 
     if (bizErr) throw new Error(`Fetch businesses: ${bizErr.message}`);
 
+    console.log(`generate-weekly-insight: fetched ${businesses?.length ?? 0} total businesses`);
+    console.log(`generate-weekly-insight: sample row: ${JSON.stringify(businesses?.[0] ?? null)}`);
+
     const eligible = (businesses ?? []).filter((b: any) =>
       b.is_beta === true ||
-      b.subscription_status === "growth" ||
-      b.subscription_status === "pro"
+      ((b.subscription_status === "active" || b.subscription_status === "trialing") &&
+        (b.plan === "growth" || b.plan === "pro"))
     );
 
     console.log(`generate-weekly-insight: ${eligible.length} eligible businesses`);

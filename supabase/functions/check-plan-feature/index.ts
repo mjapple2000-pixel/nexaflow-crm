@@ -19,6 +19,7 @@ const PLAN_FEATURES: Record<string, string[]> = {
     'review_requests',
     'contact_timeline',
     'appointment_reminders',
+    'on_my_way_sms',
   ],
   growth: [
     // Includes everything in starter
