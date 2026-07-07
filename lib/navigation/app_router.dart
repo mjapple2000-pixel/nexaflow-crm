@@ -32,6 +32,7 @@ import '../screens/snippets_screen.dart';
 import '../screens/reviews_screen.dart';
 import '../screens/public_booking_screen.dart';
 import '../screens/jobs_screen.dart';
+import '../screens/jobs_overview_screen.dart';
 import '../screens/quotes_screen.dart';
 import '../screens/quote_detail_screen.dart';
 import '../screens/new_quote_screen.dart';
@@ -439,7 +440,12 @@ class AppRouter {
           ),
           GoRoute(
             path: '/jobs',
-            name: 'jobs',
+            name: 'jobs-overview',
+            builder: (context, state) => const JobsOverviewScreen(),
+          ),
+          GoRoute(
+            path: '/jobs/board',
+            name: 'jobs-board',
             builder: (context, state) {
               final tab = int.tryParse(state.uri.queryParameters['tab'] ?? '0') ?? 0;
               return JobsScreen(initialTab: tab);

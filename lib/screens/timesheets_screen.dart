@@ -597,6 +597,9 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
             const Expanded(flex: 3, child: Text('CLOCKED OUT',
                 style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
                     color: AppTheme.textSecondary, letterSpacing: 1))),
+            const Expanded(flex: 3, child: Text('JOB',
+                style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                    color: AppTheme.textSecondary, letterSpacing: 1))),
             const Expanded(flex: 2, child: Text('DURATION',
                 style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
                     color: AppTheme.textSecondary, letterSpacing: 1))),
@@ -661,6 +664,11 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
                   isActive ? '—' : _formatDateTime(e['clocked_out_at'] as String?),
                   style: TextStyle(fontSize: 12,
                       color: isActive ? AppTheme.textMuted : AppTheme.textPrimary),
+                )),
+                Expanded(flex: 3, child: Text(
+                  (e['appointment_info'] as Map<String, dynamic>?)?['appointment_type'] as String? ?? '—',
+                  style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary),
+                  overflow: TextOverflow.ellipsis,
                 )),
                 Expanded(flex: 2, child: isActive
                     ? _LiveDuration(
@@ -885,6 +893,48 @@ class _TimeEntryDetailDialog extends StatelessWidget {
                   ])),
                 ]),
                 const SizedBox(height: 20),
+                Builder(builder: (context) {
+                  final apptInfo = entry['appointment_info'] as Map<String, dynamic>?;
+                  if (apptInfo == null) return const SizedBox.shrink();
+                  final apptType = apptInfo['appointment_type'] as String? ?? 'Appointment';
+                  final leadName = apptInfo['lead_name'] as String?;
+                  final location = apptInfo['location'] as String?;
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('Job',
+                          style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+                      const SizedBox(height: 8),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: AppTheme.pageBg,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: AppTheme.borderColor),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(apptType,
+                                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+                            if (leadName != null && leadName.isNotEmpty) ...[
+                              const SizedBox(height: 2),
+                              Text(leadName,
+                                  style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+                            ],
+                            if (location != null && location.isNotEmpty) ...[
+                              const SizedBox(height: 2),
+                              Text(location,
+                                  style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                            ],
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                    ],
+                  );
+                }),
                 const Text('Clock-In Location',
                     style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
                 const SizedBox(height: 8),

@@ -271,6 +271,55 @@ class _AppNavBarState extends State<AppNavBar> {
     return _permissions[key] == true;
   }
 
+  Widget _buildJobsNav(BuildContext context, String location) {
+    return ListView(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      primary: false,
+      physics: const ClampingScrollPhysics(),
+      children: [
+        Clickable(
+          onTap: () => context.go('/dashboard'),
+          child: Container(
+            margin: const EdgeInsets.fromLTRB(10, 8, 10, 4),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.07),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.15)),
+            ),
+            child: const Row(
+              children: [
+                Icon(Icons.arrow_back_rounded, size: 14, color: Colors.white),
+                SizedBox(width: 8),
+                Text('Go Back',
+                    style: TextStyle(fontSize: 12.5, color: Colors.white, fontWeight: FontWeight.w500)),
+              ],
+            ),
+          ),
+        ),
+        _SectionLabel('Jobs'),
+        _NavItem(
+          icon: Icons.work_outline_rounded,
+          label: 'Jobs',
+          route: '/jobs/board',
+          active: location.startsWith('/jobs/board'),
+        ),
+        _NavItem(
+          icon: Icons.access_time_outlined,
+          label: 'Timesheets',
+          route: '/timesheets',
+          active: location.startsWith('/timesheets'),
+        ),
+        _NavItem(
+          icon: Icons.route_outlined,
+          label: 'Routes',
+          route: '/routes',
+          active: location.startsWith('/routes'),
+        ),
+      ],
+    );
+  }
+
   Widget _buildSettingsNav(BuildContext context, String location) {
     return ListView(
       padding: const EdgeInsets.symmetric(vertical: 8),
@@ -495,7 +544,9 @@ class _AppNavBarState extends State<AppNavBar> {
             Expanded(
               child: location.startsWith('/settings')
                   ? _buildSettingsNav(context, location)
-                  : ListView(
+                  : (location.startsWith('/jobs') || location.startsWith('/timesheets') || location.startsWith('/routes'))
+                      ? _buildJobsNav(context, location)
+                      : ListView(
                       padding: const EdgeInsets.symmetric(vertical: 8),
                       primary: false,
                       physics: const ClampingScrollPhysics(),
@@ -545,13 +596,6 @@ class _AppNavBarState extends State<AppNavBar> {
                       label: 'Calendars',
                       route: '/appointments',
                       active: location.startsWith('/appointments'),
-                    ),
-                  if (_can('appointments'))
-                    _NavItem(
-                      icon: Icons.access_time_outlined,
-                      label: 'Timesheets',
-                      route: '/timesheets',
-                      active: location.startsWith('/timesheets'),
                     ),
                   if (_can('pipelines'))
                     _NavItem(

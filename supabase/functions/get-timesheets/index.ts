@@ -130,10 +130,32 @@ serve(async (req) => {
       });
     }
 
-    // ── Enrich entries with full_name ──────────────────────────────────────
+    // ── Fetch appointment details for entries that have one ────────────────
+    const appointmentIds = [...new Set(
+      (entries ?? []).map((e) => e.appointment_id).filter((id) => id != null)
+    )];
+
+    const appointmentMap: Record<number, { appointment_type: string; lead_name: string | null; location: string | null }> = {};
+    if (appointmentIds.length > 0) {
+      const { data: appts } = await supabase
+        .from("appointments")
+        .select("id, appointment_type, lead_name, location")
+        .in("id", appointmentIds);
+
+      for (const a of (appts ?? [])) {
+        appointmentMap[a.id] = {
+          appointment_type: a.appointment_type,
+          lead_name: a.lead_name,
+          location: a.location,
+        };
+      }
+    }
+
+    // ── Enrich entries with full_name and appointment info ─────────────────
     const enriched = (entries ?? []).map((e) => ({
       ...e,
       full_name: profileMap[e.user_id] ?? "Unknown",
+      appointment_info: e.appointment_id ? (appointmentMap[e.appointment_id] ?? null) : null,
     }));
 
     // ── Compute per-member totals (owner view) ─────────────────────────────
