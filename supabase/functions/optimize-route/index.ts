@@ -56,7 +56,7 @@ Deno.serve(async (req) => {
 
     const { data: targetProfile, error: targetErr } = await supabase
       .from("profiles")
-      .select("business_id")
+      .select("business_id, full_name")
       .eq("user_id", assigned_user_id)
       .maybeSingle();
     if (targetErr) throw targetErr;
@@ -91,13 +91,17 @@ Deno.serve(async (req) => {
       return new Response(JSON.stringify({ error: "feature_disabled", message: "GPS tracking / route optimization is not enabled for this business." }), { status: 403, headers: corsHeaders });
     }
 
+    if (!targetProfile.full_name) {
+      return new Response(JSON.stringify({ error: "Target team member has no name on profile" }), { status: 400, headers: corsHeaders });
+    }
+
     const dayStart = `${route_date}T00:00:00`;
     const dayEnd = `${route_date}T23:59:59`;
     const { data: appointments, error: apptErr } = await supabase
       .from("appointments")
       .select("id, appointment_name, location, latitude, longitude, start_date_time")
       .eq("business_id", businessId)
-      .eq("assigned_to", assigned_user_id)
+      .eq("assigned_to", targetProfile.full_name)
       .gte("start_date_time", dayStart)
       .lte("start_date_time", dayEnd)
       .order("start_date_time");
@@ -167,8 +171,12 @@ Deno.serve(async (req) => {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (err) {
+    console.error("optimize-route error:", err);
+    const details = err && typeof err === "object"
+      ? { message: (err as any).message, code: (err as any).code, details: (err as any).details, hint: (err as any).hint }
+      : { message: String(err) };
     return new Response(
-      JSON.stringify({ error: "Unexpected error: " + (err instanceof Error ? err.message : String(err)) }),
+      JSON.stringify({ error: "Unexpected error", ...details }),
       { status: 500, headers: corsHeaders }
     );
   }

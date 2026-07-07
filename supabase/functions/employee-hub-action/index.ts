@@ -17,7 +17,7 @@ Deno.serve(async (req) => {
 
   try {
     const body = await req.json();
-    const { token, action, appointment_id, lat, lng, notes } = body;
+    const { token, action, appointment_id, lat, lng, notes, enabled, accuracy } = body;
 
     if (!token) {
       return new Response(JSON.stringify({ error: "token is required" }), {
@@ -26,8 +26,9 @@ Deno.serve(async (req) => {
       });
     }
 
-    if (action !== "clock_in" && action !== "clock_out") {
-      return new Response(JSON.stringify({ error: "action must be 'clock_in' or 'clock_out'" }), {
+    const validActions = ["clock_in", "clock_out", "toggle_location_sharing", "update_location"];
+    if (!validActions.includes(action)) {
+      return new Response(JSON.stringify({ error: "Invalid action" }), {
         status: 400,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
@@ -63,6 +64,90 @@ Deno.serve(async (req) => {
       );
     }
     const callerUserId = profile.user_id;
+
+    if (action === "toggle_location_sharing") {
+      if (typeof enabled !== "boolean") {
+        return new Response(JSON.stringify({ error: "enabled must be true or false" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      const { error: prefErr } = await supabase
+        .from("profiles")
+        .update({ location_sharing_enabled: enabled })
+        .eq("id", hubToken.profile_id);
+
+      if (prefErr) {
+        return new Response(JSON.stringify({ error: "Error updating preference: " + prefErr.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      return new Response(JSON.stringify({ success: true, location_sharing_enabled: enabled }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    if (action === "update_location") {
+      if (lat == null || lng == null) {
+        return new Response(JSON.stringify({ error: "lat and lng are required" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const { data: bizGps } = await supabase
+        .from("businesses")
+        .select("gps_tracking_enabled")
+        .eq("id", businessId)
+        .maybeSingle();
+
+      if (!bizGps?.gps_tracking_enabled) {
+        return new Response(JSON.stringify({ error: "feature_disabled", message: "GPS tracking is not enabled for this business." }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const { data: profSharing } = await supabase
+        .from("profiles")
+        .select("location_sharing_enabled")
+        .eq("id", hubToken.profile_id)
+        .maybeSingle();
+
+      if (!profSharing?.location_sharing_enabled) {
+        return new Response(JSON.stringify({ error: "consent_required", message: "Location sharing is turned off." }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const { error: locErr } = await supabase
+        .from("team_locations")
+        .upsert({
+          user_id: callerUserId,
+          business_id: businessId,
+          latitude: lat,
+          longitude: lng,
+          accuracy_meters: accuracy ?? null,
+          recorded_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }, { onConflict: "user_id" });
+
+      if (locErr) {
+        return new Response(JSON.stringify({ error: "Error updating location: " + locErr.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      return new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
 
     // ── 3. Check location requirement ────────────────────────────────────────
     const { data: bizSettings } = await supabase

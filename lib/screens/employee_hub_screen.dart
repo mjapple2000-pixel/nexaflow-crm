@@ -33,6 +33,14 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
   Timer? _tickTimer;
   Duration _elapsed = Duration.zero;
 
+  bool _gpsTrackingEnabled = false;
+  bool _locationSharingEnabled = false;
+  bool _savingLocationPref = false;
+  Timer? _locationLoopTimer;
+
+  final _jobSearchCtrl = TextEditingController();
+  bool _showJobResults = false;
+
   @override
   void initState() {
     super.initState();
@@ -42,6 +50,8 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
   @override
   void dispose() {
     _tickTimer?.cancel();
+    _locationLoopTimer?.cancel();
+    _jobSearchCtrl.dispose();
     super.dispose();
   }
 
@@ -75,6 +85,8 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
         _fullName = data['full_name'] as String? ?? '';
         _businessName = data['business_name'] as String? ?? '';
         _requireLocation = data['require_location_on_clock'] as bool? ?? false;
+        _gpsTrackingEnabled = data['gps_tracking_enabled'] as bool? ?? false;
+        _locationSharingEnabled = data['location_sharing_enabled'] as bool? ?? false;
         _activeEntry = data['active_entry'] as Map<String, dynamic>?;
         _appointments =
             List<Map<String, dynamic>>.from(data['appointments'] ?? []);
@@ -82,6 +94,7 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
       });
 
       _startTickerIfNeeded();
+      _updateLocationLoop();
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -106,6 +119,67 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
 
     tick();
     _tickTimer = Timer.periodic(const Duration(seconds: 1), (_) => tick());
+  }
+
+  void _updateLocationLoop() {
+    _locationLoopTimer?.cancel();
+    final isClockedIn = _activeEntry != null;
+    if (!isClockedIn || !_gpsTrackingEnabled || !_locationSharingEnabled) return;
+    _sendLocationUpdate();
+    _locationLoopTimer = Timer.periodic(const Duration(seconds: 60), (_) => _sendLocationUpdate());
+  }
+
+  Future<void> _sendLocationUpdate() async {
+    final pos = await _getLocation();
+    if (pos == null) return;
+    try {
+      await http.post(
+        Uri.parse('$_fnBase/employee-hub-action'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'token': widget.token,
+          'action': 'update_location',
+          'lat': pos.latitude,
+          'lng': pos.longitude,
+          'accuracy': pos.accuracy,
+        }),
+      );
+    } catch (e) {
+      debugPrint('Location update error: $e');
+    }
+  }
+
+  Future<void> _toggleLocationSharing(bool value) async {
+    setState(() => _savingLocationPref = true);
+    try {
+      final res = await http.post(
+        Uri.parse('$_fnBase/employee-hub-action'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'token': widget.token,
+          'action': 'toggle_location_sharing',
+          'enabled': value,
+        }),
+      );
+      if (res.statusCode == 200) {
+        setState(() => _locationSharingEnabled = value);
+        _updateLocationLoop();
+      } else if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Could not update location sharing. Please try again.'),
+          backgroundColor: AppTheme.error,
+        ));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Network error — please try again.'),
+          backgroundColor: AppTheme.error,
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _savingLocationPref = false);
+    }
   }
 
   Future<Position?> _getLocation() async {
@@ -215,6 +289,27 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
     return '$h:$m:$s';
   }
 
+  List<Map<String, dynamic>> get _filteredAppointments {
+    final q = _jobSearchCtrl.text.trim().toLowerCase();
+    if (q.isEmpty) return _appointments;
+    return _appointments.where((a) {
+      final type = (a['appointment_type'] as String? ?? '').toLowerCase();
+      final lead = (a['lead_name'] as String? ?? '').toLowerCase();
+      final addr = (a['lead_address'] as String? ?? '').toLowerCase();
+      return type.contains(q) || lead.contains(q) || addr.contains(q);
+    }).toList();
+  }
+
+  void _selectJob(Map<String, dynamic>? appt) {
+    setState(() {
+      _selectedAppointmentId = appt?['id'] as int?;
+      _jobSearchCtrl.text = appt == null
+          ? ''
+          : '${appt['appointment_type'] ?? 'Appointment'} — ${appt['lead_name'] ?? ''}';
+      _showJobResults = false;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_loading) {
@@ -321,45 +416,73 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
                                     color: AppTheme.textSecondary)),
                           ),
                           const SizedBox(height: 6),
-                          Container(
-                            width: double.infinity,
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 12),
-                            decoration: BoxDecoration(
-                              color: AppTheme.pageBg,
-                              borderRadius: BorderRadius.circular(8),
-                              border:
-                                  Border.all(color: AppTheme.borderColor),
-                            ),
-                            child: DropdownButtonHideUnderline(
-                              child: DropdownButton<int?>(
-                                isExpanded: true,
-                                value: _selectedAppointmentId,
-                                hint: const Text('No specific job',
-                                    style: TextStyle(
-                                        fontSize: 13,
-                                        color: AppTheme.textSecondary)),
-                                items: [
-                                  const DropdownMenuItem<int?>(
-                                    value: null,
-                                    child: Text('No specific job'),
-                                  ),
-                                  ..._appointments.map((a) {
-                                    final id = a['id'] as int;
-                                    final label =
-                                        '${a['appointment_type'] ?? 'Appointment'} — ${a['lead_name'] ?? ''}';
-                                    return DropdownMenuItem<int?>(
-                                      value: id,
-                                      child: Text(label,
-                                          overflow: TextOverflow.ellipsis),
-                                    );
-                                  }),
-                                ],
-                                onChanged: (v) =>
-                                    setState(() => _selectedAppointmentId = v),
-                              ),
+                          TextField(
+                            controller: _jobSearchCtrl,
+                            onTap: () => setState(() => _showJobResults = true),
+                            onChanged: (_) => setState(() => _showJobResults = true),
+                            style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                            decoration: InputDecoration(
+                              hintText: 'Search jobs by name or address...',
+                              hintStyle: const TextStyle(fontSize: 13, color: AppTheme.textSecondary),
+                              prefixIcon: const Icon(Icons.search, size: 18, color: AppTheme.textSecondary),
+                              suffixIcon: _selectedAppointmentId != null
+                                  ? IconButton(
+                                      icon: const Icon(Icons.close, size: 16, color: AppTheme.textSecondary),
+                                      onPressed: () => _selectJob(null),
+                                    )
+                                  : null,
+                              filled: true,
+                              fillColor: AppTheme.pageBg,
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                                  borderSide: const BorderSide(color: AppTheme.borderColor)),
+                              enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                                  borderSide: const BorderSide(color: AppTheme.borderColor)),
+                              focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                                  borderSide: BorderSide(color: AppTheme.brand, width: 1.5)),
                             ),
                           ),
+                          if (_showJobResults) ...[
+                            const SizedBox(height: 6),
+                            Container(
+                              constraints: const BoxConstraints(maxHeight: 220),
+                              decoration: BoxDecoration(
+                                color: AppTheme.cardBg,
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(color: AppTheme.borderColor),
+                              ),
+                              child: _filteredAppointments.isEmpty
+                                  ? const Padding(
+                                      padding: EdgeInsets.all(14),
+                                      child: Text('No matching jobs',
+                                          style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+                                    )
+                                  : ListView(
+                                      shrinkWrap: true,
+                                      padding: EdgeInsets.zero,
+                                      children: _filteredAppointments.map((a) {
+                                        final label = '${a['appointment_type'] ?? 'Appointment'} — ${a['lead_name'] ?? ''}';
+                                        final addr = a['lead_address'] as String? ?? '';
+                                        return InkWell(
+                                          onTap: () => _selectJob(a),
+                                          child: Padding(
+                                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                                            child: Column(
+                                              crossAxisAlignment: CrossAxisAlignment.start,
+                                              children: [
+                                                Text(label,
+                                                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+                                                if (addr.isNotEmpty)
+                                                  Text(addr,
+                                                      style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                                              ],
+                                            ),
+                                          ),
+                                        );
+                                      }).toList(),
+                                    ),
+                            ),
+                          ],
                           const SizedBox(height: 20),
                         ] else
                           const SizedBox(height: 4),
@@ -396,6 +519,56 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
                       ],
                     ),
                   ),
+
+                  if (_gpsTrackingEnabled) ...[
+                    const SizedBox(height: 16),
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(18),
+                      decoration: BoxDecoration(
+                        color: AppTheme.cardBg,
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(color: AppTheme.borderColor),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(Icons.location_on_outlined,
+                              size: 20,
+                              color: _locationSharingEnabled
+                                  ? AppTheme.brand
+                                  : AppTheme.textSecondary),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text('Share My Location',
+                                    style: TextStyle(
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w600,
+                                        color: AppTheme.textPrimary)),
+                                const SizedBox(height: 2),
+                                const Text(
+                                    'Lets your dispatcher see where you are and build your route.',
+                                    style: TextStyle(
+                                        fontSize: 11,
+                                        color: AppTheme.textSecondary)),
+                              ],
+                            ),
+                          ),
+                          _savingLocationPref
+                              ? const SizedBox(
+                                  width: 20, height: 20,
+                                  child: CircularProgressIndicator(strokeWidth: 2))
+                              : Switch(
+                                  value: _locationSharingEnabled,
+                                  onChanged: _toggleLocationSharing,
+                                  activeColor: AppTheme.brand,
+                                ),
+                        ],
+                      ),
+                    ),
+                  ],
 
                   if (_appointments.isNotEmpty) ...[
                     const SizedBox(height: 24),

@@ -50,7 +50,7 @@ Deno.serve(async (req) => {
     // ── 3. Load profile ──────────────────────────────────────────────────────
     const { data: profile, error: profileError } = await supabase
       .from("profiles")
-      .select("id, user_id, full_name, role")
+      .select("id, user_id, full_name, role, location_sharing_enabled")
       .eq("id", hubToken.profile_id)
       .maybeSingle();
 
@@ -69,11 +69,15 @@ Deno.serve(async (req) => {
     }
 
     // ── 4. Load business ─────────────────────────────────────────────────────
-    const { data: business } = await supabase
+    const { data: business, error: businessError } = await supabase
       .from("businesses")
-      .select("name, require_location_on_clock")
+      .select("business_name, require_location_on_clock, gps_tracking_enabled")
       .eq("id", hubToken.business_id)
       .maybeSingle();
+
+    if (businessError) {
+      console.error("get-employee-hub-data business lookup error:", businessError);
+    }
 
     // ── 5. Active time entry ─────────────────────────────────────────────────
     const { data: activeEntry } = await supabase
@@ -90,23 +94,36 @@ Deno.serve(async (req) => {
     const todayEnd = new Date();
     todayEnd.setHours(23, 59, 59, 999);
 
-    const { data: appointments } = await supabase
+    const { data: appointments, error: apptError } = await supabase
       .from("appointments")
-      .select("id, appointment_type, scheduled_at, status, lead_name, lead_address")
+      .select("id, appointment_type, start_date_time, status, lead_name, location")
       .eq("business_id", hubToken.business_id)
-      .eq("assigned_to", profile.user_id)
-      .gte("scheduled_at", todayStart.toISOString())
-      .lte("scheduled_at", todayEnd.toISOString())
-      .order("scheduled_at", { ascending: true });
+      .eq("assigned_to", profile.full_name)
+      .gte("start_date_time", todayStart.toISOString())
+      .lte("start_date_time", todayEnd.toISOString())
+      .order("start_date_time", { ascending: true });
+
+    if (apptError) {
+      console.error("get-employee-hub-data appointments lookup error:", apptError);
+    }
 
     return new Response(
       JSON.stringify({
         needs_setup: false,
         full_name: profile.full_name,
-        business_name: business?.name ?? "",
+        business_name: business?.business_name ?? "",
         require_location_on_clock: business?.require_location_on_clock === true,
+        gps_tracking_enabled: business?.gps_tracking_enabled === true,
+        location_sharing_enabled: profile.location_sharing_enabled === true,
         active_entry: activeEntry ?? null,
-        appointments: appointments ?? [],
+        appointments: (appointments ?? []).map((a: any) => ({
+          id: a.id,
+          appointment_type: a.appointment_type,
+          scheduled_at: a.start_date_time,
+          status: a.status,
+          lead_name: a.lead_name,
+          lead_address: a.location,
+        })),
       }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );

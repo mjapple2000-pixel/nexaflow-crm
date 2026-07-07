@@ -709,6 +709,7 @@ class _BusinessProfileSectionState
   // SMS consent
   bool _smsConsent = false;
   bool _requireLocationOnClock = false;
+  bool _gpsTrackingEnabled = false;
   Map<String, dynamic> _availabilityHours = {};
   bool _resettingCalendars = false;
 
@@ -755,6 +756,7 @@ class _BusinessProfileSectionState
 
     _smsConsent = b['sms_consent'] as bool? ?? false;
     _requireLocationOnClock = b['require_location_on_clock'] as bool? ?? false;
+    _gpsTrackingEnabled = b['gps_tracking_enabled'] as bool? ?? false;
     final rawHours = b['availability_hours'];
     if (rawHours is Map) {
       _availabilityHours = Map<String, dynamic>.from(rawHours);
@@ -819,6 +821,7 @@ class _BusinessProfileSectionState
         'industry':         _selectedIndustry,
         'sms_consent':               _smsConsent,
         'require_location_on_clock': _requireLocationOnClock,
+        'gps_tracking_enabled':      _gpsTrackingEnabled,
         'availability_hours':        _availabilityHours,
       });
       setState(
@@ -1105,6 +1108,17 @@ class _BusinessProfileSectionState
             subtitle: 'Team members must allow location access when clocking in or out. Coordinates are stored per entry so you can verify on-site presence.',
             value: _requireLocationOnClock,
             onChanged: (v) => setState(() => _requireLocationOnClock = v),
+          ),
+        ]),
+        const SizedBox(height: 24),
+
+        // ── GPS Tracking & Routing ────────────────────────────────
+        _SettingsGroup(title: 'GPS Tracking & Routing', children: [
+          _ToggleRow(
+            label: 'Enable GPS Tracking',
+            subtitle: 'Lets team members share their live location and allows dispatchers to build optimized routes for the day. Individual team members must also consent from their own profile before their location is shared.',
+            value: _gpsTrackingEnabled,
+            onChanged: (v) => setState(() => _gpsTrackingEnabled = v),
           ),
         ]),
         const SizedBox(height: 24),
@@ -5196,6 +5210,10 @@ class _MyProfileSectionState extends State<_MyProfileSection> {
   bool _savingNotifications      = false;
   String? _notificationsSuccess;
 
+  bool _locationSharingEnabled = false;
+  bool _savingLocationSharing  = false;
+  String? _locationSharingSuccess;
+
   Map<String, dynamic> _profile = {};
 
   @override
@@ -5251,6 +5269,7 @@ class _MyProfileSectionState extends State<_MyProfileSection> {
         _notifyTasksSms           = prefs['tasks_sms']           as bool? ?? false;
         _notifyAppointmentsEmail  = prefs['appointments_email']  as bool? ?? true;
         _notifyAppointmentsSms    = prefs['appointments_sms']    as bool? ?? false;
+        _locationSharingEnabled   = _profile['location_sharing_enabled'] as bool? ?? false;
         setState(() {});
       }
     } catch (e) {
@@ -5322,6 +5341,22 @@ class _MyProfileSectionState extends State<_MyProfileSection> {
       setState(() { _notificationsSuccess = 'Notification preferences saved.'; _savingNotifications = false; });
     } catch (e) {
       setState(() { _savingNotifications = false; });
+    }
+  }
+
+  Future<void> _saveLocationSharing() async {
+    final userId = _supabase.auth.currentUser?.id;
+    if (userId == null) return;
+    setState(() { _savingLocationSharing = true; _locationSharingSuccess = null; });
+    try {
+      await _supabase
+          .from('profiles')
+          .update({'location_sharing_enabled': _locationSharingEnabled})
+          .eq('user_id', userId)
+          .eq('business_id', widget.businessId);
+      setState(() { _locationSharingSuccess = 'Location sharing preference saved.'; _savingLocationSharing = false; });
+    } catch (e) {
+      setState(() { _savingLocationSharing = false; });
     }
   }
 
@@ -5561,6 +5596,41 @@ class _MyProfileSectionState extends State<_MyProfileSection> {
               const Icon(Icons.check_circle, color: Color(0xFF10B981), size: 16),
               const SizedBox(width: 4),
               Text(_notificationsSuccess!, style: const TextStyle(color: Color(0xFF10B981), fontSize: 13)),
+            ],
+          ]),
+          const SizedBox(height: 28),
+
+          // ── Location Sharing ───────────────────────────────────────
+          _SettingsGroup(title: 'Location Sharing', children: [
+            _ToggleRow(
+              label: 'Share My Location',
+              subtitle: 'Lets your dispatcher see your live location and build optimized routes for your day. Only available if your business has GPS Tracking enabled. You can turn this off at any time.',
+              value: _locationSharingEnabled,
+              onChanged: (v) => setState(() => _locationSharingEnabled = v),
+            ),
+          ]),
+          const SizedBox(height: 12),
+          Row(children: [
+            MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: ElevatedButton(
+                onPressed: _savingLocationSharing ? null : _saveLocationSharing,
+                style: ElevatedButton.styleFrom(
+                    backgroundColor: AppTheme.brand,
+                    foregroundColor: Colors.white,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+                child: _savingLocationSharing
+                    ? const SizedBox(width: 16, height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                    : const Text('Save Location Sharing'),
+              ),
+            ),
+            if (_locationSharingSuccess != null) ...[
+              const SizedBox(width: 12),
+              const Icon(Icons.check_circle, color: Color(0xFF10B981), size: 16),
+              const SizedBox(width: 4),
+              Text(_locationSharingSuccess!, style: const TextStyle(color: Color(0xFF10B981), fontSize: 13)),
             ],
           ]),
         ],
