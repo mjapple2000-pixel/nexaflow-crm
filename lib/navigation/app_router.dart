@@ -42,6 +42,7 @@ import '../screens/new_invoice_screen.dart';
 import '../screens/client_hub_screen.dart';
 import '../screens/employee_hub_screen.dart';
 import '../screens/timesheets_screen.dart';
+import '../screens/routes_screen.dart';
 
 class AppRouter {
   static bool? cachedIsSuperuser;
@@ -537,6 +538,11 @@ class AppRouter {
             path: '/timesheets',
             name: 'timesheets',
             builder: (context, state) => const TimesheetsScreen(),
+          ),
+          GoRoute(
+            path: '/routes',
+            name: 'routes',
+            builder: (context, state) => const RoutesScreen(),
           ),
           GoRoute(
             path: '/tickets',

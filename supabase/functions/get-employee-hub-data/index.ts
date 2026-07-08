@@ -107,6 +107,51 @@ Deno.serve(async (req) => {
       console.error("get-employee-hub-data appointments lookup error:", apptError);
     }
 
+    // ── 7. Today's assigned route (if a dispatcher has built one) ───────────
+    const routeDateStr = todayStart.toISOString().slice(0, 10);
+    const { data: route, error: routeError } = await supabase
+      .from("routes")
+      .select("id, stops")
+      .eq("business_id", hubToken.business_id)
+      .eq("assigned_user_id", profile.user_id)
+      .eq("route_date", routeDateStr)
+      .is("deleted_at", null)
+      .maybeSingle();
+
+    if (routeError) {
+      console.error("get-employee-hub-data route lookup error:", routeError);
+    }
+
+    let routeStops: any[] = [];
+    if (route?.stops?.length) {
+      const stopApptIds = route.stops
+        .map((s: any) => s.appointment_id)
+        .filter((id: any) => typeof id === "number");
+
+      const { data: stopAppts, error: stopApptError } = await supabase
+        .from("appointments")
+        .select("id, appointment_type, lead_name, location, start_date_time")
+        .eq("business_id", hubToken.business_id)
+        .in("id", stopApptIds);
+
+      if (stopApptError) {
+        console.error("get-employee-hub-data route appointments lookup error:", stopApptError);
+      }
+
+      const apptById = new Map((stopAppts ?? []).map((a: any) => [a.id, a]));
+      routeStops = route.stops.map((s: any) => {
+        const appt = apptById.get(s.appointment_id);
+        return {
+          appointment_id: s.appointment_id,
+          sequence: s.sequence,
+          appointment_type: appt?.appointment_type ?? null,
+          lead_name: appt?.lead_name ?? null,
+          location: appt?.location ?? null,
+          scheduled_at: appt?.start_date_time ?? null,
+        };
+      });
+    }
+
     return new Response(
       JSON.stringify({
         needs_setup: false,
@@ -116,6 +161,7 @@ Deno.serve(async (req) => {
         gps_tracking_enabled: business?.gps_tracking_enabled === true,
         location_sharing_enabled: profile.location_sharing_enabled === true,
         active_entry: activeEntry ?? null,
+        route_stops: routeStops,
         appointments: (appointments ?? []).map((a: any) => ({
           id: a.id,
           appointment_type: a.appointment_type,

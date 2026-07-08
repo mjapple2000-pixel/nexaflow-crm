@@ -27,6 +27,7 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
   bool _requireLocation = false;
   Map<String, dynamic>? _activeEntry;
   List<Map<String, dynamic>> _appointments = [];
+  List<Map<String, dynamic>> _routeStops = [];
 
   int? _selectedAppointmentId;
   bool _submitting = false;
@@ -90,6 +91,8 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
         _activeEntry = data['active_entry'] as Map<String, dynamic>?;
         _appointments =
             List<Map<String, dynamic>>.from(data['appointments'] ?? []);
+        _routeStops =
+            List<Map<String, dynamic>>.from(data['route_stops'] ?? []);
         _loading = false;
       });
 
@@ -570,6 +573,17 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
                     ),
                   ],
 
+                  if (_routeStops.isNotEmpty) ...[
+                    const SizedBox(height: 24),
+                    const Text('Your Route Today',
+                        style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700,
+                            color: AppTheme.textPrimary)),
+                    const SizedBox(height: 10),
+                    ..._routeStops.map((s) => _RouteStopCard(stop: s)),
+                  ],
+
                   if (_appointments.isNotEmpty) ...[
                     const SizedBox(height: 24),
                     const Text("Today's Jobs",
@@ -617,6 +631,89 @@ class _AppointmentCard extends StatelessWidget {
       ),
       child: Row(
         children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(type,
+                    style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: AppTheme.textPrimary)),
+                if (leadName.isNotEmpty) ...[
+                  const SizedBox(height: 2),
+                  Text(leadName,
+                      style: const TextStyle(
+                          fontSize: 12, color: AppTheme.textSecondary)),
+                ],
+                if (address.isNotEmpty) ...[
+                  const SizedBox(height: 2),
+                  Text(address,
+                      style: const TextStyle(
+                          fontSize: 11, color: AppTheme.textSecondary)),
+                ],
+              ],
+            ),
+          ),
+          if (timeStr.isNotEmpty)
+            Text(timeStr,
+                style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: AppTheme.textSecondary)),
+        ],
+      ),
+    );
+  }
+
+  String _time(DateTime dt) {
+    final h = dt.hour % 12 == 0 ? 12 : dt.hour % 12;
+    final min = dt.minute.toString().padLeft(2, '0');
+    final ampm = dt.hour < 12 ? 'AM' : 'PM';
+    return '$h:$min $ampm';
+  }
+}
+
+// ── Route stop card (employee's ordered route for today) ───────────────────────
+
+class _RouteStopCard extends StatelessWidget {
+  final Map<String, dynamic> stop;
+  const _RouteStopCard({required this.stop});
+
+  @override
+  Widget build(BuildContext context) {
+    final dt = stop['scheduled_at'] != null
+        ? DateTime.tryParse(stop['scheduled_at'] as String)?.toLocal()
+        : null;
+    final timeStr = dt != null ? _time(dt) : '';
+    final type = stop['appointment_type'] as String? ?? 'Appointment';
+    final leadName = stop['lead_name'] as String? ?? '';
+    final address = stop['location'] as String? ?? '';
+    final sequence = stop['sequence'] as int? ?? 0;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppTheme.cardBg,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppTheme.borderColor),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 26,
+            height: 26,
+            decoration: const BoxDecoration(
+                color: AppTheme.brand, shape: BoxShape.circle),
+            alignment: Alignment.center,
+            child: Text('$sequence',
+                style: const TextStyle(
+                    fontSize: 11,
+                    color: Colors.white,
+                    fontWeight: FontWeight.w700)),
+          ),
+          const SizedBox(width: 12),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
