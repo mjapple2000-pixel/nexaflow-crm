@@ -107,6 +107,46 @@ Deno.serve(async (req) => {
       console.error("get-employee-hub-data appointments lookup error:", apptError);
     }
 
+    // ── 6b. Job forms attached to today's appointments ──────────────────────
+    const apptIds = (appointments ?? []).map((a: any) => a.id);
+    let jobFormsByAppt = new Map<number, any[]>();
+    if (apptIds.length > 0) {
+      const { data: submissions, error: subsError } = await supabase
+        .from("job_form_submissions")
+        .select("id, appointment_id, job_form_id, status")
+        .in("appointment_id", apptIds)
+        .is("deleted_at", null);
+
+      if (subsError) {
+        console.error("get-employee-hub-data job_form_submissions lookup error:", subsError);
+      }
+
+      const formIds = [...new Set((submissions ?? []).map((s: any) => s.job_form_id))];
+      let formsById = new Map<number, string>();
+      if (formIds.length > 0) {
+        const { data: forms, error: formsError } = await supabase
+          .from("job_forms")
+          .select("id, name")
+          .in("id", formIds);
+        if (formsError) {
+          console.error("get-employee-hub-data job_forms lookup error:", formsError);
+        }
+        formsById = new Map((forms ?? []).map((f: any) => [f.id, f.name]));
+      }
+
+      jobFormsByAppt = new Map();
+      for (const sub of submissions ?? []) {
+        const list = jobFormsByAppt.get(sub.appointment_id) ?? [];
+        list.push({
+          submission_id: sub.id,
+          job_form_id: sub.job_form_id,
+          form_name: formsById.get(sub.job_form_id) ?? "Unknown Form",
+          status: sub.status,
+        });
+        jobFormsByAppt.set(sub.appointment_id, list);
+      }
+    }
+
     // ── 7. Today's assigned route (if a dispatcher has built one) ───────────
     const routeDateStr = todayStart.toISOString().slice(0, 10);
     const { data: route, error: routeError } = await supabase
@@ -169,6 +209,7 @@ Deno.serve(async (req) => {
           status: a.status,
           lead_name: a.lead_name,
           lead_address: a.location,
+          job_forms: jobFormsByAppt.get(a.id) ?? [],
         })),
       }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }

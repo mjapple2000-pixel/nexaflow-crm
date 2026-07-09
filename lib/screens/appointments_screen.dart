@@ -4685,6 +4685,12 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
   bool _jobCostsSectionExpanded = true;
   String? _expenseError;
 
+  // Job Forms state
+  List<Map<String, dynamic>> _attachedForms = [];
+  List<Map<String, dynamic>> _availableJobForms = [];
+  bool _loadingForms = false;
+  bool _jobFormsSectionExpanded = true;
+
   late final TextEditingController _nameCtrl;
   late final TextEditingController _locationCtrl;
   late final TextEditingController _leadNameCtrl;
@@ -4742,6 +4748,8 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _loadExpenses();
       _loadActiveTimeEntry();
+      _loadAttachedForms();
+      _loadAvailableJobForms();
     });
   }
 
@@ -4778,6 +4786,168 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
       if (mounted) setState(() => _loadingExpenses = false);
     }
   }
+
+  Future<void> _loadAttachedForms() async {
+    if (!mounted) return;
+    setState(() => _loadingForms = true);
+    try {
+      final apptId = widget.appointment['id'] as int;
+      final subs = await _db
+          .from('job_form_submissions')
+          .select('id, status, job_form_id')
+          .eq('appointment_id', apptId)
+          .filter('deleted_at', 'is', null)
+          .order('created_at', ascending: true);
+      final subsList = List<Map<String, dynamic>>.from(subs);
+
+      if (subsList.isEmpty) {
+        if (!mounted) return;
+        setState(() => _attachedForms = []);
+        return;
+      }
+
+      final formIds = subsList.map((s) => s['job_form_id']).whereType<int>().toSet().toList();
+      final forms = await _db
+          .from('job_forms')
+          .select('id, name')
+          .inFilter('id', formIds);
+      final formsById = {for (final f in List<Map<String, dynamic>>.from(forms)) f['id']: f};
+
+      final merged = subsList.map((s) {
+        final form = formsById[s['job_form_id']];
+        return {
+          ...s,
+          'form_name': form?['name'] ?? 'Unknown Form',
+        };
+      }).toList();
+
+      if (!mounted) return;
+      setState(() => _attachedForms = merged);
+    } catch (e) {
+      debugPrint('Load attached forms error: $e');
+    } finally {
+      if (mounted) setState(() => _loadingForms = false);
+    }
+  }
+
+  Future<void> _loadAvailableJobForms() async {
+    try {
+      final businessId = widget.appointment['business_id'];
+      if (businessId == null) return;
+      final data = await _db
+          .from('job_forms')
+          .select('id, name')
+          .eq('business_id', businessId)
+          .filter('deleted_at', 'is', null)
+          .order('name', ascending: true);
+      if (!mounted) return;
+      setState(() => _availableJobForms = List<Map<String, dynamic>>.from(data));
+    } catch (e) {
+      debugPrint('Load available job forms error: $e');
+    }
+  }
+
+  Future<void> _attachForm(int jobFormId) async {
+    try {
+      final apptId = widget.appointment['id'] as int;
+      final businessId = widget.appointment['business_id'];
+      await _db.from('job_form_submissions').insert({
+        'business_id': businessId,
+        'job_form_id': jobFormId,
+        'appointment_id': apptId,
+        'status': 'not_started',
+      });
+      await _loadAttachedForms();
+    } catch (e) {
+      debugPrint('Attach form error: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to attach form: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  Future<void> _detachForm(int submissionId) async {
+    try {
+      await _db
+          .from('job_form_submissions')
+          .update({'deleted_at': DateTime.now().toUtc().toIso8601String()})
+          .eq('id', submissionId);
+      await _loadAttachedForms();
+    } catch (e) {
+      debugPrint('Detach form error: $e');
+    }
+  }
+
+  void _showAttachFormSheet(BuildContext context) {
+    final attachedFormIds = _attachedForms.map((s) => s['job_form_id']).toSet();
+    final unattached = _availableJobForms.where((f) => !attachedFormIds.contains(f['id'])).toList();
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => Container(
+        decoration: const BoxDecoration(
+          color: AppTheme.cardBg,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+        padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
+        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Center(child: Container(width: 40, height: 4,
+              decoration: BoxDecoration(color: AppTheme.borderColor, borderRadius: BorderRadius.circular(2)))),
+          const SizedBox(height: 16),
+          const Text('Attach Job Form',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+          const SizedBox(height: 16),
+          if (unattached.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 20),
+              child: Text('No more job forms to attach — either none exist yet or all are already attached.',
+                  style: TextStyle(fontSize: 13, color: AppTheme.textSecondary)),
+            )
+          else
+            ...unattached.map((form) => Clickable(
+              onTap: () {
+                Navigator.pop(context);
+                _attachForm(form['id'] as int);
+              },
+              child: Container(
+                margin: const EdgeInsets.only(bottom: 8),
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                decoration: BoxDecoration(
+                  color: AppTheme.pageBg,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppTheme.borderColor),
+                ),
+                child: Row(children: [
+                  const Icon(Icons.assignment_outlined, size: 16, color: AppTheme.brand),
+                  const SizedBox(width: 10),
+                  Expanded(child: Text(form['name'] ?? '',
+                      style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary))),
+                  const Icon(Icons.add_circle_outline, size: 16, color: AppTheme.textSecondary),
+                ]),
+              ),
+            )),
+        ]),
+      ),
+    );
+  }
+
+  String _formStatusLabel(String status) => switch (status) {
+        'not_started' => 'Not Started',
+        'in_progress' => 'In Progress',
+        'completed' => 'Completed',
+        _ => status,
+      };
+
+  Color _formStatusColor(String status) => switch (status) {
+        'not_started' => AppTheme.textSecondary,
+        'in_progress' => const Color(0xFFF59E0B),
+        'completed' => AppTheme.success,
+        _ => AppTheme.textSecondary,
+      };
 
   Future<void> _loadActiveTimeEntry() async {
     if (!mounted) return;
@@ -5273,6 +5443,10 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
           if (!blocked) _buildJobCostsSection(context),
           if (!blocked) const SizedBox(height: 24),
 
+          // ── Job Forms ─────────────────────────────────────────────────
+          if (!blocked) _buildJobFormsSection(context),
+          if (!blocked) const SizedBox(height: 24),
+
           // ── Save button ───────────────────────────────────────────────
           SizedBox(
             width: double.infinity, height: 44,
@@ -5518,6 +5692,115 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
                       onTap: () async {
                         final id = exp['id'] as int?;
                         if (id != null) await _softDeleteExpense(id);
+                      },
+                      child: const Padding(
+                        padding: EdgeInsets.all(4),
+                        child: Icon(Icons.close, size: 13, color: AppTheme.error),
+                      ),
+                    ),
+                  ]),
+                );
+              }),
+            ]),
+          ),
+      ],
+    ]);
+  }
+
+  Widget _buildJobFormsSection(BuildContext context) {
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(children: [
+        Expanded(child: GestureDetector(
+          onTap: () => setState(() => _jobFormsSectionExpanded = !_jobFormsSectionExpanded),
+          child: Row(children: [
+            const Text('JOB FORMS', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700,
+                color: AppTheme.textSecondary, letterSpacing: 0.5)),
+            const SizedBox(width: 6),
+            Icon(_jobFormsSectionExpanded ? Icons.expand_less : Icons.expand_more,
+                size: 16, color: AppTheme.textSecondary),
+          ]),
+        )),
+        GestureDetector(
+          onTap: () => _showAttachFormSheet(context),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              color: AppTheme.brand,
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: const Row(mainAxisSize: MainAxisSize.min, children: [
+              Icon(Icons.add, size: 12, color: Colors.white),
+              SizedBox(width: 4),
+              Text('Attach Form', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.white)),
+            ]),
+          ),
+        ),
+      ]),
+      const SizedBox(height: 8),
+
+      if (_jobFormsSectionExpanded) ...[
+        if (_loadingForms)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 12),
+            child: Center(child: SizedBox(width: 20, height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2))),
+          )
+        else if (_attachedForms.isEmpty)
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: AppTheme.pageBg,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: AppTheme.borderColor),
+            ),
+            child: const Row(children: [
+              Icon(Icons.assignment_outlined, size: 16, color: AppTheme.textMuted),
+              SizedBox(width: 8),
+              Text('No job forms attached yet',
+                  style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+            ]),
+          )
+        else
+          Container(
+            decoration: BoxDecoration(
+              color: AppTheme.pageBg,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: AppTheme.borderColor),
+            ),
+            child: Column(children: [
+              ..._attachedForms.asMap().entries.map((entry) {
+                final i = entry.key;
+                final sub = entry.value;
+                final status = sub['status'] as String? ?? 'not_started';
+                final name = sub['form_name'] as String? ?? 'Unknown Form';
+                final color = _formStatusColor(status);
+                return Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  decoration: BoxDecoration(
+                    border: i < _attachedForms.length - 1
+                        ? const Border(bottom: BorderSide(color: AppTheme.borderColor))
+                        : null,
+                  ),
+                  child: Row(children: [
+                    const Icon(Icons.assignment_outlined, size: 14, color: AppTheme.textSecondary),
+                    const SizedBox(width: 8),
+                    Expanded(child: Text(name,
+                        style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary),
+                        overflow: TextOverflow.ellipsis)),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: color.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(_formStatusLabel(status), style: TextStyle(fontSize: 10,
+                          fontWeight: FontWeight.w600, color: color)),
+                    ),
+                    const SizedBox(width: 4),
+                    GestureDetector(
+                      onTap: () async {
+                        final id = sub['id'] as int?;
+                        if (id != null) await _detachForm(id);
                       },
                       child: const Padding(
                         padding: EdgeInsets.all(4),

@@ -4,6 +4,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme/app_theme.dart';
 import '../screens/quotes_screen.dart';
 import '../screens/invoices_screen.dart';
+import '../screens/job_forms_screen.dart';
 
 class JobsScreen extends StatefulWidget {
   final int initialTab;
@@ -45,12 +46,7 @@ class _JobsScreenState extends State<JobsScreen>
                 _QuotesTab(),
                 _InvoicesTab(),
                 _ServiceRequestsTab(),
-                _ComingSoonTab(
-                  icon: Icons.assignment_outlined,
-                  title: 'Job forms',
-                  description:
-                      'Send pre-job checklists and authorization forms to clients or crew before work begins.',
-                ),
+                _JobFormsTab(),
                 _ComingSoonTab(
                   icon: Icons.timer_outlined,
                   title: 'Time & expenses',
@@ -279,6 +275,18 @@ class _InvoicesTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return const InvoicesScreen();
+  }
+}
+
+// ─────────────────────────────────────────────
+//  JOB FORMS TAB
+// ─────────────────────────────────────────────
+class _JobFormsTab extends StatelessWidget {
+  const _JobFormsTab();
+
+  @override
+  Widget build(BuildContext context) {
+    return const JobFormsScreen();
   }
 }
 
