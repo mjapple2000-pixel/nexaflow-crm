@@ -1943,11 +1943,12 @@ class _AddSheetState extends State<_AddSheet> {
   final _notesCtrl  = TextEditingController();
   final _tagCtrl    = TextEditingController();
   final _valueCtrl  = TextEditingController();
-  final _assignCtrl = TextEditingController();
   String _status = 'New';
   String _source = 'Manual';
   List<String> _tags = [];
   bool _saving = false;
+  List<Map<String, dynamic>> _teamMembers = [];
+  String? _assignedToName;
 
   static const _suggestedTags = [
     'Hot Lead', 'Follow Up', 'VIP', 'Cold', 'Booked',
@@ -1955,7 +1956,11 @@ class _AddSheetState extends State<_AddSheet> {
   ];
 
   @override
-  void initState() { super.initState(); _loadBusinessName(); }
+  void initState() {
+    super.initState();
+    _loadBusinessName();
+    _loadTeamMembers();
+  }
 
   Future<void> _loadBusinessName() async {
     try {
@@ -1968,10 +1973,21 @@ class _AddSheetState extends State<_AddSheet> {
     } catch (e) { debugPrint('Load biz name: $e'); }
   }
 
+  Future<void> _loadTeamMembers() async {
+    try {
+      final data = await _db.from('profiles')
+          .select('id, full_name')
+          .eq('business_id', widget.businessId)
+          .order('full_name');
+      if (!mounted) return;
+      setState(() => _teamMembers = List<Map<String, dynamic>>.from(data));
+    } catch (e) { debugPrint('Load team members: $e'); }
+  }
+
   @override
   void dispose() {
     for (final c in [_nameCtrl,_emailCtrl,_phoneCtrl,_bizCtrl,_addrCtrl,
-        _cityCtrl,_stateCtrl,_postalCtrl,_notesCtrl,_tagCtrl,_valueCtrl,_assignCtrl]) c.dispose();
+        _cityCtrl,_stateCtrl,_postalCtrl,_notesCtrl,_tagCtrl,_valueCtrl]) c.dispose();
     super.dispose();
   }
 
@@ -1999,7 +2015,11 @@ class _AddSheetState extends State<_AddSheet> {
         'lead_address': addrParts.isEmpty ? null : addrParts.join(', '),
         'estimated_value': _valueCtrl.text.trim().isEmpty ? null
             : double.tryParse(_valueCtrl.text.trim().replaceAll(r'$', '').replaceAll(',', '')),
-        'assigned_to': _assignCtrl.text.trim().isEmpty ? null : _assignCtrl.text.trim(),
+        'assigned_to': _assignedToName,
+        'assigned_to_profile_id': _assignedToName != null
+            ? _teamMembers.firstWhere((m) => m['full_name'] == _assignedToName,
+                orElse: () => {})['id'] as int?
+            : null,
         'date_added': DateTime.now().toIso8601String(),
       });
       widget.onSaved();
@@ -2061,7 +2081,7 @@ class _AddSheetState extends State<_AddSheet> {
             Row(children: [
               Expanded(child: _field(_valueCtrl, 'Estimated Value (\$)', type: TextInputType.number)),
               const SizedBox(width: 12),
-              Expanded(child: _field(_assignCtrl, 'Assigned To')),
+              Expanded(child: _assignDropdown()),
             ]),
             const SizedBox(height: 20),
             _secLabel('Address'),
@@ -2168,6 +2188,26 @@ class _AddSheetState extends State<_AddSheet> {
     decoration: InputDecoration(labelText: label,
       labelStyle: const TextStyle(color: AppTheme.textSecondary, fontSize: 13)),
   );
+
+  Widget _assignDropdown() =>
+    Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text('Assigned To', style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12)),
+      const SizedBox(height: 6),
+      Container(height: 44, padding: const EdgeInsets.symmetric(horizontal: 12),
+        decoration: BoxDecoration(color: AppTheme.cardBg, borderRadius: BorderRadius.circular(8), border: Border.all(color: AppTheme.borderColor)),
+        child: DropdownButtonHideUnderline(child: DropdownButton<String?>(
+          value: _assignedToName, isExpanded: true, dropdownColor: AppTheme.cardBg,
+          style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13),
+          hint: const Text('Unassigned', style: TextStyle(color: AppTheme.textSecondary)),
+          items: [
+            const DropdownMenuItem<String?>(value: null, child: Text('Unassigned')),
+            ..._teamMembers.map((m) => DropdownMenuItem<String?>(
+                value: m['full_name'] as String?,
+                child: Text(m['full_name'] as String? ?? 'Unknown'))),
+          ],
+          onChanged: (v) => setState(() => _assignedToName = v),
+        ))),
+    ]);
 
   Widget _drop(String label, String value, List<String> items, ValueChanged<String?> onChange) =>
     Column(crossAxisAlignment: CrossAxisAlignment.start, children: [

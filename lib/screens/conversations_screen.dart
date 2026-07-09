@@ -407,6 +407,8 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
   }
 
   Future<void> _loadUserProfile() async {
+    final isSuperuser = AppRouter.cachedIsSuperuser == true;
+
     try {
       final userId = _supabase.auth.currentUser?.id;
       if (userId == null) return;
@@ -414,30 +416,45 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
           .from('profiles')
           .select('full_name, role, business_id')
           .eq('user_id', userId)
-          .single();
+          .maybeSingle();
       if (!mounted) return;
-      final role = res['role'] as String? ?? 'user';
+      final role = res?['role'] as String? ?? 'user';
       final isOwner = role == 'owner';
-      final isSuperuser = AppRouter.cachedIsSuperuser == true;
       setState(() {
-        _currentUserFullName = res['full_name'] as String?;
+        _currentUserFullName = res?['full_name'] as String?;
         _currentUserRole = role;
         _isOwnerOrSuperuser = isOwner || isSuperuser;
       });
+    } catch (e) {
+      debugPrint('Load user profile error: $e');
+      if (mounted) setState(() => _isOwnerOrSuperuser = isSuperuser);
+    }
 
-      // Load team members for assignment dropdown
+    // Load team members for the assignment dropdown — independent of
+    // whether the caller has their own profiles row. The superuser
+    // intentionally has none, so this must not depend on the block above.
+    try {
       final businessId = await getActiveBusinessId();
       if (businessId == null) return;
       final members = await _supabase
           .from('profiles')
-          .select('full_name, role')
+          .select('id, full_name, role')
           .eq('business_id', businessId)
           .order('full_name', ascending: true);
       if (!mounted) return;
       setState(() => _teamMembers = List<Map<String, dynamic>>.from(members));
     } catch (e) {
-      debugPrint('Load user profile error: $e');
+      debugPrint('Load team members error: $e');
     }
+  }
+
+  int? _profileIdForName(String? fullName) {
+    if (fullName == null) return null;
+    final match = _teamMembers.firstWhere(
+      (m) => m['full_name'] == fullName,
+      orElse: () => {},
+    );
+    return match['id'] as int?;
   }
 
   Future<void> _assignConversation(Conversation convo, String? assignee) async {
@@ -446,7 +463,10 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
     try {
       await _supabase
           .from('conversations')
-          .update({'assigned_to': assignee}).eq('id', convo.id);
+          .update({
+            'assigned_to': assignee,
+            'assigned_to_profile_id': _profileIdForName(assignee),
+          }).eq('id', convo.id);
       await _loadConversations();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -3328,24 +3348,26 @@ Future<void> _updateTags(Conversation c, List<String> newTags) async {
             ),
           ),
           const SizedBox(width: 12),
-          Expanded(
+          SizedBox(
+            width: 200,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(c.contactName,
+                    overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
                         fontSize: 14,
                         fontWeight: FontWeight.w700,
                         color: AppTheme.textPrimary)),
                 Text(c.contactPhone,
+                    overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
                         fontSize: 12, color: AppTheme.textSecondary)),
               ],
             ),
           ),
           const SizedBox(width: 8),
-          SizedBox(
-            width: 580,
+          Expanded(
             child: SingleChildScrollView(
               scrollDirection: Axis.horizontal,
               child: Row(
@@ -3396,14 +3418,26 @@ Future<void> _updateTags(Conversation c, List<String> newTags) async {
                   const SizedBox(width: 8),
                   // ── Assign to dropdown ──
                   if (_teamMembers.isNotEmpty)
-                    SizedBox(
+                    Container(
                       height: 28,
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      decoration: BoxDecoration(
+                        border: Border.all(color: AppTheme.borderColor),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
                       child: _assigningConvo
                           ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
                           : DropdownButtonHideUnderline(
                               child: DropdownButton<String?>(
                                 value: c.assignedTo,
-                                hint: const Text('Assign', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+                                hint: const Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.person_outline_rounded, size: 14, color: AppTheme.textSecondary),
+                                    SizedBox(width: 4),
+                                    Text('Assign', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+                                  ],
+                                ),
                                 icon: const Icon(Icons.keyboard_arrow_down_rounded, size: 14, color: AppTheme.textSecondary),
                                 style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary),
                                 isDense: true,

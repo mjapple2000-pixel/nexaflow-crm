@@ -119,7 +119,7 @@ class _RoutesScreenState extends State<RoutesScreen> {
       if (_hasAccess && _planAllows) {
         final team = await _db
             .from('profiles')
-            .select('user_id, full_name')
+            .select('id, user_id, full_name')
             .eq('business_id', _businessId!)
             .not('user_id', 'is', null)
             .order('full_name');
@@ -181,6 +181,14 @@ class _RoutesScreenState extends State<RoutesScreen> {
       orElse: () => {},
     );
     return teamMember['full_name'] as String?;
+  }
+
+  int? _selectedProfileId() {
+    final teamMember = _teamProfiles.firstWhere(
+      (p) => p['user_id'] == _selectedUserId,
+      orElse: () => {},
+    );
+    return teamMember['id'] as int?;
   }
 
   Future<void> _fetchInitialLocation() async {
@@ -413,7 +421,10 @@ class _RoutesScreenState extends State<RoutesScreen> {
 
     if (apptId != null) {
       try {
-        await _db.from('appointments').update({'assigned_to': null}).eq('id', apptId);
+        await _db.from('appointments').update({
+          'assigned_to': null,
+          'assigned_to_profile_id': null,
+        }).eq('id', apptId);
       } catch (e) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -474,7 +485,10 @@ class _RoutesScreenState extends State<RoutesScreen> {
         await _stripStopFromOtherRoutes(apptId, _currentRoute!['id'] as int);
       }
 
-      await _db.from('appointments').update({'assigned_to': fullName}).eq('id', apptId);
+      await _db.from('appointments').update({
+        'assigned_to': fullName,
+        'assigned_to_profile_id': _selectedProfileId(),
+      }).eq('id', apptId);
 
       final stops = List<Map<String, dynamic>>.from(_currentRoute!['stops'] as List? ?? []);
       stops.add({

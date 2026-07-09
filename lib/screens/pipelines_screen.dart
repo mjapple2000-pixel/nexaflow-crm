@@ -1295,7 +1295,7 @@ class _AddDealDialogState extends State<_AddDealDialog> {
   Future<void> _loadTeamMembers() async {
     try {
       final data = await _db.from('profiles')
-          .select('user_id, full_name')
+          .select('id, user_id, full_name')
           .eq('business_id', widget.businessId)
           .order('full_name');
       if (!mounted) return;
@@ -1328,6 +1328,10 @@ class _AddDealDialogState extends State<_AddDealDialog> {
         'assigned_to': _selectedAssignedToId != null
             ? _teamMembers.firstWhere((m) => m['user_id'] == _selectedAssignedToId,
                 orElse: () => {'full_name': _selectedAssignedToId})['full_name'] as String?
+            : null,
+        'assigned_to_profile_id': _selectedAssignedToId != null
+            ? _teamMembers.firstWhere((m) => m['user_id'] == _selectedAssignedToId,
+                orElse: () => {})['id'] as int?
             : null,
         'expected_close': _closeDate?.toIso8601String().split('T').first,
         'business_id': widget.businessId,
@@ -1897,7 +1901,7 @@ class _DealDetailDialogState extends State<_DealDetailDialog> {
       if (!mounted) return;
       final data = await Supabase.instance.client
           .from('profiles')
-          .select('user_id, full_name')
+          .select('id, user_id, full_name')
           .eq('business_id', businessId!)
           .order('full_name');
       if (!mounted) return;
@@ -1924,6 +1928,10 @@ class _DealDetailDialogState extends State<_DealDetailDialog> {
         'status': _status,
         'notes': _notesCtrl.text.trim().isEmpty ? null : _notesCtrl.text.trim(),
         'assigned_to': _selectedAssignedToName,
+        'assigned_to_profile_id': _selectedAssignedToName != null
+            ? _teamMembers.firstWhere((m) => m['full_name'] == _selectedAssignedToName,
+                orElse: () => {})['id'] as int?
+            : null,
         'expected_close': _closeDate?.toIso8601String().split('T').first,
         'tags': _tags,
         if (stageChanged) 'stage_moved_at': DateTime.now().toUtc().toIso8601String(),

@@ -3674,6 +3674,15 @@ class _AppointmentFormTabState extends State<_AppointmentFormTab> {
     });
   }
 
+  int? _teamMemberProfileId() {
+    if (_teamMember == null) return null;
+    final match = widget.teamMembers.firstWhere(
+      (m) => m['full_name'] == _teamMember,
+      orElse: () => {},
+    );
+    return match['id'] as int?;
+  }
+
   Future<void> _pickDateTime(bool isStart) async {
     final date = await showDatePicker(
       context: context,
@@ -3727,6 +3736,7 @@ class _AppointmentFormTabState extends State<_AppointmentFormTab> {
         'is_recurring':     false,
         if (_calendarId != null) 'calendar_id': int.tryParse(_calendarId!),
         if (_teamMember != null) 'assigned_to':  _teamMember,
+        if (_teamMember != null) 'assigned_to_profile_id': _teamMemberProfileId(),
         if (_selectedJobTypeId != null) 'job_type': widget.jobTypes.firstWhere((j) => j['id'] == _selectedJobTypeId)['name'],
       };
       final newAppt = await _db.from('appointments').insert(payload).select().maybeSingle();
@@ -4983,7 +4993,8 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
         'booking_source':   _sourceCtrl.text.trim(),
         'admin_email':      _adminEmailCtrl.text.trim(),
         if (_calendarId != null) 'calendar_id': int.tryParse(_calendarId!),
-        if (_assignedTo != null) 'assigned_to': _assignedTo,
+        'assigned_to': _assignedTo,
+        'assigned_to_profile_id': _assignedToProfileId(),
         'job_type': _selectedJobType,
       }).eq('id', widget.appointment['id']);
 
@@ -5071,6 +5082,15 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
     setState(() => _deleting = true);
     await _db.from('appointments').delete().eq('id', widget.appointment['id']);
     widget.onUpdated();
+  }
+
+  int? _assignedToProfileId() {
+    if (_assignedTo == null) return null;
+    final match = widget.teamMembers.firstWhere(
+      (m) => m['full_name'] == _assignedTo,
+      orElse: () => {},
+    );
+    return match['id'] as int?;
   }
 
   Future<void> _pickDateTime(bool isStart) async {

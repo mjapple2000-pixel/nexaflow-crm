@@ -134,7 +134,7 @@ class _TasksScreenState extends State<TasksScreen> {
     try {
       final res = await _db
           .from('profiles')
-          .select('user_id, full_name')
+          .select('id, user_id, full_name')
           .eq('business_id', _businessId!);
       _teamMembers = List<Map<String, dynamic>>.from(res as List);
     } catch (e) {
@@ -739,9 +739,16 @@ class _TaskDialogState extends State<_TaskDialog> {
       _dueDate = t.dueDate;
       _assignedName = t.assignedName;
     } else {
-      // Default assign to current user
-      _assignedName = widget.currentUserName;
-      _assignedTo = widget.currentUserId;
+      // Default assign to current user — but only if they're actually a
+      // real team member with a profile row. The superuser intentionally
+      // has none, so this must fall back to "Unassigned" rather than an
+      // empty string, which the dropdown can't match.
+      final isRealTeamMember = widget.teamMembers
+          .any((m) => m['full_name'] == widget.currentUserName);
+      if (widget.currentUserName.isNotEmpty && isRealTeamMember) {
+        _assignedName = widget.currentUserName;
+        _assignedTo = widget.currentUserId;
+      }
     }
   }
 
@@ -762,6 +769,15 @@ class _TaskDialogState extends State<_TaskDialog> {
     if (picked != null) setState(() => _dueDate = picked);
   }
 
+  int? _profileIdForName(String? fullName) {
+    if (fullName == null) return null;
+    final match = widget.teamMembers.firstWhere(
+      (m) => m['full_name'] == fullName,
+      orElse: () => {},
+    );
+    return match['id'] as int?;
+  }
+
   Future<void> _save() async {
     if (_titleCtrl.text.trim().isEmpty) return;
     setState(() => _saving = true);
@@ -774,6 +790,7 @@ class _TaskDialogState extends State<_TaskDialog> {
         'priority':      _priority,
         'due_date':      _dueDate?.toIso8601String(),
         'assigned_to':   _assignedTo,
+        'assigned_to_profile_id': _profileIdForName(_assignedName),
         'assigned_name': _assignedName,
         'created_by':    widget.currentUserId,
         'completed_at':  _status == 'done' ? DateTime.now().toIso8601String() : null,

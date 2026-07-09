@@ -5,6 +5,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import '../theme/app_theme.dart';
+import '../utils/business_utils.dart';
 
 class ContactDetailScreen extends StatefulWidget {
   final String leadId;
@@ -34,10 +35,11 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
   final _addrCtrl    = TextEditingController();
   final _notesCtrl   = TextEditingController();
   final _valueCtrl   = TextEditingController();
-  final _assignCtrl  = TextEditingController();
   String _editStatus = 'New';
   String _editSource = 'Manual';
   List<String> _editTags = [];
+  List<Map<String, dynamic>> _teamMembers = [];
+  String? _editAssignedTo;
 
   // Portal state
   bool _sendingPortalLink = false;
@@ -56,6 +58,20 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
     super.initState();
     _tabs = TabController(length: 3, vsync: this);
     _load();
+    _loadTeamMembers();
+  }
+
+  Future<void> _loadTeamMembers() async {
+    try {
+      final businessId = await getActiveBusinessId();
+      if (businessId == null) return;
+      final data = await _db.from('profiles')
+          .select('id, full_name')
+          .eq('business_id', businessId)
+          .order('full_name');
+      if (!mounted) return;
+      setState(() => _teamMembers = List<Map<String, dynamic>>.from(data));
+    } catch (e) { debugPrint('Load team members: $e'); }
   }
 
   @override
@@ -63,7 +79,7 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
     _tabs.dispose();
     _nameCtrl.dispose(); _emailCtrl.dispose(); _phoneCtrl.dispose();
     _bizCtrl.dispose();  _addrCtrl.dispose();  _notesCtrl.dispose();
-    _valueCtrl.dispose(); _assignCtrl.dispose();
+    _valueCtrl.dispose();
     super.dispose();
   }
 
@@ -137,7 +153,7 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
     _addrCtrl.text   = _lead!['lead_address'] ?? '';
     _notesCtrl.text  = _lead!['notes'] ?? '';
     _valueCtrl.text  = _lead!['estimated_value']?.toString() ?? '';
-    _assignCtrl.text = _lead!['assigned_to'] ?? '';
+    _editAssignedTo = _lead!['assigned_to'] as String?;
     _editStatus = _lead!['lead_status'] ?? 'New';
     _editSource = _lead!['source'] ?? 'Manual';
     // Parse tags
@@ -187,7 +203,11 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
         'business_name':   _bizCtrl.text.trim().isEmpty ? null : _bizCtrl.text.trim(),
         'lead_address':    _addrCtrl.text.trim().isEmpty ? null : _addrCtrl.text.trim(),
         'estimated_value': double.tryParse(_valueCtrl.text.trim().replaceAll(',', '')),
-        'assigned_to':     _assignCtrl.text.trim().isEmpty ? null : _assignCtrl.text.trim(),
+        'assigned_to':     _editAssignedTo,
+        'assigned_to_profile_id': _editAssignedTo != null
+            ? _teamMembers.firstWhere((m) => m['full_name'] == _editAssignedTo,
+                orElse: () => {})['id'] as int?
+            : null,
         'tags':            _editTags,
       }).eq('id', id);
       await _load();
@@ -1197,7 +1217,7 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
             _editField(_valueCtrl, r'Estimated Value ($)',
                 type: TextInputType.number),
             const SizedBox(height: 12),
-            _editField(_assignCtrl, 'Assigned To'),
+            _assignDropdown(),
             const SizedBox(height: 12),
             // Converted toggle
             Container(
@@ -1353,6 +1373,35 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
           labelStyle: const TextStyle(color: AppTheme.textSecondary, fontSize: 13)),
       ),
     );
+  }
+
+  Widget _assignDropdown() {
+    final validValue = _teamMembers.any((m) => m['full_name'] == _editAssignedTo)
+        ? _editAssignedTo : null;
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      const Text('Assigned To', style: TextStyle(color: AppTheme.textSecondary, fontSize: 12)),
+      const SizedBox(height: 6),
+      Container(
+        height: 44, padding: const EdgeInsets.symmetric(horizontal: 12),
+        decoration: BoxDecoration(
+          color: AppTheme.pageBg,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: AppTheme.borderColor)),
+        child: DropdownButtonHideUnderline(child: DropdownButton<String?>(
+          value: validValue, isExpanded: true,
+          dropdownColor: AppTheme.cardBg,
+          style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13),
+          hint: const Text('Unassigned', style: TextStyle(color: AppTheme.textSecondary)),
+          items: [
+            const DropdownMenuItem<String?>(value: null, child: Text('Unassigned')),
+            ..._teamMembers.map((m) => DropdownMenuItem<String?>(
+                value: m['full_name'] as String?,
+                child: Text(m['full_name'] as String? ?? 'Unknown'))),
+          ],
+          onChanged: (v) => setState(() => _editAssignedTo = v),
+        )),
+      ),
+    ]);
   }
 
   Widget _editDropdown(String label, String value, List<String> baseItems,
