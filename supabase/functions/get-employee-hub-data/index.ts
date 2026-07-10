@@ -147,6 +147,53 @@ Deno.serve(async (req) => {
       }
     }
 
+    // ── 6c. Past completed job forms for this tech (any date) ───────────────
+    const { data: pastSubmissions, error: pastSubsError } = await supabase
+      .from("job_form_submissions")
+      .select("id, job_form_id, appointment_id, status, updated_at")
+      .eq("business_id", hubToken.business_id)
+      .eq("completed_by_profile_id", profile.id)
+      .eq("status", "completed")
+      .is("deleted_at", null)
+      .order("updated_at", { ascending: false })
+      .limit(30);
+
+    if (pastSubsError) {
+      console.error("get-employee-hub-data past submissions lookup error:", pastSubsError);
+    }
+
+    let pastJobForms: any[] = [];
+    if (pastSubmissions && pastSubmissions.length > 0) {
+      const pastFormIds = [...new Set(pastSubmissions.map((s: any) => s.job_form_id))];
+      const pastApptIds = [...new Set(pastSubmissions.map((s: any) => s.appointment_id).filter((id: any) => id != null))];
+
+      const { data: pastForms } = await supabase
+        .from("job_forms")
+        .select("id, name")
+        .in("id", pastFormIds);
+      const pastFormsById = new Map((pastForms ?? []).map((f: any) => [f.id, f.name]));
+
+      let pastApptsById = new Map<number, any>();
+      if (pastApptIds.length > 0) {
+        const { data: pastAppts } = await supabase
+          .from("appointments")
+          .select("id, appointment_type, lead_name")
+          .in("id", pastApptIds);
+        pastApptsById = new Map((pastAppts ?? []).map((a: any) => [a.id, a]));
+      }
+
+      pastJobForms = pastSubmissions.map((s: any) => {
+        const appt = s.appointment_id ? pastApptsById.get(s.appointment_id) : null;
+        return {
+          submission_id: s.id,
+          form_name: pastFormsById.get(s.job_form_id) ?? "Unknown Form",
+          appointment_type: appt?.appointment_type ?? null,
+          lead_name: appt?.lead_name ?? null,
+          completed_at: s.updated_at,
+        };
+      });
+    }
+
     // ── 7. Today's assigned route (if a dispatcher has built one) ───────────
     const routeDateStr = todayStart.toISOString().slice(0, 10);
     const { data: route, error: routeError } = await supabase
@@ -211,6 +258,7 @@ Deno.serve(async (req) => {
           lead_address: a.location,
           job_forms: jobFormsByAppt.get(a.id) ?? [],
         })),
+        past_job_forms: pastJobForms,
       }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );

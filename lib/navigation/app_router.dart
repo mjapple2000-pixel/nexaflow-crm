@@ -41,6 +41,8 @@ import '../screens/invoice_detail_screen.dart';
 import '../screens/new_invoice_screen.dart';
 import '../screens/client_hub_screen.dart';
 import '../screens/employee_hub_screen.dart';
+import '../screens/job_form_fill_screen.dart';
+import '../screens/completed_job_form_viewer.dart';
 import '../screens/timesheets_screen.dart';
 import '../screens/routes_screen.dart';
 
@@ -229,6 +231,22 @@ class AppRouter {
         name: 'employee-hub',
         builder: (context, state) => EmployeeHubScreen(
           token: state.pathParameters['token']!,
+        ),
+      ),
+      GoRoute(
+        path: '/hub/:token/job-form/:submissionId',
+        name: 'job-form-fill',
+        builder: (context, state) => JobFormFillScreen(
+          token: state.pathParameters['token']!,
+          submissionId: state.pathParameters['submissionId']!,
+        ),
+      ),
+      GoRoute(
+        path: '/hub/:token/job-form/:submissionId/view',
+        name: 'job-form-view',
+        builder: (context, state) => CompletedJobFormViewer(
+          token: state.pathParameters['token']!,
+          submissionId: state.pathParameters['submissionId']!,
         ),
       ),
       GoRoute(

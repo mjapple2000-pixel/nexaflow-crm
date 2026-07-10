@@ -3,6 +3,7 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:geolocator/geolocator.dart';
+import 'package:go_router/go_router.dart';
 import 'dart:convert';
 import '../theme/app_theme.dart';
 
@@ -28,6 +29,7 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
   Map<String, dynamic>? _activeEntry;
   List<Map<String, dynamic>> _appointments = [];
   List<Map<String, dynamic>> _routeStops = [];
+  List<Map<String, dynamic>> _pastJobForms = [];
 
   int? _selectedAppointmentId;
   bool _submitting = false;
@@ -93,6 +95,8 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
             List<Map<String, dynamic>>.from(data['appointments'] ?? []);
         _routeStops =
             List<Map<String, dynamic>>.from(data['route_stops'] ?? []);
+        _pastJobForms =
+            List<Map<String, dynamic>>.from(data['past_job_forms'] ?? []);
         _loading = false;
       });
 
@@ -592,7 +596,17 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
                             fontWeight: FontWeight.w700,
                             color: AppTheme.textPrimary)),
                     const SizedBox(height: 10),
-                    ..._appointments.map((a) => _AppointmentCard(appt: a)),
+                    ..._appointments.map((a) => _AppointmentCard(appt: a, token: widget.token)),
+                  ],
+                  if (_pastJobForms.isNotEmpty) ...[
+                    const SizedBox(height: 24),
+                    const Text("Past Job Forms",
+                        style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700,
+                            color: AppTheme.textPrimary)),
+                    const SizedBox(height: 10),
+                    ..._pastJobForms.map((f) => _PastJobFormCard(token: widget.token, form: f)),
                   ],
                   const SizedBox(height: 40),
                 ],
@@ -609,7 +623,8 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
 
 class _AppointmentCard extends StatelessWidget {
   final Map<String, dynamic> appt;
-  const _AppointmentCard({required this.appt});
+  final String token;
+  const _AppointmentCard({required this.appt, required this.token});
 
   @override
   Widget build(BuildContext context) {
@@ -620,6 +635,7 @@ class _AppointmentCard extends StatelessWidget {
     final type = appt['appointment_type'] as String? ?? 'Appointment';
     final leadName = appt['lead_name'] as String? ?? '';
     final address = appt['lead_address'] as String? ?? '';
+    final jobForms = List<Map<String, dynamic>>.from(appt['job_forms'] ?? []);
 
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
@@ -629,38 +645,53 @@ class _AppointmentCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(10),
         border: Border.all(color: AppTheme.borderColor),
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(type,
+          Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(type,
+                        style: const TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: AppTheme.textPrimary)),
+                    if (leadName.isNotEmpty) ...[
+                      const SizedBox(height: 2),
+                      Text(leadName,
+                          style: const TextStyle(
+                              fontSize: 12, color: AppTheme.textSecondary)),
+                    ],
+                    if (address.isNotEmpty) ...[
+                      const SizedBox(height: 2),
+                      Text(address,
+                          style: const TextStyle(
+                              fontSize: 11, color: AppTheme.textSecondary)),
+                    ],
+                  ],
+                ),
+              ),
+              if (timeStr.isNotEmpty)
+                Text(timeStr,
                     style: const TextStyle(
-                        fontSize: 13,
+                        fontSize: 12,
                         fontWeight: FontWeight.w600,
-                        color: AppTheme.textPrimary)),
-                if (leadName.isNotEmpty) ...[
-                  const SizedBox(height: 2),
-                  Text(leadName,
-                      style: const TextStyle(
-                          fontSize: 12, color: AppTheme.textSecondary)),
-                ],
-                if (address.isNotEmpty) ...[
-                  const SizedBox(height: 2),
-                  Text(address,
-                      style: const TextStyle(
-                          fontSize: 11, color: AppTheme.textSecondary)),
-                ],
-              ],
-            ),
+                        color: AppTheme.textSecondary)),
+            ],
           ),
-          if (timeStr.isNotEmpty)
-            Text(timeStr,
-                style: const TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    color: AppTheme.textSecondary)),
+          if (jobForms.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: jobForms
+                  .map((f) => _JobFormChip(token: token, form: f))
+                  .toList(),
+            ),
+          ],
         ],
       ),
     );
@@ -671,6 +702,155 @@ class _AppointmentCard extends StatelessWidget {
     final min = dt.minute.toString().padLeft(2, '0');
     final ampm = dt.hour < 12 ? 'AM' : 'PM';
     return '$h:$min $ampm';
+  }
+}
+
+// ── Job form chip (tappable, links to the field fill-out screen) ──────────────
+
+class _PastJobFormCard extends StatelessWidget {
+  final String token;
+  final Map<String, dynamic> form;
+  const _PastJobFormCard({required this.token, required this.form});
+
+  String _formatDate(String? iso) {
+    if (iso == null) return '';
+    final dt = DateTime.tryParse(iso)?.toLocal();
+    if (dt == null) return '';
+    final h = dt.hour % 12 == 0 ? 12 : dt.hour % 12;
+    final min = dt.minute.toString().padLeft(2, '0');
+    final ampm = dt.hour < 12 ? 'AM' : 'PM';
+    return '${dt.month}/${dt.day}/${dt.year} · $h:$min $ampm';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final submissionId = form['submission_id'];
+    final formName = form['form_name'] as String? ?? 'Job Form';
+    final apptType = form['appointment_type'] as String? ?? '';
+    final leadName = form['lead_name'] as String? ?? '';
+    final completedAt = _formatDate(form['completed_at'] as String?);
+
+    return InkWell(
+      onTap: () => context.go('/hub/$token/job-form/$submissionId/view'),
+      borderRadius: BorderRadius.circular(10),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 8),
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: AppTheme.cardBg,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: AppTheme.borderColor),
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.check_circle_outline_rounded,
+                size: 18, color: AppTheme.success),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(formName,
+                      style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: AppTheme.textPrimary)),
+                  if (apptType.isNotEmpty || leadName.isNotEmpty) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      [apptType, leadName].where((s) => s.isNotEmpty).join(' — '),
+                      style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
+                    ),
+                  ],
+                  if (completedAt.isNotEmpty) ...[
+                    const SizedBox(height: 2),
+                    Text(completedAt,
+                        style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                  ],
+                ],
+              ),
+            ),
+            const Icon(Icons.chevron_right, size: 16, color: AppTheme.textSecondary),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _JobFormChip extends StatelessWidget {
+  final String token;
+  final Map<String, dynamic> form;
+  const _JobFormChip({required this.token, required this.form});
+
+  @override
+  Widget build(BuildContext context) {
+    final status = form['status'] as String? ?? 'not_started';
+    final formName = form['form_name'] as String? ?? 'Job Form';
+    final submissionId = form['submission_id'];
+
+    return InkWell(
+      onTap: () => context.go(status == 'completed'
+          ? '/hub/$token/job-form/$submissionId/view'
+          : '/hub/$token/job-form/$submissionId'),
+      borderRadius: BorderRadius.circular(99),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: _formStatusColor(status).withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(99),
+          border: Border.all(color: _formStatusColor(status).withValues(alpha: 0.4)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(_formStatusIcon(status), size: 13, color: _formStatusColor(status)),
+            const SizedBox(width: 5),
+            Text(formName,
+                style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: _formStatusColor(status))),
+            const SizedBox(width: 5),
+            Text('· ${_formStatusLabel(status)}',
+                style: TextStyle(fontSize: 11, color: _formStatusColor(status))),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+Color _formStatusColor(String status) {
+  switch (status) {
+    case 'completed':
+      return AppTheme.success;
+    case 'in_progress':
+      return Colors.orange;
+    default:
+      return AppTheme.textSecondary;
+  }
+}
+
+String _formStatusLabel(String status) {
+  switch (status) {
+    case 'completed':
+      return 'Completed';
+    case 'in_progress':
+      return 'In Progress';
+    default:
+      return 'Not Started';
+  }
+}
+
+IconData _formStatusIcon(String status) {
+  switch (status) {
+    case 'completed':
+      return Icons.check_circle_outline;
+    case 'in_progress':
+      return Icons.edit_note_rounded;
+    default:
+      return Icons.assignment_outlined;
   }
 }
 

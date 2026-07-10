@@ -25,6 +25,7 @@ Deno.serve(async (req) => {
     let action: string | null = null;
     let answers: any = null;
     let fieldId: string | null = null;
+    let photoPath: string | null = null;
     let signedByName: string | null = null;
     let file: File | null = null;
 
@@ -37,6 +38,7 @@ Deno.serve(async (req) => {
       const answersRaw = formData.get("answers") as string | null;
       answers = answersRaw ? JSON.parse(answersRaw) : null;
       fieldId = formData.get("field_id") as string | null;
+      photoPath = formData.get("photo_path") as string | null;
       signedByName = formData.get("signed_by_name") as string | null;
       file = formData.get("file") as File | null;
     } else {
@@ -46,6 +48,7 @@ Deno.serve(async (req) => {
       action = body.action;
       answers = body.answers ?? null;
       fieldId = body.field_id ?? null;
+      photoPath = body.photo_path ?? null;
       signedByName = body.signed_by_name ?? null;
     }
 
@@ -56,7 +59,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    const validActions = ["save_answers", "upload_photo", "upload_signature", "complete"];
+    const validActions = ["save_answers", "upload_photo", "upload_signature", "delete_photo", "complete"];
     if (!validActions.includes(action)) {
       return new Response(JSON.stringify({ error: "Invalid action" }), {
         status: 400,
@@ -87,7 +90,7 @@ Deno.serve(async (req) => {
     // ── 2. Load + validate submission belongs to this business ───────────────
     const { data: submission, error: subError } = await supabase
       .from("job_form_submissions")
-      .select("id, business_id, photo_urls, status, job_form_id")
+      .select("id, business_id, photo_urls, status, job_form_id, answers")
       .eq("id", submissionId)
       .eq("business_id", hubToken.business_id)
       .is("deleted_at", null)
@@ -152,10 +155,15 @@ Deno.serve(async (req) => {
       }
 
       const updatedUrls = [...(submission.photo_urls ?? []), path];
+      const currentAnswers = submission.answers ?? {};
+      const existingFieldPhotos = Array.isArray(currentAnswers[fieldId]) ? currentAnswers[fieldId] : [];
+      const updatedAnswers = { ...currentAnswers, [fieldId]: [...existingFieldPhotos, path] };
+
       const { error: updateError } = await supabase
         .from("job_form_submissions")
         .update({
           photo_urls: updatedUrls,
+          answers: updatedAnswers,
           completed_by_profile_id: hubToken.profile_id,
           status: submission.status === "not_started" ? "in_progress" : submission.status,
         })
@@ -169,6 +177,43 @@ Deno.serve(async (req) => {
       }
 
       return new Response(JSON.stringify({ success: true, path }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    // ── delete_photo ───────────────────────────────────────────────────────
+    if (action === "delete_photo") {
+      if (!fieldId || !photoPath) {
+        return new Response(JSON.stringify({ error: "field_id and photo_path are required" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      await supabase.storage.from(BUCKET).remove([photoPath]);
+
+      const updatedUrls = (submission.photo_urls ?? []).filter((p: string) => p !== photoPath);
+      const currentAnswers = submission.answers ?? {};
+      const existingFieldPhotos = Array.isArray(currentAnswers[fieldId]) ? currentAnswers[fieldId] : [];
+      const updatedAnswers = {
+        ...currentAnswers,
+        [fieldId]: existingFieldPhotos.filter((p: string) => p !== photoPath),
+      };
+
+      const { error: updateError } = await supabase
+        .from("job_form_submissions")
+        .update({ photo_urls: updatedUrls, answers: updatedAnswers })
+        .eq("id", submissionId);
+
+      if (updateError) {
+        return new Response(JSON.stringify({ error: "Error removing photo: " + updateError.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      return new Response(JSON.stringify({ success: true }), {
         status: 200,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });

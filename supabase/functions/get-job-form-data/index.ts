@@ -10,6 +10,21 @@ const supabase = createClient(
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
 );
 
+const BUCKET = "job-form-media";
+const SIGNED_URL_EXPIRY_SECONDS = 3600;
+
+async function getSignedUrl(path: string | null): Promise<string | null> {
+  if (!path) return null;
+  const { data, error } = await supabase.storage
+    .from(BUCKET)
+    .createSignedUrl(path, SIGNED_URL_EXPIRY_SECONDS);
+  if (error) {
+    console.error("Signed URL error for", path, error.message);
+    return null;
+  }
+  return data?.signedUrl ?? null;
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -77,6 +92,14 @@ Deno.serve(async (req) => {
       });
     }
 
+    // ── 3b. Signed URLs for private bucket display ────────────────────────────
+    const rawPhotoUrls: string[] = submission.photo_urls ?? [];
+    const signedUrlEntries = await Promise.all(
+      rawPhotoUrls.map(async (p) => [p, await getSignedUrl(p)] as [string, string | null])
+    );
+    const photoSignedUrlMap: Record<string, string | null> = Object.fromEntries(signedUrlEntries);
+    const signatureSignedUrl = await getSignedUrl(submission.signature_url);
+
     // ── 4. Appointment context (for header display) ──────────────────────────
     let appointmentInfo: any = null;
     if (submission.appointment_id) {
@@ -94,15 +117,19 @@ Deno.serve(async (req) => {
         submission_id: submission.id,
         status: submission.status,
         answers: submission.answers ?? {},
-        photo_urls: submission.photo_urls ?? [],
+        photo_urls: rawPhotoUrls,
+        photo_signed_urls: photoSignedUrlMap,
         signature_url: submission.signature_url,
+        signature_signed_url: signatureSignedUrl,
         signed_by_name: submission.signed_by_name,
         signed_at: submission.signed_at,
         form_name: jobForm.name,
         form_type: jobForm.form_type,
         fields: jobForm.fields ?? [],
         requires_signature: jobForm.requires_signature === true,
-        appointment: appointmentInfo,
+        appointment_type: appointmentInfo?.appointment_type ?? null,
+        lead_name: appointmentInfo?.lead_name ?? null,
+        location: appointmentInfo?.location ?? null,
       }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );

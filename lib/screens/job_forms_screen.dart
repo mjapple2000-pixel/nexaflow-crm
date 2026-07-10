@@ -337,6 +337,19 @@ class _JobFormBuilderDialogState extends State<_JobFormBuilderDialog> {
 
     if (e != null) {
       final rawFields = List<dynamic>.from(e['fields'] as List? ?? []);
+      int maxCounter = 0;
+      for (final f in rawFields) {
+        final map = Map<String, dynamic>.from(f as Map);
+        final idStr = map['id'] as String?;
+        if (idStr != null) {
+          final match = RegExp(r'^f_(\d+)$').firstMatch(idStr);
+          if (match != null) {
+            final n = int.tryParse(match.group(1)!) ?? 0;
+            if (n > maxCounter) maxCounter = n;
+          }
+        }
+      }
+      _fieldCounter = maxCounter;
       for (final f in rawFields) {
         final map = Map<String, dynamic>.from(f as Map);
         final options = (map['options'] as List?)?.join(', ') ?? '';
