@@ -5,6 +5,7 @@ import 'dart:convert';
 import '../theme/app_theme.dart';
 import '../widgets/clickable.dart';
 import '../utils/business_utils.dart';
+import '../widgets/office_job_form_viewer_sheet.dart';
 
 // ─────────────────────────────────────────────
 //  REPORTING SCREEN
@@ -17,8 +18,16 @@ class ReportingScreen extends StatefulWidget {
   State<ReportingScreen> createState() => _ReportingScreenState();
 }
 
-class _ReportingScreenState extends State<ReportingScreen> {
+class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProviderStateMixin {
   final _supabase = Supabase.instance.client;
+  late TabController _reportTabController;
+
+  // Checklists report state
+  List<Map<String, dynamic>> _checklistSubmissions = [];
+  bool _loadingChecklists = false;
+  String? _checklistsError;
+  String _checklistStatusFilter = 'all'; // all | not_started | started
+  final _checklistSearchCtrl = TextEditingController();
 
   bool _loading = true;
   String? _error;
@@ -55,7 +64,15 @@ class _ReportingScreenState extends State<ReportingScreen> {
   @override
   void initState() {
     super.initState();
-    _loadData();
+    _reportTabController = TabController(length: 3, vsync: this);
+    _loadData().then((_) => _loadChecklistsReport());
+  }
+
+  @override
+  void dispose() {
+    _reportTabController.dispose();
+    _checklistSearchCtrl.dispose();
+    super.dispose();
   }
 
   Future<void> _loadData() async {
@@ -248,6 +265,58 @@ class _ReportingScreenState extends State<ReportingScreen> {
     }
   }
 
+  Future<void> _loadChecklistsReport() async {
+    if (_businessId == null) return;
+    setState(() { _loadingChecklists = true; _checklistsError = null; });
+    try {
+      final token = _supabase.auth.currentSession?.accessToken;
+      if (token == null) return;
+      final uri = Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/get-checklists-report')
+          .replace(queryParameters: {
+        'date_range_days': _range,
+        'status_filter': _checklistStatusFilter,
+        if (_businessId != null) 'business_id': '$_businessId',
+      });
+      final resp = await http.get(uri, headers: {'Authorization': 'Bearer $token'});
+      if (!mounted) return;
+      if (resp.statusCode != 200) {
+        setState(() { _checklistsError = 'Could not load checklists report.'; _loadingChecklists = false; });
+        return;
+      }
+      final data = jsonDecode(resp.body);
+      setState(() {
+        _checklistSubmissions = List<Map<String, dynamic>>.from(data['submissions'] ?? []);
+        _loadingChecklists = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() { _checklistsError = 'Network error — please try again.'; _loadingChecklists = false; });
+    }
+  }
+
+  List<Map<String, dynamic>> get _filteredChecklistSubmissions {
+    final q = _checklistSearchCtrl.text.trim().toLowerCase();
+    if (q.isEmpty) return _checklistSubmissions;
+    return _checklistSubmissions.where((s) {
+      final form = (s['form_name'] ?? '').toString().toLowerCase();
+      final by = (s['completed_by_name'] ?? '').toString().toLowerCase();
+      final lead = (s['lead_name'] ?? '').toString().toLowerCase();
+      return form.contains(q) || by.contains(q) || lead.contains(q);
+    }).toList();
+  }
+
+  void _openChecklistViewer(int submissionId) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => OfficeJobFormViewerSheet(
+        submissionId: submissionId,
+        businessId: _businessId,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -255,12 +324,39 @@ class _ReportingScreenState extends State<ReportingScreen> {
       body: Column(
         children: [
           _buildTopBar(),
+          Container(
+            color: AppTheme.cardBg,
+            child: TabBar(
+              controller: _reportTabController,
+              isScrollable: true,
+              tabAlignment: TabAlignment.start,
+              labelColor: AppTheme.brand,
+              unselectedLabelColor: AppTheme.textSecondary,
+              labelStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+              unselectedLabelStyle: const TextStyle(fontSize: 13),
+              indicatorColor: AppTheme.brand,
+              indicatorWeight: 2,
+              dividerColor: AppTheme.borderColor,
+              tabs: const [
+                Tab(text: 'Overview'),
+                Tab(text: 'Job Costing'),
+                Tab(text: 'Forms'),
+              ],
+            ),
+          ),
           Expanded(
             child: _loading
                 ? const Center(child: CircularProgressIndicator())
                 : _error != null
                     ? _errorView()
-                    : _buildBody(),
+                    : TabBarView(
+                        controller: _reportTabController,
+                        children: [
+                          _buildOverviewTab(),
+                          _buildJobCostingTab(),
+                          _buildChecklistsTab(),
+                        ],
+                      ),
           ),
         ],
       ),
@@ -311,6 +407,7 @@ class _ReportingScreenState extends State<ReportingScreen> {
       onTap: () {
         setState(() => _range = value);
         _loadData();
+        _loadChecklistsReport();
       },
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 150),
@@ -331,7 +428,7 @@ class _ReportingScreenState extends State<ReportingScreen> {
     );
   }
 
-  Widget _buildBody() {
+  Widget _buildOverviewTab() {
     return ListView(
       padding: const EdgeInsets.all(24),
       children: [
@@ -381,8 +478,15 @@ class _ReportingScreenState extends State<ReportingScreen> {
         _sectionTitle('Recent Campaign Performance'),
         const SizedBox(height: 12),
         _buildCampaignTable(),
-        const SizedBox(height: 28),
+        const SizedBox(height: 24),
+      ],
+    );
+  }
 
+  Widget _buildJobCostingTab() {
+    return ListView(
+      padding: const EdgeInsets.all(24),
+      children: [
         _sectionTitle('Job Costing'),
         const SizedBox(height: 4),
         const Text('Profitability tracking across jobs and calendars.',
@@ -392,6 +496,155 @@ class _ReportingScreenState extends State<ReportingScreen> {
         const SizedBox(height: 24),
       ],
     );
+  }
+
+  Widget _buildChecklistsTab() {
+    final rows = _filteredChecklistSubmissions;
+    return Padding(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _sectionTitle('Job Forms'),
+          const SizedBox(height: 4),
+          const Text('Job form submissions across your team — completed, in progress, and not yet started.',
+              style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+          const SizedBox(height: 16),
+          Row(children: [
+            _checklistFilterChip('All', 'all'),
+            const SizedBox(width: 8),
+            _checklistFilterChip('Completed', 'completed'),
+            const SizedBox(width: 8),
+            _checklistFilterChip('Started', 'started'),
+            const SizedBox(width: 8),
+            _checklistFilterChip('Not Started', 'not_started'),
+            const Spacer(),
+            IconButton(onPressed: _loadChecklistsReport, icon: const Icon(Icons.refresh, size: 18, color: AppTheme.textSecondary)),
+          ]),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: 360,
+            child: TextField(
+              controller: _checklistSearchCtrl,
+              onChanged: (_) => setState(() {}),
+              style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+              decoration: InputDecoration(
+                isDense: true,
+                hintText: 'Search forms, techs, customers',
+                hintStyle: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+                prefixIcon: const Icon(Icons.search, size: 16, color: AppTheme.textSecondary),
+                filled: true, fillColor: AppTheme.cardBg,
+                contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
+                enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
+                focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.brand)),
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+          Expanded(
+            child: _loadingChecklists
+                ? const Center(child: CircularProgressIndicator())
+                : _checklistsError != null
+                    ? Center(child: Text(_checklistsError!, style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary)))
+                    : rows.isEmpty
+                        ? Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+                            const Icon(Icons.assignment_outlined, size: 40, color: AppTheme.textMuted),
+                            const SizedBox(height: 12),
+                            const Text('No checklists found for this range', style: TextStyle(fontSize: 13, color: AppTheme.textSecondary)),
+                          ]))
+                        : Container(
+                            decoration: _cardDecoration(),
+                            child: Column(children: [
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                                decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: AppTheme.borderColor))),
+                                child: const Row(children: [
+                                  Expanded(flex: 3, child: Text('FORM', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
+                                  Expanded(flex: 2, child: Text('STATUS', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
+                                  Expanded(flex: 2, child: Text('TECHNICIAN', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
+                                  Expanded(flex: 3, child: Text('CUSTOMER / LOCATION', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
+                                  Expanded(flex: 2, child: Text('UPDATED', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
+                                ]),
+                              ),
+                              Expanded(child: ListView.separated(
+                                itemCount: rows.length,
+                                separatorBuilder: (_, __) => const Divider(height: 1, color: AppTheme.borderColor),
+                                itemBuilder: (_, i) {
+                                  final row = rows[i];
+                                  final status = row['status'] as String? ?? 'not_started';
+                                  final isCompleted = status == 'completed';
+                                  final content = Padding(
+                                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                                    child: Row(children: [
+                                      Expanded(flex: 3, child: Text(row['form_name'] ?? '', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: AppTheme.textPrimary))),
+                                      Expanded(flex: 2, child: _checklistStatusBadge(status)),
+                                      Expanded(flex: 2, child: Text(row['completed_by_name'] ?? '—', style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary))),
+                                      Expanded(flex: 3, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                        Text(row['lead_name'] ?? '—', style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary)),
+                                        if ((row['location'] ?? '').toString().isNotEmpty)
+                                          Text(row['location'], style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary), overflow: TextOverflow.ellipsis),
+                                      ])),
+                                      Expanded(flex: 2, child: Text(_fmtChecklistDate(row['updated_at']), style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary))),
+                                    ]),
+                                  );
+                                  return isCompleted
+                                      ? InkWell(onTap: () => _openChecklistViewer(row['submission_id'] as int), child: content)
+                                      : content;
+                                },
+                              )),
+                            ]),
+                          ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _checklistFilterChip(String label, String value) {
+    final selected = _checklistStatusFilter == value;
+    return Clickable(
+      onTap: () {
+        setState(() => _checklistStatusFilter = value);
+        _loadChecklistsReport();
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+        decoration: BoxDecoration(
+          color: selected ? AppTheme.brand : AppTheme.cardBg,
+          borderRadius: BorderRadius.circular(99),
+          border: Border.all(color: selected ? AppTheme.brand : AppTheme.borderColor),
+        ),
+        child: Text(label, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: selected ? Colors.white : AppTheme.textSecondary)),
+      ),
+    );
+  }
+
+  Widget _checklistStatusBadge(String status) {
+    final label = switch (status) {
+      'not_started' => 'Not Started',
+      'in_progress' => 'In Progress',
+      'completed' => 'Completed',
+      _ => status,
+    };
+    final color = switch (status) {
+      'not_started' => AppTheme.textSecondary,
+      'in_progress' => const Color(0xFFF59E0B),
+      'completed' => AppTheme.success,
+      _ => AppTheme.textSecondary,
+    };
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(color: color.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(4)),
+      child: Text(label, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: color)),
+    );
+  }
+
+  String _fmtChecklistDate(dynamic iso) {
+    final dt = DateTime.tryParse(iso?.toString() ?? '')?.toLocal();
+    if (dt == null) return '—';
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    return '${months[dt.month-1]} ${dt.day}';
   }
 
   // ── Stat Cards ────────────────────────────

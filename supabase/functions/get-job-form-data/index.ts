@@ -35,26 +35,67 @@ Deno.serve(async (req) => {
     const token = url.searchParams.get("token");
     const submissionIdParam = url.searchParams.get("submission_id");
     const submissionId = submissionIdParam ? parseInt(submissionIdParam) : null;
+    const authHeader = req.headers.get("Authorization");
+    const businessIdParam = url.searchParams.get("business_id");
 
-    if (!token || !submissionId) {
-      return new Response(JSON.stringify({ error: "token and submission_id are required" }), {
+    if (!submissionId || (!token && !authHeader)) {
+      return new Response(JSON.stringify({ error: "submission_id and either token or a session are required" }), {
         status: 400,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    // ── 1. Resolve token ─────────────────────────────────────────────────────
-    const { data: hubToken, error: tokenError } = await supabase
-      .from("employee_hub_tokens")
-      .select("id, profile_id, business_id, revoked_at")
-      .eq("token", token)
-      .maybeSingle();
+    // ── 1. Resolve caller: hub token (field) OR Supabase session (office) ────
+    let businessId: number;
 
-    if (tokenError || !hubToken || hubToken.revoked_at) {
-      return new Response(JSON.stringify({ error: "This link is no longer valid." }), {
-        status: 404,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+    if (token) {
+      const { data: hubToken, error: tokenError } = await supabase
+        .from("employee_hub_tokens")
+        .select("id, profile_id, business_id, revoked_at")
+        .eq("token", token)
+        .maybeSingle();
+
+      if (tokenError || !hubToken || hubToken.revoked_at) {
+        return new Response(JSON.stringify({ error: "This link is no longer valid." }), {
+          status: 404,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      businessId = hubToken.business_id;
+    } else {
+      const { data: userData, error: userError } = await supabase.auth.getUser(
+        authHeader!.replace("Bearer ", "")
+      );
+      if (userError || !userData?.user) {
+        return new Response(JSON.stringify({ error: "Not authenticated." }), {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      const { data: profile, error: profileError } = await supabase
+        .from("profiles")
+        .select("business_id")
+        .eq("user_id", userData.user.id)
+        .maybeSingle();
+
+      if (profileError || !profile) {
+        const { data: superuser } = await supabase
+          .from("superusers")
+          .select("user_id")
+          .eq("user_id", userData.user.id)
+          .maybeSingle();
+
+        if (superuser && businessIdParam) {
+          businessId = parseInt(businessIdParam);
+        } else {
+          return new Response(JSON.stringify({ error: "Profile not found." }), {
+            status: 404,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+      } else {
+        businessId = profile.business_id;
+      }
     }
 
     // ── 2. Load submission, scoped to this business ──────────────────────────
@@ -62,7 +103,7 @@ Deno.serve(async (req) => {
       .from("job_form_submissions")
       .select("id, job_form_id, appointment_id, status, answers, photo_urls, signature_url, signed_by_name, signed_at, business_id")
       .eq("id", submissionId)
-      .eq("business_id", hubToken.business_id)
+      .eq("business_id", businessId)
       .is("deleted_at", null)
       .maybeSingle();
 
@@ -82,7 +123,7 @@ Deno.serve(async (req) => {
       .from("job_forms")
       .select("id, name, form_type, fields, requires_signature")
       .eq("id", submission.job_form_id)
-      .eq("business_id", hubToken.business_id)
+      .eq("business_id", businessId)
       .maybeSingle();
 
     if (formError || !jobForm) {
@@ -107,7 +148,7 @@ Deno.serve(async (req) => {
         .from("appointments")
         .select("appointment_type, lead_name, location")
         .eq("id", submission.appointment_id)
-        .eq("business_id", hubToken.business_id)
+        .eq("business_id", businessId)
         .maybeSingle();
       appointmentInfo = appt ?? null;
     }

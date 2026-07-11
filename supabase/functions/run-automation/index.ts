@@ -55,6 +55,11 @@ function buildOwnerNotification(triggerType: string, payload: any, business: any
         subject: `🔄 Lead Status Changed: ${name}`,
         message: `${name}'s status was changed to "${payload.new_status || "unknown"}" in ${bizName}.`,
       };
+    case "job_form_completed":
+      return {
+        subject: `✅ Job Form Completed: ${payload.completed_by_name || "A technician"}`,
+        message: `${payload.completed_by_name || "A technician"} just completed a job form${name !== "Someone" ? ` for ${name}` : ""} at ${bizName}.`,
+      };
     default:
       return {
         subject: `⚡ Automation Triggered`,

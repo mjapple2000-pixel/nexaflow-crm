@@ -90,7 +90,7 @@ Deno.serve(async (req) => {
     // ── 2. Load + validate submission belongs to this business ───────────────
     const { data: submission, error: subError } = await supabase
       .from("job_form_submissions")
-      .select("id, business_id, photo_urls, status, job_form_id, answers")
+      .select("id, business_id, photo_urls, status, job_form_id, answers, appointment_id")
       .eq("id", submissionId)
       .eq("business_id", hubToken.business_id)
       .is("deleted_at", null)
@@ -319,6 +319,44 @@ Deno.serve(async (req) => {
           status: 500,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
+      }
+
+      // Fire job_form_completed automation trigger — non-blocking, never fails the request
+      try {
+        let leadName: string | null = null;
+        let leadPhone: string | null = null;
+        let leadEmail: string | null = null;
+        if (submission.appointment_id) {
+          const { data: appt } = await supabase
+            .from("appointments")
+            .select("lead_name, lead_phone, lead_email")
+            .eq("id", submission.appointment_id)
+            .maybeSingle();
+          leadName = appt?.lead_name ?? null;
+          leadPhone = appt?.lead_phone ?? null;
+          leadEmail = appt?.lead_email ?? null;
+        }
+
+        await fetch("https://rllriopqojaraceytdno.supabase.co/functions/v1/run-automation", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            trigger_type: "job_form_completed",
+            business_id: hubToken.business_id,
+            payload: {
+              submission_id: submissionId,
+              job_form_id: submission.job_form_id,
+              appointment_id: submission.appointment_id,
+              completed_by_profile_id: hubToken.profile_id,
+              completed_by_name: profile?.full_name ?? null,
+              lead_name: leadName,
+              phone: leadPhone,
+              email: leadEmail,
+            },
+          }),
+        });
+      } catch (e) {
+        console.error("job_form_completed automation error:", e);
       }
 
       return new Response(JSON.stringify({ success: true }), {

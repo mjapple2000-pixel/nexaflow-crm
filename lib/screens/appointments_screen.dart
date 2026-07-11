@@ -8,6 +8,7 @@ import '../widgets/clickable.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import '../utils/business_utils.dart';
+import '../widgets/office_job_form_viewer_sheet.dart';
 
 class AppointmentsScreen extends StatefulWidget {
   const AppointmentsScreen({super.key});
@@ -4880,6 +4881,18 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
     }
   }
 
+  void _openCompletedFormViewer(int submissionId) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => OfficeJobFormViewerSheet(
+        submissionId: submissionId,
+        businessId: widget.appointment['business_id'] as int?,
+      ),
+    );
+  }
+
   void _showAttachFormSheet(BuildContext context) {
     final attachedFormIds = _attachedForms.map((s) => s['job_form_id']).toSet();
     final unattached = _availableJobForms.where((f) => !attachedFormIds.contains(f['id'])).toList();
@@ -5774,40 +5787,55 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
                 final status = sub['status'] as String? ?? 'not_started';
                 final name = sub['form_name'] as String? ?? 'Unknown Form';
                 final color = _formStatusColor(status);
+                final isCompleted = status == 'completed';
+                final rowContent = Row(children: [
+                  const Icon(Icons.assignment_outlined, size: 14, color: AppTheme.textSecondary),
+                  const SizedBox(width: 8),
+                  Expanded(child: Text(name,
+                      style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary),
+                      overflow: TextOverflow.ellipsis)),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: color.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text(_formStatusLabel(status), style: TextStyle(fontSize: 10,
+                        fontWeight: FontWeight.w600, color: color)),
+                  ),
+                  const SizedBox(width: 4),
+                  GestureDetector(
+                    onTap: () async {
+                      final id = sub['id'] as int?;
+                      if (id != null) await _detachForm(id);
+                    },
+                    child: const Padding(
+                      padding: EdgeInsets.all(4),
+                      child: Icon(Icons.close, size: 13, color: AppTheme.error),
+                    ),
+                  ),
+                ]);
                 return Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                   decoration: BoxDecoration(
                     border: i < _attachedForms.length - 1
                         ? const Border(bottom: BorderSide(color: AppTheme.borderColor))
                         : null,
                   ),
-                  child: Row(children: [
-                    const Icon(Icons.assignment_outlined, size: 14, color: AppTheme.textSecondary),
-                    const SizedBox(width: 8),
-                    Expanded(child: Text(name,
-                        style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary),
-                        overflow: TextOverflow.ellipsis)),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-                      decoration: BoxDecoration(
-                        color: color.withValues(alpha: 0.12),
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                      child: Text(_formStatusLabel(status), style: TextStyle(fontSize: 10,
-                          fontWeight: FontWeight.w600, color: color)),
-                    ),
-                    const SizedBox(width: 4),
-                    GestureDetector(
-                      onTap: () async {
-                        final id = sub['id'] as int?;
-                        if (id != null) await _detachForm(id);
-                      },
-                      child: const Padding(
-                        padding: EdgeInsets.all(4),
-                        child: Icon(Icons.close, size: 13, color: AppTheme.error),
-                      ),
-                    ),
-                  ]),
+                  child: isCompleted
+                      ? InkWell(
+                          onTap: () {
+                            final id = sub['id'] as int?;
+                            if (id != null) _openCompletedFormViewer(id);
+                          },
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                            child: rowContent,
+                          ),
+                        )
+                      : Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                          child: rowContent,
+                        ),
                 );
               }),
             ]),

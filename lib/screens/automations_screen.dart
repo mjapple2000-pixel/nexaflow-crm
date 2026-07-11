@@ -268,6 +268,7 @@ class _AutomationCard extends StatelessWidget {
       case 'appointment_booked': return 'Appointment Booked';
       case 'status_changed': return 'Status Changed';
       case 'appointment_completed': return 'Appointment Completed';
+      case 'job_form_completed': return 'Job Form Completed';
       default: return type;
     }
   }
@@ -279,6 +280,7 @@ class _AutomationCard extends StatelessWidget {
       case 'appointment_booked': return Icons.calendar_today_outlined;
       case 'status_changed': return Icons.swap_horiz_outlined;
       case 'appointment_completed': return Icons.task_alt_outlined;
+      case 'job_form_completed': return Icons.assignment_turned_in_outlined;
       default: return Icons.bolt_outlined;
     }
   }
@@ -657,6 +659,8 @@ class _AutomationBuilderViewState extends State<_AutomationBuilderView> {
                             'Appointment Booked'),
                         ('appointment_completed', Icons.task_alt_outlined,
                             'Appointment Completed'),
+                        ('job_form_completed', Icons.assignment_turned_in_outlined,
+                            'Job Form Completed'),
                         ('form_submitted', Icons.dynamic_form_outlined,
                             'Form Submitted'),
                         ('new_lead', Icons.person_add_outlined, 'New Lead'),
@@ -896,6 +900,7 @@ class _TriggerNode extends StatelessWidget {
       case 'appointment_booked': return 'Appointment Booked';
       case 'status_changed': return 'Lead Status Changed';
       case 'appointment_completed': return 'Appointment Marked Completed';
+      case 'job_form_completed': return 'Job Form Completed';
       default: return type;
     }
   }
@@ -907,6 +912,7 @@ class _TriggerNode extends StatelessWidget {
       case 'appointment_booked': return Icons.calendar_today_outlined;
       case 'status_changed': return Icons.swap_horiz_outlined;
       case 'appointment_completed': return Icons.task_alt_outlined;
+      case 'job_form_completed': return Icons.assignment_turned_in_outlined;
       default: return Icons.bolt_outlined;
     }
   }

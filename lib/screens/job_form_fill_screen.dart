@@ -212,9 +212,69 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
     }
   }
 
-  Future<void> _pickAndUploadPhoto(String fieldId) async {
+  void _showPhotoSourcePicker(String fieldId) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (_) => Container(
+        decoration: const BoxDecoration(
+          color: AppTheme.cardBg,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+        padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(
+              child: Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                    color: AppTheme.borderColor,
+                    borderRadius: BorderRadius.circular(2)),
+              ),
+            ),
+            const SizedBox(height: 16),
+            InkWell(
+              onTap: () {
+                Navigator.pop(context);
+                _pickAndUploadPhoto(fieldId, ImageSource.camera);
+              },
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                child: Row(children: [
+                  const Icon(Icons.camera_alt_outlined, size: 20, color: AppTheme.brand),
+                  const SizedBox(width: 12),
+                  const Text('Take Photo',
+                      style: TextStyle(fontSize: 14, color: AppTheme.textPrimary)),
+                ]),
+              ),
+            ),
+            InkWell(
+              onTap: () {
+                Navigator.pop(context);
+                _pickAndUploadPhoto(fieldId, ImageSource.gallery);
+              },
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                child: Row(children: [
+                  const Icon(Icons.photo_library_outlined, size: 20, color: AppTheme.brand),
+                  const SizedBox(width: 12),
+                  const Text('Choose from Library',
+                      style: TextStyle(fontSize: 14, color: AppTheme.textPrimary)),
+                ]),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _pickAndUploadPhoto(String fieldId, ImageSource source) async {
     final XFile? picked = await _picker.pickImage(
-      source: ImageSource.camera,
+      source: source,
       imageQuality: 85,
     );
     if (picked == null) return;
@@ -595,7 +655,7 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
               ),
             InkWell(
               borderRadius: BorderRadius.circular(8),
-              onTap: isUploading ? null : () => _pickAndUploadPhoto(id),
+              onTap: isUploading ? null : () => _showPhotoSourcePicker(id),
               child: Container(
                 width: 64,
                 height: 64,
