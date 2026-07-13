@@ -101,7 +101,7 @@ Deno.serve(async (req) => {
     // ── 2. Load submission, scoped to this business ──────────────────────────
     const { data: submission, error: subError } = await supabase
       .from("job_form_submissions")
-      .select("id, job_form_id, appointment_id, status, answers, photo_urls, signature_url, signed_by_name, signed_at, business_id")
+      .select("id, job_form_id, appointment_id, status, answers, photo_urls, signature_url, signed_by_name, signed_at, business_id, pdf_url")
       .eq("id", submissionId)
       .eq("business_id", businessId)
       .is("deleted_at", null)
@@ -140,6 +140,7 @@ Deno.serve(async (req) => {
     );
     const photoSignedUrlMap: Record<string, string | null> = Object.fromEntries(signedUrlEntries);
     const signatureSignedUrl = await getSignedUrl(submission.signature_url);
+    const pdfSignedUrl = await getSignedUrl(submission.pdf_url);
 
     // ── 4. Appointment context (for header display) ──────────────────────────
     let appointmentInfo: any = null;
@@ -162,6 +163,8 @@ Deno.serve(async (req) => {
         photo_signed_urls: photoSignedUrlMap,
         signature_url: submission.signature_url,
         signature_signed_url: signatureSignedUrl,
+        pdf_url: submission.pdf_url,
+        pdf_signed_url: pdfSignedUrl,
         signed_by_name: submission.signed_by_name,
         signed_at: submission.signed_at,
         form_name: jobForm.name,

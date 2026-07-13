@@ -28,6 +28,7 @@ Deno.serve(async (req) => {
     let photoPath: string | null = null;
     let signedByName: string | null = null;
     let file: File | null = null;
+    let businessIdParam: number | null = null;
 
     if (contentType.includes("multipart/form-data")) {
       const formData = await req.formData();
@@ -41,6 +42,8 @@ Deno.serve(async (req) => {
       photoPath = formData.get("photo_path") as string | null;
       signedByName = formData.get("signed_by_name") as string | null;
       file = formData.get("file") as File | null;
+      const businessIdRaw = formData.get("business_id") as string | null;
+      businessIdParam = businessIdRaw ? parseInt(businessIdRaw) : null;
     } else {
       const body = await req.json();
       token = body.token;
@@ -50,16 +53,19 @@ Deno.serve(async (req) => {
       fieldId = body.field_id ?? null;
       photoPath = body.photo_path ?? null;
       signedByName = body.signed_by_name ?? null;
+      businessIdParam = body.business_id ?? null;
     }
 
-    if (!token || !submissionId || !action) {
-      return new Response(JSON.stringify({ error: "token, submission_id, and action are required" }), {
+    const authHeader = req.headers.get("Authorization");
+
+    if ((!token && !authHeader) || !submissionId || !action) {
+      return new Response(JSON.stringify({ error: "submission_id, action, and either token or a session are required" }), {
         status: 400,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    const validActions = ["save_answers", "upload_photo", "upload_signature", "delete_photo", "complete"];
+    const validActions = ["save_answers", "upload_photo", "upload_signature", "delete_photo", "complete", "reopen_for_correction"];
     if (!validActions.includes(action)) {
       return new Response(JSON.stringify({ error: "Invalid action" }), {
         status: 400,
@@ -67,25 +73,69 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ── 1. Resolve token ─────────────────────────────────────────────────────
-    const { data: hubToken, error: tokenError } = await supabase
-      .from("employee_hub_tokens")
-      .select("id, profile_id, business_id, revoked_at")
-      .eq("token", token)
-      .maybeSingle();
+    // ── 1. Resolve caller: hub token (field) OR office session ────────────────
+    let hubToken: { business_id: number; profile_id: number | null };
+    let profile: { id: number; full_name: string } | null = null;
 
-    if (tokenError || !hubToken || hubToken.revoked_at) {
-      return new Response(JSON.stringify({ error: "This link is no longer valid." }), {
-        status: 404,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+    if (token) {
+      const { data: hubTokenRow, error: tokenError } = await supabase
+        .from("employee_hub_tokens")
+        .select("id, profile_id, business_id, revoked_at")
+        .eq("token", token)
+        .maybeSingle();
+
+      if (tokenError || !hubTokenRow || hubTokenRow.revoked_at) {
+        return new Response(JSON.stringify({ error: "This link is no longer valid." }), {
+          status: 404,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      hubToken = { business_id: hubTokenRow.business_id, profile_id: hubTokenRow.profile_id };
+
+      const { data: profileRow } = await supabase
+        .from("profiles")
+        .select("id, full_name")
+        .eq("id", hubTokenRow.profile_id)
+        .maybeSingle();
+      profile = profileRow ?? null;
+    } else {
+      const { data: userData, error: userError } = await supabase.auth.getUser(
+        authHeader!.replace("Bearer ", "")
+      );
+      if (userError || !userData?.user) {
+        return new Response(JSON.stringify({ error: "Not authenticated." }), {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const { data: sessionProfile, error: sessionProfileError } = await supabase
+        .from("profiles")
+        .select("id, full_name, business_id")
+        .eq("user_id", userData.user.id)
+        .maybeSingle();
+
+      if (sessionProfileError || !sessionProfile) {
+        const { data: superuser } = await supabase
+          .from("superusers")
+          .select("user_id")
+          .eq("user_id", userData.user.id)
+          .maybeSingle();
+
+        if (superuser && businessIdParam) {
+          hubToken = { business_id: businessIdParam, profile_id: null };
+        } else {
+          return new Response(JSON.stringify({ error: "Profile not found." }), {
+            status: 404,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+      } else {
+        hubToken = { business_id: sessionProfile.business_id, profile_id: sessionProfile.id };
+        profile = { id: sessionProfile.id, full_name: sessionProfile.full_name };
+      }
     }
-
-    const { data: profile } = await supabase
-      .from("profiles")
-      .select("id, full_name")
-      .eq("id", hubToken.profile_id)
-      .maybeSingle();
 
     // ── 2. Load + validate submission belongs to this business ───────────────
     const { data: submission, error: subError } = await supabase
@@ -357,6 +407,33 @@ Deno.serve(async (req) => {
         });
       } catch (e) {
         console.error("job_form_completed automation error:", e);
+      }
+
+      return new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    // ── reopen_for_correction ─────────────────────────────────────────────
+    if (action === "reopen_for_correction") {
+      if (submission.status !== "completed") {
+        return new Response(JSON.stringify({ error: "Only completed forms can be sent back for correction." }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const { error: updateError } = await supabase
+        .from("job_form_submissions")
+        .update({ status: "in_progress" })
+        .eq("id", submissionId);
+
+      if (updateError) {
+        return new Response(JSON.stringify({ error: "Error reopening form: " + updateError.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
       }
 
       return new Response(JSON.stringify({ success: true }), {

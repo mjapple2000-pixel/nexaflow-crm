@@ -161,6 +161,8 @@ class _AppNavBarState extends State<AppNavBar> {
         // JOBS
     ('/settings?section=service_library', Icons.inventory_2_outlined,       'Service Library'),
     ('/settings?section=job_types',        Icons.category_outlined,         'Job Types'),
+    // DOCUMENTS
+    ('/settings?section=documents',        Icons.picture_as_pdf_outlined,   'Client Document Settings'),
   ];
 
   @override
@@ -453,7 +455,43 @@ class _AppNavBarState extends State<AppNavBar> {
 
         // JOBS SECTION
         _SectionLabel('JOBS'),
-        ..._settingsSections.skip(24).map((s) {
+        ..._settingsSections.skip(24).take(2).map((s) {
+          final isActive = location == s.$1;
+          return Clickable(
+            onTap: () => context.go(s.$1),
+            child: Container(
+              height: 36,
+              decoration: BoxDecoration(
+                color: isActive ? AppTheme.brandActive : Colors.transparent,
+                border: Border(
+                  left: BorderSide(
+                    color: isActive ? AppTheme.brand : Colors.transparent,
+                    width: 3,
+                  ),
+                ),
+              ),
+              padding: const EdgeInsets.symmetric(horizontal: 14),
+              child: Row(
+                children: [
+                  Icon(s.$2, size: 16,
+                      color: isActive ? AppTheme.textActive : AppTheme.textNormal),
+                  const SizedBox(width: 9),
+                  Expanded(
+                    child: Text(s.$3,
+                        style: TextStyle(
+                          fontSize: 12.5,
+                          color: isActive ? AppTheme.textActive : AppTheme.textNormal,
+                        )),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }),
+
+        // DOCUMENTS SECTION
+        _SectionLabel('DOCUMENTS'),
+        ..._settingsSections.skip(26).map((s) {
           final isActive = location == s.$1;
           return Clickable(
             onTap: () => context.go(s.$1),

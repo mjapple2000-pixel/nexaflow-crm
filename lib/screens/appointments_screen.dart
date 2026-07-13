@@ -4889,6 +4889,7 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
       builder: (_) => OfficeJobFormViewerSheet(
         submissionId: submissionId,
         businessId: widget.appointment['business_id'] as int?,
+        onSent: _loadAttachedForms,
       ),
     );
   }

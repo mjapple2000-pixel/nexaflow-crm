@@ -9,6 +9,7 @@ import '../theme/app_theme.dart';
 import '../widgets/clickable.dart';
 import '../widgets/invite_member_dialog.dart';
 import '../utils/business_utils.dart';
+import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 
 // ─────────────────────────────────────────────
 //  STRIPE PLAN CONFIG
@@ -277,6 +278,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       case 'url_redirects':   return 24;
       case 'service_library': return 25;
       case 'job_types':       return 26;
+      case 'documents':       return 27;
       default:                return 0;
     }
   }
@@ -641,6 +643,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
         return _ServiceLibrarySection(businessId: _businessId!);
       case 26:
         return _JobTypesSection(businessId: _businessId!);
+      case 27:
+        return _ClientDocumentSettingsSection(
+            business: _business, onSave: _updateBusiness);
       default:
         return const SizedBox();
     }
@@ -7706,6 +7711,561 @@ class _ServiceItemDialogState extends State<_ServiceItemDialog> {
     ]);
   }
 }
+// ─────────────────────────────────────────────
+//  CLIENT DOCUMENT SETTINGS SECTION
+// ─────────────────────────────────────────────
+
+class _ClientDocumentSettingsSection extends StatefulWidget {
+  final Map<String, dynamic> business;
+  final Future<void> Function(Map<String, dynamic>) onSave;
+  const _ClientDocumentSettingsSection(
+      {required this.business, required this.onSave});
+
+  @override
+  State<_ClientDocumentSettingsSection> createState() =>
+      _ClientDocumentSettingsSectionState();
+}
+
+class _ClientDocumentSettingsSectionState
+    extends State<_ClientDocumentSettingsSection> {
+  late final TextEditingController _hexCtrl;
+  late final TextEditingController _accentHexCtrl;
+  late final TextEditingController _footerCtrl;
+  late final TextEditingController _disclaimerCtrl;
+  String _brandColor = '#6366F1';
+  String _accentColor = '#10B981';
+  String _headerLayout = 'compact';
+  String _headerStyle = 'modern';
+  String _logoSize = 'medium';
+  String _footerFontSize = 'medium';
+  bool _showCompanyPhone = true;
+  bool _showCompanyEmail = true;
+  bool _showCompanyWebsite = true;
+  bool _showPageNumbers = true;
+  bool _showGeneratedDate = true;
+  bool _saving = false;
+  String? _successMsg;
+  String? _error;
+
+  static const _presetColors = [
+    '#6366F1', '#3B82F6', '#10B981', '#F59E0B',
+    '#EF4444', '#8B5CF6', '#EC4899', '#0EA5E9',
+    '#1A1A1A', '#059669',
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    final raw = widget.business['pdf_settings'];
+    final settings = raw is Map ? Map<String, dynamic>.from(raw) : <String, dynamic>{};
+    _brandColor = settings['brand_color'] as String? ?? '#6366F1';
+    _accentColor = settings['accent_color'] as String? ?? '#10B981';
+    _headerLayout = settings['header_layout'] as String? ?? 'compact';
+    _headerStyle = settings['header_style'] as String? ?? 'modern';
+    _logoSize = settings['logo_size'] as String? ?? 'medium';
+    _footerFontSize = settings['footer_font_size'] as String? ?? 'medium';
+    _showCompanyPhone = settings['show_company_phone'] as bool? ?? true;
+    _showCompanyEmail = settings['show_company_email'] as bool? ?? true;
+    _showCompanyWebsite = settings['show_company_website'] as bool? ?? true;
+    _showPageNumbers = settings['show_page_numbers'] as bool? ?? true;
+    _showGeneratedDate = settings['show_generated_date'] as bool? ?? true;
+    _hexCtrl = TextEditingController(text: _brandColor);
+    _accentHexCtrl = TextEditingController(text: _accentColor);
+    _footerCtrl = TextEditingController(text: settings['footer_text'] as String? ?? '');
+    _disclaimerCtrl = TextEditingController(text: settings['disclaimer_text'] as String? ?? '');
+  }
+
+  @override
+  void dispose() {
+    _hexCtrl.dispose();
+    _accentHexCtrl.dispose();
+    _footerCtrl.dispose();
+    _disclaimerCtrl.dispose();
+    super.dispose();
+  }
+
+  Color? get _previewColor {
+    final hex = _hexCtrl.text.trim().replaceAll('#', '');
+    if (hex.length != 6) return null;
+    final val = int.tryParse(hex, radix: 16);
+    if (val == null) return null;
+    return Color(0xFF000000 | val);
+  }
+
+  void _selectPreset(String hex) {
+    setState(() {
+      _brandColor = hex;
+      _hexCtrl.text = hex;
+    });
+  }
+
+  Color? get _accentPreviewColor {
+    final hex = _accentHexCtrl.text.trim().replaceAll('#', '');
+    if (hex.length != 6) return null;
+    final val = int.tryParse(hex, radix: 16);
+    if (val == null) return null;
+    return Color(0xFF000000 | val);
+  }
+
+  void _selectAccentPreset(String hex) {
+    setState(() {
+      _accentColor = hex;
+      _accentHexCtrl.text = hex;
+    });
+  }
+
+  void _openAccentColorPicker() {
+    Color working = _accentPreviewColor ?? const Color(0xFF10B981);
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.cardBg,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Choose Accent Color',
+            style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+        content: SingleChildScrollView(
+          child: ColorPicker(
+            pickerColor: working,
+            onColorChanged: (c) => working = c,
+            enableAlpha: false,
+            displayThumbColor: true,
+            paletteType: PaletteType.hsv,
+            labelTypes: const [ColorLabelType.hex],
+            pickerAreaHeightPercent: 0.7,
+          ),
+        ),
+        actions: [
+          MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: TextButton(
+              onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(),
+              child: const Text('Cancel'),
+            ),
+          ),
+          MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: ElevatedButton(
+              onPressed: () {
+                final hex = '#${working.value.toRadixString(16).substring(2).toUpperCase()}';
+                setState(() {
+                  _accentColor = hex;
+                  _accentHexCtrl.text = hex;
+                });
+                Navigator.of(ctx, rootNavigator: true).pop();
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.brand,
+                foregroundColor: Colors.white,
+                elevation: 0,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              child: const Text('Select'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _choicePills(List<(String, String)> options, String selected, ValueChanged<String> onChanged) {
+    return Wrap(spacing: 8, runSpacing: 8, children: options.map((opt) {
+      final isSelected = selected == opt.$1;
+      return Clickable(
+        onTap: () => onChanged(opt.$1),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          decoration: BoxDecoration(
+            color: isSelected ? AppTheme.brand : AppTheme.pageBg,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: isSelected ? AppTheme.brand : AppTheme.borderColor),
+          ),
+          child: Text(opt.$2,
+              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500,
+                  color: isSelected ? Colors.white : AppTheme.textSecondary)),
+        ),
+      );
+    }).toList());
+  }
+
+  void _openColorPicker() {
+    Color working = _previewColor ?? AppTheme.brand;
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.cardBg,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Choose Brand Color',
+            style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+        content: SingleChildScrollView(
+          child: ColorPicker(
+            pickerColor: working,
+            onColorChanged: (c) => working = c,
+            enableAlpha: false,
+            displayThumbColor: true,
+            paletteType: PaletteType.hsv,
+            labelTypes: const [ColorLabelType.hex],
+            pickerAreaHeightPercent: 0.7,
+          ),
+        ),
+        actions: [
+          MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: TextButton(
+              onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(),
+              child: const Text('Cancel'),
+            ),
+          ),
+          MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: ElevatedButton(
+              onPressed: () {
+                final hex = '#${working.value.toRadixString(16).substring(2).toUpperCase()}';
+                setState(() {
+                  _brandColor = hex;
+                  _hexCtrl.text = hex;
+                });
+                Navigator.of(ctx, rootNavigator: true).pop();
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.brand,
+                foregroundColor: Colors.white,
+                elevation: 0,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              child: const Text('Select'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _save() async {
+    final preview = _previewColor;
+    if (preview == null) {
+      setState(() => _error = 'Enter a valid hex color, e.g. #6366F1');
+      return;
+    }
+    final accentPreview = _accentPreviewColor;
+    if (accentPreview == null) {
+      setState(() => _error = 'Enter a valid accent hex color, e.g. #10B981');
+      return;
+    }
+    setState(() { _saving = true; _error = null; _successMsg = null; });
+    try {
+      await widget.onSave({
+        'pdf_settings': {
+          'brand_color': _hexCtrl.text.trim(),
+          'accent_color': _accentHexCtrl.text.trim(),
+          'header_layout': _headerLayout,
+          'header_style': _headerStyle,
+          'logo_size': _logoSize,
+          'footer_font_size': _footerFontSize,
+          'show_company_phone': _showCompanyPhone,
+          'show_company_email': _showCompanyEmail,
+          'show_company_website': _showCompanyWebsite,
+          'show_page_numbers': _showPageNumbers,
+          'show_generated_date': _showGeneratedDate,
+          'footer_text': _footerCtrl.text.trim().isEmpty ? null : _footerCtrl.text.trim(),
+          'disclaimer_text': _disclaimerCtrl.text.trim().isEmpty ? null : _disclaimerCtrl.text.trim(),
+        },
+      });
+      if (!mounted) return;
+      setState(() { _successMsg = 'Client document settings saved.'; _saving = false; });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() { _error = e.toString(); _saving = false; });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final logoUrl = widget.business['company_logo_url'] as String?;
+    final preview = _previewColor ?? AppTheme.brand;
+
+    return _SectionShell(
+      title: 'Client Document Settings',
+      subtitle: 'Control how your generated PDFs (job forms, checklists) look to your team and customers.',
+      onSave: _save,
+      saving: _saving,
+      successMsg: _successMsg,
+      error: _error,
+      child: Column(children: [
+        _SettingsGroup(title: 'Branding', children: [
+          const Text('Brand Color',
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
+          const SizedBox(height: 8),
+          const Text(
+            'Used for the header on generated PDFs.',
+            style: TextStyle(fontSize: 11, color: AppTheme.textSecondary),
+          ),
+          const SizedBox(height: 12),
+          Wrap(spacing: 8, runSpacing: 8, children: [
+            ..._presetColors.map((hex) {
+              final selected = _hexCtrl.text.trim().toUpperCase() == hex.toUpperCase();
+              final swatch = Color(0xFF000000 | int.parse(hex.replaceAll('#', ''), radix: 16));
+              return Clickable(
+                onTap: () => _selectPreset(hex),
+                child: Container(
+                  width: 32, height: 32,
+                  decoration: BoxDecoration(
+                    color: swatch,
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: selected ? AppTheme.textPrimary : Colors.transparent,
+                      width: 2,
+                    ),
+                  ),
+                  child: selected
+                      ? const Icon(Icons.check, size: 16, color: Colors.white)
+                      : null,
+                ),
+              );
+            }),
+            Clickable(
+              onTap: _openColorPicker,
+              child: Container(
+                width: 32, height: 32,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  border: Border.all(color: AppTheme.borderColor, width: 1.5),
+                  gradient: const SweepGradient(colors: [
+                    Colors.red, Colors.yellow, Colors.green, Colors.cyan,
+                    Colors.blue, Colors.purple, Colors.red,
+                  ]),
+                ),
+                child: const Icon(Icons.colorize_rounded, size: 15, color: Colors.white),
+              ),
+            ),
+          ]),
+          const SizedBox(height: 14),
+          Row(children: [
+            Container(
+              width: 40, height: 40,
+              decoration: BoxDecoration(
+                color: preview,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: AppTheme.borderColor),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: TextField(
+                controller: _hexCtrl,
+                onChanged: (v) => setState(() => _brandColor = v),
+                style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                decoration: InputDecoration(
+                  hintText: '#6366F1',
+                  filled: true,
+                  fillColor: AppTheme.pageBg,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                      borderSide: const BorderSide(color: AppTheme.borderColor)),
+                  enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                      borderSide: const BorderSide(color: AppTheme.borderColor)),
+                  focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                      borderSide: BorderSide(color: AppTheme.brand, width: 1.5)),
+                ),
+              ),
+            ),
+          ]),
+          const SizedBox(height: 20),
+          const Text('Accent Color',
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
+          const SizedBox(height: 8),
+          const Text(
+            'Used for field labels and section accents on generated PDFs.',
+            style: TextStyle(fontSize: 11, color: AppTheme.textSecondary),
+          ),
+          const SizedBox(height: 12),
+          Wrap(spacing: 8, runSpacing: 8, children: [
+            ..._presetColors.map((hex) {
+              final selected = _accentHexCtrl.text.trim().toUpperCase() == hex.toUpperCase();
+              final swatch = Color(0xFF000000 | int.parse(hex.replaceAll('#', ''), radix: 16));
+              return Clickable(
+                onTap: () => _selectAccentPreset(hex),
+                child: Container(
+                  width: 32, height: 32,
+                  decoration: BoxDecoration(
+                    color: swatch,
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: selected ? AppTheme.textPrimary : Colors.transparent,
+                      width: 2,
+                    ),
+                  ),
+                  child: selected
+                      ? const Icon(Icons.check, size: 16, color: Colors.white)
+                      : null,
+                ),
+              );
+            }),
+            Clickable(
+              onTap: _openAccentColorPicker,
+              child: Container(
+                width: 32, height: 32,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  border: Border.all(color: AppTheme.borderColor, width: 1.5),
+                  gradient: const SweepGradient(colors: [
+                    Colors.red, Colors.yellow, Colors.green, Colors.cyan,
+                    Colors.blue, Colors.purple, Colors.red,
+                  ]),
+                ),
+                child: const Icon(Icons.colorize_rounded, size: 15, color: Colors.white),
+              ),
+            ),
+          ]),
+          const SizedBox(height: 14),
+          Row(children: [
+            Container(
+              width: 40, height: 40,
+              decoration: BoxDecoration(
+                color: _accentPreviewColor ?? const Color(0xFF10B981),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: AppTheme.borderColor),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: TextField(
+                controller: _accentHexCtrl,
+                onChanged: (v) => setState(() => _accentColor = v),
+                style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                decoration: InputDecoration(
+                  hintText: '#10B981',
+                  filled: true,
+                  fillColor: AppTheme.pageBg,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                      borderSide: const BorderSide(color: AppTheme.borderColor)),
+                  enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                      borderSide: const BorderSide(color: AppTheme.borderColor)),
+                  focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                      borderSide: BorderSide(color: AppTheme.brand, width: 1.5)),
+                ),
+              ),
+            ),
+          ]),
+          const SizedBox(height: 16),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: AppTheme.pageBg,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: AppTheme.borderColor),
+            ),
+            child: Row(children: [
+              const Icon(Icons.info_outline, size: 14, color: AppTheme.textSecondary),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  logoUrl == null || logoUrl.isEmpty
+                      ? 'No logo set yet — add one in Business Profile → Logo URL to include it on PDFs.'
+                      : 'Your logo from Business Profile will also appear on generated PDFs.',
+                  style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary, height: 1.4),
+                ),
+              ),
+            ]),
+          ),
+        ]),
+        const SizedBox(height: 24),
+        _SettingsGroup(title: 'Header & Logo', children: [
+          const Text('Header Layout',
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
+          const SizedBox(height: 8),
+          _choicePills(const [
+            ('compact', 'Compact'),
+            ('basic', 'Basic'),
+          ], _headerLayout, (v) => setState(() => _headerLayout = v)),
+          const SizedBox(height: 18),
+          const Text('Header Style',
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
+          const SizedBox(height: 8),
+          _choicePills(const [
+            ('modern', 'Modern'),
+            ('clean', 'Clean'),
+          ], _headerStyle, (v) => setState(() => _headerStyle = v)),
+          const SizedBox(height: 18),
+          const Text('Logo Size',
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
+          const SizedBox(height: 8),
+          _choicePills(const [
+            ('small', 'Small'),
+            ('medium', 'Medium'),
+            ('large', 'Large'),
+          ], _logoSize, (v) => setState(() => _logoSize = v)),
+          const SizedBox(height: 18),
+          const Text('Header Contact Info',
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
+          const SizedBox(height: 4),
+          _ToggleRow(
+            label: 'Show Phone Number',
+            subtitle: 'Shows your business phone in the PDF header.',
+            value: _showCompanyPhone,
+            onChanged: (v) => setState(() => _showCompanyPhone = v),
+          ),
+          _ToggleRow(
+            label: 'Show Email Address',
+            subtitle: 'Shows your business email in the PDF header.',
+            value: _showCompanyEmail,
+            onChanged: (v) => setState(() => _showCompanyEmail = v),
+          ),
+          _ToggleRow(
+            label: 'Show Website',
+            subtitle: 'Shows your business website in the PDF header.',
+            value: _showCompanyWebsite,
+            onChanged: (v) => setState(() => _showCompanyWebsite = v),
+          ),
+        ]),
+        const SizedBox(height: 24),
+        _SettingsGroup(title: 'Footer', children: [
+          const Text('Footer Font Size',
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
+          const SizedBox(height: 8),
+          _choicePills(const [
+            ('small', 'Small'),
+            ('medium', 'Medium'),
+            ('large', 'Large'),
+          ], _footerFontSize, (v) => setState(() => _footerFontSize = v)),
+          const SizedBox(height: 14),
+          _ToggleRow(
+            label: 'Show Page Numbers',
+            subtitle: 'Adds "Page X of Y" to the bottom of each page.',
+            value: _showPageNumbers,
+            onChanged: (v) => setState(() => _showPageNumbers = v),
+          ),
+          _ToggleRow(
+            label: 'Show Generated Date',
+            subtitle: 'Adds the date the PDF was created to the footer.',
+            value: _showGeneratedDate,
+            onChanged: (v) => setState(() => _showGeneratedDate = v),
+          ),
+          _SettingsField(
+            label: 'Footer Text (optional)',
+            controller: _footerCtrl,
+            hint: 'e.g. a warranty note or thank-you message',
+          ),
+        ]),
+        const SizedBox(height: 24),
+        _SettingsGroup(title: 'Contract / Disclaimer', children: [
+          const Text(
+            'This message appears in a prominent boxed section near the bottom of the PDF — use it for terms, warranty language, or anything you want your client to be aware of.',
+            style: TextStyle(fontSize: 12, color: AppTheme.textSecondary, height: 1.4),
+          ),
+          const SizedBox(height: 14),
+          _SettingsFieldMultiline(
+            label: 'Contract / Disclaimer Text (optional)',
+            controller: _disclaimerCtrl,
+            hint: 'e.g. This inspection reflects conditions observed on the date above and is not a warranty...',
+            maxLines: 4,
+          ),
+        ]),
+      ]),
+    );
+  }
+}
+
 // ─────────────────────────────────────────────
 //  JOB TYPES SECTION
 // ─────────────────────────────────────────────

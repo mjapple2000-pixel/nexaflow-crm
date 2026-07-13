@@ -731,7 +731,7 @@ class _PastJobFormCard extends StatelessWidget {
     final completedAt = _formatDate(form['completed_at'] as String?);
 
     return InkWell(
-      onTap: () => context.go('/hub/$token/job-form/$submissionId/view'),
+      onTap: () => context.go('/hub/$token/job-form/$submissionId'),
       borderRadius: BorderRadius.circular(10),
       child: Container(
         margin: const EdgeInsets.only(bottom: 8),
@@ -790,9 +790,7 @@ class _JobFormChip extends StatelessWidget {
     final submissionId = form['submission_id'];
 
     return InkWell(
-      onTap: () => context.go(status == 'completed'
-          ? '/hub/$token/job-form/$submissionId/view'
-          : '/hub/$token/job-form/$submissionId'),
+      onTap: () => context.go('/hub/$token/job-form/$submissionId'),
       borderRadius: BorderRadius.circular(99),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),

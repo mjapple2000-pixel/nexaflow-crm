@@ -32,6 +32,7 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
   bool _loading = true;
   String? _error;
   int? _businessId;
+  List<Map<String, dynamic>> _teamMembers = [];
 
   // Stat card data
   int _totalContacts = 0;
@@ -85,6 +86,12 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
       final userId = _supabase.auth.currentUser?.id;
       _businessId = await getActiveBusinessId();
       if (_businessId == null) throw Exception('No business found.');
+
+      final teamMembersData = await _supabase
+          .from('profiles')
+          .select('id, full_name')
+          .eq('business_id', _businessId!);
+      _teamMembers = List<Map<String, dynamic>>.from(teamMembersData as List);
 
       final since = DateTime.now()
           .subtract(Duration(days: int.parse(_range)))
@@ -313,8 +320,26 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
       builder: (_) => OfficeJobFormViewerSheet(
         submissionId: submissionId,
         businessId: _businessId,
+        onSent: _loadChecklistsReport,
       ),
     );
+  }
+
+  Future<void> _reassignForm(int? appointmentId, Map<String, dynamic> member) async {
+    if (appointmentId == null) return;
+    try {
+      await _supabase.from('appointments').update({
+        'assigned_to': member['full_name'],
+        'assigned_to_profile_id': member['id'],
+      }).eq('id', appointmentId);
+      await _loadChecklistsReport();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Failed to reassign: $e'),
+        backgroundColor: AppTheme.error,
+      ));
+    }
   }
 
   @override
@@ -579,7 +604,32 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
                                     child: Row(children: [
                                       Expanded(flex: 3, child: Text(row['form_name'] ?? '', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: AppTheme.textPrimary))),
                                       Expanded(flex: 2, child: _checklistStatusBadge(status)),
-                                      Expanded(flex: 2, child: Text(row['completed_by_name'] ?? '—', style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary))),
+                                      Expanded(flex: 2, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                        Text(row['completed_by_name'] ?? '—', style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary), overflow: TextOverflow.ellipsis),
+                                        const SizedBox(height: 4),
+                                        PopupMenuButton<Map<String, dynamic>>(
+                                          tooltip: 'Reassign this form',
+                                          padding: EdgeInsets.zero,
+                                          itemBuilder: (_) => _teamMembers.map((m) => PopupMenuItem(
+                                            value: m,
+                                            child: Text(m['full_name'] ?? 'Unknown', style: const TextStyle(fontSize: 13)),
+                                          )).toList(),
+                                          onSelected: (member) => _reassignForm(row['appointment_id'] as int?, member),
+                                          child: Container(
+                                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                            decoration: BoxDecoration(
+                                              color: AppTheme.brand.withValues(alpha: 0.08),
+                                              borderRadius: BorderRadius.circular(6),
+                                              border: Border.all(color: AppTheme.brand.withValues(alpha: 0.3)),
+                                            ),
+                                            child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                                              Icon(Icons.person_outline, size: 12, color: AppTheme.brand),
+                                              SizedBox(width: 4),
+                                              Text('Reassign', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppTheme.brand)),
+                                            ]),
+                                          ),
+                                        ),
+                                      ])),
                                       Expanded(flex: 3, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                                         Text(row['lead_name'] ?? '—', style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary)),
                                         if ((row['location'] ?? '').toString().isNotEmpty)

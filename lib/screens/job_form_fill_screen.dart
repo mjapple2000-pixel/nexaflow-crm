@@ -511,6 +511,27 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
     }
   }
 
+  List<String> get _missingRequiredLabels {
+    final missing = <String>[];
+    for (final field in _fields) {
+      if (field['required'] != true) continue;
+      final id = field['id'] as String;
+      final type = field['type'] as String? ?? 'text';
+      final val = _answers[id];
+      bool filled;
+      if (type == 'checkbox') {
+        filled = val == true;
+      } else if (type == 'photo') {
+        filled = ((val as List?)?.cast<String>() ?? <String>[]).isNotEmpty;
+      } else {
+        filled = (val?.toString().trim() ?? '').isNotEmpty;
+      }
+      if (!filled) missing.add(field['label'] as String? ?? 'Field');
+    }
+    if (_requiresSignature && _signatureUrl == null) missing.add('Signature');
+    return missing;
+  }
+
   Widget _buildField(Map<String, dynamic> field) {
     final id = field['id'] as String;
     final type = field['type'] as String? ?? 'text';
@@ -966,7 +987,7 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
                   ..._fields.map(_buildField),
                   if (_requiresSignature) _buildSignatureSection(),
                   const SizedBox(height: 8),
-                  if (_status != 'completed')
+                  if (_status != 'completed' && _missingRequiredLabels.isEmpty)
                     SizedBox(
                       width: double.infinity,
                       child: ElevatedButton(
@@ -990,28 +1011,79 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
                             : const Text('Complete Job Form'),
                       ),
                     )
-                  else
+                  else if (_status != 'completed')
                     Container(
                       width: double.infinity,
-                      padding: const EdgeInsets.all(16),
+                      padding: const EdgeInsets.all(14),
                       decoration: BoxDecoration(
-                        color: AppTheme.success.withValues(alpha: 0.1),
+                        color: AppTheme.pageBg,
                         borderRadius: BorderRadius.circular(10),
-                        border: Border.all(
-                            color: AppTheme.success.withValues(alpha: 0.4)),
+                        border: Border.all(color: AppTheme.borderColor),
                       ),
-                      child: const Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
+                      child: Row(
                         children: [
-                          Icon(Icons.check_circle_outline_rounded,
-                              color: AppTheme.success),
-                          SizedBox(width: 8),
-                          Text('Job Form Completed',
-                              style: TextStyle(
-                                  fontWeight: FontWeight.w700,
-                                  color: AppTheme.success)),
+                          const Icon(Icons.info_outline_rounded,
+                              size: 16, color: AppTheme.textSecondary),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'Complete all required fields to finish: ${_missingRequiredLabels.join(', ')}',
+                              style: const TextStyle(
+                                  fontSize: 12, color: AppTheme.textSecondary),
+                            ),
+                          ),
                         ],
                       ),
+                    )
+                  else
+                    Column(
+                      children: [
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: AppTheme.success.withValues(alpha: 0.1),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(
+                                color: AppTheme.success.withValues(alpha: 0.4)),
+                          ),
+                          child: const Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(Icons.check_circle_outline_rounded,
+                                  color: AppTheme.success),
+                              SizedBox(width: 8),
+                              Text('Job Form Completed',
+                                  style: TextStyle(
+                                      fontWeight: FontWeight.w700,
+                                      color: AppTheme.success)),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        SizedBox(
+                          width: double.infinity,
+                          child: OutlinedButton(
+                            onPressed: _completing ? null : _completeForm,
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: AppTheme.brand,
+                              side: const BorderSide(color: AppTheme.brand),
+                              padding: const EdgeInsets.symmetric(vertical: 14),
+                              shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(10)),
+                              textStyle: const TextStyle(
+                                  fontSize: 14, fontWeight: FontWeight.w700),
+                            ),
+                            child: _completing
+                                ? const SizedBox(
+                                    height: 18,
+                                    width: 18,
+                                    child: CircularProgressIndicator(
+                                        strokeWidth: 2, color: AppTheme.brand))
+                                : const Text('Made a correction? Resubmit'),
+                          ),
+                        ),
+                      ],
                     ),
                   const SizedBox(height: 40),
                 ],

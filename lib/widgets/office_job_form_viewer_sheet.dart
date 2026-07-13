@@ -2,12 +2,14 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:http/http.dart' as http;
+import 'package:url_launcher/url_launcher.dart';
 import '../theme/app_theme.dart';
 
 class OfficeJobFormViewerSheet extends StatefulWidget {
   final int submissionId;
   final int? businessId;
-  const OfficeJobFormViewerSheet({super.key, required this.submissionId, required this.businessId});
+  final VoidCallback? onSent;
+  const OfficeJobFormViewerSheet({super.key, required this.submissionId, required this.businessId, this.onSent});
 
   @override
   State<OfficeJobFormViewerSheet> createState() => _OfficeJobFormViewerSheetState();
@@ -27,6 +29,9 @@ class _OfficeJobFormViewerSheetState extends State<OfficeJobFormViewerSheet> {
   String? _signatureSignedUrl;
   String? _signedByName;
   String? _signedAt;
+  String? _pdfUrl;
+  String? _pdfSignedUrl;
+  bool _generatingPdf = false;
   String _appointmentType = '';
   String _leadName = '';
   String _location = '';
@@ -61,6 +66,8 @@ class _OfficeJobFormViewerSheetState extends State<OfficeJobFormViewerSheet> {
         _signatureSignedUrl = data['signature_signed_url'] as String?;
         _signedByName = data['signed_by_name'] as String?;
         _signedAt = data['signed_at'] as String?;
+        _pdfUrl = data['pdf_url'] as String?;
+        _pdfSignedUrl = data['pdf_signed_url'] as String?;
         _appointmentType = data['appointment_type'] as String? ?? '';
         _leadName = data['lead_name'] as String? ?? '';
         _location = data['location'] as String? ?? '';
@@ -69,6 +76,79 @@ class _OfficeJobFormViewerSheetState extends State<OfficeJobFormViewerSheet> {
     } catch (e) {
       if (!mounted) return;
       setState(() { _error = 'Network error — please try again.'; _loading = false; });
+    }
+  }
+
+  bool _reopening = false;
+
+  Future<void> _sendBackToField() async {
+    setState(() => _reopening = true);
+    try {
+      final token = _db.auth.currentSession?.accessToken;
+      if (token == null) throw Exception('Not authenticated');
+      final res = await http.post(
+        Uri.parse('$_fnBase/submit-job-form-action'),
+        headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'submission_id': widget.submissionId,
+          'action': 'reopen_for_correction',
+          if (widget.businessId != null) 'business_id': widget.businessId,
+        }),
+      );
+      if (!mounted) return;
+      if (res.statusCode == 200) {
+        Navigator.pop(context);
+        widget.onSent?.call();
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Could not send this form back — please try again.'),
+          backgroundColor: AppTheme.error,
+        ));
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Network error — please try again.'),
+        backgroundColor: AppTheme.error,
+      ));
+    } finally {
+      if (mounted) setState(() => _reopening = false);
+    }
+  }
+
+  Future<void> _generatePdf() async {
+    setState(() => _generatingPdf = true);
+    try {
+      final res = await http.post(
+        Uri.parse('$_fnBase/generate-job-form-pdf'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'submission_id': widget.submissionId}),
+      );
+      if (!mounted) return;
+      if (res.statusCode == 200) {
+        await _load();
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Could not generate PDF — please try again.'),
+          backgroundColor: AppTheme.error,
+        ));
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Network error — please try again.'),
+        backgroundColor: AppTheme.error,
+      ));
+    } finally {
+      if (mounted) setState(() => _generatingPdf = false);
+    }
+  }
+
+  Future<void> _downloadPdf() async {
+    if (_pdfSignedUrl == null) return;
+    final uri = Uri.parse(_pdfSignedUrl!);
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
     }
   }
 
@@ -206,6 +286,53 @@ class _OfficeJobFormViewerSheetState extends State<OfficeJobFormViewerSheet> {
               const SizedBox(height: 2),
               Text(_location, style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
             ],
+            const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: _reopening ? null : _sendBackToField,
+                icon: _reopening
+                    ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.undo_rounded, size: 16, color: AppTheme.error),
+                label: Text(_reopening ? 'Sending...' : 'Send Back to Field for Correction',
+                    style: const TextStyle(fontSize: 13, color: AppTheme.error, fontWeight: FontWeight.w600)),
+                style: OutlinedButton.styleFrom(
+                  side: const BorderSide(color: AppTheme.error),
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+              ),
+            ),
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: _pdfSignedUrl != null
+                  ? OutlinedButton.icon(
+                      onPressed: _downloadPdf,
+                      icon: const Icon(Icons.download_rounded, size: 16, color: AppTheme.brand),
+                      label: const Text('Download PDF',
+                          style: TextStyle(fontSize: 13, color: AppTheme.brand, fontWeight: FontWeight.w600)),
+                      style: OutlinedButton.styleFrom(
+                        side: const BorderSide(color: AppTheme.brand),
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      ),
+                    )
+                  : ElevatedButton.icon(
+                      onPressed: _generatingPdf ? null : _generatePdf,
+                      icon: _generatingPdf
+                          ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                          : const Icon(Icons.picture_as_pdf_outlined, size: 16, color: Colors.white),
+                      label: Text(_generatingPdf ? 'Generating...' : 'Generate PDF',
+                          style: const TextStyle(fontSize: 13, color: Colors.white, fontWeight: FontWeight.w600)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppTheme.brand,
+                        elevation: 0,
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      ),
+                    ),
+            ),
             const SizedBox(height: 16),
             ..._fields.map(_buildAnswerField),
             if (_signatureSignedUrl != null)

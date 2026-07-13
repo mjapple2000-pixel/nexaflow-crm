@@ -15,6 +15,22 @@ const BUCKET = "job-form-media";
 const PAGE_W = 612;
 const PAGE_H = 792;
 const MARGIN = 50;
+const TEXT_DARK = rgb(0.13, 0.13, 0.15);
+const TEXT_SECONDARY = rgb(0.42, 0.42, 0.46);
+const BORDER_LIGHT = rgb(0.85, 0.85, 0.88);
+
+function hexToRgb(hex: string) {
+  const clean = (hex || "#6366F1").replace("#", "");
+  const val = parseInt(clean.length === 6 ? clean : "6366F1", 16);
+  return rgb(((val >> 16) & 255) / 255, ((val >> 8) & 255) / 255, (val & 255) / 255);
+}
+
+function isLightColor(hex: string): boolean {
+  const clean = (hex || "#6366F1").replace("#", "");
+  const val = parseInt(clean.length === 6 ? clean : "6366F1", 16);
+  const r = (val >> 16) & 255, g = (val >> 8) & 255, b = val & 255;
+  return (0.299 * r + 0.587 * g + 0.114 * b) > 150;
+}
 
 function wrapText(text: string, font: any, size: number, maxWidth: number): string[] {
   const words = text.split(" ");
@@ -66,6 +82,30 @@ Deno.serve(async (req) => {
       .eq("id", submission.job_form_id)
       .maybeSingle();
 
+    const { data: businessRow } = await supabase
+      .from("businesses")
+      .select("pdf_settings, company_logo_url, business_phone, business_email, company_website")
+      .eq("id", submission.business_id)
+      .maybeSingle();
+
+    const pdfSettings = businessRow?.pdf_settings ?? {};
+    const BRAND = hexToRgb(pdfSettings.brand_color ?? "#6366F1");
+    const BRAND_TEXT = isLightColor(pdfSettings.brand_color ?? "#6366F1") ? rgb(0.1, 0.1, 0.1) : rgb(1, 1, 1);
+    const ACCENT = hexToRgb(pdfSettings.accent_color ?? "#10B981");
+    const showPageNumbers = pdfSettings.show_page_numbers !== false;
+    const showGeneratedDate = pdfSettings.show_generated_date !== false;
+    const footerText: string | null = pdfSettings.footer_text ?? null;
+    const disclaimerText: string | null = pdfSettings.disclaimer_text ?? null;
+    const headerLayout: string = pdfSettings.header_layout ?? "compact";
+    const headerStyle: string = pdfSettings.header_style ?? "modern";
+    const logoSize: string = pdfSettings.logo_size ?? "medium";
+    const footerFontSize: string = pdfSettings.footer_font_size ?? "medium";
+    const footerPtSize = footerFontSize === "small" ? 7 : footerFontSize === "large" ? 10 : 8;
+    const showCompanyPhone = pdfSettings.show_company_phone !== false;
+    const showCompanyEmail = pdfSettings.show_company_email !== false;
+    const showCompanyWebsite = pdfSettings.show_company_website !== false;
+    const logoPx = logoSize === "small" ? 32 : logoSize === "large" ? 56 : 44;
+
     let appointmentInfo: any = null;
     if (submission.appointment_id) {
       const { data: appt } = await supabase
@@ -83,52 +123,109 @@ Deno.serve(async (req) => {
     const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
     const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
+    const allPages: any[] = [];
     let page = pdfDoc.addPage([PAGE_W, PAGE_H]);
+    allPages.push(page);
     let y = PAGE_H - MARGIN;
     const contentWidth = PAGE_W - MARGIN * 2;
 
     function newPageIfNeeded(neededHeight: number) {
-      if (y - neededHeight < MARGIN) {
+      if (y - neededHeight < MARGIN + 24) {
         page = pdfDoc.addPage([PAGE_W, PAGE_H]);
+        allPages.push(page);
         y = PAGE_H - MARGIN;
       }
     }
 
     // ── Header ──────────────────────────────────────────────────────────────
-    page.drawText(jobForm?.name ?? "Job Form", { x: MARGIN, y, size: 20, font: boldFont, color: rgb(0.1, 0.1, 0.1) });
-    y -= 26;
-
     const headerLine = [appointmentInfo?.appointment_type, appointmentInfo?.lead_name].filter(Boolean).join("  —  ");
+    const contactParts: string[] = [];
+    if (showCompanyPhone && businessRow?.business_phone) contactParts.push(businessRow.business_phone);
+    if (showCompanyEmail && businessRow?.business_email) contactParts.push(businessRow.business_email);
+    if (showCompanyWebsite && businessRow?.company_website) contactParts.push(businessRow.company_website);
+    const contactLine = contactParts.join("  ·  ");
+
+    const isBasic = headerLayout === "basic";
+    const isClean = headerStyle === "clean";
+
+    let logoImg: any = null;
+    if (businessRow?.company_logo_url) {
+      try {
+        const logoRes = await fetch(businessRow.company_logo_url);
+        if (logoRes.ok) {
+          const logoBytes = new Uint8Array(await logoRes.arrayBuffer());
+          const contentType = logoRes.headers.get("content-type") ?? "";
+          logoImg = contentType.includes("png")
+            ? await pdfDoc.embedPng(logoBytes)
+            : await pdfDoc.embedJpg(logoBytes);
+        }
+      } catch (e) {
+        console.error("Logo embed error:", e);
+      }
+    }
+
+    const bandHeight = (isBasic ? 74 : 58) + (headerLine ? 18 : 0) + (appointmentInfo?.location ? 16 : 0) + (contactLine ? 14 : 0);
+
+    if (isClean) {
+      page.drawRectangle({ x: 0, y: PAGE_H - 4, width: PAGE_W, height: 4, color: BRAND });
+    } else {
+      page.drawRectangle({ x: 0, y: PAGE_H - bandHeight, width: PAGE_W, height: bandHeight, color: BRAND });
+    }
+
+    const titleColor = isClean ? BRAND : BRAND_TEXT;
+    const subColor = isClean ? TEXT_SECONDARY : rgb(0.93, 0.93, 1);
+    const locColor = isClean ? TEXT_SECONDARY : rgb(0.88, 0.88, 0.98);
+
+    let headerY = PAGE_H - (isBasic ? 44 : 36);
+    let textX = MARGIN;
+
+    if (logoImg) {
+      const logoScale = logoPx / logoImg.height;
+      const logoW = logoImg.width * logoScale;
+      page.drawImage(logoImg, { x: MARGIN, y: headerY - logoPx + 8, width: logoW, height: logoPx });
+      textX = MARGIN + logoW + 14;
+    }
+
+    page.drawText(jobForm?.name ?? "Job Form", { x: textX, y: headerY, size: isBasic ? 22 : 19, font: boldFont, color: titleColor });
+    headerY -= isBasic ? 26 : 22;
     if (headerLine) {
-      page.drawText(headerLine, { x: MARGIN, y, size: 11, font, color: rgb(0.35, 0.35, 0.35) });
-      y -= 16;
+      page.drawText(headerLine, { x: textX, y: headerY, size: 11, font, color: subColor });
+      headerY -= 16;
     }
     if (appointmentInfo?.location) {
-      page.drawText(appointmentInfo.location, { x: MARGIN, y, size: 10, font, color: rgb(0.45, 0.45, 0.45) });
-      y -= 16;
+      page.drawText(appointmentInfo.location, { x: textX, y: headerY, size: 10, font, color: locColor });
+      headerY -= 16;
     }
-    y -= 10;
-    page.drawLine({ start: { x: MARGIN, y }, end: { x: PAGE_W - MARGIN, y }, thickness: 1, color: rgb(0.85, 0.85, 0.85) });
-    y -= 24;
+    if (contactLine) {
+      page.drawText(contactLine, { x: textX, y: headerY, size: 9, font, color: locColor });
+      headerY -= 14;
+    }
+
+    if (isClean) {
+      page.drawLine({ start: { x: MARGIN, y: PAGE_H - bandHeight }, end: { x: PAGE_W - MARGIN, y: PAGE_H - bandHeight }, thickness: 1, color: BORDER_LIGHT });
+    }
+
+    y = PAGE_H - bandHeight - 28;
 
     // ── Fields ──────────────────────────────────────────────────────────────
     for (const field of fields) {
-      const label = field.label ?? "";
+      const label = (field.label ?? "").toUpperCase();
       const type = field.type ?? "text";
       const raw = answers[field.id];
 
       newPageIfNeeded(60);
-      page.drawText(label, { x: MARGIN, y, size: 11, font: boldFont, color: rgb(0.1, 0.1, 0.1) });
-      y -= 16;
+      page.drawRectangle({ x: MARGIN - 10, y: y - 4, width: 3, height: 14, color: ACCENT });
+      page.drawText(label, { x: MARGIN, y, size: 10, font: boldFont, color: ACCENT });
+      y -= 18;
 
       if (type === "checkbox") {
         const value = raw === true ? "Yes" : "No";
-        page.drawText(value, { x: MARGIN, y, size: 11, font, color: rgb(0.2, 0.2, 0.2) });
+        page.drawText(value, { x: MARGIN, y, size: 12, font, color: TEXT_DARK });
         y -= 20;
       } else if (type === "photo") {
         const paths: string[] = Array.isArray(raw) ? raw : [];
         if (paths.length === 0) {
-          page.drawText("No photos", { x: MARGIN, y, size: 10, font, color: rgb(0.55, 0.55, 0.55) });
+          page.drawText("No photos", { x: MARGIN, y, size: 10, font, color: TEXT_SECONDARY });
           y -= 20;
         } else {
           for (const path of paths) {
@@ -142,9 +239,13 @@ Deno.serve(async (req) => {
               const scale = maxW / img.width;
               const drawW = maxW;
               const drawH = img.height * scale;
-              newPageIfNeeded(drawH + 10);
+              newPageIfNeeded(drawH + 14);
+              page.drawRectangle({
+                x: MARGIN - 4, y: y - drawH - 4, width: drawW + 8, height: drawH + 8,
+                borderColor: BORDER_LIGHT, borderWidth: 1, color: rgb(1, 1, 1),
+              });
               page.drawImage(img, { x: MARGIN, y: y - drawH, width: drawW, height: drawH });
-              y -= drawH + 10;
+              y -= drawH + 14;
             } catch (e) {
               console.error("Photo embed error for", path, e);
             }
@@ -152,24 +253,26 @@ Deno.serve(async (req) => {
         }
       } else {
         const text = raw === null || raw === undefined || raw === "" ? "—" : String(raw);
-        const lines = wrapText(text, font, 11, contentWidth);
+        const lines = wrapText(text, font, 12, contentWidth);
         for (const line of lines) {
           newPageIfNeeded(16);
-          page.drawText(line, { x: MARGIN, y, size: 11, font, color: rgb(0.2, 0.2, 0.2) });
+          page.drawText(line, { x: MARGIN, y, size: 12, font, color: TEXT_DARK });
           y -= 16;
         }
         y -= 4;
       }
-      y -= 8;
+      y -= 6;
+      page.drawLine({ start: { x: MARGIN, y }, end: { x: PAGE_W - MARGIN, y }, thickness: 0.5, color: BORDER_LIGHT });
+      y -= 14;
     }
 
     // ── Signature ───────────────────────────────────────────────────────────
     if (submission.signature_url) {
-      newPageIfNeeded(140);
-      page.drawLine({ start: { x: MARGIN, y }, end: { x: PAGE_W - MARGIN, y }, thickness: 1, color: rgb(0.85, 0.85, 0.85) });
-      y -= 24;
-      page.drawText("Signature", { x: MARGIN, y, size: 11, font: boldFont, color: rgb(0.1, 0.1, 0.1) });
-      y -= 16;
+      newPageIfNeeded(160);
+      y -= 10;
+      page.drawRectangle({ x: MARGIN - 10, y: y - 4, width: 3, height: 14, color: ACCENT });
+      page.drawText("SIGNATURE", { x: MARGIN, y, size: 10, font: boldFont, color: ACCENT });
+      y -= 20;
       try {
         const { data: sigData } = await supabase.storage.from(BUCKET).download(submission.signature_url);
         if (sigData) {
@@ -178,16 +281,50 @@ Deno.serve(async (req) => {
           const maxW = 200;
           const scale = maxW / img.width;
           const drawH = img.height * scale;
+          page.drawRectangle({
+            x: MARGIN - 4, y: y - drawH - 4, width: maxW + 8, height: drawH + 8,
+            borderColor: BORDER_LIGHT, borderWidth: 1, color: rgb(1, 1, 1),
+          });
           page.drawImage(img, { x: MARGIN, y: y - drawH, width: maxW, height: drawH });
-          y -= drawH + 10;
+          y -= drawH + 14;
         }
       } catch (e) {
         console.error("Signature embed error:", e);
       }
       const signedLine = `Signed by ${submission.signed_by_name ?? "Unknown"} · ${submission.signed_at ? new Date(submission.signed_at).toLocaleString() : ""}`;
-      page.drawText(signedLine, { x: MARGIN, y, size: 10, font, color: rgb(0.4, 0.4, 0.4) });
+      page.drawText(signedLine, { x: MARGIN, y, size: 10, font, color: TEXT_SECONDARY });
       y -= 16;
     }
+
+    if (disclaimerText) {
+      newPageIfNeeded(60);
+      y -= 6;
+      page.drawRectangle({
+        x: MARGIN, y: y - 40, width: contentWidth, height: 44,
+        borderColor: BORDER_LIGHT, borderWidth: 1, color: rgb(0.98, 0.98, 0.99),
+      });
+      const disclaimerLines = wrapText(disclaimerText, font, 9, contentWidth - 20);
+      let dy = y - 14;
+      for (const line of disclaimerLines.slice(0, 3)) {
+        page.drawText(line, { x: MARGIN + 10, y: dy, size: 9, font, color: TEXT_SECONDARY });
+        dy -= 12;
+      }
+      y -= 50;
+    }
+
+    const generatedOn = new Date().toLocaleDateString();
+    allPages.forEach((p: any, idx: number) => {
+      p.drawLine({ start: { x: MARGIN, y: MARGIN - 10 }, end: { x: PAGE_W - MARGIN, y: MARGIN - 10 }, thickness: 0.5, color: BORDER_LIGHT });
+      if (showGeneratedDate) {
+        p.drawText(`Generated ${generatedOn}`, { x: MARGIN, y: MARGIN - 24, size: footerPtSize, font, color: TEXT_SECONDARY });
+      }
+      if (showPageNumbers) {
+        p.drawText(`Page ${idx + 1} of ${allPages.length}`, { x: PAGE_W - MARGIN - 70, y: MARGIN - 24, size: footerPtSize, font, color: TEXT_SECONDARY });
+      }
+      if (footerText) {
+        p.drawText(footerText, { x: MARGIN, y: MARGIN - 38, size: footerPtSize, font, color: TEXT_SECONDARY });
+      }
+    });
 
     const pdfBytes = await pdfDoc.save();
     const pdfPath = `${submission.business_id}/${submission_id}/completed-form.pdf`;
