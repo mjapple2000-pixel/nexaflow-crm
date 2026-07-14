@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme/app_theme.dart';
 import '../utils/business_utils.dart';
@@ -61,6 +62,29 @@ class _JobFormsScreenState extends State<JobFormsScreen> {
         onSaved: _load,
       ),
     );
+  }
+
+  Future<void> _openAiRecreation() async {
+    final businessId = await getActiveBusinessId();
+    if (businessId == null || !mounted) return;
+    final biz = await _db
+        .from('businesses')
+        .select('plan, is_beta')
+        .eq('id', businessId)
+        .maybeSingle();
+    if (!mounted) return;
+    final plan = biz?['plan'] as String? ?? 'starter';
+    final isBeta = biz?['is_beta'] as bool? ?? false;
+    final allowed = isBeta || plan == 'growth' || plan == 'pro';
+    if (!allowed) {
+      showDialog(
+        context: context,
+        builder: (ctx) => _AiRecreationLockedDialog(currentPlan: plan),
+      );
+      return;
+    }
+    if (!mounted) return;
+    context.go('/settings/ai-form-recreation');
   }
 
   void _confirmDelete(Map<String, dynamic> form) {
@@ -146,21 +170,38 @@ class _JobFormsScreenState extends State<JobFormsScreen> {
             ),
           ),
           const SizedBox(height: 16),
-          MouseRegion(
-            cursor: SystemMouseCursors.click,
-            child: ElevatedButton.icon(
-              onPressed: () => _openBuilder(),
-              icon: const Icon(Icons.add, size: 16),
-              label: const Text('New Job Form'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppTheme.brand,
-                foregroundColor: Colors.white,
-                elevation: 0,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          Row(mainAxisSize: MainAxisSize.min, children: [
+            MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: OutlinedButton.icon(
+                onPressed: _openAiRecreation,
+                icon: const Icon(Icons.auto_awesome, size: 16),
+                label: const Text('Recreate with AI'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppTheme.brand,
+                  side: BorderSide(color: AppTheme.brand.withValues(alpha: 0.4)),
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
               ),
             ),
-          ),
+            const SizedBox(width: 10),
+            MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: ElevatedButton.icon(
+                onPressed: () => _openBuilder(),
+                icon: const Icon(Icons.add, size: 16),
+                label: const Text('New Job Form'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppTheme.brand,
+                  foregroundColor: Colors.white,
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                ),
+              ),
+            ),
+          ]),
         ]),
       );
     }
@@ -172,6 +213,21 @@ class _JobFormsScreenState extends State<JobFormsScreen> {
           padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
           child: Row(children: [
             const Spacer(),
+            MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: OutlinedButton.icon(
+                onPressed: _openAiRecreation,
+                icon: const Icon(Icons.auto_awesome, size: 16),
+                label: const Text('Recreate with AI'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppTheme.brand,
+                  side: BorderSide(color: AppTheme.brand.withValues(alpha: 0.4)),
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
             MouseRegion(
               cursor: SystemMouseCursors.click,
               child: ElevatedButton.icon(
@@ -273,6 +329,91 @@ class _JobFormsScreenState extends State<JobFormsScreen> {
           ),
         ),
       ],
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+//  AI RECREATION — LOCKED TEASER DIALOG
+// ─────────────────────────────────────────────
+class _AiRecreationLockedDialog extends StatelessWidget {
+  final String currentPlan;
+  const _AiRecreationLockedDialog({required this.currentPlan});
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: AppTheme.cardBg,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Container(
+        width: 420,
+        padding: const EdgeInsets.all(24),
+        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                color: AppTheme.brand.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              alignment: Alignment.center,
+              child: const Icon(Icons.auto_awesome, size: 20, color: AppTheme.brand),
+            ),
+            const SizedBox(width: 12),
+            const Expanded(
+              child: Text('AI Form Recreation',
+                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+            ),
+          ]),
+          const SizedBox(height: 16),
+          const Text(
+            'Upload a form you already use — a PDF, photo, or scan — and let AI rebuild it as a fully working job form in NexaFlow, ready to fill out in the field.',
+            style: TextStyle(fontSize: 13, color: AppTheme.textSecondary, height: 1.5),
+          ),
+          const SizedBox(height: 16),
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: AppTheme.pageBg,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: AppTheme.borderColor),
+            ),
+            child: Row(children: [
+              const Icon(Icons.lock_outline, size: 16, color: AppTheme.textSecondary),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Available on Growth and Pro plans. You are currently on ${currentPlan.isEmpty ? 'Starter' : currentPlan[0].toUpperCase() + currentPlan.substring(1)}.',
+                  style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary, height: 1.4),
+                ),
+              ),
+            ]),
+          ),
+          const SizedBox(height: 20),
+          Row(children: [
+            const Spacer(),
+            TextButton(
+              onPressed: () => Navigator.of(context, rootNavigator: true).pop(),
+              child: const Text('Not Now', style: TextStyle(color: AppTheme.textSecondary)),
+            ),
+            const SizedBox(width: 8),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.of(context, rootNavigator: true).pop();
+                context.go('/settings?section=billing');
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.brand,
+                foregroundColor: Colors.white,
+                elevation: 0,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              child: const Text('Upgrade Plan'),
+            ),
+          ]),
+        ]),
+      ),
     );
   }
 }

@@ -7983,6 +7983,10 @@ class _ClientDocumentSettingsSectionState
     final logoUrl = widget.business['company_logo_url'] as String?;
     final preview = _previewColor ?? AppTheme.brand;
 
+    final plan = widget.business['plan'] as String? ?? 'starter';
+    final isBeta = widget.business['is_beta'] as bool? ?? false;
+    final aiRecreationAllowed = isBeta || plan == 'growth' || plan == 'pro';
+
     return _SectionShell(
       title: 'Client Document Settings',
       subtitle: 'Control how your generated PDFs (job forms, checklists) look to your team and customers.',
@@ -7991,6 +7995,63 @@ class _ClientDocumentSettingsSectionState
       successMsg: _successMsg,
       error: _error,
       child: Column(children: [
+        Container(
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: AppTheme.brand.withValues(alpha: 0.05),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: AppTheme.brand.withValues(alpha: 0.2)),
+          ),
+          child: Row(children: [
+            Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                color: AppTheme.brand.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              alignment: Alignment.center,
+              child: const Icon(Icons.auto_awesome, size: 20, color: AppTheme.brand),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Text('Recreate a Form with AI',
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+                const SizedBox(height: 3),
+                Text(
+                  aiRecreationAllowed
+                      ? 'Upload an existing form and let AI turn it into a working job form template.'
+                      : 'Available on Growth and Pro plans. Upgrade to unlock.',
+                  style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary, height: 1.4),
+                ),
+              ]),
+            ),
+            const SizedBox(width: 12),
+            MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: ElevatedButton.icon(
+                onPressed: () {
+                  if (!aiRecreationAllowed) {
+                    showDialog(context: context, builder: (ctx) => _SettingsAiLockedDialog(currentPlan: plan));
+                    return;
+                  }
+                  context.go('/settings/ai-form-recreation');
+                },
+                icon: Icon(aiRecreationAllowed ? Icons.upload_file_outlined : Icons.lock_outline, size: 15),
+                label: Text(aiRecreationAllowed ? 'Upload a Form' : 'Locked'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: aiRecreationAllowed ? AppTheme.brand : AppTheme.pageBg,
+                  foregroundColor: aiRecreationAllowed ? Colors.white : AppTheme.textSecondary,
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                ),
+              ),
+            ),
+          ]),
+        ),
+        const SizedBox(height: 24),
         _SettingsGroup(title: 'Branding', children: [
           const Text('Brand Color',
               style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
@@ -8262,6 +8323,63 @@ class _ClientDocumentSettingsSectionState
           ),
         ]),
       ]),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+//  AI RECREATION — LOCKED TEASER (Settings entry point)
+// ─────────────────────────────────────────────
+
+class _SettingsAiLockedDialog extends StatelessWidget {
+  final String currentPlan;
+  const _SettingsAiLockedDialog({required this.currentPlan});
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: AppTheme.cardBg,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Container(
+        width: 420,
+        padding: const EdgeInsets.all(24),
+        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Text('AI Form Recreation',
+              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+          const SizedBox(height: 12),
+          const Text(
+            'Upload a form you already use and let AI rebuild it as a working job form template.',
+            style: TextStyle(fontSize: 13, color: AppTheme.textSecondary, height: 1.5),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            'Available on Growth and Pro plans. You are currently on ${currentPlan.isEmpty ? 'Starter' : currentPlan[0].toUpperCase() + currentPlan.substring(1)}.',
+            style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+          ),
+          const SizedBox(height: 20),
+          Row(children: [
+            const Spacer(),
+            TextButton(
+              onPressed: () => Navigator.of(context, rootNavigator: true).pop(),
+              child: const Text('Not Now', style: TextStyle(color: AppTheme.textSecondary)),
+            ),
+            const SizedBox(width: 8),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.of(context, rootNavigator: true).pop();
+                context.go('/settings?section=billing');
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.brand,
+                foregroundColor: Colors.white,
+                elevation: 0,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              child: const Text('Upgrade Plan'),
+            ),
+          ]),
+        ]),
+      ),
     );
   }
 }

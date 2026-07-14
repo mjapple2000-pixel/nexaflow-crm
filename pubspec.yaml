@@ -28,6 +28,7 @@ dependencies:
   image_picker: ^1.2.3
   signature: ^6.3.0
   flutter_colorpicker: ^1.1.0
+  pdfx: ^2.9.2
 
 dev_dependencies:
   flutter_test:

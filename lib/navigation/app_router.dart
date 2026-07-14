@@ -45,6 +45,7 @@ import '../screens/job_form_fill_screen.dart';
 import '../screens/completed_job_form_viewer.dart';
 import '../screens/timesheets_screen.dart';
 import '../screens/routes_screen.dart';
+import '../screens/ai_form_recreation_screen.dart';
 
 class AppRouter {
   static bool? cachedIsSuperuser;
@@ -526,6 +527,11 @@ class AppRouter {
             builder: (context, state) => SettingsScreen(
               initialSection: state.uri.queryParameters['section'],
             ),
+          ),
+          GoRoute(
+            path: '/settings/ai-form-recreation',
+            name: 'ai-form-recreation',
+            builder: (context, state) => const AiFormRecreationScreen(),
           ),
           GoRoute(
             path: '/ai-chat',
