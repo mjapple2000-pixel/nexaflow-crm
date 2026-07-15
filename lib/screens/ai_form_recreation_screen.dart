@@ -28,9 +28,11 @@ class _AiFieldDraft {
   final String? section;
   final bool isFilledIn;
   final String? detectedExampleValue;
+  final TextEditingController prefilledValueCtrl;
   bool clearedByUser;
   int? page;
   Map<String, dynamic>? box;
+  Map<String, dynamic>? labelBox;
   List<dynamic>? optionBoxes;
 
   _AiFieldDraft({
@@ -45,16 +47,25 @@ class _AiFieldDraft {
     this.clearedByUser = false,
     this.page,
     this.box,
+    this.labelBox,
     this.optionBoxes,
   })  : labelCtrl = TextEditingController(text: label),
-        optionsCtrl = TextEditingController(text: options);
+        optionsCtrl = TextEditingController(text: options),
+        prefilledValueCtrl = TextEditingController(text: detectedExampleValue ?? '');
+
+  static const _validTypes = {'text', 'checkbox', 'select', 'photo', 'signature'};
 
   factory _AiFieldDraft.fromExtracted(Map<String, dynamic> map) {
     final optionsList = (map['options'] as List?)?.join(', ') ?? '';
+    final rawType = map['type'] as String? ?? 'text';
+    // AI output is never fully trustworthy — a dropdown showing this value
+    // will hard-crash the whole screen if it's not one of the fixed options,
+    // so anything unrecognized falls back to "text" rather than propagating.
+    final safeType = _validTypes.contains(rawType) ? rawType : 'text';
     return _AiFieldDraft(
       id: map['id'] as String? ?? '',
       label: map['label'] as String? ?? '',
-      type: map['type'] as String? ?? 'text',
+      type: safeType,
       required: map['required'] as bool? ?? false,
       options: optionsList,
       section: map['section'] as String?,
@@ -62,6 +73,7 @@ class _AiFieldDraft {
       detectedExampleValue: map['detected_example_value'] as String?,
       page: map['page'] as int?,
       box: map['box'] != null ? Map<String, dynamic>.from(map['box'] as Map) : null,
+      labelBox: map['label_box'] != null ? Map<String, dynamic>.from(map['label_box'] as Map) : null,
       optionBoxes: map['option_boxes'] as List?,
     );
   }
@@ -69,66 +81,163 @@ class _AiFieldDraft {
   void dispose() {
     labelCtrl.dispose();
     optionsCtrl.dispose();
+    prefilledValueCtrl.dispose();
   }
 }
 
-// One draggable/resizable target on the canvas — either a whole field's box,
-// or one option's box within a select field's option_boxes list.
+// A section header detected on the form (e.g. "Facility", "Inspector") —
+// tracked separately from fields since it has no type/required/options,
+// just a title and a position.
+class _SectionDraft {
+  final String id;
+  final TextEditingController titleCtrl;
+  int? page;
+  Map<String, dynamic>? box;
+
+  _SectionDraft({required this.id, required String title, this.page, this.box})
+      : titleCtrl = TextEditingController(text: title);
+
+  factory _SectionDraft.fromExtracted(Map<String, dynamic> map, int index) {
+    return _SectionDraft(
+      id: 'section_$index',
+      title: map['title'] as String? ?? '',
+      page: map['page'] as int?,
+      box: map['box'] != null ? Map<String, dynamic>.from(map['box'] as Map) : null,
+    );
+  }
+
+  void dispose() {
+    titleCtrl.dispose();
+  }
+}
+
+enum _TargetKind { fieldAnswer, fieldLabel, option, section }
+
+// One draggable/resizable target on the canvas. Generalized to cover four
+// kinds of annotation — a field's answer box, a field's label box, one
+// option within a select field, or a section header — since all four are
+// just "something with a page + box that can be moved/resized/deleted."
+// Sharing one widget and one selection/undo mechanism avoids duplicating
+// drag logic four separate times.
 class _EditTarget {
   final String label;
-  final _AiFieldDraft field;
-  final int? optionIndex; // null = the field's own box; otherwise index into optionBoxes
+  final _TargetKind kind;
+  final String keyId;
+  final _AiFieldDraft? sourceField;
+  final Map<String, dynamic>? Function() _getBox;
+  final void Function(Map<String, dynamic>) _setBox;
+  final int? Function() _getPage;
+  final void Function(int) _setPage;
+  final VoidCallback onDelete;
 
-  _EditTarget({required this.label, required this.field, this.optionIndex});
+  _EditTarget({
+    required this.label,
+    required this.kind,
+    required this.keyId,
+    this.sourceField,
+    required Map<String, dynamic>? Function() getBox,
+    required void Function(Map<String, dynamic>) setBox,
+    required int? Function() getPage,
+    required void Function(int) setPage,
+    required this.onDelete,
+  })  : _getBox = getBox,
+        _setBox = setBox,
+        _getPage = getPage,
+        _setPage = setPage;
 
-  // Stable identity across rebuilds — _allTargets recreates instances every
-  // build, so selection tracking must compare by this key, never by object identity.
-  String get key => '${field.id}::${optionIndex ?? -1}';
-
-  int? get page => field.page;
-
-  Map<String, dynamic>? getBox() {
-    if (optionIndex == null) return field.box;
-    final list = field.optionBoxes;
-    if (list == null || optionIndex! >= list.length) return null;
-    return Map<String, dynamic>.from((list[optionIndex!] as Map)['box'] as Map);
-  }
-
-  void setBox(Map<String, dynamic> box) {
-    if (optionIndex == null) {
-      field.box = box;
-    } else {
-      final list = field.optionBoxes;
-      if (list == null || optionIndex! >= list.length) return;
-      final entry = Map<String, dynamic>.from(list[optionIndex!] as Map);
-      entry['box'] = box;
-      list[optionIndex!] = entry;
-    }
-  }
+  String get key => keyId;
+  int? get page => _getPage();
+  Map<String, dynamic>? getBox() => _getBox();
+  void setBox(Map<String, dynamic> box) => _setBox(box);
 
   void placeOnPage(int page) {
-    const defaultBox = {'x': 10.0, 'y': 10.0, 'w': 20.0, 'h': 4.0};
-    if (optionIndex == null) {
-      field.page = page;
-      field.box = Map<String, dynamic>.from(defaultBox);
-    } else {
-      field.page = page;
-      final list = field.optionBoxes ?? [];
-      while (list.length <= optionIndex!) {
-        list.add({'label': label, 'box': Map<String, dynamic>.from(defaultBox)});
-      }
-      field.optionBoxes = list;
+    _setPage(page);
+    setBox({'x': 10.0, 'y': 10.0, 'w': 20.0, 'h': 4.0});
+  }
+
+  factory _EditTarget.fieldAnswer(_AiFieldDraft field, VoidCallback onDelete) {
+    return _EditTarget(
+      label: field.labelCtrl.text.isEmpty ? field.id : field.labelCtrl.text,
+      kind: _TargetKind.fieldAnswer,
+      keyId: '${field.id}::answer',
+      sourceField: field,
+      getBox: () => field.box,
+      setBox: (b) => field.box = b,
+      getPage: () => field.page,
+      setPage: (p) => field.page = p,
+      onDelete: onDelete,
+    );
+  }
+
+  factory _EditTarget.fieldLabel(_AiFieldDraft field, VoidCallback onDelete) {
+    return _EditTarget(
+      label: '${field.labelCtrl.text.isEmpty ? field.id : field.labelCtrl.text} (label)',
+      kind: _TargetKind.fieldLabel,
+      keyId: '${field.id}::label',
+      sourceField: field,
+      getBox: () => field.labelBox,
+      setBox: (b) => field.labelBox = b,
+      getPage: () => field.page,
+      setPage: (p) => field.page = p,
+      onDelete: onDelete,
+    );
+  }
+
+  factory _EditTarget.option(_AiFieldDraft field, int optionIndex, VoidCallback onDelete) {
+    Map<String, dynamic>? getOptBox() {
+      final list = field.optionBoxes;
+      if (list == null || optionIndex >= list.length) return null;
+      return Map<String, dynamic>.from((list[optionIndex] as Map)['box'] as Map);
     }
+
+    void setOptBox(Map<String, dynamic> box) {
+      final list = field.optionBoxes;
+      if (list == null || optionIndex >= list.length) return;
+      final entry = Map<String, dynamic>.from(list[optionIndex] as Map);
+      entry['box'] = box;
+      list[optionIndex] = entry;
+    }
+
+    final optLabel = (field.optionBoxes != null && optionIndex < field.optionBoxes!.length)
+        ? ((field.optionBoxes![optionIndex] as Map)['label'] ?? 'option ${optionIndex + 1}')
+        : 'option ${optionIndex + 1}';
+
+    return _EditTarget(
+      label: '${field.labelCtrl.text.isEmpty ? field.id : field.labelCtrl.text} — $optLabel',
+      kind: _TargetKind.option,
+      keyId: '${field.id}::opt$optionIndex',
+      sourceField: field,
+      getBox: getOptBox,
+      setBox: setOptBox,
+      getPage: () => field.page,
+      setPage: (p) => field.page = p,
+      onDelete: onDelete,
+    );
+  }
+
+  factory _EditTarget.section(_SectionDraft section, VoidCallback onDelete) {
+    return _EditTarget(
+      label: section.titleCtrl.text.isEmpty ? 'Section' : section.titleCtrl.text,
+      kind: _TargetKind.section,
+      keyId: '${section.id}::section',
+      getBox: () => section.box,
+      setBox: (b) => section.box = b,
+      getPage: () => section.page,
+      setPage: (p) => section.page = p,
+      onDelete: onDelete,
+    );
   }
 }
 
 class _CoordinatePreviewDialog extends StatefulWidget {
   final List<String> pageUrls;
   final List<_AiFieldDraft> fields;
+  final List<_SectionDraft> sections;
   final Map<String, dynamic>? rawExtracted;
   const _CoordinatePreviewDialog({
     required this.pageUrls,
     required this.fields,
+    required this.sections,
     required this.rawExtracted,
   });
 
@@ -142,25 +251,140 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
   final List<List<Map<String, dynamic>>> _undoStack = [];
   static const int _maxUndo = 40;
   static const List<String> _addFieldTypes = ['text', 'checkbox', 'select', 'photo', 'signature'];
+  final TransformationController _transformController = TransformationController();
+
+  double get _currentZoom => _transformController.value.getMaxScaleOnAxis();
+
+  void _setZoom(double scale) {
+    final clamped = scale.clamp(1.0, 4.0);
+    setState(() {
+      _transformController.value = Matrix4.identity()..scale(clamped);
+    });
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    // Keeps the on-screen zoom % and box drag math in sync with pinch/scroll
+    // zoom too, not just the +/- buttons, since InteractiveViewer updates
+    // the controller directly on those gestures without calling setState.
+    _transformController.addListener(() {
+      if (mounted) setState(() {});
+    });
+    // Any box left in a broken state from before (e.g. negative width/height
+    // from the old buggy resize clamp) gets corrected once, up front, so it
+    // renders and is grabbable instead of silently failing to build. Boxes
+    // that needed a fallback position are staggered so they fan out instead
+    // of stacking exactly on top of each other.
+    var fallbackIndex = 0;
+    for (final f in widget.fields) {
+      if (f.box != null) {
+        final result = _sanitizedBox(f.box, fallbackIndex);
+        f.box = result.box;
+        if (result.usedFallback) fallbackIndex++;
+      }
+      if (f.labelBox != null) {
+        final result = _sanitizedBox(f.labelBox, fallbackIndex);
+        f.labelBox = result.box;
+        if (result.usedFallback) fallbackIndex++;
+      }
+      if (f.optionBoxes != null) {
+        f.optionBoxes = f.optionBoxes!.map((ob) {
+          final entry = Map<String, dynamic>.from(ob as Map);
+          if (entry['box'] != null) {
+            final result = _sanitizedBox(Map<String, dynamic>.from(entry['box'] as Map), fallbackIndex);
+            entry['box'] = result.box;
+            if (result.usedFallback) fallbackIndex++;
+          }
+          return entry;
+        }).toList();
+      }
+    }
+    for (final s in widget.sections) {
+      if (s.box != null) {
+        final result = _sanitizedBox(s.box, fallbackIndex);
+        s.box = result.box;
+        if (result.usedFallback) fallbackIndex++;
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _transformController.dispose();
+    super.dispose();
+  }
+
+  ({Map<String, dynamic> box, bool usedFallback}) _sanitizedBox(Map<String, dynamic>? box, int fallbackIndex) {
+    double w = (box?['w'] as num?)?.toDouble() ?? double.nan;
+    double h = (box?['h'] as num?)?.toDouble() ?? double.nan;
+    double x = (box?['x'] as num?)?.toDouble() ?? double.nan;
+    double y = (box?['y'] as num?)?.toDouble() ?? double.nan;
+
+    final wasBroken = w.isNaN || h.isNaN || x.isNaN || y.isNaN || w <= 0 || h <= 0;
+
+    if (wasBroken) {
+      // Fan out across a 5-wide grid, stepping down the page, wrapping if
+      // there are more broken boxes than fit — each one lands somewhere
+      // distinct and draggable instead of exactly overlapping the last.
+      const cols = 5;
+      final col = fallbackIndex % cols;
+      final row = (fallbackIndex ~/ cols) % 15;
+      return (
+        box: {
+          'x': 5.0 + (col * 18.0),
+          'y': 5.0 + (row * 6.0),
+          'w': 16.0,
+          'h': 4.0,
+        },
+        usedFallback: true,
+      );
+    }
+
+    w = w.clamp(2.0, 100.0);
+    h = h.clamp(1.0, 100.0);
+    x = x.clamp(0.0, 100.0 - w);
+    y = y.clamp(0.0, 100.0 - h);
+    return (box: {'x': x, 'y': y, 'w': w, 'h': h}, usedFallback: false);
+  }
 
   List<_EditTarget> get _allTargets {
     final targets = <_EditTarget>[];
     for (final f in widget.fields) {
+      targets.add(_EditTarget.fieldAnswer(f, () {
+        widget.fields.remove(f);
+        f.dispose();
+      }));
+      if (f.labelBox != null) {
+        targets.add(_EditTarget.fieldLabel(f, () {
+          f.labelBox = null;
+        }));
+      }
       if (f.type == 'select' && (f.optionBoxes?.isNotEmpty ?? false)) {
         for (var i = 0; i < f.optionBoxes!.length; i++) {
-          final ob = Map<String, dynamic>.from(f.optionBoxes![i] as Map);
-          targets.add(_EditTarget(
-            label: '${f.labelCtrl.text.isEmpty ? f.id : f.labelCtrl.text} — ${ob['label'] ?? 'option ${i + 1}'}',
-            field: f,
-            optionIndex: i,
-          ));
+          final optIndex = i;
+          targets.add(_EditTarget.option(f, optIndex, () {
+            final list = f.optionBoxes;
+            if (list == null || optIndex >= list.length) return;
+            final removedLabel = (list[optIndex] as Map)['label'] as String?;
+            list.removeAt(optIndex);
+            if (removedLabel != null) {
+              final remaining = f.optionsCtrl.text
+                  .split(',')
+                  .map((s) => s.trim())
+                  .where((s) => s.isNotEmpty && s != removedLabel)
+                  .toList();
+              f.optionsCtrl.text = remaining.join(', ');
+            }
+          }));
         }
-      } else {
-        targets.add(_EditTarget(
-          label: f.labelCtrl.text.isEmpty ? f.id : f.labelCtrl.text,
-          field: f,
-        ));
       }
+    }
+    for (final s in widget.sections) {
+      targets.add(_EditTarget.section(s, () {
+        widget.sections.remove(s);
+        s.dispose();
+      }));
     }
     return targets;
   }
@@ -296,21 +520,13 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
     newField.box = {'x': 10.0, 'y': 10.0, 'w': 20.0, 'h': 4.0};
     widget.fields.add(newField);
     setState(() {
-      _selectedKey = '${newField.id}::-1';
+      _selectedKey = '${newField.id}::answer';
     });
   }
 
   void _deleteTarget(_EditTarget t) {
     _pushUndo();
-    if (t.optionIndex == null) {
-      widget.fields.remove(t.field);
-      t.field.dispose();
-    } else {
-      final list = t.field.optionBoxes;
-      if (list != null && t.optionIndex! < list.length) {
-        list.removeAt(t.optionIndex!);
-      }
-    }
+    t.onDelete();
     setState(() {
       if (_selectedKey == t.key) _selectedKey = null;
     });
@@ -345,9 +561,40 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
                         style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
                     const SizedBox(width: 12),
                     const Expanded(
-                      child: Text('Drag to move, drag any edge/corner to resize. Ctrl+Z to undo.',
+                      child: Text('Drag to move, drag any edge/corner to resize. Scroll or pinch to zoom. Ctrl+Z to undo.',
                           style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
                     ),
+                    MouseRegion(
+                      cursor: SystemMouseCursors.click,
+                      child: IconButton(
+                        tooltip: 'Zoom out',
+                        onPressed: () => _setZoom(_currentZoom - 0.5),
+                        icon: const Icon(Icons.zoom_out_rounded, size: 20),
+                      ),
+                    ),
+                    SizedBox(
+                      width: 44,
+                      child: Text('${(_currentZoom * 100).round()}%',
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                    ),
+                    MouseRegion(
+                      cursor: SystemMouseCursors.click,
+                      child: IconButton(
+                        tooltip: 'Zoom in',
+                        onPressed: () => _setZoom(_currentZoom + 0.5),
+                        icon: const Icon(Icons.zoom_in_rounded, size: 20),
+                      ),
+                    ),
+                    MouseRegion(
+                      cursor: SystemMouseCursors.click,
+                      child: IconButton(
+                        tooltip: 'Reset zoom',
+                        onPressed: _currentZoom == 1.0 ? null : () => _setZoom(1.0),
+                        icon: const Icon(Icons.center_focus_weak_rounded, size: 20),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
                     MouseRegion(
                       cursor: SystemMouseCursors.click,
                       child: IconButton(
@@ -404,22 +651,40 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
                         final w = constraints.maxWidth;
                         final h = w / aspectRatio > constraints.maxHeight ? constraints.maxHeight : w / aspectRatio;
                         final finalW = h * aspectRatio;
-                        return Center(
-                          child: SizedBox(
-                            width: finalW,
-                            height: h,
-                            child: Stack(clipBehavior: Clip.none, children: [
-                              Positioned.fill(
-                                child: Image.network(
-                                  widget.pageUrls[_currentPage - 1],
-                                  key: ValueKey(widget.pageUrls[_currentPage - 1]),
-                                  fit: BoxFit.fill,
-                                  errorBuilder: (_, __, ___) => Container(color: AppTheme.pageBg,
-                                      child: const Center(child: Text('Could not load page image'))),
+                        return InteractiveViewer(
+                          transformationController: _transformController,
+                          minScale: 1.0,
+                          maxScale: 4.0,
+                          boundaryMargin: const EdgeInsets.all(300),
+                          child: Center(
+                            child: SizedBox(
+                              width: finalW,
+                              height: h,
+                              child: Stack(clipBehavior: Clip.none, children: [
+                                Positioned.fill(
+                                  child: Image.network(
+                                    widget.pageUrls[_currentPage - 1],
+                                    key: ValueKey(widget.pageUrls[_currentPage - 1]),
+                                    fit: BoxFit.fill,
+                                    errorBuilder: (_, __, ___) => Container(color: AppTheme.pageBg,
+                                        child: const Center(child: Text('Could not load page image'))),
+                                  ),
                                 ),
-                              ),
-                              ...pageTargets.map((t) => _buildDraggableBox(t, finalW, h)),
-                            ]),
+                                ...pageTargets.map((t) => _DraggableFieldBox(
+                                      key: ValueKey(t.key),
+                                      target: t,
+                                      containerW: finalW,
+                                      containerH: h,
+                                      zoomScale: _currentZoom,
+                                      isSelected: t.key == _selectedKey,
+                                      isCleared: t.sourceField?.clearedByUser ?? false,
+                                      onSelect: () => setState(() => _selectedKey = t.key),
+                                      onDeleteTap: () => _deleteTarget(t),
+                                      onDragStart: _pushUndo,
+                                      onCommit: (newBox) => setState(() => t.setBox(newBox)),
+                                    )),
+                              ]),
+                            ),
                           ),
                         );
                       }),
@@ -515,6 +780,15 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
     );
   }
 
+  bool _isOutOfBounds(Map<String, dynamic>? box) {
+    if (box == null) return false;
+    final x = (box['x'] as num?)?.toDouble() ?? 0;
+    final y = (box['y'] as num?)?.toDouble() ?? 0;
+    final w = (box['w'] as num?)?.toDouble() ?? 0;
+    final h = (box['h'] as num?)?.toDouble() ?? 0;
+    return x < 0 || y < 0 || w <= 0 || h <= 0 || (x + w) > 100 || (y + h) > 100;
+  }
+
   Widget _targetListTile(_EditTarget t) {
     final isSelected = t.key == _selectedKey;
     return MouseRegion(
@@ -530,6 +804,12 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
             border: Border.all(color: isSelected ? AppTheme.brand : AppTheme.borderColor, width: isSelected ? 1.5 : 1),
           ),
           child: Row(children: [
+            Container(
+              width: 8,
+              height: 8,
+              margin: const EdgeInsets.only(right: 8),
+              decoration: BoxDecoration(color: _baseColorForKind(t.kind), shape: BoxShape.circle),
+            ),
             Expanded(
               child: Text(t.label,
                   style: TextStyle(
@@ -537,6 +817,22 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
                       fontWeight: isSelected ? FontWeight.w600 : FontWeight.w400,
                       color: isSelected ? AppTheme.brand : AppTheme.textPrimary)),
             ),
+            if (_isOutOfBounds(t.getBox())) ...[
+              MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: GestureDetector(
+                  onTap: () => setState(() {
+                    _pushUndo();
+                    t.setBox({'x': 10.0, 'y': 10.0, 'w': 20.0, 'h': 4.0});
+                    _selectedKey = t.key;
+                  }),
+                  child: const Padding(
+                    padding: EdgeInsets.only(right: 8),
+                    child: Icon(Icons.center_focus_strong, size: 15, color: Colors.orange),
+                  ),
+                ),
+              ),
+            ],
             MouseRegion(
               cursor: SystemMouseCursors.click,
               child: GestureDetector(
@@ -550,68 +846,167 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
       ),
     );
   }
+}
 
-  Widget _buildDraggableBox(_EditTarget t, double containerW, double containerH) {
-    final box = t.getBox();
-    if (box == null) return const SizedBox.shrink();
-    final isSelected = t.key == _selectedKey;
-    final xPct = (box['x'] as num?)?.toDouble() ?? 0;
-    final yPct = (box['y'] as num?)?.toDouble() ?? 0;
-    final wPct = (box['w'] as num?)?.toDouble() ?? 5;
-    final hPct = (box['h'] as num?)?.toDouble() ?? 3;
-    final left = containerW * (xPct / 100);
-    final top = containerH * (yPct / 100);
-    final boxW = containerW * (wPct / 100);
-    final boxH = containerH * (hPct / 100);
+Color _baseColorForKind(_TargetKind kind) {
+  switch (kind) {
+    case _TargetKind.fieldAnswer:
+    case _TargetKind.option:
+      return Colors.red;
+    case _TargetKind.fieldLabel:
+      return Colors.purple;
+    case _TargetKind.section:
+      return Colors.blue;
+  }
+}
 
-    void resize(bool left, bool top, bool right, bool bottom, Offset deltaPx) {
-      final dxPct = (deltaPx.dx / containerW) * 100;
-      final dyPct = (deltaPx.dy / containerH) * 100;
-      var newX = xPct;
-      var newY = yPct;
-      var newW = wPct;
-      var newH = hPct;
-      if (left) {
-        newX = (xPct + dxPct).clamp(0.0, xPct + wPct - 2);
-        newW = wPct + (xPct - newX);
-      }
-      if (right) {
-        newW = (wPct + dxPct).clamp(2.0, 100.0 - xPct);
-      }
-      if (top) {
-        newY = (yPct + dyPct).clamp(0.0, yPct + hPct - 1);
-        newH = hPct + (yPct - newY);
-      }
-      if (bottom) {
-        newH = (hPct + dyPct).clamp(1.0, 100.0 - yPct);
-      }
-      setState(() {
-        t.setBox({'x': newX, 'y': newY, 'w': newW, 'h': newH});
-      });
+Map<String, double> _applyBoxDelta(Map<String, double> base, String? handle, double dxPct, double dyPct) {
+  double x = base['x']!, y = base['y']!, w = base['w']!, h = base['h']!;
+  switch (handle) {
+    case null:
+      x += dxPct; y += dyPct;
+      break;
+    case 'tl':
+      x += dxPct; y += dyPct; w -= dxPct; h -= dyPct;
+      break;
+    case 'tr':
+      y += dyPct; w += dxPct; h -= dyPct;
+      break;
+    case 'bl':
+      x += dxPct; w -= dxPct; h += dyPct;
+      break;
+    case 'br':
+      w += dxPct; h += dyPct;
+      break;
+    case 't':
+      y += dyPct; h -= dyPct;
+      break;
+    case 'b':
+      h += dyPct;
+      break;
+    case 'l':
+      x += dxPct; w -= dxPct;
+      break;
+    case 'r':
+      w += dxPct;
+      break;
+  }
+  return {'x': x, 'y': y, 'w': w, 'h': h};
+}
+
+class _DraggableFieldBox extends StatefulWidget {
+  final _EditTarget target;
+  final double containerW;
+  final double containerH;
+  final double zoomScale;
+  final bool isSelected;
+  final bool isCleared;
+  final VoidCallback onSelect;
+  final VoidCallback onDeleteTap;
+  final VoidCallback onDragStart;
+  final void Function(Map<String, dynamic> newBox) onCommit;
+
+  const _DraggableFieldBox({
+    super.key,
+    required this.target,
+    required this.containerW,
+    required this.containerH,
+    this.zoomScale = 1.0,
+    required this.isSelected,
+    this.isCleared = false,
+    required this.onSelect,
+    required this.onDeleteTap,
+    required this.onDragStart,
+    required this.onCommit,
+  });
+
+  @override
+  State<_DraggableFieldBox> createState() => _DraggableFieldBoxState();
+}
+
+class _DraggableFieldBoxState extends State<_DraggableFieldBox> {
+  Offset _livePxDelta = Offset.zero;
+  bool _dragActive = false;
+  String? _activeHandle;
+
+  Map<String, double> get _baseBox {
+    final box = widget.target.getBox();
+    return {
+      'x': (box?['x'] as num?)?.toDouble() ?? 0,
+      'y': (box?['y'] as num?)?.toDouble() ?? 0,
+      'w': (box?['w'] as num?)?.toDouble() ?? 5,
+      'h': (box?['h'] as num?)?.toDouble() ?? 3,
+    };
+  }
+
+  // Always returns a valid, in-bounds box regardless of the starting values —
+  // this is what makes a box that started out-of-bounds self-heal the moment
+  // it's touched, instead of getting permanently stuck.
+  Map<String, double> _normalize(double x, double y, double w, double h) {
+    final nw = w.clamp(2.0, 100.0);
+    final nh = h.clamp(1.0, 100.0);
+    final nx = x.clamp(0.0, 100.0 - nw);
+    final ny = y.clamp(0.0, 100.0 - nh);
+    return {'x': nx, 'y': ny, 'w': nw, 'h': nh};
+  }
+
+  void _startDrag(String? handle) {
+    widget.onDragStart();
+    setState(() {
+      _dragActive = true;
+      _activeHandle = handle;
+      _livePxDelta = Offset.zero;
+    });
+  }
+
+  void _updateDrag(Offset delta) {
+    // Pointer deltas arrive in screen pixels regardless of zoom level, so
+    // they must be scaled down to the box's own unscaled coordinate space —
+    // otherwise dragging would feel too fast/twitchy whenever zoomed in.
+    setState(() => _livePxDelta += delta / widget.zoomScale);
+  }
+
+  void _endDrag() {
+    final base = _baseBox;
+    final dxPct = (_livePxDelta.dx / widget.containerW) * 100;
+    final dyPct = (_livePxDelta.dy / widget.containerH) * 100;
+    final applied = _applyBoxDelta(base, _activeHandle, dxPct, dyPct);
+    final normalized = _normalize(applied['x']!, applied['y']!, applied['w']!, applied['h']!);
+    widget.onCommit(normalized);
+    setState(() {
+      _dragActive = false;
+      _activeHandle = null;
+      _livePxDelta = Offset.zero;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final base = _baseBox;
+    var live = base;
+    if (_dragActive) {
+      final dxPct = (_livePxDelta.dx / widget.containerW) * 100;
+      final dyPct = (_livePxDelta.dy / widget.containerH) * 100;
+      live = _applyBoxDelta(base, _activeHandle, dxPct, dyPct);
     }
+    final x = live['x']!, y = live['y']!, w = live['w']!, h = live['h']!;
+    final left = widget.containerW * (x / 100);
+    final top = widget.containerH * (y / 100);
+    final boxW = widget.containerW * (w / 100);
+    final boxH = widget.containerH * (h / 100);
 
-    void move(Offset deltaPx) {
-      final dxPct = (deltaPx.dx / containerW) * 100;
-      final dyPct = (deltaPx.dy / containerH) * 100;
-      final newX = (xPct + dxPct).clamp(0.0, 100.0 - wPct);
-      final newY = (yPct + dyPct).clamp(0.0, 100.0 - hPct);
-      setState(() {
-        t.setBox({'x': newX, 'y': newY, 'w': wPct, 'h': hPct});
-      });
-    }
-
-    Widget handle({required bool left, required bool top, required bool right, required bool bottom,
-        required double x, required double y, required MouseCursor cursor}) {
+    Widget handle({required String id, required double hx, required double hy, required MouseCursor cursor}) {
       const hitSize = 20.0;
       return Positioned(
-        left: x - (hitSize / 2),
-        top: y - (hitSize / 2),
+        left: hx - (hitSize / 2),
+        top: hy - (hitSize / 2),
         child: MouseRegion(
           cursor: cursor,
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
-            onPanStart: (_) => _pushUndo(),
-            onPanUpdate: (details) => resize(left, top, right, bottom, details.delta),
+            onPanStart: (_) => _startDrag(id),
+            onPanUpdate: (details) => _updateDrag(details.delta),
+            onPanEnd: (_) => _endDrag(),
             child: SizedBox(
               width: hitSize,
               height: hitSize,
@@ -640,35 +1035,43 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
       child: Stack(clipBehavior: Clip.none, children: [
         GestureDetector(
           behavior: HitTestBehavior.opaque,
-          onTap: () => setState(() => _selectedKey = t.key),
+          onTap: widget.onSelect,
           onPanStart: (_) {
-            setState(() => _selectedKey = t.key);
-            _pushUndo();
+            widget.onSelect();
+            _startDrag(null);
           },
-          onPanUpdate: (details) => move(details.delta),
+          onPanUpdate: (details) => _updateDrag(details.delta),
+          onPanEnd: (_) => _endDrag(),
           child: Container(
             decoration: BoxDecoration(
-              border: Border.all(color: isSelected ? AppTheme.brand : Colors.red, width: isSelected ? 2 : 1.5),
-              color: (isSelected ? AppTheme.brand : Colors.red).withValues(alpha: 0.15),
+              border: Border.all(
+                color: widget.isCleared
+                    ? AppTheme.textSecondary
+                    : (widget.isSelected ? AppTheme.brand : _baseColorForKind(widget.target.kind)),
+                width: widget.isSelected ? 2 : 1.5,
+              ),
+              color: widget.isCleared
+                  ? AppTheme.textSecondary.withValues(alpha: 0.12)
+                  : (widget.isSelected ? AppTheme.brand : _baseColorForKind(widget.target.kind)).withValues(alpha: 0.15),
             ),
           ),
         ),
-        if (isSelected) ...[
-          handle(left: true, top: true, right: false, bottom: false, x: 0, y: 0, cursor: SystemMouseCursors.resizeUpLeft),
-          handle(left: false, top: true, right: true, bottom: false, x: boxW, y: 0, cursor: SystemMouseCursors.resizeUpRight),
-          handle(left: true, top: false, right: false, bottom: true, x: 0, y: boxH, cursor: SystemMouseCursors.resizeDownLeft),
-          handle(left: false, top: false, right: true, bottom: true, x: boxW, y: boxH, cursor: SystemMouseCursors.resizeDownRight),
-          handle(left: false, top: true, right: false, bottom: false, x: boxW / 2, y: 0, cursor: SystemMouseCursors.resizeUpDown),
-          handle(left: false, top: false, right: false, bottom: true, x: boxW / 2, y: boxH, cursor: SystemMouseCursors.resizeUpDown),
-          handle(left: true, top: false, right: false, bottom: false, x: 0, y: boxH / 2, cursor: SystemMouseCursors.resizeLeftRight),
-          handle(left: false, top: false, right: true, bottom: false, x: boxW, y: boxH / 2, cursor: SystemMouseCursors.resizeLeftRight),
+        if (widget.isSelected) ...[
+          handle(id: 'tl', hx: 0, hy: 0, cursor: SystemMouseCursors.resizeUpLeft),
+          handle(id: 'tr', hx: boxW, hy: 0, cursor: SystemMouseCursors.resizeUpRight),
+          handle(id: 'bl', hx: 0, hy: boxH, cursor: SystemMouseCursors.resizeDownLeft),
+          handle(id: 'br', hx: boxW, hy: boxH, cursor: SystemMouseCursors.resizeDownRight),
+          handle(id: 't', hx: boxW / 2, hy: 0, cursor: SystemMouseCursors.resizeUpDown),
+          handle(id: 'b', hx: boxW / 2, hy: boxH, cursor: SystemMouseCursors.resizeUpDown),
+          handle(id: 'l', hx: 0, hy: boxH / 2, cursor: SystemMouseCursors.resizeLeftRight),
+          handle(id: 'r', hx: boxW, hy: boxH / 2, cursor: SystemMouseCursors.resizeLeftRight),
           Positioned(
             right: -10,
             top: -10,
             child: MouseRegion(
               cursor: SystemMouseCursors.click,
               child: GestureDetector(
-                onTap: () => _deleteTarget(t),
+                onTap: widget.onDeleteTap,
                 child: Container(
                   width: 20,
                   height: 20,
@@ -697,6 +1100,7 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
   String _formType = 'checklist';
   bool _requiresSignature = false;
   List<_AiFieldDraft> _reviewFields = [];
+  List<_SectionDraft> _sections = [];
   bool _savingTemplate = false;
   String? _saveError;
   List<String> _pagePaths = [];
@@ -712,6 +1116,9 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
     _formNameCtrl.dispose();
     for (final f in _reviewFields) {
       f.dispose();
+    }
+    for (final s in _sections) {
+      s.dispose();
     }
     super.dispose();
   }
@@ -873,9 +1280,15 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
         final map = Map<String, dynamic>.from(f as Map);
         return _AiFieldDraft.fromExtracted(map);
       }).toList();
+      final rawSections = List<dynamic>.from(body['sections'] as List? ?? []);
+      final sectionDrafts = <_SectionDraft>[
+        for (var i = 0; i < rawSections.length; i++)
+          _SectionDraft.fromExtracted(Map<String, dynamic>.from(rawSections[i] as Map), i),
+      ];
       setState(() {
         _extractedPreview = body;
         _reviewFields = fieldDrafts;
+        _sections = sectionDrafts;
         _requiresSignature = fieldDrafts.any((f) => f.type == 'signature');
         _stage = _Stage.done;
       });
@@ -888,7 +1301,65 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
     }
   }
 
+  final List<List<Map<String, dynamic>>> _reviewUndoStack = [];
+  static const int _reviewMaxUndo = 40;
+
+  List<Map<String, dynamic>> _captureReviewSnapshot() {
+    return _reviewFields.map((f) => {
+          'id': f.id,
+          'label': f.labelCtrl.text,
+          'type': f.type,
+          'required': f.required,
+          'options': f.optionsCtrl.text,
+          'section': f.section,
+          'isFilledIn': f.isFilledIn,
+          'detectedExampleValue': f.detectedExampleValue,
+          'clearedByUser': f.clearedByUser,
+          'page': f.page,
+          'box': f.box == null ? null : Map<String, dynamic>.from(f.box!),
+          'optionBoxes': f.optionBoxes == null
+              ? null
+              : f.optionBoxes!.map((ob) {
+                  final m = Map<String, dynamic>.from(ob as Map);
+                  return {
+                    'label': m['label'],
+                    'box': Map<String, dynamic>.from(m['box'] as Map),
+                  };
+                }).toList(),
+        }).toList();
+  }
+
+  void _pushReviewUndo() {
+    _reviewUndoStack.add(_captureReviewSnapshot());
+    if (_reviewUndoStack.length > _reviewMaxUndo) _reviewUndoStack.removeAt(0);
+  }
+
+  void _undoReview() {
+    if (_reviewUndoStack.isEmpty) return;
+    final snapshot = _reviewUndoStack.removeLast();
+    for (final f in _reviewFields) {
+      f.dispose();
+    }
+    setState(() {
+      _reviewFields = snapshot.map((m) => _AiFieldDraft(
+            id: m['id'] as String,
+            label: m['label'] as String,
+            type: m['type'] as String,
+            required: m['required'] as bool,
+            options: m['options'] as String,
+            section: m['section'] as String?,
+            isFilledIn: m['isFilledIn'] as bool? ?? false,
+            detectedExampleValue: m['detectedExampleValue'] as String?,
+            clearedByUser: m['clearedByUser'] as bool? ?? false,
+            page: m['page'] as int?,
+            box: m['box'] as Map<String, dynamic>?,
+            optionBoxes: m['optionBoxes'] as List<dynamic>?,
+          )).toList();
+    });
+  }
+
   void _addReviewField() {
+    _pushReviewUndo();
     setState(() {
       _reviewFields.add(_AiFieldDraft(
         id: 'f_new_${_reviewFields.length + 1}',
@@ -901,6 +1372,7 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
   }
 
   void _removeReviewField(_AiFieldDraft field) {
+    _pushReviewUndo();
     setState(() {
       field.dispose();
       _reviewFields.remove(field);
@@ -1002,6 +1474,7 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
       builder: (ctx) => _CoordinatePreviewDialog(
         pageUrls: signedUrls,
         fields: _reviewFields,
+        sections: _sections,
         rawExtracted: _extractedPreview,
       ),
     );
@@ -1163,19 +1636,30 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
               style: TextStyle(fontSize: 12, color: AppTheme.textSecondary, height: 1.5),
             ),
             const SizedBox(height: 12),
-            MouseRegion(
-              cursor: SystemMouseCursors.click,
-              child: OutlinedButton.icon(
-                onPressed: _showCoordinatePreview,
-                icon: const Icon(Icons.crop_free_rounded, size: 15),
-                label: const Text('Adjust Field Positions on Original Form'),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: AppTheme.brand,
-                  side: BorderSide(color: AppTheme.brand.withValues(alpha: 0.4)),
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+            Row(children: [
+              MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: OutlinedButton.icon(
+                  onPressed: _showCoordinatePreview,
+                  icon: const Icon(Icons.crop_free_rounded, size: 15),
+                  label: const Text('Adjust Field Positions on Original Form'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppTheme.brand,
+                    side: BorderSide(color: AppTheme.brand.withValues(alpha: 0.4)),
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+                  ),
                 ),
               ),
-            ),
+              const SizedBox(width: 10),
+              MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: IconButton(
+                  tooltip: 'Undo last change (add, remove, or clear)',
+                  onPressed: _reviewUndoStack.isEmpty ? null : _undoReview,
+                  icon: const Icon(Icons.undo_rounded, size: 20),
+                ),
+              ),
+            ]),
             const SizedBox(height: 20),
             Container(
               padding: const EdgeInsets.all(20),
@@ -1424,31 +1908,49 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
               borderRadius: BorderRadius.circular(6),
               border: Border.all(color: Colors.orange.withValues(alpha: 0.3)),
             ),
-            child: Row(children: [
-              const Icon(Icons.warning_amber_rounded, size: 14, color: Colors.orange),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  f.detectedExampleValue != null
-                      ? 'Pre-filled on source: "${f.detectedExampleValue}"'
-                      : 'This field appeared filled in on the source document.',
-                  style: const TextStyle(fontSize: 11, color: Colors.orange, height: 1.3),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
+                const Icon(Icons.warning_amber_rounded, size: 14, color: Colors.orange),
+                const SizedBox(width: 8),
+                const Expanded(
+                  child: Text('Pre-filled on source — edit or clear the detected value:',
+                      style: TextStyle(fontSize: 11, color: Colors.orange, height: 1.3)),
                 ),
-              ),
-              const SizedBox(width: 8),
-              MouseRegion(
-                cursor: SystemMouseCursors.click,
-                child: GestureDetector(
-                  onTap: () => setState(() => f.clearedByUser = true),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: Colors.orange.withValues(alpha: 0.15),
-                      borderRadius: BorderRadius.circular(4),
+                const SizedBox(width: 8),
+                MouseRegion(
+                  cursor: SystemMouseCursors.click,
+                  child: GestureDetector(
+                    onTap: () {
+                      _pushReviewUndo();
+                      setState(() => f.clearedByUser = true);
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: Colors.orange.withValues(alpha: 0.15),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: const Text('Clear',
+                          style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.orange)),
                     ),
-                    child: const Text('Clear',
-                        style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.orange)),
                   ),
+                ),
+              ]),
+              const SizedBox(height: 6),
+              TextField(
+                controller: f.prefilledValueCtrl,
+                style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary),
+                decoration: InputDecoration(
+                  isDense: true,
+                  filled: true,
+                  fillColor: AppTheme.cardBg,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(4),
+                      borderSide: BorderSide(color: Colors.orange.withValues(alpha: 0.3))),
+                  enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(4),
+                      borderSide: BorderSide(color: Colors.orange.withValues(alpha: 0.3))),
+                  focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(4),
+                      borderSide: const BorderSide(color: Colors.orange, width: 1.5)),
                 ),
               ),
             ]),
