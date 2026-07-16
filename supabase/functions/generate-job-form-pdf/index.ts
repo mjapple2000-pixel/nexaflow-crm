@@ -12,6 +12,7 @@ const supabase = createClient(
 );
 
 const BUCKET = "job-form-media";
+const SOURCE_BUCKET = "job-form-ai-sources";
 const PAGE_W = 612;
 const PAGE_H = 792;
 const MARGIN = 50;
@@ -49,15 +50,321 @@ function wrapText(text: string, font: any, size: number, maxWidth: number): stri
   return lines;
 }
 
+const RECREATION_FONT_SIZE = 20;
+const CHECK_MARK_SIZE = 12;
+
+async function embedImageAuto(pdfDoc: any, bytes: Uint8Array) {
+  const isPng = bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47;
+  return isPng ? await pdfDoc.embedPng(bytes) : await pdfDoc.embedJpg(bytes);
+}
+
+// Converts an editor box (0-100 percentage, top-left origin, matching the
+// coordinate editor) into PDF points (bottom-left origin).
+function boxToPdfPoint(box: any, imgW: number, imgH: number) {
+  const xPt = (box.x / 100) * imgW;
+  const boxHeightPt = (box.h / 100) * imgH;
+  const yTopPt = (box.y / 100) * imgH;
+  const yBaselinePt = imgH - yTopPt - boxHeightPt;
+  const boxWidthPt = (box.w / 100) * imgW;
+  return { xPt, yBaselinePt, boxWidthPt, boxHeightPt };
+}
+
+function fitFontSize(font: any, text: string, maxWidthPt: number, defaultSize: number): number {
+  let size = defaultSize;
+  while (size > 7 && font.widthOfTextAtSize(text, size) > maxWidthPt) {
+    size -= 1;
+  }
+  return size;
+}
+
+async function generateVisualRecreationPdf(
+  { submission, jobForm, submission_id, businessRow }: { submission: any; jobForm: any; submission_id: number; businessRow: any }
+) {
+  try {
+    // Page numbers are computed from the actual rendered output, not the
+    // original scan — a business may append pages later (extra custom
+    // pages, combined forms), so numbering must reflect the real final
+    // page count rather than anything baked into the source images.
+    const pdfSettings = businessRow?.pdf_settings ?? {};
+    const showPageNumbers = pdfSettings.show_page_numbers !== false;
+    const fields: any[] = jobForm.fields ?? [];
+    const answers = submission.answers ?? {};
+    const backgroundPages: string[] = jobForm.background_pages ?? [];
+
+    const pdfDoc = await PDFDocument.create();
+    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+
+    // Group fields by their 1-indexed page number so each background page
+    // only draws the answers that belong to it.
+    const fieldsByPage = new Map<number, any[]>();
+    for (const f of fields) {
+      const pg = f.page ?? 1;
+      if (!fieldsByPage.has(pg)) fieldsByPage.set(pg, []);
+      fieldsByPage.get(pg)!.push(f);
+    }
+
+    let signatureImg: any = null;
+    if (submission.signature_url && jobForm.signature_box) {
+      try {
+        const { data: sigData } = await supabase.storage.from(BUCKET).download(submission.signature_url);
+        if (sigData) {
+          signatureImg = await embedImageAuto(pdfDoc, new Uint8Array(await sigData.arrayBuffer()));
+        }
+      } catch (e) {
+        console.error("Signature embed error:", e);
+      }
+    }
+
+    for (let i = 0; i < backgroundPages.length; i++) {
+      const pageNum = i + 1;
+      const { data: imgBlob, error: dlErr } = await supabase.storage.from(BUCKET).download(backgroundPages[i]);
+      if (dlErr || !imgBlob) {
+        console.error(`Failed to load background page ${pageNum}:`, dlErr?.message);
+        continue;
+      }
+      const imgBytes = new Uint8Array(await imgBlob.arrayBuffer());
+      const embeddedImg = await embedImageAuto(pdfDoc, imgBytes);
+      const { width: imgW, height: imgH } = embeddedImg.scale(1);
+
+      const page = pdfDoc.addPage([imgW, imgH]);
+      page.drawImage(embeddedImg, { x: 0, y: 0, width: imgW, height: imgH });
+
+      const pageFields = fieldsByPage.get(pageNum) ?? [];
+      for (const field of pageFields) {
+        const type = field.type ?? "text";
+        const raw = answers[field.id];
+
+        if (type === "photo") {
+          continue; // no natural placement on a fixed background page
+        }
+
+        if (type === "checkbox") {
+          if (raw === true && field.box) {
+            const { xPt, yBaselinePt, boxWidthPt, boxHeightPt } = boxToPdfPoint(field.box, imgW, imgH);
+            page.drawText("X", {
+              x: xPt + boxWidthPt / 2 - CHECK_MARK_SIZE * 0.3,
+              y: yBaselinePt + boxHeightPt / 2 - CHECK_MARK_SIZE * 0.35,
+              size: CHECK_MARK_SIZE,
+              font: boldFont,
+              color: rgb(0.8, 0, 0),
+            });
+          }
+          continue;
+        }
+
+        if (type === "select") {
+          const chosen = raw ? String(raw) : null;
+          const optionBoxes: any[] = field.option_boxes ?? [];
+          const match = chosen ? optionBoxes.find((o) => o.label === chosen) : null;
+          if (match?.box) {
+            const { xPt, yBaselinePt, boxWidthPt, boxHeightPt } = boxToPdfPoint(match.box, imgW, imgH);
+            page.drawText("X", {
+              x: xPt + boxWidthPt / 2 - CHECK_MARK_SIZE * 0.3,
+              y: yBaselinePt + boxHeightPt / 2 - CHECK_MARK_SIZE * 0.35,
+              size: CHECK_MARK_SIZE,
+              font: boldFont,
+              color: rgb(0.8, 0, 0),
+            });
+          }
+          continue;
+        }
+
+        // text
+        if (field.box && raw !== null && raw !== undefined && raw !== "") {
+          const text = String(raw);
+          const { xPt, yBaselinePt, boxWidthPt, boxHeightPt } = boxToPdfPoint(field.box, imgW, imgH);
+          // Mask any pre-filled sample value baked into the original
+          // scanned image before stamping the real answer, so old data
+          // doesn't show through underneath the new value.
+          page.drawRectangle({
+            x: xPt - 2,
+            y: yBaselinePt - 2,
+            width: boxWidthPt + 4,
+            height: boxHeightPt + 4,
+            color: rgb(1, 1, 1),
+          });
+          const size = fitFontSize(font, text, boxWidthPt, RECREATION_FONT_SIZE);
+          page.drawText(text, { x: xPt, y: yBaselinePt, size, font, color: rgb(0.75, 0, 0) });
+        }
+      }
+
+      if (signatureImg && jobForm.signature_box?.page === pageNum && jobForm.signature_box?.box) {
+        const { xPt, yBaselinePt, boxWidthPt, boxHeightPt } = boxToPdfPoint(jobForm.signature_box.box, imgW, imgH);
+        const scale = Math.min(boxWidthPt / signatureImg.width, boxHeightPt / signatureImg.height, 1) || (boxWidthPt / signatureImg.width);
+        const drawW = signatureImg.width * scale;
+        const drawH = signatureImg.height * scale;
+        page.drawImage(signatureImg, { x: xPt, y: yBaselinePt, width: drawW, height: drawH });
+      }
+    }
+
+    if (showPageNumbers) {
+      const startNum = jobForm.page_number_start ?? 1;
+      const allOutputPages = pdfDoc.getPages();
+      const totalNum = jobForm.page_number_total_override ?? allOutputPages.length;
+      allOutputPages.forEach((p: any, idx: number) => {
+        p.drawText(`Page ${startNum + idx} of ${totalNum}`, {
+          x: p.getWidth() - 100,
+          y: 14,
+          size: 8,
+          font,
+          color: rgb(0.42, 0.42, 0.46),
+        });
+      });
+    }
+
+    const pdfBytes = await pdfDoc.save();
+    const pdfPath = `${submission.business_id}/${submission_id}/completed-form.pdf`;
+
+    const { error: uploadError } = await supabase.storage
+      .from(BUCKET)
+      .upload(pdfPath, pdfBytes, { contentType: "application/pdf", upsert: true });
+
+    if (uploadError) {
+      return new Response(JSON.stringify({ error: "PDF upload failed: " + uploadError.message }), {
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    await supabase.from("job_form_submissions").update({ pdf_url: pdfPath }).eq("id", submission_id);
+
+    // Signed here using the service-role client (bypasses RLS) so the
+    // response can be opened directly — signing separately with an
+    // unauthenticated client fails against this bucket's policies.
+    const { data: signed } = await supabase.storage.from(BUCKET).createSignedUrl(pdfPath, 3600);
+
+    return new Response(JSON.stringify({ success: true, path: pdfPath, url: signed?.signedUrl }), {
+      status: 200,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  } catch (err) {
+    return new Response(
+      JSON.stringify({ error: "Recreation PDF error: " + (err instanceof Error ? err.message : String(err)) }),
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
+  }
+}
+
+async function generatePreviewPdf(
+  { business_id, draft_id, source_page_paths, fields }: { business_id: number; draft_id: number; source_page_paths: string[]; fields: any[] }
+) {
+  try {
+    if (!business_id || !draft_id || !Array.isArray(source_page_paths)) {
+      return new Response(JSON.stringify({ error: "business_id, draft_id, and source_page_paths are required" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    const pdfDoc = await PDFDocument.create();
+    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+
+    const fieldsByPage = new Map<number, any[]>();
+    for (const f of fields) {
+      const pg = f.page ?? 1;
+      if (!fieldsByPage.has(pg)) fieldsByPage.set(pg, []);
+      fieldsByPage.get(pg)!.push(f);
+    }
+
+    for (let i = 0; i < source_page_paths.length; i++) {
+      const pageNum = i + 1;
+      const { data: imgBlob, error: dlErr } = await supabase.storage.from(SOURCE_BUCKET).download(source_page_paths[i]);
+      if (dlErr || !imgBlob) {
+        console.error(`Failed to load source page ${pageNum}:`, dlErr?.message);
+        continue;
+      }
+      const imgBytes = new Uint8Array(await imgBlob.arrayBuffer());
+      const embeddedImg = await embedImageAuto(pdfDoc, imgBytes);
+      const { width: imgW, height: imgH } = embeddedImg.scale(1);
+
+      const page = pdfDoc.addPage([imgW, imgH]);
+      page.drawImage(embeddedImg, { x: 0, y: 0, width: imgW, height: imgH });
+
+      const pageFields = fieldsByPage.get(pageNum) ?? [];
+      for (const field of pageFields) {
+        const type = field.type ?? "text";
+        if (!field.show_prefilled) continue;
+
+        if (type === "checkbox") {
+          if (field.box) {
+            const { xPt, yBaselinePt, boxWidthPt, boxHeightPt } = boxToPdfPoint(field.box, imgW, imgH);
+            page.drawText("X", {
+              x: xPt + boxWidthPt / 2 - CHECK_MARK_SIZE * 0.3,
+              y: yBaselinePt + boxHeightPt / 2 - CHECK_MARK_SIZE * 0.35,
+              size: CHECK_MARK_SIZE,
+              font: boldFont,
+              color: rgb(0.8, 0, 0),
+            });
+          }
+          continue;
+        }
+
+        if (type === "select") {
+          const optionBoxes: any[] = field.option_boxes ?? [];
+          const match = field.prefilled_value ? optionBoxes.find((o: any) => o.label === field.prefilled_value) : null;
+          if (match?.box) {
+            const { xPt, yBaselinePt, boxWidthPt, boxHeightPt } = boxToPdfPoint(match.box, imgW, imgH);
+            page.drawText("X", {
+              x: xPt + boxWidthPt / 2 - CHECK_MARK_SIZE * 0.3,
+              y: yBaselinePt + boxHeightPt / 2 - CHECK_MARK_SIZE * 0.35,
+              size: CHECK_MARK_SIZE,
+              font: boldFont,
+              color: rgb(0.8, 0, 0),
+            });
+          }
+          continue;
+        }
+
+        if (field.box && field.prefilled_value) {
+          const text = String(field.prefilled_value);
+          const { xPt, yBaselinePt, boxWidthPt, boxHeightPt } = boxToPdfPoint(field.box, imgW, imgH);
+          page.drawRectangle({
+            x: xPt - 2, y: yBaselinePt - 2, width: boxWidthPt + 4, height: boxHeightPt + 4, color: rgb(1, 1, 1),
+          });
+          const size = fitFontSize(font, text, boxWidthPt, RECREATION_FONT_SIZE);
+          page.drawText(text, { x: xPt, y: yBaselinePt, size, font, color: rgb(0.75, 0, 0) });
+        }
+      }
+    }
+
+    const pdfBytes = await pdfDoc.save();
+    const outPath = `${business_id}/${draft_id}/preview-${Date.now()}.pdf`;
+    await supabase.storage.from(SOURCE_BUCKET).upload(outPath, pdfBytes, { contentType: "application/pdf", upsert: true });
+    const { data: signed } = await supabase.storage.from(SOURCE_BUCKET).createSignedUrl(outPath, 3600);
+
+    return new Response(JSON.stringify({ success: true, url: signed?.signedUrl }), {
+      status: 200,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  } catch (err) {
+    return new Response(
+      JSON.stringify({ error: "Preview error: " + (err instanceof Error ? err.message : String(err)) }),
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
+  }
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
   }
 
   try {
-    const { submission_id } = await req.json();
+    const body = await req.json();
+    const { submission_id, draft_id, business_id, source_page_paths, fields: previewFields } = body;
+
+    // Two modes share this one function: a real completed submission
+    // (submission_id, writes a permanent PDF) or a draft preview (draft_id,
+    // stamps current in-editor field state onto the still-temporary source
+    // images — nothing saved to job_forms or permanent storage).
+    if (draft_id && !submission_id) {
+      return await generatePreviewPdf({ business_id, draft_id, source_page_paths, fields: previewFields ?? [] });
+    }
+
     if (!submission_id) {
-      return new Response(JSON.stringify({ error: "submission_id is required" }), {
+      return new Response(JSON.stringify({ error: "submission_id or draft_id is required" }), {
         status: 400,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
@@ -78,7 +385,7 @@ Deno.serve(async (req) => {
 
     const { data: jobForm } = await supabase
       .from("job_forms")
-      .select("name, fields")
+      .select("name, fields, recreation_mode, background_pages, signature_box, page_number_start, page_number_total_override")
       .eq("id", submission.job_form_id)
       .maybeSingle();
 
@@ -87,6 +394,15 @@ Deno.serve(async (req) => {
       .select("pdf_settings, company_logo_url, business_phone, business_email, company_website")
       .eq("id", submission.business_id)
       .maybeSingle();
+
+    // Visual recreation forms use the AI Form Recreation background pages +
+    // per-field coordinates instead of the standard generated layout. The
+    // original document's own header/footer/logo are already baked into
+    // the background image, so this branch only ever draws answer values
+    // on top — nothing else — to stay visually faithful to the source.
+    if (jobForm?.recreation_mode === "visual_recreation" && Array.isArray(jobForm?.background_pages) && jobForm.background_pages.length > 0) {
+      return await generateVisualRecreationPdf({ submission, jobForm, submission_id, businessRow });
+    }
 
     const pdfSettings = businessRow?.pdf_settings ?? {};
     const BRAND = hexToRgb(pdfSettings.brand_color ?? "#6366F1");

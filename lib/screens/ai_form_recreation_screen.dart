@@ -7,6 +7,7 @@ import 'package:go_router/go_router.dart';
 import 'package:http/http.dart' as http;
 import 'package:pdfx/pdfx.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../theme/app_theme.dart';
 import '../utils/business_utils.dart';
 
@@ -358,6 +359,7 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
       if (f.labelBox != null) {
         targets.add(_EditTarget.fieldLabel(f, () {
           f.labelBox = null;
+          f.labelCtrl.clear();
         }));
       }
       if (f.type == 'select' && (f.optionBoxes?.isNotEmpty ?? false)) {
@@ -1097,11 +1099,14 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
   int? _businessId;
 
   final _formNameCtrl = TextEditingController();
+  final _pageNumberStartCtrl = TextEditingController(text: '1');
+  final _pageNumberTotalCtrl = TextEditingController();
   String _formType = 'checklist';
   bool _requiresSignature = false;
   List<_AiFieldDraft> _reviewFields = [];
   List<_SectionDraft> _sections = [];
   bool _savingTemplate = false;
+  bool _previewLoading = false;
   String? _saveError;
   List<String> _pagePaths = [];
 
@@ -1114,6 +1119,8 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
   @override
   void dispose() {
     _formNameCtrl.dispose();
+    _pageNumberStartCtrl.dispose();
+    _pageNumberTotalCtrl.dispose();
     for (final f in _reviewFields) {
       f.dispose();
     }
@@ -1210,11 +1217,11 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
                 quality: 85,
               );
               if (rendered == null) continue;
-              final pagePath = '$businessId/$draftId/page-$i.jpg';
+              final pagePath = '$businessId/$draftId/page-$i.png';
               await _db.storage.from('job-form-ai-sources').uploadBinary(
                     pagePath,
                     rendered.bytes,
-                    fileOptions: const FileOptions(contentType: 'image/jpeg'),
+                    fileOptions: const FileOptions(contentType: 'image/png'),
                   );
               pagePaths.add(pagePath);
               setState(() => _statusText = 'Rendered page $i of ${doc.pagesCount}...');
@@ -1426,8 +1433,69 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
         if (f.section != null && f.section!.isNotEmpty) {
           map['section'] = f.section;
         }
+        // Coordinate data from the visual recreation editor — additive-only
+        // keys. Standard (non-recreation) forms never populate these, so
+        // nothing that reads the fields contract without expecting them
+        // breaks.
+        if (f.page != null) map['page'] = f.page;
+        if (f.box != null) map['box'] = f.box;
+        if (f.labelBox != null) map['label_box'] = f.labelBox;
+        if (f.optionBoxes != null) map['option_boxes'] = f.optionBoxes;
         return map;
       }).toList();
+
+      final sectionsJson = _sections
+          .map((s) => {
+                'id': s.id,
+                'title': s.titleCtrl.text.trim(),
+                'page': s.page,
+                'box': s.box,
+              })
+          .toList();
+
+      final hasCoordinateData = _reviewFields.any((f) => f.box != null) || _sections.isNotEmpty;
+
+      Map<String, dynamic>? signatureBoxJson;
+      final sigFields = _reviewFields.where((f) => f.type == 'signature').toList();
+      if (sigFields.isNotEmpty && sigFields.first.box != null) {
+        signatureBoxJson = {
+          'page': sigFields.first.page,
+          'box': sigFields.first.box,
+        };
+      }
+
+      // Copy source pages to permanent storage BEFORE inserting the
+      // job_forms row — keyed off the draft id (which already exists),
+      // not a job_forms id (which doesn't exist yet at this point). A
+      // recreation-mode form must never get created without its background
+      // images already secured, so if this copy fails, nothing saves at
+      // all rather than leaving a half-finished row behind.
+      List<String> permanentPagePaths = [];
+      if (hasCoordinateData && _pagePaths.isNotEmpty) {
+        final session = _db.auth.currentSession;
+        final copyRes = await http.post(
+          Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/confirm-job-form-recreation'),
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ${session?.accessToken ?? ''}',
+          },
+          body: jsonEncode({
+            'business_id': _businessId,
+            'draft_id': _draftId,
+            'source_page_paths': _pagePaths,
+          }),
+        );
+        if (copyRes.statusCode != 200) {
+          throw Exception('Failed to save permanent form pages: ${copyRes.body}');
+        }
+        final copyBody = jsonDecode(copyRes.body) as Map<String, dynamic>;
+        permanentPagePaths = List<String>.from(copyBody['background_pages'] as List? ?? []);
+      }
+
+      final pageNumberStart = int.tryParse(_pageNumberStartCtrl.text.trim()) ?? 1;
+      final pageNumberTotalOverride = _pageNumberTotalCtrl.text.trim().isEmpty
+          ? null
+          : int.tryParse(_pageNumberTotalCtrl.text.trim());
 
       final formRes = await _db
           .from('job_forms')
@@ -1437,6 +1505,12 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
             'form_type': _formType,
             'fields': fieldsJson,
             'requires_signature': _requiresSignature,
+            'recreation_mode': hasCoordinateData ? 'visual_recreation' : 'standard',
+            'sections': sectionsJson,
+            'signature_box': signatureBoxJson,
+            'background_pages': permanentPagePaths,
+            'page_number_start': pageNumberStart,
+            'page_number_total_override': pageNumberTotalOverride,
           })
           .select('id')
           .single();
@@ -1456,6 +1530,61 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
         _saveError = 'Error: $e';
         _savingTemplate = false;
       });
+    }
+  }
+
+  Future<void> _previewFilledForm() async {
+    if (_pagePaths.isEmpty || _businessId == null || _draftId == null) return;
+    setState(() => _previewLoading = true);
+    try {
+      final previewFields = _reviewFields.where((f) => f.page != null).map((f) {
+        final showPrefilled = f.isFilledIn && !f.clearedByUser;
+        return {
+          'type': f.type,
+          'page': f.page,
+          'box': f.box,
+          'option_boxes': f.optionBoxes,
+          'show_prefilled': showPrefilled,
+          'prefilled_value': showPrefilled ? f.prefilledValueCtrl.text : null,
+        };
+      }).toList();
+
+      final session = _db.auth.currentSession;
+      final res = await http.post(
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/generate-job-form-pdf'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ${session?.accessToken ?? ''}',
+        },
+        body: jsonEncode({
+          'business_id': _businessId,
+          'draft_id': _draftId,
+          'source_page_paths': _pagePaths,
+          'fields': previewFields,
+        }),
+      );
+
+      if (!mounted) return;
+
+      if (res.statusCode != 200) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Preview failed: ${res.body}')),
+        );
+        return;
+      }
+
+      final body = jsonDecode(res.body) as Map<String, dynamic>;
+      final url = body['url'] as String?;
+      if (url != null) {
+        await launchUrl(Uri.parse(url), webOnlyWindowName: '_blank');
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Preview error: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _previewLoading = false);
     }
   }
 
@@ -1653,6 +1782,22 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
               const SizedBox(width: 10),
               MouseRegion(
                 cursor: SystemMouseCursors.click,
+                child: OutlinedButton.icon(
+                  onPressed: _previewLoading ? null : _previewFilledForm,
+                  icon: _previewLoading
+                      ? const SizedBox(width: 15, height: 15, child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Icon(Icons.visibility_outlined, size: 15),
+                  label: const Text('Preview Filled Form'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: const Color(0xFF10B981),
+                    side: const BorderSide(color: Color(0xFF10B981)),
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              MouseRegion(
+                cursor: SystemMouseCursors.click,
                 child: IconButton(
                   tooltip: 'Undo last change (add, remove, or clear)',
                   onPressed: _reviewUndoStack.isEmpty ? null : _undoReview,
@@ -1729,6 +1874,47 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
                     activeColor: AppTheme.brand,
                   ),
                 ]),
+                if (_reviewFields.any((f) => f.box != null) || _sections.isNotEmpty) ...[
+                  const SizedBox(height: 14),
+                  const Text('Page Numbering',
+                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+                  const Text('Override if this form is part of a larger packet (e.g. "Page 3 of 10")',
+                      style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                  const SizedBox(height: 8),
+                  Row(children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _pageNumberStartCtrl,
+                        keyboardType: TextInputType.number,
+                        style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                        decoration: InputDecoration(
+                          labelText: 'Starts at',
+                          isDense: true,
+                          filled: true,
+                          fillColor: AppTheme.pageBg,
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(6)),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: TextField(
+                        controller: _pageNumberTotalCtrl,
+                        keyboardType: TextInputType.number,
+                        style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                        decoration: InputDecoration(
+                          labelText: 'Total pages (blank = auto)',
+                          isDense: true,
+                          filled: true,
+                          fillColor: AppTheme.pageBg,
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(6)),
+                        ),
+                      ),
+                    ),
+                  ]),
+                ],
               ]),
             ),
             const SizedBox(height: 20),
