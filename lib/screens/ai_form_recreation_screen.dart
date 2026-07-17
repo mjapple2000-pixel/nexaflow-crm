@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -230,13 +231,64 @@ class _EditTarget {
   }
 }
 
+// Erases a region of a page image by sampling the surrounding background
+// color and painting over the target area — instead of a flat white
+// rectangle, which looked like an obvious patch on non-white backgrounds.
+Future<Uint8List> _erasePixelRegion(Uint8List sourceBytes, Map<String, dynamic> box) async {
+  final codec = await ui.instantiateImageCodec(sourceBytes);
+  final frame = await codec.getNextFrame();
+  final image = frame.image;
+  final width = image.width;
+  final height = image.height;
+
+  final x = (box['x'] as num).toDouble() / 100 * width;
+  final y = (box['y'] as num).toDouble() / 100 * height;
+  final w = (box['w'] as num).toDouble() / 100 * width;
+  final h = (box['h'] as num).toDouble() / 100 * height;
+
+  Color fillColor = Colors.white;
+  final rawData = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
+  if (rawData != null) {
+    final bytes = rawData.buffer.asUint8List();
+    final sampleY = (y - 6).clamp(0, height - 1).toInt();
+    int rSum = 0, gSum = 0, bSum = 0, count = 0;
+    final startX = x.clamp(0, width - 1).toInt();
+    final endX = (x + w).clamp(0, width - 1).toInt();
+    for (var px = startX; px < endX; px += 2) {
+      final offset = (sampleY * width + px) * 4;
+      if (offset + 3 < bytes.length) {
+        rSum += bytes[offset];
+        gSum += bytes[offset + 1];
+        bSum += bytes[offset + 2];
+        count++;
+      }
+    }
+    if (count > 0) {
+      fillColor = Color.fromARGB(255, rSum ~/ count, gSum ~/ count, bSum ~/ count);
+    }
+  }
+
+  final recorder = ui.PictureRecorder();
+  final canvas = Canvas(recorder);
+  canvas.drawImage(image, Offset.zero, Paint());
+  // A few px of padding so the erase covers the real ink, not just the
+  // tightly-cropped OCR box that measured it.
+  canvas.drawRect(Rect.fromLTWH(x - 3, y - 3, w + 6, h + 6), Paint()..color = fillColor);
+  final picture = recorder.endRecording();
+  final newImage = await picture.toImage(width, height);
+  final pngData = await newImage.toByteData(format: ui.ImageByteFormat.png);
+  return pngData!.buffer.asUint8List();
+}
+
 class _CoordinatePreviewDialog extends StatefulWidget {
   final List<String> pageUrls;
+  final List<String> pagePaths;
   final List<_AiFieldDraft> fields;
   final List<_SectionDraft> sections;
   final Map<String, dynamic>? rawExtracted;
   const _CoordinatePreviewDialog({
     required this.pageUrls,
+    required this.pagePaths,
     required this.fields,
     required this.sections,
     required this.rawExtracted,
@@ -251,6 +303,8 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
   String? _selectedKey;
   final List<List<Map<String, dynamic>>> _undoStack = [];
   static const int _maxUndo = 40;
+  final Map<int, Uint8List> _editedPageBytes = {};
+  bool _erasingInProgress = false;
   static const List<String> _addFieldTypes = ['text', 'checkbox', 'select', 'photo', 'signature'];
   final TransformationController _transformController = TransformationController();
 
@@ -526,12 +580,59 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
     });
   }
 
+  Future<void> _eraseFieldRegion({required int page, required Map<String, dynamic> box}) async {
+    if (page - 1 < 0 || page - 1 >= widget.pagePaths.length) return;
+    setState(() => _erasingInProgress = true);
+    try {
+      final path = widget.pagePaths[page - 1];
+      final storage = Supabase.instance.client.storage.from('job-form-ai-sources');
+      final currentBytes = _editedPageBytes[page] ?? await storage.download(path);
+      final erasedBytes = await _erasePixelRegion(currentBytes, box);
+      // Overwrite the draft source image in place, so the erase is already
+      // baked into what confirm-job-form-recreation copies to permanent
+      // storage later — nothing downstream needs its own masking logic.
+      await storage.uploadBinary(path, erasedBytes,
+          fileOptions: const FileOptions(contentType: 'image/png', upsert: true));
+      if (!mounted) return;
+      setState(() {
+        _editedPageBytes[page] = erasedBytes;
+        _erasingInProgress = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _erasingInProgress = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not erase source image: $e')),
+      );
+    }
+  }
+
   void _deleteTarget(_EditTarget t) {
     _pushUndo();
+    final page = t.page;
+    final box = t.getBox() != null ? Map<String, dynamic>.from(t.getBox()!) : null;
+    final shouldErase = t.kind == _TargetKind.fieldAnswer && page != null && box != null;
     t.onDelete();
     setState(() {
       if (_selectedKey == t.key) _selectedKey = null;
     });
+    if (shouldErase) _eraseFieldRegion(page: page!, box: box!);
+  }
+
+  // Distinct from delete: field and box stay, only the pre-filled value
+  // (both the data and the ink it came from) goes away — leaves a real
+  // blank ready for Review & Confirm or the Field Hub to fill in for real.
+  void _clearTarget(_EditTarget t) {
+    final field = t.sourceField;
+    if (field == null || !field.isFilledIn) return;
+    _pushUndo();
+    final page = field.page;
+    final box = field.box != null ? Map<String, dynamic>.from(field.box!) : null;
+    setState(() {
+      field.clearedByUser = true;
+      field.prefilledValueCtrl.clear();
+    });
+    if (page != null && box != null) _eraseFieldRegion(page: page, box: box);
   }
 
   @override
@@ -664,14 +765,26 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
                               height: h,
                               child: Stack(clipBehavior: Clip.none, children: [
                                 Positioned.fill(
-                                  child: Image.network(
-                                    widget.pageUrls[_currentPage - 1],
-                                    key: ValueKey(widget.pageUrls[_currentPage - 1]),
-                                    fit: BoxFit.fill,
-                                    errorBuilder: (_, __, ___) => Container(color: AppTheme.pageBg,
-                                        child: const Center(child: Text('Could not load page image'))),
-                                  ),
+                                  child: _editedPageBytes[_currentPage] != null
+                                      ? Image.memory(
+                                          _editedPageBytes[_currentPage]!,
+                                          key: ValueKey('edited_${_currentPage}_${_editedPageBytes[_currentPage]!.length}'),
+                                          fit: BoxFit.fill,
+                                        )
+                                      : Image.network(
+                                          widget.pageUrls[_currentPage - 1],
+                                          key: ValueKey(widget.pageUrls[_currentPage - 1]),
+                                          fit: BoxFit.fill,
+                                          errorBuilder: (_, __, ___) => Container(color: AppTheme.pageBg,
+                                              child: const Center(child: Text('Could not load page image'))),
+                                        ),
                                 ),
+                                if (_erasingInProgress)
+                                  const Positioned(
+                                    top: 8, right: 8,
+                                    child: SizedBox(width: 16, height: 16,
+                                        child: CircularProgressIndicator(strokeWidth: 2)),
+                                  ),
                                 ...pageTargets.map((t) => _DraggableFieldBox(
                                       key: ValueKey(t.key),
                                       target: t,
@@ -682,6 +795,11 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
                                       isCleared: t.sourceField?.clearedByUser ?? false,
                                       onSelect: () => setState(() => _selectedKey = t.key),
                                       onDeleteTap: () => _deleteTarget(t),
+                                      onClearTap: (t.kind == _TargetKind.fieldAnswer &&
+                                              (t.sourceField?.isFilledIn ?? false) &&
+                                              !(t.sourceField?.clearedByUser ?? false))
+                                          ? () => _clearTarget(t)
+                                          : null,
                                       onDragStart: _pushUndo,
                                       onCommit: (newBox) => setState(() => t.setBox(newBox)),
                                     )),
@@ -835,6 +953,20 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
                 ),
               ),
             ],
+            if (t.kind == _TargetKind.fieldAnswer &&
+                (t.sourceField?.isFilledIn ?? false) &&
+                !(t.sourceField?.clearedByUser ?? false)) ...[
+              MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: GestureDetector(
+                  onTap: () => _clearTarget(t),
+                  child: const Padding(
+                    padding: EdgeInsets.only(right: 8),
+                    child: Icon(Icons.backspace_outlined, size: 14, color: Colors.orange),
+                  ),
+                ),
+              ),
+            ],
             MouseRegion(
               cursor: SystemMouseCursors.click,
               child: GestureDetector(
@@ -905,6 +1037,7 @@ class _DraggableFieldBox extends StatefulWidget {
   final bool isCleared;
   final VoidCallback onSelect;
   final VoidCallback onDeleteTap;
+  final VoidCallback? onClearTap;
   final VoidCallback onDragStart;
   final void Function(Map<String, dynamic> newBox) onCommit;
 
@@ -918,6 +1051,7 @@ class _DraggableFieldBox extends StatefulWidget {
     this.isCleared = false,
     required this.onSelect,
     required this.onDeleteTap,
+    this.onClearTap,
     required this.onDragStart,
     required this.onCommit,
   });
@@ -1083,6 +1217,26 @@ class _DraggableFieldBoxState extends State<_DraggableFieldBox> {
               ),
             ),
           ),
+          if (widget.onClearTap != null)
+            Positioned(
+              left: -10,
+              top: -10,
+              child: MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: Tooltip(
+                  message: 'Clear pre-filled value (keeps the field)',
+                  child: GestureDetector(
+                    onTap: widget.onClearTap,
+                    child: Container(
+                      width: 20,
+                      height: 20,
+                      decoration: const BoxDecoration(color: Colors.orange, shape: BoxShape.circle),
+                      child: const Icon(Icons.backspace_outlined, size: 12, color: Colors.white),
+                    ),
+                  ),
+                ),
+              ),
+            ),
         ],
       ]),
     );
@@ -1602,6 +1756,7 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
       context: context,
       builder: (ctx) => _CoordinatePreviewDialog(
         pageUrls: signedUrls,
+        pagePaths: _pagePaths,
         fields: _reviewFields,
         sections: _sections,
         rawExtracted: _extractedPreview,

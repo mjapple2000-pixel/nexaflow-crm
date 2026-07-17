@@ -64,11 +64,21 @@ function getBlockText(block: any, blockMap: Map<string, any>): string {
 // Flattens a Textract AnalyzeDocument response into a simple list of
 // measured items (id, page, kind, text, box) that GPT will later reference
 // by id — GPT never sees or produces raw coordinates itself.
+function centerInsideAnyRegion(
+  box: { x: number; y: number; w: number; h: number },
+  regions: Array<{ x: number; y: number; w: number; h: number }>,
+): boolean {
+  const cx = box.x + box.w / 2;
+  const cy = box.y + box.h / 2;
+  return regions.some((r) => cx >= r.x && cx <= r.x + r.w && cy >= r.y && cy <= r.y + r.h);
+}
+
 function parseTextractBlocks(
   blocks: any[],
   page: number,
   itemsOut: Array<Record<string, unknown>>,
   idCounterRef: { n: number },
+  tableRegions: Array<{ x: number; y: number; w: number; h: number }> = [],
 ) {
   const blockMap = new Map<string, any>();
   for (const b of blocks) blockMap.set(b.Id, b);
@@ -77,10 +87,15 @@ function parseTextractBlocks(
     if (block.BlockType === 'LINE') {
       const box = toBoxPct(block.Geometry);
       if (!box) continue;
+      // Anything inside a detected table is already captured, with full
+      // row/column context, by parseTableBlocks — including it again here
+      // would hand GPT the same text twice: once gridded, once floating.
+      if (centerInsideAnyRegion(box, tableRegions)) continue;
       itemsOut.push({ id: `ocr_${idCounterRef.n++}`, page, kind: 'line', text: block.Text ?? '', box });
     } else if (block.BlockType === 'SELECTION_ELEMENT') {
       const box = toBoxPct(block.Geometry);
       if (!box) continue;
+      if (centerInsideAnyRegion(box, tableRegions)) continue;
       itemsOut.push({
         id: `ocr_${idCounterRef.n++}`,
         page,
@@ -102,6 +117,7 @@ function parseTextractBlocks(
         if (!valueBlock) continue;
         const box = toBoxPct(valueBlock.Geometry);
         if (!box) continue;
+        if (centerInsideAnyRegion(box, tableRegions)) continue;
         itemsOut.push({
           id: `ocr_${idCounterRef.n++}`,
           page,
@@ -129,19 +145,36 @@ function parseTableBlocks(
   page: number,
   itemsOut: Array<Record<string, unknown>>,
   idCounterRef: { n: number },
-) {
+): Array<{ x: number; y: number; w: number; h: number }> {
   const blockMap = new Map<string, any>();
   for (const b of blocks) blockMap.set(b.Id, b);
 
   const tableBlocks = blocks.filter((b) => b.BlockType === 'TABLE');
+  const tableRegions: Array<{ x: number; y: number; w: number; h: number }> = [];
+  let tableIndex = 0;
 
   for (const table of tableBlocks) {
+    tableIndex++;
     const cellIds = (table.Relationships ?? [])
       .filter((r: any) => r.Type === 'CHILD')
       .flatMap((r: any) => r.Ids);
     const cells = cellIds
       .map((id: string) => blockMap.get(id))
       .filter((c: any) => c?.BlockType === 'CELL');
+
+    const columnCount = cells.reduce((max: number, c: any) => Math.max(max, c.ColumnIndex ?? 0), 0);
+
+    // Textract also table-detects simple 2-column label/value layout blocks
+    // (Facility/Inspector/Door), which are already correctly captured once
+    // by KEY_VALUE_SET parsing elsewhere. Generating deterministic row
+    // fields for those too produced duplicate, garbage-labeled fields
+    // ("Inspector (Table 2, Row 2)"). Real repeating checklist grids always
+    // have 3+ columns — skip anything narrower and let it flow through the
+    // normal, already-correct label/value path untouched.
+    if (columnCount < 3) continue;
+
+    const tableBox = toBoxPct(table.Geometry);
+    if (tableBox) tableRegions.push(tableBox);
 
     const headerByCol = new Map<number, string>();
     for (const cell of cells) {
@@ -150,23 +183,56 @@ function parseTableBlocks(
       }
     }
 
+    // Every data-row cell is emitted now, filled or empty, so the full grid
+    // reaches GPT with row/column context. Previously filled cells were
+    // skipped here and silently repicked-up as context-free LINE items
+    // instead — that's what caused most Initials/Deficiencies misses: GPT
+    // had no row/column to anchor a floating scrap of handwriting to.
     for (const cell of cells) {
-      if (cell.RowIndex === 1) continue; // header row itself isn't an answer cell
+      if (cell.RowIndex === 1) continue; // header row — already consumed above to label columns, not an answer cell itself
       const text = getBlockText(cell, blockMap).trim();
-      if (text) continue; // has content — already captured by LINE parsing above
       const box = toBoxPct(cell.Geometry);
       if (!box) continue;
       itemsOut.push({
         id: `ocr_${idCounterRef.n++}`,
         page,
         kind: 'table_cell',
+        table_index: tableIndex,
         column_header: headerByCol.get(cell.ColumnIndex) ?? null,
         row_index: cell.RowIndex,
-        text: '',
+        text,
         box,
       });
     }
   }
+
+  return tableRegions;
+}
+
+// Every table row/column comes straight from Textract's own grid — GPT
+// previously collapsed a 7-row column into one field despite being told to
+// enumerate rows, because a long repeating-structure instruction is exactly
+// the kind of thing a model treats as optional. Building rows here instead
+// guarantees one field per cell, every time, with zero model involvement.
+function buildDeterministicTableFields(tableCellItems: Array<Record<string, unknown>>): any[] {
+  return tableCellItems.map((item) => {
+    const header = item.column_header ? String(item.column_header) : 'Field';
+    const row = item.row_index as number;
+    const tableIdx = item.table_index as number;
+    const text = (item.text as string) ?? '';
+    return {
+      id: item.id, // temporary, renumbered below alongside GPT fields
+      type: 'text',
+      label: `${header} (Table ${tableIdx}, Row ${row})`,
+      section: null,
+      required: false,
+      is_filled_in: text.trim().length > 0,
+      detected_example_value: text.trim() ? text.trim() : null,
+      confidence: text.trim() ? 1 : 0,
+      page: item.page,
+      box: item.box,
+    };
+  });
 }
 
 const EXTRACTION_SYSTEM_PROMPT = `You are analyzing a form (checklist, inspection form, or similar) used by a field service business. Identify every field on the form and return ONLY valid JSON, no markdown, no commentary, matching this exact shape:
@@ -202,17 +268,16 @@ Separately from fields, identify every visually distinct SECTION HEADER on the f
 You are also given an OCR ITEMS list below. Every item was measured directly from the document by a separate OCR system, so its position is exact and reliable. You do NOT have access to raw coordinates yourself — you must NEVER invent, estimate, or output your own x/y/w/h numbers. Your only job regarding position is to pick the correct "id" from the OCR ITEMS list for each field's answer location. Each OCR item has:
 - "id": a stable identifier to reference
 - "page": which page it's on
-- "kind": "line" (a detected line of printed/handwritten text), "checkbox" (a detected checkbox/selection mark, with "selected": true/false), "form_value" (a detected label + its answer blank — "text" is the label, "value_text" is whatever was actually read inside the blank, which may be empty), or "table_cell" (a BLANK cell inside a detected table — it has no text of its own, since it's unmarked; "column_header" tells you which column it belongs to, e.g. "Initials", and "row_index" distinguishes which repeated row it's in)
+- "kind": "line" (a detected line of printed/handwritten text NOT inside any table), "checkbox" (a detected checkbox/selection mark, with "selected": true/false), or "form_value" (a detected label + its answer blank — "text" is the label, "value_text" is whatever was actually read inside the blank, which may be empty)
 - "text" / "value_text": the text content, where applicable
-- For "table_cell" items specifically, use "column_header" as the basis for the field's label (e.g. an empty cell with column_header "Initials" in a repeating table row is an "Initials" field for that row), since the cell itself has no text to read
+
+IMPORTANT: table cells (rows/columns inside a detected table, e.g. an "Initials" or "Deficiencies" column that repeats down multiple rows) are NOT included in this OCR ITEMS list and are NOT your responsibility — a separate deterministic system already generates one field per table cell directly from measured grid data. Do not attempt to create fields for repeating table columns yourself; only handle standalone fields (labeled blanks, checkboxes, signatures, section headers) that appear in the list below.
 
 CRITICAL DISTINCTION - do not confuse these two things:
 1. The field's own LABEL/QUESTION TEXT — printed instructional or descriptive text that is part of the form's design itself (e.g. a checklist item description). This belongs in the "label" property. It is NEVER a filled-in answer, even though it may look like a long sentence.
-2. An ANSWER someone actually wrote, checked, signed, or selected. Only this counts toward "is_filled_in" and "detected_example_value". Use the matching OCR item's "value_text" (for form_value items) or "selected" status (for checkbox items) as your primary evidence — an empty "value_text" or "selected": false means NOT filled in, regardless of how descriptive the label text reads.
+2. An ANSWER someone actually wrote, checked, signed, or selected. Only this counts toward "is_filled_in" and "detected_example_value". Use the matching OCR item's "value_text" (for form_value items), "selected" status (for checkbox items), or "text" (for table_cell items) as your primary evidence — an empty "value_text", "selected": false, or empty "text" means NOT filled in, regardless of how descriptive the label text reads.
 
 Set "is_filled_in": true and populate "detected_example_value" ONLY when a person has visibly entered, written, checked, or signed something into that specific field's blank. Otherwise set "is_filled_in": false and "detected_example_value": null.
-
-If the form contains a repeating table (the same set of columns repeated for multiple rows), extract each row as its own set of fields in sequence, grouped under the same "section" name for that table. Flatten rows into individual fields in order — do not invent a repeating-group structure.
 
 Number field ids sequentially starting from f_001. If the same form spans multiple pages/images, continue numbering and section grouping across all pages as one continuous form.`;
 
@@ -294,8 +359,8 @@ Deno.serve(async (req: Request) => {
           FeatureTypes: ['FORMS', 'TABLES'],
         }));
         const blocks = textractRes.Blocks ?? [];
-        parseTextractBlocks(blocks, pageNum, ocrItems, idCounter);
-        parseTableBlocks(blocks, pageNum, ocrItems, idCounter);
+        const tableRegions = parseTableBlocks(blocks, pageNum, ocrItems, idCounter);
+        parseTextractBlocks(blocks, pageNum, ocrItems, idCounter, tableRegions);
       } catch (textractErr) {
         console.error(`Textract error on page ${pageNum}:`, textractErr);
       }
@@ -320,7 +385,14 @@ Deno.serve(async (req: Request) => {
     // multimodal call, and were very likely the real driver of the 80-150s
     // response times we were seeing, not output length alone. GPT's only
     // remaining job is semantic labeling of text it's already been given.
-    const ocrItemsForPrompt = ocrItems.map(({ box: _box, label_box: _labelBox, ...rest }) => rest);
+    const tableCellItems = ocrItems.filter((item) => item.kind === 'table_cell');
+    const deterministicTableFields = buildDeterministicTableFields(tableCellItems);
+
+    // Table cells are excluded entirely from what GPT sees — they're
+    // already handled above with guaranteed completeness.
+    const ocrItemsForPrompt = ocrItems
+      .filter((item) => item.kind !== 'table_cell')
+      .map(({ box: _box, label_box: _labelBox, ...rest }) => rest);
 
     const openaiStart = Date.now();
     const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -436,6 +508,21 @@ Deno.serve(async (req: Request) => {
       }
     }
     extracted.sections = sectionsOut;
+
+    // Merge GPT's non-table fields with the deterministic table fields,
+    // then renumber everything in reading order (page, then top-to-bottom)
+    // so ids stay sequential and sensible regardless of which source
+    // produced which field.
+    const allFields = [...fieldsOut, ...deterministicTableFields];
+    allFields.sort((a: any, b: any) => {
+      const pageDiff = (a.page ?? 1) - (b.page ?? 1);
+      if (pageDiff !== 0) return pageDiff;
+      return (a.box?.y ?? 0) - (b.box?.y ?? 0);
+    });
+    allFields.forEach((f: any, idx: number) => {
+      f.id = `f_${String(idx + 1).padStart(3, '0')}`;
+    });
+    extracted.fields = allFields;
 
     await supabase.from('job_form_ai_drafts').update({
       status: 'ready_for_review',
