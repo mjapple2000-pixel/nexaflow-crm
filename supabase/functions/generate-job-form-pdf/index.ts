@@ -170,6 +170,10 @@ async function generateVisualRecreationPdf(
           continue;
         }
 
+        if (type === "signature") {
+          continue; // signature is drawn separately below via jobForm.signature_box + submission.signature_url
+        }
+
         // text
         if (field.box && raw !== null && raw !== undefined && raw !== "") {
           const text = String(raw);
@@ -315,6 +319,10 @@ async function generatePreviewPdf(
             });
           }
           continue;
+        }
+
+        if (type === "signature") {
+          continue; // no real signature image exists in preview mode — never stamp OCR junk text on the signature line
         }
 
         if (field.box && field.prefilled_value) {

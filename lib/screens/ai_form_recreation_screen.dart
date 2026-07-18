@@ -113,7 +113,30 @@ class _SectionDraft {
   }
 }
 
-enum _TargetKind { fieldAnswer, fieldLabel, option, section }
+// A mark Textract measured but GPT never attached to any real field or
+// section — floating ink outside any printed box/line (e.g. a handwritten
+// checkmark scribbled between table rows). Tracked separately since it has
+// no label, type, or other properties — just a position and enough text to
+// identify what it is.
+class _StrayMarkDraft {
+  final String id;
+  final String text;
+  int? page;
+  Map<String, dynamic>? box;
+
+  _StrayMarkDraft({required this.id, required this.text, this.page, this.box});
+
+  factory _StrayMarkDraft.fromExtracted(Map<String, dynamic> map) {
+    return _StrayMarkDraft(
+      id: map['id'] as String? ?? '',
+      text: map['text'] as String? ?? '',
+      page: map['page'] as int?,
+      box: map['box'] != null ? Map<String, dynamic>.from(map['box'] as Map) : null,
+    );
+  }
+}
+
+enum _TargetKind { fieldAnswer, fieldLabel, option, section, strayMark }
 
 // One draggable/resizable target on the canvas. Generalized to cover four
 // kinds of annotation — a field's answer box, a field's label box, one
@@ -229,6 +252,19 @@ class _EditTarget {
       onDelete: onDelete,
     );
   }
+
+  factory _EditTarget.strayMark(_StrayMarkDraft mark, VoidCallback onDelete) {
+    return _EditTarget(
+      label: mark.text.isEmpty ? 'Stray mark' : mark.text,
+      kind: _TargetKind.strayMark,
+      keyId: '${mark.id}::stray',
+      getBox: () => mark.box,
+      setBox: (b) => mark.box = b,
+      getPage: () => mark.page,
+      setPage: (p) => mark.page = p,
+      onDelete: onDelete,
+    );
+  }
 }
 
 // Erases a region of a page image by sampling the surrounding background
@@ -247,24 +283,57 @@ Future<Uint8List> _erasePixelRegion(Uint8List sourceBytes, Map<String, dynamic> 
   final h = (box['h'] as num).toDouble() / 100 * height;
 
   Color fillColor = Colors.white;
+  // Table border lines (e.g. a cell's top/bottom rule) often run straight
+  // through an erased box. If a dark line is detected on BOTH the left and
+  // right side just outside the box at the same row, that's a real border
+  // continuing on both sides — redraw it across the gap so the table grid
+  // stays connected instead of leaving a blank hole where the ink was.
+  final reconnectRows = <int, Color>{};
+
   final rawData = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
   if (rawData != null) {
     final bytes = rawData.buffer.asUint8List();
+
+    Color? pixelAt(int px, int py) {
+      if (px < 0 || px >= width || py < 0 || py >= height) return null;
+      final offset = (py * width + px) * 4;
+      if (offset + 3 >= bytes.length) return null;
+      return Color.fromARGB(255, bytes[offset], bytes[offset + 1], bytes[offset + 2]);
+    }
+
+    bool isDarkLine(Color? c) {
+      if (c == null) return false;
+      final luminance = (0.299 * c.red + 0.587 * c.green + 0.114 * c.blue);
+      return luminance < 180;
+    }
+
     final sampleY = (y - 6).clamp(0, height - 1).toInt();
     int rSum = 0, gSum = 0, bSum = 0, count = 0;
     final startX = x.clamp(0, width - 1).toInt();
     final endX = (x + w).clamp(0, width - 1).toInt();
     for (var px = startX; px < endX; px += 2) {
-      final offset = (sampleY * width + px) * 4;
-      if (offset + 3 < bytes.length) {
-        rSum += bytes[offset];
-        gSum += bytes[offset + 1];
-        bSum += bytes[offset + 2];
+      final c = pixelAt(px, sampleY);
+      if (c != null) {
+        rSum += c.red;
+        gSum += c.green;
+        bSum += c.blue;
         count++;
       }
     }
     if (count > 0) {
       fillColor = Color.fromARGB(255, rSum ~/ count, gSum ~/ count, bSum ~/ count);
+    }
+
+    final leftSampleX = (x - 10).clamp(0, width - 1).toInt();
+    final rightSampleX = (x + w + 10).clamp(0, width - 1).toInt();
+    final rowStart = (y - 2).clamp(0, height - 1).toInt();
+    final rowEnd = (y + h + 2).clamp(0, height - 1).toInt();
+    for (var py = rowStart; py <= rowEnd; py++) {
+      final left = pixelAt(leftSampleX, py);
+      final right = pixelAt(rightSampleX, py);
+      if (isDarkLine(left) && isDarkLine(right)) {
+        reconnectRows[py] = left!;
+      }
     }
   }
 
@@ -274,10 +343,33 @@ Future<Uint8List> _erasePixelRegion(Uint8List sourceBytes, Map<String, dynamic> 
   // A few px of padding so the erase covers the real ink, not just the
   // tightly-cropped OCR box that measured it.
   canvas.drawRect(Rect.fromLTWH(x - 3, y - 3, w + 6, h + 6), Paint()..color = fillColor);
+
+  // Redraw any table border line that ran through the erased area so the
+  // grid reconnects instead of leaving a gap where a real printed line was.
+  for (final entry in reconnectRows.entries) {
+    final rowY = entry.key.toDouble();
+    canvas.drawLine(
+      Offset(x - 3, rowY),
+      Offset(x + w + 3, rowY),
+      Paint()
+        ..color = entry.value
+        ..strokeWidth = 1.2,
+    );
+  }
+
   final picture = recorder.endRecording();
   final newImage = await picture.toImage(width, height);
   final pngData = await newImage.toByteData(format: ui.ImageByteFormat.png);
   return pngData!.buffer.asUint8List();
+}
+
+// Bundles a field/box metadata snapshot together with the page image bytes
+// at the time of the snapshot, so Ctrl+Z can restore erased ink, not just
+// box positions.
+class _UndoSnapshot {
+  final List<Map<String, dynamic>> fields;
+  final Map<int, Uint8List> pageBytes;
+  _UndoSnapshot(this.fields, this.pageBytes);
 }
 
 class _CoordinatePreviewDialog extends StatefulWidget {
@@ -285,12 +377,14 @@ class _CoordinatePreviewDialog extends StatefulWidget {
   final List<String> pagePaths;
   final List<_AiFieldDraft> fields;
   final List<_SectionDraft> sections;
+  final List<_StrayMarkDraft> strayMarks;
   final Map<String, dynamic>? rawExtracted;
   const _CoordinatePreviewDialog({
     required this.pageUrls,
     required this.pagePaths,
     required this.fields,
     required this.sections,
+    required this.strayMarks,
     required this.rawExtracted,
   });
 
@@ -301,9 +395,10 @@ class _CoordinatePreviewDialog extends StatefulWidget {
 class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
   int _currentPage = 1;
   String? _selectedKey;
-  final List<List<Map<String, dynamic>>> _undoStack = [];
+  final List<_UndoSnapshot> _undoStack = [];
   static const int _maxUndo = 40;
   final Map<int, Uint8List> _editedPageBytes = {};
+  final Map<int, Uint8List> _originalPageBytesCache = {};
   bool _erasingInProgress = false;
   static const List<String> _addFieldTypes = ['text', 'checkbox', 'select', 'photo', 'signature'];
   final TransformationController _transformController = TransformationController();
@@ -359,6 +454,13 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
       if (s.box != null) {
         final result = _sanitizedBox(s.box, fallbackIndex);
         s.box = result.box;
+        if (result.usedFallback) fallbackIndex++;
+      }
+    }
+    for (final m in widget.strayMarks) {
+      if (m.box != null) {
+        final result = _sanitizedBox(m.box, fallbackIndex);
+        m.box = result.box;
         if (result.usedFallback) fallbackIndex++;
       }
     }
@@ -442,6 +544,11 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
         s.dispose();
       }));
     }
+    for (final m in widget.strayMarks) {
+      targets.add(_EditTarget.strayMark(m, () {
+        widget.strayMarks.remove(m);
+      }));
+    }
     return targets;
   }
 
@@ -472,7 +579,7 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
   }
 
   void _pushUndo() {
-    _undoStack.add(_captureSnapshot());
+    _undoStack.add(_UndoSnapshot(_captureSnapshot(), Map<int, Uint8List>.from(_editedPageBytes)));
     if (_undoStack.length > _maxUndo) _undoStack.removeAt(0);
   }
 
@@ -483,7 +590,7 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
       f.dispose();
     }
     widget.fields.clear();
-    for (final m in snapshot) {
+    for (final m in snapshot.fields) {
       widget.fields.add(_AiFieldDraft(
         id: m['id'] as String,
         label: m['label'] as String,
@@ -499,7 +606,39 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
         optionBoxes: m['optionBoxes'] as List<dynamic>?,
       ));
     }
-    setState(() => _selectedKey = null);
+    setState(() {
+      _selectedKey = null;
+      // Undo must also roll back any pixel erase performed by the action
+      // being undone — restoring only field/box metadata left the ink
+      // permanently erased even after "undo" put the box back.
+      _editedPageBytes
+        ..clear()
+        ..addAll(snapshot.pageBytes);
+    });
+    _syncPageBytesToStorage();
+  }
+
+  // Local undo only reverted the in-memory image cache — the storage file
+  // itself stayed erased, so anything that re-downloads the page fresh
+  // (closing and reopening this dialog, or a different screen entirely)
+  // still saw the erased version. This pushes the restored bytes back to
+  // storage so undo is a real, persisted undo, not just a local display fix.
+  Future<void> _syncPageBytesToStorage() async {
+    final storage = Supabase.instance.client.storage.from('job-form-ai-sources');
+    for (final page in _originalPageBytesCache.keys) {
+      if (page - 1 < 0 || page - 1 >= widget.pagePaths.length) continue;
+      final bytesToWrite = _editedPageBytes[page] ?? _originalPageBytesCache[page];
+      if (bytesToWrite == null) continue;
+      try {
+        await storage.uploadBinary(widget.pagePaths[page - 1], bytesToWrite,
+            fileOptions: const FileOptions(contentType: 'image/png', upsert: true));
+      } catch (e) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not sync undo to storage: $e')),
+        );
+      }
+    }
   }
 
   // ── Add / delete ────────────────────────────────────────────────
@@ -587,6 +726,9 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
       final path = widget.pagePaths[page - 1];
       final storage = Supabase.instance.client.storage.from('job-form-ai-sources');
       final currentBytes = _editedPageBytes[page] ?? await storage.download(path);
+      if (!_originalPageBytesCache.containsKey(page)) {
+        _originalPageBytesCache[page] = currentBytes;
+      }
       final erasedBytes = await _erasePixelRegion(currentBytes, box);
       // Overwrite the draft source image in place, so the erase is already
       // baked into what confirm-job-form-recreation copies to permanent
@@ -611,7 +753,7 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
     _pushUndo();
     final page = t.page;
     final box = t.getBox() != null ? Map<String, dynamic>.from(t.getBox()!) : null;
-    final shouldErase = t.kind == _TargetKind.fieldAnswer && page != null && box != null;
+    final shouldErase = (t.kind == _TargetKind.fieldAnswer || t.kind == _TargetKind.strayMark) && page != null && box != null;
     t.onDelete();
     setState(() {
       if (_selectedKey == t.key) _selectedKey = null;
@@ -624,7 +766,7 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
   // blank ready for Review & Confirm or the Field Hub to fill in for real.
   void _clearTarget(_EditTarget t) {
     final field = t.sourceField;
-    if (field == null || !field.isFilledIn) return;
+    if (field == null) return;
     _pushUndo();
     final page = field.page;
     final box = field.box != null ? Map<String, dynamic>.from(field.box!) : null;
@@ -796,7 +938,6 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
                                       onSelect: () => setState(() => _selectedKey = t.key),
                                       onDeleteTap: () => _deleteTarget(t),
                                       onClearTap: (t.kind == _TargetKind.fieldAnswer &&
-                                              (t.sourceField?.isFilledIn ?? false) &&
                                               !(t.sourceField?.clearedByUser ?? false))
                                           ? () => _clearTarget(t)
                                           : null,
@@ -954,7 +1095,6 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
               ),
             ],
             if (t.kind == _TargetKind.fieldAnswer &&
-                (t.sourceField?.isFilledIn ?? false) &&
                 !(t.sourceField?.clearedByUser ?? false)) ...[
               MouseRegion(
                 cursor: SystemMouseCursors.click,
@@ -991,6 +1131,8 @@ Color _baseColorForKind(_TargetKind kind) {
       return Colors.purple;
     case _TargetKind.section:
       return Colors.blue;
+    case _TargetKind.strayMark:
+      return Colors.amber;
   }
 }
 
@@ -1259,6 +1401,7 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
   bool _requiresSignature = false;
   List<_AiFieldDraft> _reviewFields = [];
   List<_SectionDraft> _sections = [];
+  List<_StrayMarkDraft> _strayMarks = [];
   bool _savingTemplate = false;
   bool _previewLoading = false;
   String? _saveError;
@@ -1446,10 +1589,15 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
         for (var i = 0; i < rawSections.length; i++)
           _SectionDraft.fromExtracted(Map<String, dynamic>.from(rawSections[i] as Map), i),
       ];
+      final rawStray = List<dynamic>.from(body['stray_marks'] as List? ?? []);
+      final strayDrafts = rawStray
+          .map((m) => _StrayMarkDraft.fromExtracted(Map<String, dynamic>.from(m as Map)))
+          .toList();
       setState(() {
         _extractedPreview = body;
         _reviewFields = fieldDrafts;
         _sections = sectionDrafts;
+        _strayMarks = strayDrafts;
         _requiresSignature = fieldDrafts.any((f) => f.type == 'signature');
         _stage = _Stage.done;
       });
@@ -1462,7 +1610,7 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
     }
   }
 
-  final List<List<Map<String, dynamic>>> _reviewUndoStack = [];
+  final List<_UndoSnapshot> _reviewUndoStack = [];
   static const int _reviewMaxUndo = 40;
 
   List<Map<String, dynamic>> _captureReviewSnapshot() {
@@ -1490,8 +1638,11 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
         }).toList();
   }
 
+  Map<int, Uint8List> _reviewEditedPageBytes = {};
+  final Map<int, Uint8List> _reviewOriginalPageBytesCache = {};
+
   void _pushReviewUndo() {
-    _reviewUndoStack.add(_captureReviewSnapshot());
+    _reviewUndoStack.add(_UndoSnapshot(_captureReviewSnapshot(), Map<int, Uint8List>.from(_reviewEditedPageBytes)));
     if (_reviewUndoStack.length > _reviewMaxUndo) _reviewUndoStack.removeAt(0);
   }
 
@@ -1502,7 +1653,7 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
       f.dispose();
     }
     setState(() {
-      _reviewFields = snapshot.map((m) => _AiFieldDraft(
+      _reviewFields = snapshot.fields.map((m) => _AiFieldDraft(
             id: m['id'] as String,
             label: m['label'] as String,
             type: m['type'] as String,
@@ -1516,7 +1667,28 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
             box: m['box'] as Map<String, dynamic>?,
             optionBoxes: m['optionBoxes'] as List<dynamic>?,
           )).toList();
+      _reviewEditedPageBytes = Map<int, Uint8List>.from(snapshot.pageBytes);
     });
+    _syncReviewPageBytesToStorage();
+  }
+
+  Future<void> _syncReviewPageBytesToStorage() async {
+    if (_pagePaths.isEmpty) return;
+    final storage = _db.storage.from('job-form-ai-sources');
+    for (final page in _reviewOriginalPageBytesCache.keys) {
+      if (page - 1 < 0 || page - 1 >= _pagePaths.length) continue;
+      final bytesToWrite = _reviewEditedPageBytes[page] ?? _reviewOriginalPageBytesCache[page];
+      if (bytesToWrite == null) continue;
+      try {
+        await storage.uploadBinary(_pagePaths[page - 1], bytesToWrite,
+            fileOptions: const FileOptions(contentType: 'image/png', upsert: true));
+      } catch (e) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not sync undo to storage: $e')),
+        );
+      }
+    }
   }
 
   void _addReviewField() {
@@ -1532,12 +1704,37 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
     });
   }
 
+  Future<void> _eraseFieldRegionFromReview({required int page, required Map<String, dynamic> box}) async {
+    if (_pagePaths.isEmpty || page - 1 < 0 || page - 1 >= _pagePaths.length) return;
+    try {
+      final path = _pagePaths[page - 1];
+      final storage = _db.storage.from('job-form-ai-sources');
+      final currentBytes = _reviewEditedPageBytes[page] ?? await storage.download(path);
+      if (!_reviewOriginalPageBytesCache.containsKey(page)) {
+        _reviewOriginalPageBytesCache[page] = currentBytes;
+      }
+      final erasedBytes = await _erasePixelRegion(currentBytes, box);
+      await storage.uploadBinary(path, erasedBytes,
+          fileOptions: const FileOptions(contentType: 'image/png', upsert: true));
+      if (!mounted) return;
+      setState(() => _reviewEditedPageBytes[page] = erasedBytes);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not erase source image: $e')),
+      );
+    }
+  }
+
   void _removeReviewField(_AiFieldDraft field) {
     _pushReviewUndo();
+    final page = field.page;
+    final box = field.box != null ? Map<String, dynamic>.from(field.box!) : null;
     setState(() {
       field.dispose();
       _reviewFields.remove(field);
     });
+    if (page != null && box != null) _eraseFieldRegionFromReview(page: page, box: box);
   }
 
   Future<void> _saveAsTemplate() async {
@@ -1759,6 +1956,7 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
         pagePaths: _pagePaths,
         fields: _reviewFields,
         sections: _sections,
+        strayMarks: _strayMarks,
         rawExtracted: _extractedPreview,
       ),
     );
@@ -2263,7 +2461,10 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
                   child: GestureDetector(
                     onTap: () {
                       _pushReviewUndo();
+                      final page = f.page;
+                      final box = f.box != null ? Map<String, dynamic>.from(f.box!) : null;
                       setState(() => f.clearedByUser = true);
+                      if (page != null && box != null) _eraseFieldRegionFromReview(page: page, box: box);
                     },
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),

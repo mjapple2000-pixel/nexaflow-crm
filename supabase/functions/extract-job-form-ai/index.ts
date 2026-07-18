@@ -445,6 +445,7 @@ Deno.serve(async (req: Request) => {
     // guessed or transcribed by the model.
     const VALID_FIELD_TYPES = new Set(['text', 'checkbox', 'select', 'photo', 'signature']);
     const ocrById = new Map(ocrItems.map((item) => [item.id as string, item]));
+    const usedItemIds = new Set<string>();
     const fieldsOut = Array.isArray(extracted?.fields) ? extracted.fields : [];
     for (const field of fieldsOut) {
       // GPT is given two similarly-named vocabularies: the field "type" enum
@@ -460,6 +461,7 @@ Deno.serve(async (req: Request) => {
       if (field.source_item_id) {
         const item = ocrById.get(field.source_item_id);
         if (item) {
+          usedItemIds.add(field.source_item_id);
           field.page = item.page;
           field.box = item.box;
           // GPT was instructed to label blank table cells using the column
@@ -486,6 +488,7 @@ Deno.serve(async (req: Request) => {
           .map((opt: any) => {
             const item = ocrById.get(opt.item_id);
             if (!item) return null;
+            usedItemIds.add(opt.item_id);
             if (!field.page) field.page = item.page;
             return { label: opt.label, box: item.box };
           })
@@ -501,6 +504,7 @@ Deno.serve(async (req: Request) => {
       if (section.source_item_id) {
         const item = ocrById.get(section.source_item_id);
         if (item) {
+          usedItemIds.add(section.source_item_id);
           section.page = item.page;
           section.box = item.box;
         }
@@ -523,6 +527,28 @@ Deno.serve(async (req: Request) => {
       f.id = `f_${String(idx + 1).padStart(3, '0')}`;
     });
     extracted.fields = allFields;
+
+    // Anything Textract measured but GPT never assigned to a field or
+    // section is either stray ink (a mark, a stamp, handwriting outside
+    // any real field) or genuine OCR noise — either way it's something a
+    // person may want to see and delete during cleanup. Only surface items
+    // that actually contain something (non-empty text, a checked box, or
+    // a filled-in value) — a blank, unused item isn't visible ink.
+    const strayMarks = ocrItems
+      .filter((item) => item.kind !== 'table_cell' && !usedItemIds.has(item.id as string))
+      .filter((item) => {
+        if (item.kind === 'line') return !!(item.text as string)?.trim();
+        if (item.kind === 'checkbox') return item.selected === true;
+        if (item.kind === 'form_value') return !!(item.value_text as string)?.trim();
+        return false;
+      })
+      .map((item) => ({
+        id: item.id,
+        page: item.page,
+        box: item.box,
+        text: item.kind === 'form_value' ? item.value_text : item.text,
+      }));
+    extracted.stray_marks = strayMarks;
 
     await supabase.from('job_form_ai_drafts').update({
       status: 'ready_for_review',
