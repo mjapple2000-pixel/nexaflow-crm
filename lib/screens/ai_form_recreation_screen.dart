@@ -337,12 +337,68 @@ Future<Uint8List> _erasePixelRegion(Uint8List sourceBytes, Map<String, dynamic> 
     }
   }
 
+  // Every erase previously padded outward by a flat 3px on all sides,
+  // regardless of what's immediately outside the box. For a freeform
+  // answer blank that's fine (handwriting spills past a tight OCR box) —
+  // but for anything living inside a table cell, the box IS the cell edge
+  // to edge, so that same padding painted straight over the grid border.
+  // Reuse the dark-line sampling already used for border reconnection: pad
+  // outward only on sides where NO border is detected; clamp flush to the
+  // box edge on any side where one is.
+  const padAmount = 3.0;
+  double padLeft = padAmount, padRight = padAmount, padTop = padAmount, padBottom = padAmount;
+  if (rawData != null) {
+    final bytes = rawData.buffer.asUint8List();
+    Color? pixelAt2(int px, int py) {
+      if (px < 0 || px >= width || py < 0 || py >= height) return null;
+      final offset = (py * width + px) * 4;
+      if (offset + 3 >= bytes.length) return null;
+      return Color.fromARGB(255, bytes[offset], bytes[offset + 1], bytes[offset + 2]);
+    }
+    bool isDarkLine2(Color? c) {
+      if (c == null) return false;
+      final luminance = (0.299 * c.red + 0.587 * c.green + 0.114 * c.blue);
+      return luminance < 180;
+    }
+    // A single midpoint sample missed borders that weren't perfectly
+    // aligned with that one row/column. Sampling several points along each
+    // edge and treating it as a border if ANY of them hit dark pixels is
+    // far more reliable — a real grid line runs the full length of the
+    // edge, so multiple samples will consistently catch it even if one
+    // misses due to slight misalignment or anti-aliasing.
+    bool edgeHasBorder(List<Color?> samples) => samples.any(isDarkLine2);
+
+    final leftX = (x - padAmount - 2).toInt();
+    final rightX = (x + w + padAmount + 2).toInt();
+    final topY = (y - padAmount - 2).toInt();
+    final bottomY = (y + h + padAmount + 2).toInt();
+
+    final leftSamples = [0.2, 0.4, 0.6, 0.8]
+        .map((f) => pixelAt2(leftX, (y + h * f).clamp(0, height - 1).toInt()))
+        .toList();
+    final rightSamples = [0.2, 0.4, 0.6, 0.8]
+        .map((f) => pixelAt2(rightX, (y + h * f).clamp(0, height - 1).toInt()))
+        .toList();
+    final topSamples = [0.2, 0.4, 0.6, 0.8]
+        .map((f) => pixelAt2((x + w * f).clamp(0, width - 1).toInt(), topY))
+        .toList();
+    final bottomSamples = [0.2, 0.4, 0.6, 0.8]
+        .map((f) => pixelAt2((x + w * f).clamp(0, width - 1).toInt(), bottomY))
+        .toList();
+
+    if (edgeHasBorder(leftSamples)) padLeft = 0;
+    if (edgeHasBorder(rightSamples)) padRight = 0;
+    if (edgeHasBorder(topSamples)) padTop = 0;
+    if (edgeHasBorder(bottomSamples)) padBottom = 0;
+  }
+
   final recorder = ui.PictureRecorder();
   final canvas = Canvas(recorder);
   canvas.drawImage(image, Offset.zero, Paint());
-  // A few px of padding so the erase covers the real ink, not just the
-  // tightly-cropped OCR box that measured it.
-  canvas.drawRect(Rect.fromLTWH(x - 3, y - 3, w + 6, h + 6), Paint()..color = fillColor);
+  canvas.drawRect(
+    Rect.fromLTRB(x - padLeft, y - padTop, x + w + padRight, y + h + padBottom),
+    Paint()..color = fillColor,
+  );
 
   // Redraw any table border line that ran through the erased area so the
   // grid reconnects instead of leaving a gap where a real printed line was.
@@ -369,7 +425,8 @@ Future<Uint8List> _erasePixelRegion(Uint8List sourceBytes, Map<String, dynamic> 
 class _UndoSnapshot {
   final List<Map<String, dynamic>> fields;
   final Map<int, Uint8List> pageBytes;
-  _UndoSnapshot(this.fields, this.pageBytes);
+  final List<Map<String, dynamic>>? strayMarks;
+  _UndoSnapshot(this.fields, this.pageBytes, [this.strayMarks]);
 }
 
 class _CoordinatePreviewDialog extends StatefulWidget {
@@ -399,7 +456,15 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
   static const int _maxUndo = 40;
   final Map<int, Uint8List> _editedPageBytes = {};
   final Map<int, Uint8List> _originalPageBytesCache = {};
-  bool _erasingInProgress = false;
+  // Tracks how many erase uploads are currently in flight. Delete/Clear
+  // previously fired the storage upload without awaiting it, so closing
+  // the dialog (Done or X) while an upload was still running let you leave
+  // before the erase actually saved — reopening later would fetch storage
+  // as it existed BEFORE that erase finished, making a delete look like it
+  // "came back." Blocking close while this is > 0 makes deletes genuinely
+  // final before you can navigate away.
+  int _pendingErases = 0;
+  bool get _erasingInProgress => _pendingErases > 0;
   static const List<String> _addFieldTypes = ['text', 'checkbox', 'select', 'photo', 'signature'];
   final TransformationController _transformController = TransformationController();
 
@@ -578,8 +643,21 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
         }).toList();
   }
 
+  List<Map<String, dynamic>> _captureStrayMarksSnapshot() {
+    return widget.strayMarks.map((m) => {
+          'id': m.id,
+          'text': m.text,
+          'page': m.page,
+          'box': m.box == null ? null : Map<String, dynamic>.from(m.box!),
+        }).toList();
+  }
+
   void _pushUndo() {
-    _undoStack.add(_UndoSnapshot(_captureSnapshot(), Map<int, Uint8List>.from(_editedPageBytes)));
+    _undoStack.add(_UndoSnapshot(
+      _captureSnapshot(),
+      Map<int, Uint8List>.from(_editedPageBytes),
+      _captureStrayMarksSnapshot(),
+    ));
     if (_undoStack.length > _maxUndo) _undoStack.removeAt(0);
   }
 
@@ -605,6 +683,20 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
         box: m['box'] as Map<String, dynamic>?,
         optionBoxes: m['optionBoxes'] as List<dynamic>?,
       ));
+    }
+    // Stray marks were previously untouched by undo entirely — deleting one
+    // by mistake was permanent within this dialog session. Restoring from
+    // the same snapshot as fields/boxes fixes that.
+    widget.strayMarks.clear();
+    if (snapshot.strayMarks != null) {
+      for (final m in snapshot.strayMarks!) {
+        widget.strayMarks.add(_StrayMarkDraft(
+          id: m['id'] as String,
+          text: m['text'] as String,
+          page: m['page'] as int?,
+          box: m['box'] as Map<String, dynamic>?,
+        ));
+      }
     }
     setState(() {
       _selectedKey = null;
@@ -721,7 +813,7 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
 
   Future<void> _eraseFieldRegion({required int page, required Map<String, dynamic> box}) async {
     if (page - 1 < 0 || page - 1 >= widget.pagePaths.length) return;
-    setState(() => _erasingInProgress = true);
+    setState(() => _pendingErases++);
     try {
       final path = widget.pagePaths[page - 1];
       final storage = Supabase.instance.client.storage.from('job-form-ai-sources');
@@ -738,18 +830,41 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
       if (!mounted) return;
       setState(() {
         _editedPageBytes[page] = erasedBytes;
-        _erasingInProgress = false;
+        _pendingErases--;
       });
     } catch (e) {
       if (!mounted) return;
-      setState(() => _erasingInProgress = false);
+      setState(() => _pendingErases--);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Could not erase source image: $e')),
       );
     }
   }
 
-  void _deleteTarget(_EditTarget t) {
+  // Checkbox/option boxes carry the entire PRINTED glyph as their box
+  // (border included) — erasing that full area wipes out the printed
+  // square itself, leaving a blank gap on Preview. Insetting keeps the
+  // border intact and only clears whatever mark was drawn inside it.
+  Map<String, dynamic> _eraseBoxFor(_EditTarget t, Map<String, dynamic> box) {
+    final isCheckboxLike = t.kind == _TargetKind.option ||
+        (t.kind == _TargetKind.fieldAnswer && t.sourceField?.type == 'checkbox');
+    if (!isCheckboxLike) return box;
+    final w = (box['w'] as num).toDouble();
+    final h = (box['h'] as num).toDouble();
+    final x = (box['x'] as num).toDouble();
+    final y = (box['y'] as num).toDouble();
+    const insetFrac = 0.28;
+    final insetW = w * insetFrac;
+    final insetH = h * insetFrac;
+    return {
+      'x': x + insetW,
+      'y': y + insetH,
+      'w': (w - insetW * 2).clamp(0.5, w),
+      'h': (h - insetH * 2).clamp(0.5, h),
+    };
+  }
+
+  Future<void> _deleteTarget(_EditTarget t) async {
     _pushUndo();
     final page = t.page;
     final box = t.getBox() != null ? Map<String, dynamic>.from(t.getBox()!) : null;
@@ -758,13 +873,15 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
     setState(() {
       if (_selectedKey == t.key) _selectedKey = null;
     });
-    if (shouldErase) _eraseFieldRegion(page: page!, box: box!);
+    // Await this now — previously fired without waiting, so the dialog
+    // could be closed before the erase actually saved to storage.
+    if (shouldErase) await _eraseFieldRegion(page: page!, box: _eraseBoxFor(t, box!));
   }
 
   // Distinct from delete: field and box stay, only the pre-filled value
   // (both the data and the ink it came from) goes away — leaves a real
   // blank ready for Review & Confirm or the Field Hub to fill in for real.
-  void _clearTarget(_EditTarget t) {
+  Future<void> _clearTarget(_EditTarget t) async {
     final field = t.sourceField;
     if (field == null) return;
     _pushUndo();
@@ -774,7 +891,7 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
       field.clearedByUser = true;
       field.prefilledValueCtrl.clear();
     });
-    if (page != null && box != null) _eraseFieldRegion(page: page, box: box);
+    if (page != null && box != null) await _eraseFieldRegion(page: page, box: box);
   }
 
   @override
@@ -849,7 +966,7 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
                       ),
                     ),
                     IconButton(
-                      onPressed: () => Navigator.of(context, rootNavigator: true).pop(),
+                      onPressed: _erasingInProgress ? null : () => Navigator.of(context, rootNavigator: true).pop(),
                       icon: const Icon(Icons.close, size: 20),
                     ),
                   ]),
@@ -1023,14 +1140,16 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
                 child: Row(children: [
                   const Spacer(),
                   ElevatedButton(
-                    onPressed: () => Navigator.of(context, rootNavigator: true).pop(),
+                    onPressed: _erasingInProgress ? null : () => Navigator.of(context, rootNavigator: true).pop(),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: AppTheme.brand,
                       foregroundColor: Colors.white,
                       elevation: 0,
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                     ),
-                    child: const Text('Done'),
+                    child: _erasingInProgress
+                        ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                        : const Text('Done'),
                   ),
                 ]),
               ),
@@ -1888,17 +2007,16 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
     if (_pagePaths.isEmpty || _businessId == null || _draftId == null) return;
     setState(() => _previewLoading = true);
     try {
-      final previewFields = _reviewFields.where((f) => f.page != null).map((f) {
-        final showPrefilled = f.isFilledIn && !f.clearedByUser;
-        return {
-          'type': f.type,
-          'page': f.page,
-          'box': f.box,
-          'option_boxes': f.optionBoxes,
-          'show_prefilled': showPrefilled,
-          'prefilled_value': showPrefilled ? f.prefilledValueCtrl.text : null,
-        };
-      }).toList();
+      // Preview shows exactly the current source page images — Adjust Field
+      // Positions and Review & Confirm already write every edit (erasures,
+      // undo restores) directly back to this same storage path, so those
+      // images ARE the true current template state. Preview must not add
+      // anything on top of them; the only extra thing it draws is page
+      // numbering, since that's a display setting, not part of the images.
+      final pageNumberStart = int.tryParse(_pageNumberStartCtrl.text.trim()) ?? 1;
+      final pageNumberTotalOverride = _pageNumberTotalCtrl.text.trim().isEmpty
+          ? null
+          : int.tryParse(_pageNumberTotalCtrl.text.trim());
 
       final session = _db.auth.currentSession;
       final res = await http.post(
@@ -1911,7 +2029,8 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
           'business_id': _businessId,
           'draft_id': _draftId,
           'source_page_paths': _pagePaths,
-          'fields': previewFields,
+          'page_number_start': pageNumberStart,
+          'page_number_total_override': pageNumberTotalOverride,
         }),
       );
 

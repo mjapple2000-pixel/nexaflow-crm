@@ -251,7 +251,8 @@ async function generateVisualRecreationPdf(
 }
 
 async function generatePreviewPdf(
-  { business_id, draft_id, source_page_paths, fields }: { business_id: number; draft_id: number; source_page_paths: string[]; fields: any[] }
+  { business_id, draft_id, source_page_paths, page_number_start, page_number_total_override }:
+  { business_id: number; draft_id: number; source_page_paths: string[]; page_number_start?: number; page_number_total_override?: number | null }
 ) {
   try {
     if (!business_id || !draft_id || !Array.isArray(source_page_paths)) {
@@ -263,15 +264,16 @@ async function generatePreviewPdf(
 
     const pdfDoc = await PDFDocument.create();
     const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-    const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
-    const fieldsByPage = new Map<number, any[]>();
-    for (const f of fields) {
-      const pg = f.page ?? 1;
-      if (!fieldsByPage.has(pg)) fieldsByPage.set(pg, []);
-      fieldsByPage.get(pg)!.push(f);
-    }
-
+    // Preview is a snapshot of the CURRENT source images only — nothing
+    // more. Adjust Field Positions and Review & Confirm already write every
+    // edit (pixel erasures, undo restores) directly back to this same
+    // storage path, so these images already ARE the combined, up-to-date
+    // output of both screens. Save as Template later does the exact same
+    // thing: it copies these images as-is into background_pages with no
+    // separate rendering step. So Preview must not stamp, mask, or infer
+    // anything on top — doing so would show something that was never
+    // actually saved and doesn't match what Save as Template produces.
     for (let i = 0; i < source_page_paths.length; i++) {
       const pageNum = i + 1;
       const { data: imgBlob, error: dlErr } = await supabase.storage.from(SOURCE_BUCKET).download(source_page_paths[i]);
@@ -285,57 +287,24 @@ async function generatePreviewPdf(
 
       const page = pdfDoc.addPage([imgW, imgH]);
       page.drawImage(embeddedImg, { x: 0, y: 0, width: imgW, height: imgH });
-
-      const pageFields = fieldsByPage.get(pageNum) ?? [];
-      for (const field of pageFields) {
-        const type = field.type ?? "text";
-        if (!field.show_prefilled) continue;
-
-        if (type === "checkbox") {
-          if (field.box) {
-            const { xPt, yBaselinePt, boxWidthPt, boxHeightPt } = boxToPdfPoint(field.box, imgW, imgH);
-            page.drawText("X", {
-              x: xPt + boxWidthPt / 2 - CHECK_MARK_SIZE * 0.3,
-              y: yBaselinePt + boxHeightPt / 2 - CHECK_MARK_SIZE * 0.35,
-              size: CHECK_MARK_SIZE,
-              font: boldFont,
-              color: rgb(0.8, 0, 0),
-            });
-          }
-          continue;
-        }
-
-        if (type === "select") {
-          const optionBoxes: any[] = field.option_boxes ?? [];
-          const match = field.prefilled_value ? optionBoxes.find((o: any) => o.label === field.prefilled_value) : null;
-          if (match?.box) {
-            const { xPt, yBaselinePt, boxWidthPt, boxHeightPt } = boxToPdfPoint(match.box, imgW, imgH);
-            page.drawText("X", {
-              x: xPt + boxWidthPt / 2 - CHECK_MARK_SIZE * 0.3,
-              y: yBaselinePt + boxHeightPt / 2 - CHECK_MARK_SIZE * 0.35,
-              size: CHECK_MARK_SIZE,
-              font: boldFont,
-              color: rgb(0.8, 0, 0),
-            });
-          }
-          continue;
-        }
-
-        if (type === "signature") {
-          continue; // no real signature image exists in preview mode — never stamp OCR junk text on the signature line
-        }
-
-        if (field.box && field.prefilled_value) {
-          const text = String(field.prefilled_value);
-          const { xPt, yBaselinePt, boxWidthPt, boxHeightPt } = boxToPdfPoint(field.box, imgW, imgH);
-          page.drawRectangle({
-            x: xPt - 2, y: yBaselinePt - 2, width: boxWidthPt + 4, height: boxHeightPt + 4, color: rgb(1, 1, 1),
-          });
-          const size = fitFontSize(font, text, boxWidthPt, RECREATION_FONT_SIZE);
-          page.drawText(text, { x: xPt, y: yBaselinePt, size, font, color: rgb(0.75, 0, 0) });
-        }
-      }
     }
+
+    // Page numbers are the one thing Review & Confirm lets someone set
+    // (Starts at / Total pages) that isn't baked into the source images
+    // themselves — so it's the one thing Preview draws on top, matching
+    // what generateVisualRecreationPdf does for a real completed form.
+    const startNum = page_number_start ?? 1;
+    const allOutputPages = pdfDoc.getPages();
+    const totalNum = page_number_total_override ?? allOutputPages.length;
+    allOutputPages.forEach((p: any, idx: number) => {
+      p.drawText(`Page ${startNum + idx} of ${totalNum}`, {
+        x: p.getWidth() - 100,
+        y: 14,
+        size: 8,
+        font,
+        color: rgb(0.42, 0.42, 0.46),
+      });
+    });
 
     const pdfBytes = await pdfDoc.save();
     const outPath = `${business_id}/${draft_id}/preview-${Date.now()}.pdf`;
@@ -361,14 +330,15 @@ Deno.serve(async (req) => {
 
   try {
     const body = await req.json();
-    const { submission_id, draft_id, business_id, source_page_paths, fields: previewFields } = body;
+    const { submission_id, draft_id, business_id, source_page_paths, page_number_start, page_number_total_override } = body;
 
     // Two modes share this one function: a real completed submission
     // (submission_id, writes a permanent PDF) or a draft preview (draft_id,
-    // stamps current in-editor field state onto the still-temporary source
-    // images — nothing saved to job_forms or permanent storage).
+    // renders the current source page images exactly as-is — those images
+    // already reflect every edit made in Adjust Field Positions and
+    // Review & Confirm, since both screens write directly back to storage).
     if (draft_id && !submission_id) {
-      return await generatePreviewPdf({ business_id, draft_id, source_page_paths, fields: previewFields ?? [] });
+      return await generatePreviewPdf({ business_id, draft_id, source_page_paths, page_number_start, page_number_total_override });
     }
 
     if (!submission_id) {

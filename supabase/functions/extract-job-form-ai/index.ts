@@ -73,6 +73,29 @@ function centerInsideAnyRegion(
   return regions.some((r) => cx >= r.x && cx <= r.x + r.w && cy >= r.y && cy <= r.y + r.h);
 }
 
+// A single-point-of-truth "is this the same text as that" is too strict
+// when two Textract blocks (e.g. a KEY_VALUE_SET's own box vs. an
+// independent LINE block covering the same words) don't share identical
+// geometry — the center of one can legitimately fall just outside the
+// other. Overlap area is more tolerant: if most of the candidate box
+// covers a known region, it's the same text, regardless of exact bounds.
+function overlapsAnyRegion(
+  box: { x: number; y: number; w: number; h: number },
+  regions: Array<{ x: number; y: number; w: number; h: number }>,
+  minOverlapFraction = 0.5,
+): boolean {
+  const boxArea = box.w * box.h;
+  if (boxArea <= 0) return false;
+  return regions.some((r) => {
+    const ix = Math.max(box.x, r.x);
+    const iy = Math.max(box.y, r.y);
+    const iw = Math.min(box.x + box.w, r.x + r.w) - ix;
+    const ih = Math.min(box.y + box.h, r.y + r.h) - iy;
+    if (iw <= 0 || ih <= 0) return false;
+    return (iw * ih) / boxArea >= minOverlapFraction;
+  });
+}
+
 function parseTextractBlocks(
   blocks: any[],
   page: number,
@@ -83,6 +106,33 @@ function parseTextractBlocks(
   const blockMap = new Map<string, any>();
   for (const b of blocks) blockMap.set(b.Id, b);
 
+  // Textract detects a KEY's label text BOTH as part of the KEY_VALUE_SET
+  // pair AND as its own independent LINE block covering the same words.
+  // Without skipping the duplicate, every field label on the form produced
+  // a guaranteed false "stray mark" — the real, correctly-matched
+  // form_value item AND an orphaned duplicate of the same text.
+  const keyBoxes: Array<{ x: number; y: number; w: number; h: number }> = [];
+  const valueBoxes: Array<{ x: number; y: number; w: number; h: number }> = [];
+  for (const block of blocks) {
+    if (block.BlockType === 'KEY_VALUE_SET' && block.EntityTypes?.includes('KEY')) {
+      const keyBox = toBoxPct(block.Geometry);
+      if (keyBox) keyBoxes.push(keyBox);
+      // The VALUE side (the actual answer text — "9/22/2025", a name, an
+      // address) is ALSO independently detected as its own LINE block,
+      // same as the KEY. That duplicate was still slipping through as a
+      // false stray mark even after the KEY dedupe — every filled-in
+      // answer field was throwing off one guaranteed duplicate.
+      const valueRel = block.Relationships?.find((r: any) => r.Type === 'VALUE');
+      if (valueRel) {
+        for (const valueId of valueRel.Ids) {
+          const valueBlock = blockMap.get(valueId);
+          const valueBox = valueBlock ? toBoxPct(valueBlock.Geometry) : null;
+          if (valueBox) valueBoxes.push(valueBox);
+        }
+      }
+    }
+  }
+
   for (const block of blocks) {
     if (block.BlockType === 'LINE') {
       const box = toBoxPct(block.Geometry);
@@ -91,7 +141,9 @@ function parseTextractBlocks(
       // row/column context, by parseTableBlocks — including it again here
       // would hand GPT the same text twice: once gridded, once floating.
       if (centerInsideAnyRegion(box, tableRegions)) continue;
-      itemsOut.push({ id: `ocr_${idCounterRef.n++}`, page, kind: 'line', text: block.Text ?? '', box });
+      if (overlapsAnyRegion(box, keyBoxes)) continue;
+      if (overlapsAnyRegion(box, valueBoxes)) continue;
+      itemsOut.push({ id: `ocr_${idCounterRef.n++}`, page, kind: 'line', text: block.Text ?? '', text_type: block.TextType ?? null, box });
     } else if (block.BlockType === 'SELECTION_ELEMENT') {
       const box = toBoxPct(block.Geometry);
       if (!box) continue;
@@ -190,6 +242,64 @@ function parseTableBlocks(
     // had no row/column to anchor a floating scrap of handwriting to.
     for (const cell of cells) {
       if (cell.RowIndex === 1) continue; // header row — already consumed above to label columns, not an answer cell itself
+
+      // Some cells (e.g. "Signage complies with the following: [ ] Does
+      // not exceed... [ ] Is attached...") contain real checkbox marks
+      // mixed into their text. Lumping the whole cell into one giant text
+      // field left every checkbox inside with no box of its own — only the
+      // entire cell could be selected. Detect marks here and give each its
+      // own TIGHT box, taken directly from the mark's own Textract
+      // geometry — never widened or inferred from a neighboring cell/row,
+      // which is what caused the earlier box-widening regression. This
+      // stays entirely local to one cell's own children.
+      const cellChildIds = (cell.Relationships ?? [])
+        .filter((r: any) => r.Type === 'CHILD')
+        .flatMap((r: any) => r.Ids);
+      const cellChildren = cellChildIds.map((id: string) => blockMap.get(id)).filter(Boolean);
+      const selectionChildren = cellChildren.filter((c: any) => c.BlockType === 'SELECTION_ELEMENT');
+
+      if (selectionChildren.length > 0) {
+        const wordChildren = cellChildren.filter((c: any) => c.BlockType === 'WORD');
+        const avgWordHeight = wordChildren.length
+          ? wordChildren.reduce((sum: number, w: any) => sum + (w.Geometry?.BoundingBox?.Height ?? 0), 0) / wordChildren.length
+          : 0.02;
+
+        for (const sel of selectionChildren) {
+          const box = toBoxPct(sel.Geometry);
+          if (!box) continue;
+          const selTop = sel.Geometry?.BoundingBox?.Top ?? 0;
+          const selMidY = selTop + (sel.Geometry?.BoundingBox?.Height ?? 0) / 2;
+          // Words on roughly the same visual line as THIS specific checkbox
+          // (within ~1.5 line-heights, matched only within this cell's own
+          // words) become its label — e.g. "Does not exceed 5% of area".
+          const nearbyWords = wordChildren
+            .filter((w: any) => {
+              const wTop = w.Geometry?.BoundingBox?.Top ?? 0;
+              const wMidY = wTop + (w.Geometry?.BoundingBox?.Height ?? 0) / 2;
+              return Math.abs(wMidY - selMidY) <= avgWordHeight * 1.5;
+            })
+            .sort((a: any, b: any) => (a.Geometry?.BoundingBox?.Left ?? 0) - (b.Geometry?.BoundingBox?.Left ?? 0))
+            .map((w: any) => w.Text)
+            .join(' ');
+
+          itemsOut.push({
+            id: `ocr_${idCounterRef.n++}`,
+            page,
+            kind: 'table_checkbox',
+            table_index: tableIndex,
+            column_header: headerByCol.get(cell.ColumnIndex) ?? null,
+            row_index: cell.RowIndex,
+            text: nearbyWords || headerByCol.get(cell.ColumnIndex) || 'Checkbox',
+            selected: sel.SelectionStatus === 'SELECTED',
+            box,
+          });
+        }
+        // Checkbox marks are now individually captured above — do not also
+        // emit the old whole-cell text blob, or the checkboxes would be
+        // duplicated inside a big redundant text field.
+        continue;
+      }
+
       const text = getBlockText(cell, blockMap).trim();
       const box = toBoxPct(cell.Geometry);
       if (!box) continue;
@@ -219,6 +329,28 @@ function buildDeterministicTableFields(tableCellItems: Array<Record<string, unkn
     const header = item.column_header ? String(item.column_header) : 'Field';
     const row = item.row_index as number;
     const tableIdx = item.table_index as number;
+
+    // A checkbox mark detected inside a table cell — same shape as a
+    // standalone checkbox elsewhere on the form (tight box, boolean state),
+    // so it renders and behaves identically to page 1's checkboxes instead
+    // of being lumped into one giant text field.
+    if (item.kind === 'table_checkbox') {
+      const label = (item.text as string) || header;
+      const selected = item.selected === true;
+      return {
+        id: item.id,
+        type: 'checkbox',
+        label: `${label} (Table ${tableIdx}, Row ${row})`,
+        section: null,
+        required: false,
+        is_filled_in: selected,
+        detected_example_value: selected ? 'checked' : null,
+        confidence: 1,
+        page: item.page,
+        box: item.box,
+      };
+    }
+
     const text = (item.text as string) ?? '';
     return {
       id: item.id, // temporary, renumbered below alongside GPT fields
@@ -335,6 +467,7 @@ Deno.serve(async (req: Request) => {
     const stageStart = Date.now();
     const ocrItems: Array<Record<string, unknown>> = [];
     const idCounter = { n: 1 };
+    let rawPage2Bottom: any[] = []; // TEMPORARY DIAGNOSTIC
 
     // Download + Textract each page CONCURRENTLY. Page images are
     // deliberately NOT sent to GPT anymore (see below) — we only need the
@@ -361,6 +494,21 @@ Deno.serve(async (req: Request) => {
         const blocks = textractRes.Blocks ?? [];
         const tableRegions = parseTableBlocks(blocks, pageNum, ocrItems, idCounter);
         parseTextractBlocks(blocks, pageNum, ocrItems, idCounter, tableRegions);
+        // TEMPORARY DIAGNOSTIC — capture every raw block near the bottom
+        // third of page 2 (BlockType + text + geometry + confidence),
+        // regardless of type, so we can see whether Textract produced ANY
+        // block for the circled "A" initials that our pipeline currently
+        // never surfaces, versus it genuinely detecting nothing there.
+        if (pageNum === 2) {
+          rawPage2Bottom = blocks
+            .filter((b: any) => (b.Geometry?.BoundingBox?.Top ?? 0) > 0.75)
+            .map((b: any) => ({
+              type: b.BlockType,
+              text: b.Text ?? null,
+              confidence: b.Confidence ?? null,
+              box: toBoxPct(b.Geometry),
+            }));
+        }
       } catch (textractErr) {
         console.error(`Textract error on page ${pageNum}:`, textractErr);
       }
@@ -385,13 +533,13 @@ Deno.serve(async (req: Request) => {
     // multimodal call, and were very likely the real driver of the 80-150s
     // response times we were seeing, not output length alone. GPT's only
     // remaining job is semantic labeling of text it's already been given.
-    const tableCellItems = ocrItems.filter((item) => item.kind === 'table_cell');
+    const tableCellItems = ocrItems.filter((item) => item.kind === 'table_cell' || item.kind === 'table_checkbox');
     const deterministicTableFields = buildDeterministicTableFields(tableCellItems);
 
-    // Table cells are excluded entirely from what GPT sees — they're
-    // already handled above with guaranteed completeness.
+    // Table cells AND table checkbox marks are excluded entirely from what
+    // GPT sees — both are already handled deterministically above.
     const ocrItemsForPrompt = ocrItems
-      .filter((item) => item.kind !== 'table_cell')
+      .filter((item) => item.kind !== 'table_cell' && item.kind !== 'table_checkbox')
       .map(({ box: _box, label_box: _labelBox, ...rest }) => rest);
 
     const openaiStart = Date.now();
@@ -535,9 +683,18 @@ Deno.serve(async (req: Request) => {
     // that actually contain something (non-empty text, a checked box, or
     // a filled-in value) — a blank, unused item isn't visible ink.
     const strayMarks = ocrItems
-      .filter((item) => item.kind !== 'table_cell' && !usedItemIds.has(item.id as string))
+      .filter((item) => item.kind !== 'table_cell' && item.kind !== 'table_checkbox' && !usedItemIds.has(item.id as string))
       .filter((item) => {
-        if (item.kind === 'line') return !!(item.text as string)?.trim();
+        if (item.kind === 'line') {
+          const text = (item.text as string)?.trim() ?? '';
+          // TEMPORARY: not filtering by text_type here anymore — we don't
+          // yet know if Textract's HANDWRITING/PRINTED classification
+          // actually lines up with "added later" vs "original template
+          // design" the way we assumed. Surfacing everything with real
+          // content lets us see actual text_type values on the next test
+          // run before writing a permanent rule.
+          return !!text;
+        }
         if (item.kind === 'checkbox') return item.selected === true;
         if (item.kind === 'form_value') return !!(item.value_text as string)?.trim();
         return false;
@@ -547,8 +704,21 @@ Deno.serve(async (req: Request) => {
         page: item.page,
         box: item.box,
         text: item.kind === 'form_value' ? item.value_text : item.text,
+        text_type: item.text_type ?? null, // temporary diagnostic field — see if HANDWRITING/PRINTED classification is the real cause of missed stray marks
       }));
     extracted.stray_marks = strayMarks;
+
+    // TEMPORARY DIAGNOSTIC — dumps every raw 'line' item Textract detected
+    // on page 2, before any claiming/filtering/dedupe logic touches it.
+    // This lets us see ground truth (does Textract even detect the "A"
+    // initials as separate items? are they merged into the adjacent
+    // sentence's LINE block? something else?) instead of guessing at a
+    // filter rule. Remove this block once #2 (missing page 2 initials) is
+    // diagnosed and fixed — it's not meant to ship long-term.
+    extracted.debug_raw_lines_page2 = ocrItems
+      .filter((item) => item.kind === 'line' && item.page === 2)
+      .map((item) => ({ id: item.id, text: item.text, box: item.box }));
+    extracted.debug_raw_blocks_page2_bottom = rawPage2Bottom;
 
     await supabase.from('job_form_ai_drafts').update({
       status: 'ready_for_review',
