@@ -413,13 +413,18 @@ Set "is_filled_in": true and populate "detected_example_value" ONLY when a perso
 
 Number field ids sequentially starting from f_001. If the same form spans multiple pages/images, continue numbering and section grouping across all pages as one continuous form.`;
 
+const BLANK_TEMPLATE_ADDENDUM = `
+
+IMPORTANT — THIS IS A BLANK, UNFILLED TEMPLATE, not a completed form. Nobody has written, checked, or signed anything on it yet. Any printed example text, sample dates, placeholder formatting (e.g. "XX/XX/XXXX"), or instructional wording is part of the form's own design, never a real answer — always set "is_filled_in": false and "detected_example_value": null for every field, regardless of what the OCR items show. Focus entirely on correctly identifying each field's label, its logical section, and the right "type" for what a field technician will need to enter later (text, checkbox, select, photo, or signature) based on the visual cues already on the form (blank lines, empty boxes, checkbox glyphs).`;
+
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
   }
 
   try {
-    const { draft_id, business_id: businessIdParam } = await req.json();
+    const { draft_id, business_id: businessIdParam, is_blank_template: isBlankTemplateParam } = await req.json();
+    const isBlankTemplate = isBlankTemplateParam === true;
     if (!draft_id) {
       return jsonResponse({ error: 'draft_id is required' }, 400);
     }
@@ -468,6 +473,8 @@ Deno.serve(async (req: Request) => {
     const ocrItems: Array<Record<string, unknown>> = [];
     const idCounter = { n: 1 };
     let rawPage2Bottom: any[] = []; // TEMPORARY DIAGNOSTIC
+    let rawPage1InspectorBand: any[] = []; // TEMPORARY DIAGNOSTIC — tracking down missing "Company Address"
+    let rawPage1DoorTable: any[] = []; // TEMPORARY DIAGNOSTIC — tracking down split Door table rows
 
     // Download + Textract each page CONCURRENTLY. Page images are
     // deliberately NOT sent to GPT anymore (see below) — we only need the
@@ -509,6 +516,56 @@ Deno.serve(async (req: Request) => {
               box: toBoxPct(b.Geometry),
             }));
         }
+        // TEMPORARY DIAGNOSTIC — every raw block (any type) in the vertical
+        // band covering the Inspector section on page 1, to see exactly how
+        // Textract classified "Company Address" (or whether it exists as a
+        // block at all) instead of guessing.
+        if (pageNum === 1) {
+          rawPage1InspectorBand = blocks
+            .filter((b: any) => {
+              const top = b.Geometry?.BoundingBox?.Top ?? -1;
+              return top > 0.44 && top < 0.62;
+            })
+            .map((b: any) => ({
+              type: b.BlockType,
+              text: b.Text ?? null,
+              confidence: b.Confidence ?? null,
+              box: toBoxPct(b.Geometry),
+            }));
+        }
+        // TEMPORARY DIAGNOSTIC — every raw block covering the Door table
+        // (rows 2-4: Door Location/ID, Type of Door, Operation Type), to see
+        // whether "Swinging Door with Builders Hardware" is one MERGED_CELL
+        // or multiple separate CELLs, and which raw CELLs (if any) a
+        // MERGED_CELL references — instead of guessing at the fix.
+        if (pageNum === 1) {
+          const mergedCellChildIds = new Set<string>();
+          for (const b of blocks) {
+            if (b.BlockType === 'MERGED_CELL') {
+              const childIds = (b.Relationships ?? [])
+                .filter((r: any) => r.Type === 'CHILD')
+                .flatMap((r: any) => r.Ids);
+              for (const id of childIds) mergedCellChildIds.add(id);
+            }
+          }
+          rawPage1DoorTable = blocks
+            .filter((b: any) => {
+              const top = b.Geometry?.BoundingBox?.Top ?? -1;
+              return top > 0.60 && top < 0.72;
+            })
+            .map((b: any) => ({
+              id: b.Id,
+              type: b.BlockType,
+              text: b.Text ?? null,
+              rowIndex: b.RowIndex ?? null,
+              columnIndex: b.ColumnIndex ?? null,
+              rowSpan: b.RowSpan ?? null,
+              columnSpan: b.ColumnSpan ?? null,
+              isChildOfMergedCell: mergedCellChildIds.has(b.Id),
+              confidence: b.Confidence ?? null,
+              box: toBoxPct(b.Geometry),
+            }));
+        }
       } catch (textractErr) {
         console.error(`Textract error on page ${pageNum}:`, textractErr);
       }
@@ -542,6 +599,8 @@ Deno.serve(async (req: Request) => {
       .filter((item) => item.kind !== 'table_cell' && item.kind !== 'table_checkbox')
       .map(({ box: _box, label_box: _labelBox, ...rest }) => rest);
 
+    const systemPrompt = isBlankTemplate ? `${EXTRACTION_SYSTEM_PROMPT}${BLANK_TEMPLATE_ADDENDUM}` : EXTRACTION_SYSTEM_PROMPT;
+
     const openaiStart = Date.now();
     const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -552,7 +611,7 @@ Deno.serve(async (req: Request) => {
       body: JSON.stringify({
         model: 'gpt-4o-mini',
         messages: [
-          { role: 'system', content: EXTRACTION_SYSTEM_PROMPT },
+          { role: 'system', content: systemPrompt },
           {
             role: 'user',
             content: `Extract all fields from this form using only the OCR items below (no page image is provided — rely entirely on this structured text).\n\nOCR ITEMS:\n${JSON.stringify(ocrItemsForPrompt)}`,
@@ -696,7 +755,18 @@ Deno.serve(async (req: Request) => {
           return !!text;
         }
         if (item.kind === 'checkbox') return item.selected === true;
-        if (item.kind === 'form_value') return !!(item.value_text as string)?.trim();
+        // On a blank template, an unclaimed form_value item with EMPTY
+        // value_text is still meaningful — it means GPT was handed this
+        // labeled field and didn't attach it to anything, so the label
+        // (e.g. "Company Address") would otherwise vanish with no field
+        // and no stray mark to catch it. Filled-form mode keeps the
+        // stricter rule (only non-empty unclaimed values are noise worth
+        // flagging), since surfacing every blank label there would be
+        // clutter, not a real miss.
+        if (item.kind === 'form_value') {
+          if (isBlankTemplate) return true;
+          return !!(item.value_text as string)?.trim();
+        }
         return false;
       })
       .map((item) => ({
@@ -719,6 +789,8 @@ Deno.serve(async (req: Request) => {
       .filter((item) => item.kind === 'line' && item.page === 2)
       .map((item) => ({ id: item.id, text: item.text, box: item.box }));
     extracted.debug_raw_blocks_page2_bottom = rawPage2Bottom;
+    extracted.debug_raw_blocks_page1_inspector = rawPage1InspectorBand;
+    extracted.debug_raw_blocks_page1_door_table = rawPage1DoorTable;
 
     await supabase.from('job_form_ai_drafts').update({
       status: 'ready_for_review',

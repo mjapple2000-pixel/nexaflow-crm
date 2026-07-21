@@ -36,6 +36,18 @@ class _AiFieldDraft {
   Map<String, dynamic>? box;
   Map<String, dynamic>? labelBox;
   List<dynamic>? optionBoxes;
+  // Header/footer/static content that's part of the form's layout but
+  // isn't something a field tech should be able to type into — e.g. the
+  // form's own title bar or a printed disclaimer. Defaults to true (a
+  // normal fillable field) so nothing existing changes behavior unless
+  // explicitly marked otherwise.
+  bool editableByFieldAgent;
+  // Non-destructive alternative to deleting a wrongly-detected or junk
+  // field. Inactive fields stay in the list (recoverable, reversible) but
+  // are excluded from what actually saves into the template's real
+  // `fields` array — unlike Delete, which is permanent and erases the
+  // underlying source image.
+  bool active;
 
   _AiFieldDraft({
     required this.id,
@@ -51,6 +63,8 @@ class _AiFieldDraft {
     this.box,
     this.labelBox,
     this.optionBoxes,
+    this.editableByFieldAgent = true,
+    this.active = true,
   })  : labelCtrl = TextEditingController(text: label),
         optionsCtrl = TextEditingController(text: options),
         prefilledValueCtrl = TextEditingController(text: detectedExampleValue ?? '');
@@ -77,6 +91,8 @@ class _AiFieldDraft {
       box: map['box'] != null ? Map<String, dynamic>.from(map['box'] as Map) : null,
       labelBox: map['label_box'] != null ? Map<String, dynamic>.from(map['label_box'] as Map) : null,
       optionBoxes: map['option_boxes'] as List?,
+      editableByFieldAgent: map['editable_by_field_agent'] as bool? ?? true,
+      active: map['active'] as bool? ?? true,
     );
   }
 
@@ -465,6 +481,8 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
   // final before you can navigate away.
   int _pendingErases = 0;
   bool get _erasingInProgress => _pendingErases > 0;
+  bool _mergeMode = false;
+  final Set<String> _mergeSelection = {};
   static const List<String> _addFieldTypes = ['text', 'checkbox', 'select', 'photo', 'signature'];
   final TransformationController _transformController = TransformationController();
 
@@ -640,6 +658,7 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
                     'box': Map<String, dynamic>.from(m['box'] as Map),
                   };
                 }).toList(),
+          'active': f.active,
         }).toList();
   }
 
@@ -811,6 +830,103 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
     });
   }
 
+  // ── Merge support ───────────────────────────────────────────────
+  void _toggleMergeMode() {
+    setState(() {
+      _mergeMode = !_mergeMode;
+      _mergeSelection.clear();
+      if (_mergeMode) _selectedKey = null;
+    });
+  }
+
+  void _handleTargetTap(_EditTarget t) {
+    if (_mergeMode) {
+      if (t.kind != _TargetKind.fieldAnswer) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Only fields can be merged — not labels, sections, or stray marks.')),
+        );
+        return;
+      }
+      setState(() {
+        if (_mergeSelection.contains(t.key)) {
+          _mergeSelection.remove(t.key);
+        } else {
+          _mergeSelection.add(t.key);
+        }
+      });
+      return;
+    }
+    setState(() => _selectedKey = t.key);
+  }
+
+  void _toggleFieldActive(_EditTarget t) {
+    final field = t.sourceField;
+    if (field == null) return;
+    _pushUndo();
+    setState(() => field.active = !field.active);
+  }
+
+  void _mergeSelectedFields() {
+    if (_mergeSelection.length < 2) return;
+    final targets = _allTargets.where((t) => _mergeSelection.contains(t.key)).toList();
+    if (targets.length < 2) return;
+
+    final pages = targets.map((t) => t.page).toSet();
+    if (pages.length > 1) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Can only merge fields that are on the same page.')),
+      );
+      return;
+    }
+
+    final fields = targets.map((t) => t.sourceField).whereType<_AiFieldDraft>().toList();
+    if (fields.length != targets.length) return; // safety — merge is restricted to fieldAnswer targets above
+
+    _pushUndo();
+
+    // Keep whichever field appears first in the field list — its label,
+    // type, and required flag survive the merge unchanged. Every selected
+    // field's box is unioned into one rectangle covering all of them, and
+    // the rest are removed.
+    fields.sort((a, b) => widget.fields.indexOf(a).compareTo(widget.fields.indexOf(b)));
+    final survivor = fields.first;
+    final others = fields.skip(1).toList();
+
+    double minX = double.infinity, minY = double.infinity;
+    double maxX = -double.infinity, maxY = -double.infinity;
+    for (final f in fields) {
+      final box = f.box;
+      if (box == null) continue;
+      final x = (box['x'] as num).toDouble();
+      final y = (box['y'] as num).toDouble();
+      final w = (box['w'] as num).toDouble();
+      final h = (box['h'] as num).toDouble();
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x + w > maxX) maxX = x + w;
+      if (y + h > maxY) maxY = y + h;
+    }
+
+    final mergedCount = fields.length;
+    final survivorLabel = survivor.labelCtrl.text.isEmpty ? survivor.id : survivor.labelCtrl.text;
+
+    setState(() {
+      if (minX.isFinite) {
+        survivor.box = {'x': minX, 'y': minY, 'w': maxX - minX, 'h': maxY - minY};
+      }
+      for (final f in others) {
+        widget.fields.remove(f);
+        f.dispose();
+      }
+      _mergeSelection.clear();
+      _selectedKey = '${survivor.id}::answer';
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Merged $mergedCount fields into "$survivorLabel"')),
+    );
+  }
+
   Future<void> _eraseFieldRegion({required int page, required Map<String, dynamic> box}) async {
     if (page - 1 < 0 || page - 1 >= widget.pagePaths.length) return;
     setState(() => _pendingErases++);
@@ -965,6 +1081,15 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
                         icon: const Icon(Icons.undo_rounded, size: 20),
                       ),
                     ),
+                    const SizedBox(width: 4),
+                    MouseRegion(
+                      cursor: SystemMouseCursors.click,
+                      child: IconButton(
+                        tooltip: _mergeMode ? 'Exit Merge Mode' : 'Merge Fields',
+                        onPressed: _erasingInProgress ? null : _toggleMergeMode,
+                        icon: Icon(Icons.call_merge_rounded, size: 20, color: _mergeMode ? Colors.green : null),
+                      ),
+                    ),
                     IconButton(
                       onPressed: _erasingInProgress ? null : () => Navigator.of(context, rootNavigator: true).pop(),
                       icon: const Icon(Icons.close, size: 20),
@@ -1050,9 +1175,13 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
                                       containerW: finalW,
                                       containerH: h,
                                       zoomScale: _currentZoom,
-                                      isSelected: t.key == _selectedKey,
+                                      isSelected: !_mergeMode && t.key == _selectedKey,
+                                      isMergeSelected: _mergeMode && _mergeSelection.contains(t.key),
+                                      mergeModeActive: _mergeMode,
                                       isCleared: t.sourceField?.clearedByUser ?? false,
-                                      onSelect: () => setState(() => _selectedKey = t.key),
+                                      isFieldActive: t.sourceField?.active ?? true,
+                                      onSelect: () => _handleTargetTap(t),
+                                      onToggleActiveTap: t.kind == _TargetKind.fieldAnswer ? () => _toggleFieldActive(t) : null,
                                       onDeleteTap: () => _deleteTarget(t),
                                       onClearTap: (t.kind == _TargetKind.fieldAnswer &&
                                               !(t.sourceField?.clearedByUser ?? false))
@@ -1090,6 +1219,46 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
                           ),
                         ),
                       ),
+                      if (_mergeMode)
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                          child: Container(
+                            padding: const EdgeInsets.all(10),
+                            decoration: BoxDecoration(
+                              color: Colors.green.withValues(alpha: 0.08),
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: Colors.green.withValues(alpha: 0.3)),
+                            ),
+                            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                              Text(
+                                _mergeSelection.isEmpty
+                                    ? 'Merge mode: tap 2+ fields to combine them into one.'
+                                    : '${_mergeSelection.length} field${_mergeSelection.length == 1 ? '' : 's'} selected',
+                                style: const TextStyle(fontSize: 11, color: Colors.green, height: 1.4),
+                              ),
+                              if (_mergeSelection.length >= 2) ...[
+                                const SizedBox(height: 8),
+                                MouseRegion(
+                                  cursor: SystemMouseCursors.click,
+                                  child: SizedBox(
+                                    width: double.infinity,
+                                    child: ElevatedButton(
+                                      onPressed: _mergeSelectedFields,
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: Colors.green,
+                                        foregroundColor: Colors.white,
+                                        elevation: 0,
+                                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                                        padding: const EdgeInsets.symmetric(vertical: 8),
+                                      ),
+                                      child: Text('Merge ${_mergeSelection.length} Fields'),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ]),
+                          ),
+                        ),
                       Expanded(
                         child: ListView(
                           padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
@@ -1170,26 +1339,42 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
   }
 
   Widget _targetListTile(_EditTarget t) {
-    final isSelected = t.key == _selectedKey;
+    final isMergeSelected = _mergeMode && _mergeSelection.contains(t.key);
+    final isSelected = !_mergeMode && t.key == _selectedKey;
     return MouseRegion(
       cursor: SystemMouseCursors.click,
       child: GestureDetector(
-        onTap: () => setState(() => _selectedKey = t.key),
+        onTap: () => _handleTargetTap(t),
         child: Container(
           margin: const EdgeInsets.only(bottom: 6),
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
           decoration: BoxDecoration(
-            color: isSelected ? AppTheme.brand.withValues(alpha: 0.1) : AppTheme.pageBg,
+            color: isMergeSelected
+                ? Colors.green.withValues(alpha: 0.12)
+                : (isSelected ? AppTheme.brand.withValues(alpha: 0.1) : AppTheme.pageBg),
             borderRadius: BorderRadius.circular(6),
-            border: Border.all(color: isSelected ? AppTheme.brand : AppTheme.borderColor, width: isSelected ? 1.5 : 1),
+            border: Border.all(
+              color: isMergeSelected ? Colors.green : (isSelected ? AppTheme.brand : AppTheme.borderColor),
+              width: (isSelected || isMergeSelected) ? 1.5 : 1,
+            ),
           ),
           child: Row(children: [
-            Container(
-              width: 8,
-              height: 8,
-              margin: const EdgeInsets.only(right: 8),
-              decoration: BoxDecoration(color: _baseColorForKind(t.kind), shape: BoxShape.circle),
-            ),
+            if (_mergeMode)
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: Icon(
+                  isMergeSelected ? Icons.check_box : Icons.check_box_outline_blank,
+                  size: 16,
+                  color: isMergeSelected ? Colors.green : AppTheme.textSecondary,
+                ),
+              )
+            else
+              Container(
+                width: 8,
+                height: 8,
+                margin: const EdgeInsets.only(right: 8),
+                decoration: BoxDecoration(color: _baseColorForKind(t.kind), shape: BoxShape.circle),
+              ),
             Expanded(
               child: Text(t.label,
                   style: TextStyle(
@@ -1222,6 +1407,22 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
                   child: const Padding(
                     padding: EdgeInsets.only(right: 8),
                     child: Icon(Icons.backspace_outlined, size: 14, color: Colors.orange),
+                  ),
+                ),
+              ),
+            ],
+            if (t.kind == _TargetKind.fieldAnswer) ...[
+              MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: GestureDetector(
+                  onTap: () => _toggleFieldActive(t),
+                  child: Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: Icon(
+                      (t.sourceField?.active ?? true) ? Icons.visibility_outlined : Icons.visibility_off_outlined,
+                      size: 14,
+                      color: (t.sourceField?.active ?? true) ? AppTheme.textSecondary : Colors.grey,
+                    ),
                   ),
                 ),
               ),
@@ -1295,10 +1496,14 @@ class _DraggableFieldBox extends StatefulWidget {
   final double containerH;
   final double zoomScale;
   final bool isSelected;
+  final bool isMergeSelected;
+  final bool mergeModeActive;
   final bool isCleared;
+  final bool isFieldActive;
   final VoidCallback onSelect;
   final VoidCallback onDeleteTap;
   final VoidCallback? onClearTap;
+  final VoidCallback? onToggleActiveTap;
   final VoidCallback onDragStart;
   final void Function(Map<String, dynamic> newBox) onCommit;
 
@@ -1309,10 +1514,14 @@ class _DraggableFieldBox extends StatefulWidget {
     required this.containerH,
     this.zoomScale = 1.0,
     required this.isSelected,
+    this.isMergeSelected = false,
+    this.mergeModeActive = false,
     this.isCleared = false,
+    this.isFieldActive = true,
     required this.onSelect,
     required this.onDeleteTap,
     this.onClearTap,
+    this.onToggleActiveTap,
     required this.onDragStart,
     required this.onCommit,
   });
@@ -1433,24 +1642,38 @@ class _DraggableFieldBoxState extends State<_DraggableFieldBox> {
         GestureDetector(
           behavior: HitTestBehavior.opaque,
           onTap: widget.onSelect,
-          onPanStart: (_) {
-            widget.onSelect();
-            _startDrag(null);
-          },
-          onPanUpdate: (details) => _updateDrag(details.delta),
-          onPanEnd: (_) => _endDrag(),
+          onPanStart: widget.mergeModeActive
+              ? null
+              : (_) {
+                  widget.onSelect();
+                  _startDrag(null);
+                },
+          onPanUpdate: widget.mergeModeActive ? null : (details) => _updateDrag(details.delta),
+          onPanEnd: widget.mergeModeActive ? null : (_) => _endDrag(),
           child: Container(
             decoration: BoxDecoration(
               border: Border.all(
-                color: widget.isCleared
-                    ? AppTheme.textSecondary
-                    : (widget.isSelected ? AppTheme.brand : _baseColorForKind(widget.target.kind)),
-                width: widget.isSelected ? 2 : 1.5,
+                color: !widget.isFieldActive
+                    ? Colors.grey
+                    : (widget.isMergeSelected
+                        ? Colors.green
+                        : (widget.isCleared
+                            ? AppTheme.textSecondary
+                            : (widget.isSelected ? AppTheme.brand : _baseColorForKind(widget.target.kind)))),
+                width: (widget.isSelected || widget.isMergeSelected) ? 2 : 1.5,
+                style: widget.isFieldActive ? BorderStyle.solid : BorderStyle.none,
               ),
-              color: widget.isCleared
-                  ? AppTheme.textSecondary.withValues(alpha: 0.12)
-                  : (widget.isSelected ? AppTheme.brand : _baseColorForKind(widget.target.kind)).withValues(alpha: 0.15),
+              color: !widget.isFieldActive
+                  ? Colors.grey.withValues(alpha: 0.15)
+                  : (widget.isMergeSelected
+                      ? Colors.green.withValues(alpha: 0.18)
+                      : (widget.isCleared
+                          ? AppTheme.textSecondary.withValues(alpha: 0.12)
+                          : (widget.isSelected ? AppTheme.brand : _baseColorForKind(widget.target.kind)).withValues(alpha: 0.15))),
             ),
+            child: !widget.isFieldActive
+                ? const Center(child: Icon(Icons.visibility_off_outlined, size: 14, color: Colors.grey))
+                : null,
           ),
         ),
         if (widget.isSelected) ...[
@@ -1498,6 +1721,35 @@ class _DraggableFieldBoxState extends State<_DraggableFieldBox> {
                 ),
               ),
             ),
+          if (widget.onToggleActiveTap != null)
+            Positioned(
+              left: -10,
+              bottom: -10,
+              child: MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: Tooltip(
+                  message: widget.isFieldActive
+                      ? 'Deactivate (excludes from saved template, reversible)'
+                      : 'Reactivate this field',
+                  child: GestureDetector(
+                    onTap: widget.onToggleActiveTap,
+                    child: Container(
+                      width: 20,
+                      height: 20,
+                      decoration: BoxDecoration(
+                        color: widget.isFieldActive ? Colors.grey : Colors.green,
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(
+                        widget.isFieldActive ? Icons.visibility_off_outlined : Icons.visibility_outlined,
+                        size: 12,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
         ],
       ]),
     );
@@ -1512,6 +1764,8 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
   Map<String, dynamic>? _extractedPreview;
   int? _draftId;
   int? _businessId;
+  bool _isBlankTemplate = false;
+  bool _shareWithOtherBusinesses = false;
 
   final _formNameCtrl = TextEditingController();
   final _pageNumberStartCtrl = TextEditingController(text: '1');
@@ -1600,6 +1854,7 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
             'business_id': businessId,
             'status': 'processing',
             'created_by_profile_id': profileId,
+            'is_blank_template': _isBlankTemplate,
           })
           .select('id')
           .single();
@@ -1679,7 +1934,7 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer ${session?.accessToken ?? ''}',
         },
-        body: jsonEncode({'draft_id': draftId, 'business_id': businessId}),
+        body: jsonEncode({'draft_id': draftId, 'business_id': businessId, 'is_blank_template': _isBlankTemplate}),
       );
 
       if (!mounted) return;
@@ -1754,11 +2009,15 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
                     'box': Map<String, dynamic>.from(m['box'] as Map),
                   };
                 }).toList(),
+          'editableByFieldAgent': f.editableByFieldAgent,
+          'active': f.active,
         }).toList();
   }
 
   Map<int, Uint8List> _reviewEditedPageBytes = {};
   final Map<int, Uint8List> _reviewOriginalPageBytesCache = {};
+  int _pendingReviewErases = 0;
+  bool get _reviewErasingInProgress => _pendingReviewErases > 0;
 
   void _pushReviewUndo() {
     _reviewUndoStack.add(_UndoSnapshot(_captureReviewSnapshot(), Map<int, Uint8List>.from(_reviewEditedPageBytes)));
@@ -1785,6 +2044,8 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
             page: m['page'] as int?,
             box: m['box'] as Map<String, dynamic>?,
             optionBoxes: m['optionBoxes'] as List<dynamic>?,
+            editableByFieldAgent: m['editableByFieldAgent'] as bool? ?? true,
+            active: m['active'] as bool? ?? true,
           )).toList();
       _reviewEditedPageBytes = Map<int, Uint8List>.from(snapshot.pageBytes);
     });
@@ -1825,6 +2086,7 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
 
   Future<void> _eraseFieldRegionFromReview({required int page, required Map<String, dynamic> box}) async {
     if (_pagePaths.isEmpty || page - 1 < 0 || page - 1 >= _pagePaths.length) return;
+    setState(() => _pendingReviewErases++);
     try {
       final path = _pagePaths[page - 1];
       final storage = _db.storage.from('job-form-ai-sources');
@@ -1836,16 +2098,20 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
       await storage.uploadBinary(path, erasedBytes,
           fileOptions: const FileOptions(contentType: 'image/png', upsert: true));
       if (!mounted) return;
-      setState(() => _reviewEditedPageBytes[page] = erasedBytes);
+      setState(() {
+        _reviewEditedPageBytes[page] = erasedBytes;
+        _pendingReviewErases--;
+      });
     } catch (e) {
       if (!mounted) return;
+      setState(() => _pendingReviewErases--);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Could not erase source image: $e')),
       );
     }
   }
 
-  void _removeReviewField(_AiFieldDraft field) {
+  Future<void> _removeReviewField(_AiFieldDraft field) async {
     _pushReviewUndo();
     final page = field.page;
     final box = field.box != null ? Map<String, dynamic>.from(field.box!) : null;
@@ -1853,7 +2119,7 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
       field.dispose();
       _reviewFields.remove(field);
     });
-    if (page != null && box != null) _eraseFieldRegionFromReview(page: page, box: box);
+    if (page != null && box != null) await _eraseFieldRegionFromReview(page: page, box: box);
   }
 
   Future<void> _saveAsTemplate() async {
@@ -1885,13 +2151,14 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
       // Fields tagged "signature" aren't a locked field type — they map to
       // the form-level requires_signature toggle instead, not a fields entry.
       final fieldsJson = _reviewFields
-          .where((f) => f.type != 'signature')
+          .where((f) => f.type != 'signature' && f.active)
           .map((f) {
         final map = <String, dynamic>{
           'id': f.id,
           'type': f.type,
           'label': f.labelCtrl.text.trim(),
           'required': f.required,
+          'editable_by_field_agent': f.editableByFieldAgent,
         };
         if (f.type == 'select') {
           map['options'] = f.optionsCtrl.text
@@ -1981,6 +2248,8 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
             'background_pages': permanentPagePaths,
             'page_number_start': pageNumberStart,
             'page_number_total_override': pageNumberTotalOverride,
+            'is_blank_template': _isBlankTemplate,
+            'available_to_other_businesses': _isBlankTemplate && _shareWithOtherBusinesses,
           })
           .select('id')
           .single();
@@ -2147,6 +2416,48 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
               style: TextStyle(fontSize: 13, color: AppTheme.textSecondary, height: 1.6),
             ),
             const SizedBox(height: 20),
+            MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: GestureDetector(
+                onTap: () => setState(() {
+                  _isBlankTemplate = !_isBlankTemplate;
+                  if (!_isBlankTemplate) _shareWithOtherBusinesses = false;
+                }),
+                child: Row(children: [
+                  Checkbox(
+                    value: _isBlankTemplate,
+                    onChanged: (v) => setState(() {
+                      _isBlankTemplate = v ?? false;
+                      if (!_isBlankTemplate) _shareWithOtherBusinesses = false;
+                    }),
+                    activeColor: AppTheme.brand,
+                  ),
+                  const Expanded(
+                    child: Text('This form is blank (a template — nobody has filled it out)',
+                        style: TextStyle(fontSize: 12, color: AppTheme.textPrimary)),
+                  ),
+                ]),
+              ),
+            ),
+            if (_isBlankTemplate)
+              MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: GestureDetector(
+                  onTap: () => setState(() => _shareWithOtherBusinesses = !_shareWithOtherBusinesses),
+                  child: Row(children: [
+                    Checkbox(
+                      value: _shareWithOtherBusinesses,
+                      onChanged: (v) => setState(() => _shareWithOtherBusinesses = v ?? false),
+                      activeColor: AppTheme.brand,
+                    ),
+                    const Expanded(
+                      child: Text('Make this template available to other businesses in the Forms Library',
+                          style: TextStyle(fontSize: 12, color: AppTheme.textPrimary)),
+                    ),
+                  ]),
+                ),
+              ),
+            const SizedBox(height: 12),
             MouseRegion(
               cursor: SystemMouseCursors.click,
               child: ElevatedButton.icon(
@@ -2430,7 +2741,7 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
               MouseRegion(
                 cursor: SystemMouseCursors.click,
                 child: ElevatedButton(
-                  onPressed: _savingTemplate ? null : _saveAsTemplate,
+                  onPressed: (_savingTemplate || _reviewErasingInProgress) ? null : _saveAsTemplate,
                   style: ElevatedButton.styleFrom(
                     backgroundColor: AppTheme.brand,
                     foregroundColor: Colors.white,
@@ -2438,7 +2749,7 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                     padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
                   ),
-                  child: _savingTemplate
+                  child: (_savingTemplate || _reviewErasingInProgress)
                       ? const SizedBox(width: 16, height: 16,
                           child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
                       : const Text('Save as Template'),
@@ -2556,6 +2867,20 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
             ),
           ),
           const Text('Required', style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+          const SizedBox(width: 16),
+          SizedBox(
+            height: 24,
+            width: 40,
+            child: Transform.scale(
+              scale: 0.7,
+              child: Switch(
+                value: !f.editableByFieldAgent,
+                onChanged: (v) => setState(() => f.editableByFieldAgent = !v),
+                activeColor: Colors.orange,
+              ),
+            ),
+          ),
+          const Text('Not Editable by Field Agent', style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
         ]),
         if (showPrefilled) ...[
           const SizedBox(height: 8),

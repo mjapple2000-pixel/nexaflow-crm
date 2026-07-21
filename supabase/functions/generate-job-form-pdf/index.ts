@@ -323,6 +323,196 @@ async function generatePreviewPdf(
   }
 }
 
+async function generateSavedFormPreviewPdf({ job_form_id }: { job_form_id: number }) {
+  try {
+    const { data: jobForm, error } = await supabase
+      .from("job_forms")
+      .select("id, business_id, background_pages, page_number_start, page_number_total_override, recreation_mode")
+      .eq("id", job_form_id)
+      .maybeSingle();
+
+    if (error || !jobForm) {
+      return new Response(JSON.stringify({ error: "Job form not found." }), {
+        status: 404,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    const backgroundPages: string[] = jobForm.background_pages ?? [];
+    if (jobForm.recreation_mode !== "visual_recreation" || backgroundPages.length === 0) {
+      return new Response(
+        JSON.stringify({ error: "Preview is only available for AI-recreated forms with saved background pages." }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    const pdfDoc = await PDFDocument.create();
+    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+
+    // Same principle as generatePreviewPdf for drafts, applied to a form
+    // that's already been saved: show the exact background pages that
+    // were locked in at Save as Template time, no stamping on top.
+    for (let i = 0; i < backgroundPages.length; i++) {
+      const { data: imgBlob, error: dlErr } = await supabase.storage.from(BUCKET).download(backgroundPages[i]);
+      if (dlErr || !imgBlob) {
+        console.error(`Failed to load background page ${i + 1}:`, dlErr?.message);
+        continue;
+      }
+      const imgBytes = new Uint8Array(await imgBlob.arrayBuffer());
+      const embeddedImg = await embedImageAuto(pdfDoc, imgBytes);
+      const { width: imgW, height: imgH } = embeddedImg.scale(1);
+      const page = pdfDoc.addPage([imgW, imgH]);
+      page.drawImage(embeddedImg, { x: 0, y: 0, width: imgW, height: imgH });
+    }
+
+    const startNum = jobForm.page_number_start ?? 1;
+    const allOutputPages = pdfDoc.getPages();
+    const totalNum = jobForm.page_number_total_override ?? allOutputPages.length;
+    allOutputPages.forEach((p: any, idx: number) => {
+      p.drawText(`Page ${startNum + idx} of ${totalNum}`, {
+        x: p.getWidth() - 100,
+        y: 14,
+        size: 8,
+        font,
+        color: rgb(0.42, 0.42, 0.46),
+      });
+    });
+
+    const pdfBytes = await pdfDoc.save();
+    const outPath = `${jobForm.business_id}/form-previews/${job_form_id}-${Date.now()}.pdf`;
+    await supabase.storage.from(BUCKET).upload(outPath, pdfBytes, { contentType: "application/pdf", upsert: true });
+    const { data: signed } = await supabase.storage.from(BUCKET).createSignedUrl(outPath, 3600);
+
+    return new Response(JSON.stringify({ success: true, url: signed?.signedUrl }), {
+      status: 200,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  } catch (err) {
+    return new Response(
+      JSON.stringify({ error: "Preview error: " + (err instanceof Error ? err.message : String(err)) }),
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
+  }
+}
+
+async function generateStandardFormPreviewPdf({ job_form_id }: { job_form_id: number }) {
+  try {
+    const { data: jobForm, error } = await supabase
+      .from("job_forms")
+      .select("id, business_id, name, fields, requires_signature")
+      .eq("id", job_form_id)
+      .maybeSingle();
+
+    if (error || !jobForm) {
+      return new Response(JSON.stringify({ error: "Job form not found." }), {
+        status: 404,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    const { data: businessRow } = await supabase
+      .from("businesses")
+      .select("pdf_settings, company_logo_url, business_phone, business_email, company_website")
+      .eq("id", jobForm.business_id)
+      .maybeSingle();
+
+    const pdfSettings = businessRow?.pdf_settings ?? {};
+    const BRAND = hexToRgb(pdfSettings.brand_color ?? "#6366F1");
+    const BRAND_TEXT = isLightColor(pdfSettings.brand_color ?? "#6366F1") ? rgb(0.1, 0.1, 0.1) : rgb(1, 1, 1);
+    const ACCENT = hexToRgb(pdfSettings.accent_color ?? "#10B981");
+
+    const fields: any[] = jobForm.fields ?? [];
+
+    const pdfDoc = await PDFDocument.create();
+    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+
+    const allPages: any[] = [];
+    let page = pdfDoc.addPage([PAGE_W, PAGE_H]);
+    allPages.push(page);
+    let y = PAGE_H - MARGIN;
+    const contentWidth = PAGE_W - MARGIN * 2;
+
+    function newPageIfNeeded(neededHeight: number) {
+      if (y - neededHeight < MARGIN + 24) {
+        page = pdfDoc.addPage([PAGE_W, PAGE_H]);
+        allPages.push(page);
+        y = PAGE_H - MARGIN;
+      }
+    }
+
+    const bandHeight = 58;
+    page.drawRectangle({ x: 0, y: PAGE_H - bandHeight, width: PAGE_W, height: bandHeight, color: BRAND });
+    page.drawText(jobForm.name ?? "Job Form", { x: MARGIN, y: PAGE_H - 36, size: 19, font: boldFont, color: BRAND_TEXT });
+    page.drawText("PREVIEW — this template has no answers yet", {
+      x: MARGIN, y: PAGE_H - 52, size: 9, font, color: rgb(0.93, 0.93, 1),
+    });
+    y = PAGE_H - bandHeight - 28;
+
+    // No submission or answers exist for a template preview — each field
+    // is drawn as its label plus an empty representation of its input
+    // type, so this shows the SHAPE of the form a field tech will see,
+    // not fabricated data.
+    for (const field of fields) {
+      const label = (field.label ?? "").toUpperCase();
+      const type = field.type ?? "text";
+
+      newPageIfNeeded(50);
+      page.drawRectangle({ x: MARGIN - 10, y: y - 4, width: 3, height: 14, color: ACCENT });
+      page.drawText(label, { x: MARGIN, y, size: 10, font: boldFont, color: ACCENT });
+      y -= 18;
+
+      if (type === "checkbox") {
+        page.drawRectangle({ x: MARGIN, y: y - 10, width: 12, height: 12, borderColor: BORDER_LIGHT, borderWidth: 1 });
+        y -= 24;
+      } else if (type === "select") {
+        const options: string[] = field.options ?? [];
+        page.drawText(options.join("  /  ") || "(no options)", { x: MARGIN, y, size: 10, font, color: TEXT_SECONDARY });
+        y -= 20;
+      } else if (type === "photo") {
+        page.drawText("[ Photo will be attached here ]", { x: MARGIN, y, size: 10, font, color: TEXT_SECONDARY });
+        y -= 20;
+      } else {
+        page.drawLine({ start: { x: MARGIN, y: y - 4 }, end: { x: PAGE_W - MARGIN, y: y - 4 }, thickness: 0.5, color: BORDER_LIGHT });
+        y -= 20;
+      }
+      y -= 6;
+      page.drawLine({ start: { x: MARGIN, y }, end: { x: PAGE_W - MARGIN, y }, thickness: 0.5, color: BORDER_LIGHT });
+      y -= 14;
+    }
+
+    if (jobForm.requires_signature) {
+      newPageIfNeeded(40);
+      page.drawRectangle({ x: MARGIN - 10, y: y - 4, width: 3, height: 14, color: ACCENT });
+      page.drawText("SIGNATURE", { x: MARGIN, y, size: 10, font: boldFont, color: ACCENT });
+      y -= 18;
+      page.drawText("[ Signature will be captured here ]", { x: MARGIN, y, size: 10, font, color: TEXT_SECONDARY });
+      y -= 20;
+    }
+
+    allPages.forEach((p: any, idx: number) => {
+      p.drawText(`Page ${idx + 1} of ${allPages.length}`, {
+        x: p.getWidth() - MARGIN - 70, y: MARGIN - 24, size: 8, font, color: TEXT_SECONDARY,
+      });
+    });
+
+    const pdfBytes = await pdfDoc.save();
+    const outPath = `${jobForm.business_id}/form-previews/${job_form_id}-${Date.now()}.pdf`;
+    await supabase.storage.from(BUCKET).upload(outPath, pdfBytes, { contentType: "application/pdf", upsert: true });
+    const { data: signed } = await supabase.storage.from(BUCKET).createSignedUrl(outPath, 3600);
+
+    return new Response(JSON.stringify({ success: true, url: signed?.signedUrl }), {
+      status: 200,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  } catch (err) {
+    return new Response(
+      JSON.stringify({ error: "Preview error: " + (err instanceof Error ? err.message : String(err)) }),
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
+  }
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -330,15 +520,30 @@ Deno.serve(async (req) => {
 
   try {
     const body = await req.json();
-    const { submission_id, draft_id, business_id, source_page_paths, page_number_start, page_number_total_override } = body;
+    const { submission_id, draft_id, business_id, source_page_paths, page_number_start, page_number_total_override, job_form_id } = body;
 
-    // Two modes share this one function: a real completed submission
-    // (submission_id, writes a permanent PDF) or a draft preview (draft_id,
+    // Three modes share this one function: a real completed submission
+    // (submission_id, writes a permanent PDF), a draft preview (draft_id,
     // renders the current source page images exactly as-is — those images
     // already reflect every edit made in Adjust Field Positions and
-    // Review & Confirm, since both screens write directly back to storage).
+    // Review & Confirm, since both screens write directly back to storage),
+    // or a preview of an already-saved form (job_form_id, renders the
+    // permanent background_pages exactly as they were at Save as Template).
     if (draft_id && !submission_id) {
       return await generatePreviewPdf({ business_id, draft_id, source_page_paths, page_number_start, page_number_total_override });
+    }
+
+    if (job_form_id && !submission_id && !draft_id) {
+      const { data: previewForm } = await supabase
+        .from("job_forms")
+        .select("recreation_mode, background_pages")
+        .eq("id", job_form_id)
+        .maybeSingle();
+      const hasBackgroundPages = Array.isArray(previewForm?.background_pages) && previewForm.background_pages.length > 0;
+      if (previewForm?.recreation_mode === "visual_recreation" && hasBackgroundPages) {
+        return await generateSavedFormPreviewPdf({ job_form_id });
+      }
+      return await generateStandardFormPreviewPdf({ job_form_id });
     }
 
     if (!submission_id) {
