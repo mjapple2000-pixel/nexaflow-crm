@@ -152,7 +152,26 @@ class _StrayMarkDraft {
   }
 }
 
-enum _TargetKind { fieldAnswer, fieldLabel, option, section, strayMark }
+// A draggable icon marking where a photo-attachment prompt sits on the
+// form template. Purely positional metadata at the template level — the
+// actual uploaded photos live in job_form_photo_attachments, keyed off
+// this marker's id. Label is user-created (not AI-detected), so unlike
+// stray marks it's editable in place, same as section titles.
+class _PhotoMarkerDraft {
+  final String id;
+  final TextEditingController labelCtrl;
+  int? page;
+  Map<String, dynamic>? box;
+
+  _PhotoMarkerDraft({required this.id, required String label, this.page, this.box})
+      : labelCtrl = TextEditingController(text: label);
+
+  void dispose() {
+    labelCtrl.dispose();
+  }
+}
+
+enum _TargetKind { fieldAnswer, fieldLabel, option, section, strayMark, photoMarker }
 
 // One draggable/resizable target on the canvas. Generalized to cover four
 // kinds of annotation — a field's answer box, a field's label box, one
@@ -170,6 +189,10 @@ class _EditTarget {
   final int? Function() _getPage;
   final void Function(int) _setPage;
   final VoidCallback onDelete;
+  // Only set for stray-mark targets — promotes the mark directly into a
+  // real, saveable field using its existing text/box/page, instead of
+  // requiring Add Field + manual retyping/repositioning.
+  final VoidCallback? onPromote;
 
   _EditTarget({
     required this.label,
@@ -181,6 +204,7 @@ class _EditTarget {
     required int? Function() getPage,
     required void Function(int) setPage,
     required this.onDelete,
+    this.onPromote,
   })  : _getBox = getBox,
         _setBox = setBox,
         _getPage = getPage,
@@ -269,7 +293,7 @@ class _EditTarget {
     );
   }
 
-  factory _EditTarget.strayMark(_StrayMarkDraft mark, VoidCallback onDelete) {
+  factory _EditTarget.strayMark(_StrayMarkDraft mark, VoidCallback onDelete, VoidCallback onPromote) {
     return _EditTarget(
       label: mark.text.isEmpty ? 'Stray mark' : mark.text,
       kind: _TargetKind.strayMark,
@@ -278,6 +302,20 @@ class _EditTarget {
       setBox: (b) => mark.box = b,
       getPage: () => mark.page,
       setPage: (p) => mark.page = p,
+      onDelete: onDelete,
+      onPromote: onPromote,
+    );
+  }
+
+  factory _EditTarget.photoMarker(_PhotoMarkerDraft marker, VoidCallback onDelete) {
+    return _EditTarget(
+      label: marker.labelCtrl.text.isEmpty ? 'Photo marker' : marker.labelCtrl.text,
+      kind: _TargetKind.photoMarker,
+      keyId: '${marker.id}::photo',
+      getBox: () => marker.box,
+      setBox: (b) => marker.box = b,
+      getPage: () => marker.page,
+      setPage: (p) => marker.page = p,
       onDelete: onDelete,
     );
   }
@@ -442,7 +480,8 @@ class _UndoSnapshot {
   final List<Map<String, dynamic>> fields;
   final Map<int, Uint8List> pageBytes;
   final List<Map<String, dynamic>>? strayMarks;
-  _UndoSnapshot(this.fields, this.pageBytes, [this.strayMarks]);
+  final List<Map<String, dynamic>>? photoMarkers;
+  _UndoSnapshot(this.fields, this.pageBytes, [this.strayMarks, this.photoMarkers]);
 }
 
 class _CoordinatePreviewDialog extends StatefulWidget {
@@ -451,6 +490,7 @@ class _CoordinatePreviewDialog extends StatefulWidget {
   final List<_AiFieldDraft> fields;
   final List<_SectionDraft> sections;
   final List<_StrayMarkDraft> strayMarks;
+  final List<_PhotoMarkerDraft> photoMarkers;
   final Map<String, dynamic>? rawExtracted;
   const _CoordinatePreviewDialog({
     required this.pageUrls,
@@ -458,6 +498,7 @@ class _CoordinatePreviewDialog extends StatefulWidget {
     required this.fields,
     required this.sections,
     required this.strayMarks,
+    required this.photoMarkers,
     required this.rawExtracted,
   });
 
@@ -547,6 +588,13 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
         if (result.usedFallback) fallbackIndex++;
       }
     }
+    for (final p in widget.photoMarkers) {
+      if (p.box != null) {
+        final result = _sanitizedBox(p.box, fallbackIndex);
+        p.box = result.box;
+        if (result.usedFallback) fallbackIndex++;
+      }
+    }
   }
 
   @override
@@ -630,6 +678,12 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
     for (final m in widget.strayMarks) {
       targets.add(_EditTarget.strayMark(m, () {
         widget.strayMarks.remove(m);
+      }, () => _promoteStrayMark(m)));
+    }
+    for (final p in widget.photoMarkers) {
+      targets.add(_EditTarget.photoMarker(p, () {
+        widget.photoMarkers.remove(p);
+        p.dispose();
       }));
     }
     return targets;
@@ -671,11 +725,21 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
         }).toList();
   }
 
+  List<Map<String, dynamic>> _capturePhotoMarkersSnapshot() {
+    return widget.photoMarkers.map((p) => {
+          'id': p.id,
+          'label': p.labelCtrl.text,
+          'page': p.page,
+          'box': p.box == null ? null : Map<String, dynamic>.from(p.box!),
+        }).toList();
+  }
+
   void _pushUndo() {
     _undoStack.add(_UndoSnapshot(
       _captureSnapshot(),
       Map<int, Uint8List>.from(_editedPageBytes),
       _captureStrayMarksSnapshot(),
+      _capturePhotoMarkersSnapshot(),
     ));
     if (_undoStack.length > _maxUndo) _undoStack.removeAt(0);
   }
@@ -714,6 +778,20 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
           text: m['text'] as String,
           page: m['page'] as int?,
           box: m['box'] as Map<String, dynamic>?,
+        ));
+      }
+    }
+    for (final p in widget.photoMarkers) {
+      p.dispose();
+    }
+    widget.photoMarkers.clear();
+    if (snapshot.photoMarkers != null) {
+      for (final p in snapshot.photoMarkers!) {
+        widget.photoMarkers.add(_PhotoMarkerDraft(
+          id: p['id'] as String,
+          label: p['label'] as String,
+          page: p['page'] as int?,
+          box: p['box'] as Map<String, dynamic>?,
         ));
       }
     }
@@ -827,6 +905,52 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
     widget.fields.add(newField);
     setState(() {
       _selectedKey = '${newField.id}::answer';
+    });
+  }
+
+  Future<void> _promptAddPhotoMarker() async {
+    final labelCtrl = TextEditingController();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.cardBg,
+        title: const Text('New Photo Marker', style: TextStyle(color: AppTheme.textPrimary, fontSize: 15)),
+        content: SizedBox(
+          width: 320,
+          child: TextField(
+            controller: labelCtrl,
+            autofocus: true,
+            style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+            decoration: InputDecoration(
+              hintText: 'e.g. Roof damage',
+              filled: true,
+              fillColor: AppTheme.pageBg,
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(false), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(true),
+            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.brand, foregroundColor: Colors.white, elevation: 0),
+            child: const Text('Add'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || labelCtrl.text.trim().isEmpty) return;
+
+    _pushUndo();
+    final newMarker = _PhotoMarkerDraft(
+      id: 'photo_marker_${DateTime.now().millisecondsSinceEpoch}',
+      label: labelCtrl.text.trim(),
+    );
+    newMarker.page = _currentPage;
+    newMarker.box = {'x': 10.0, 'y': 10.0, 'w': 20.0, 'h': 4.0};
+    widget.photoMarkers.add(newMarker);
+    setState(() {
+      _selectedKey = '${newMarker.id}::photo';
     });
   }
 
@@ -1008,6 +1132,29 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
       field.prefilledValueCtrl.clear();
     });
     if (page != null && box != null) await _eraseFieldRegion(page: page, box: box);
+  }
+
+  // Turns a stray mark (text/position Textract measured but GPT never
+  // attached to a real field) directly into a real field — same label,
+  // same box, same page — instead of requiring Add Field plus manually
+  // retyping the label and redrawing the box from scratch. The resulting
+  // field behaves exactly like any other: editable, movable, deletable.
+  void _promoteStrayMark(_StrayMarkDraft mark) {
+    _pushUndo();
+    final newField = _AiFieldDraft(
+      id: 'f_promoted_${DateTime.now().millisecondsSinceEpoch}',
+      label: mark.text.isEmpty ? 'Untitled field' : mark.text,
+      type: 'text',
+      required: false,
+      options: '',
+    );
+    newField.page = mark.page;
+    newField.box = mark.box != null ? Map<String, dynamic>.from(mark.box!) : {'x': 10.0, 'y': 10.0, 'w': 20.0, 'h': 4.0};
+    setState(() {
+      widget.fields.add(newField);
+      widget.strayMarks.remove(mark);
+      _selectedKey = '${newField.id}::answer';
+    });
   }
 
   @override
@@ -1203,21 +1350,37 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
                     child: Column(children: [
                       Padding(
                         padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-                        child: MouseRegion(
-                          cursor: SystemMouseCursors.click,
-                          child: SizedBox(
-                            width: double.infinity,
-                            child: OutlinedButton.icon(
-                              onPressed: _promptAddField,
-                              icon: const Icon(Icons.add, size: 15),
-                              label: const Text('Add Field'),
-                              style: OutlinedButton.styleFrom(
-                                foregroundColor: AppTheme.brand,
-                                side: BorderSide(color: AppTheme.brand.withValues(alpha: 0.4)),
+                        child: Row(children: [
+                          Expanded(
+                            child: MouseRegion(
+                              cursor: SystemMouseCursors.click,
+                              child: OutlinedButton.icon(
+                                onPressed: _promptAddField,
+                                icon: const Icon(Icons.add, size: 15),
+                                label: const Text('Add Field'),
+                                style: OutlinedButton.styleFrom(
+                                  foregroundColor: AppTheme.brand,
+                                  side: BorderSide(color: AppTheme.brand.withValues(alpha: 0.4)),
+                                ),
                               ),
                             ),
                           ),
-                        ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: MouseRegion(
+                              cursor: SystemMouseCursors.click,
+                              child: OutlinedButton.icon(
+                                onPressed: _promptAddPhotoMarker,
+                                icon: const Icon(Icons.add_photo_alternate_outlined, size: 15),
+                                label: const Text('Add Photo'),
+                                style: OutlinedButton.styleFrom(
+                                  foregroundColor: Colors.teal,
+                                  side: BorderSide(color: Colors.teal.withValues(alpha: 0.4)),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ]),
                       ),
                       if (_mergeMode)
                         Padding(
@@ -1427,6 +1590,21 @@ class _CoordinatePreviewDialogState extends State<_CoordinatePreviewDialog> {
                 ),
               ),
             ],
+            if (t.onPromote != null) ...[
+              MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: Tooltip(
+                  message: 'Add as a real field',
+                  child: GestureDetector(
+                    onTap: t.onPromote,
+                    child: const Padding(
+                      padding: EdgeInsets.only(right: 8),
+                      child: Icon(Icons.add_box_outlined, size: 15, color: Colors.green),
+                    ),
+                  ),
+                ),
+              ),
+            ],
             MouseRegion(
               cursor: SystemMouseCursors.click,
               child: GestureDetector(
@@ -1453,6 +1631,8 @@ Color _baseColorForKind(_TargetKind kind) {
       return Colors.blue;
     case _TargetKind.strayMark:
       return Colors.amber;
+    case _TargetKind.photoMarker:
+      return Colors.teal;
   }
 }
 
@@ -1766,6 +1946,12 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
   int? _businessId;
   bool _isBlankTemplate = false;
   bool _shareWithOtherBusinesses = false;
+  // Forms Library sharing — tags fetched once extraction succeeds (only
+  // matters if the upload checkboxes marked this as a shareable blank
+  // template), selection kept as ids since form_template_tags stores tag_id.
+  List<Map<String, dynamic>> _availableTags = [];
+  final Set<int> _selectedTagIds = {};
+  final _templateDescriptionCtrl = TextEditingController();
 
   final _formNameCtrl = TextEditingController();
   final _pageNumberStartCtrl = TextEditingController(text: '1');
@@ -1775,6 +1961,7 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
   List<_AiFieldDraft> _reviewFields = [];
   List<_SectionDraft> _sections = [];
   List<_StrayMarkDraft> _strayMarks = [];
+  List<_PhotoMarkerDraft> _photoMarkers = [];
   bool _savingTemplate = false;
   bool _previewLoading = false;
   String? _saveError;
@@ -1791,11 +1978,15 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
     _formNameCtrl.dispose();
     _pageNumberStartCtrl.dispose();
     _pageNumberTotalCtrl.dispose();
+    _templateDescriptionCtrl.dispose();
     for (final f in _reviewFields) {
       f.dispose();
     }
     for (final s in _sections) {
       s.dispose();
+    }
+    for (final p in _photoMarkers) {
+      p.dispose();
     }
     super.dispose();
   }
@@ -1975,6 +2166,7 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
         _requiresSignature = fieldDrafts.any((f) => f.type == 'signature');
         _stage = _Stage.done;
       });
+      _loadFormTagsIfSharing();
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -2068,6 +2260,21 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
           SnackBar(content: Text('Could not sync undo to storage: $e')),
         );
       }
+    }
+  }
+
+  Future<void> _loadFormTagsIfSharing() async {
+    if (!_isBlankTemplate || !_shareWithOtherBusinesses) return;
+    try {
+      final tags = await _db
+          .from('form_tags')
+          .select('id, name')
+          .filter('deleted_at', 'is', null)
+          .order('name');
+      if (!mounted) return;
+      setState(() => _availableTags = List<Map<String, dynamic>>.from(tags));
+    } catch (e) {
+      debugPrint('Could not load form tags: $e');
     }
   }
 
@@ -2190,6 +2397,15 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
               })
           .toList();
 
+      final photoMarkersJson = _photoMarkers
+          .map((p) => {
+                'id': p.id,
+                'label': p.labelCtrl.text.trim(),
+                'page': p.page,
+                'box': p.box,
+              })
+          .toList();
+
       final hasCoordinateData = _reviewFields.any((f) => f.box != null) || _sections.isNotEmpty;
 
       Map<String, dynamic>? signatureBoxJson;
@@ -2198,6 +2414,8 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
         signatureBoxJson = {
           'page': sigFields.first.page,
           'box': sigFields.first.box,
+          'required': sigFields.first.required,
+          'editable_by_field_agent': sigFields.first.editableByFieldAgent,
         };
       }
 
@@ -2245,6 +2463,7 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
             'recreation_mode': hasCoordinateData ? 'visual_recreation' : 'standard',
             'sections': sectionsJson,
             'signature_box': signatureBoxJson,
+            'photo_attachment_markers': photoMarkersJson,
             'background_pages': permanentPagePaths,
             'page_number_start': pageNumberStart,
             'page_number_total_override': pageNumberTotalOverride,
@@ -2260,6 +2479,41 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
         'confirmed_job_form_id': newFormId,
         'updated_at': DateTime.now().toUtc().toIso8601String(),
       }).eq('id', _draftId!);
+
+      // Publishing into the Forms Library is best-effort: the job form
+      // itself is already fully saved above, so a sharing failure here
+      // must not block leaving this screen — it should surface as a
+      // warning, not lose the person's work.
+      if (_isBlankTemplate && _shareWithOtherBusinesses) {
+        try {
+          final session = _db.auth.currentSession;
+          final shareRes = await http.post(
+            Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/job-form-editor'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer ${session?.accessToken ?? ''}',
+            },
+            body: jsonEncode({
+              'action': 'share_template',
+              'job_form_id': newFormId,
+              'title': _formNameCtrl.text.trim(),
+              'description': _templateDescriptionCtrl.text.trim().isEmpty ? null : _templateDescriptionCtrl.text.trim(),
+              'tag_ids': _selectedTagIds.toList(),
+            }),
+          );
+          if (shareRes.statusCode != 200 && mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Form saved, but sharing to the library failed: ${shareRes.body}')),
+            );
+          }
+        } catch (e) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Form saved, but sharing to the library failed: $e')),
+            );
+          }
+        }
+      }
 
       if (!mounted) return;
       context.go('/jobs/board?tab=3');
@@ -2345,6 +2599,7 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
         fields: _reviewFields,
         sections: _sections,
         strayMarks: _strayMarks,
+        photoMarkers: _photoMarkers,
         rawExtracted: _extractedPreview,
       ),
     );
@@ -2587,6 +2842,24 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
                   icon: const Icon(Icons.undo_rounded, size: 20),
                 ),
               ),
+              const Spacer(),
+              MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: ElevatedButton(
+                  onPressed: (_savingTemplate || _reviewErasingInProgress) ? null : _saveAsTemplate,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppTheme.brand,
+                    foregroundColor: Colors.white,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  ),
+                  child: (_savingTemplate || _reviewErasingInProgress)
+                      ? const SizedBox(width: 16, height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                      : const Text('Save as Template'),
+                ),
+              ),
             ]),
             const SizedBox(height: 20),
             Container(
@@ -2697,6 +2970,63 @@ class _AiFormRecreationScreenState extends State<AiFormRecreationScreen> {
                       ),
                     ),
                   ]),
+                ],
+                if (_isBlankTemplate && _shareWithOtherBusinesses) ...[
+                  const SizedBox(height: 14),
+                  const Text('Forms Library Listing',
+                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+                  const Text('How this template appears to other businesses browsing the library',
+                      style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: _templateDescriptionCtrl,
+                    maxLines: 2,
+                    style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                    decoration: InputDecoration(
+                      hintText: 'Optional description shown in the library',
+                      filled: true,
+                      fillColor: AppTheme.pageBg,
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(6)),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  if (_availableTags.isEmpty)
+                    const Text('Loading tags...', style: TextStyle(fontSize: 11, color: AppTheme.textSecondary))
+                  else
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: _availableTags.map((tag) {
+                        final tagId = (tag['id'] as num).toInt();
+                        final tagName = tag['name'] as String? ?? '';
+                        final isSelected = _selectedTagIds.contains(tagId);
+                        return MouseRegion(
+                          cursor: SystemMouseCursors.click,
+                          child: GestureDetector(
+                            onTap: () => setState(() {
+                              if (isSelected) {
+                                _selectedTagIds.remove(tagId);
+                              } else {
+                                _selectedTagIds.add(tagId);
+                              }
+                            }),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                              decoration: BoxDecoration(
+                                color: isSelected ? AppTheme.brand : AppTheme.pageBg,
+                                borderRadius: BorderRadius.circular(14),
+                                border: Border.all(color: isSelected ? AppTheme.brand : AppTheme.borderColor),
+                              ),
+                              child: Text(tagName,
+                                  style: TextStyle(
+                                      fontSize: 11,
+                                      color: isSelected ? Colors.white : AppTheme.textSecondary)),
+                            ),
+                          ),
+                        );
+                      }).toList(),
+                    ),
                 ],
               ]),
             ),

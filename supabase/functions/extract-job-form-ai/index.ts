@@ -773,7 +773,14 @@ Deno.serve(async (req: Request) => {
         id: item.id,
         page: item.page,
         box: item.box,
-        text: item.kind === 'form_value' ? item.value_text : item.text,
+        // form_value stray marks show whatever was actually written in the
+        // blank (value_text) when there is one — that's the meaningful
+        // unclaimed content in filled-form mode. But on a blank template
+        // there's nothing written, so value_text is always empty and the
+        // mark rendered with no visible text at all, making a dropped
+        // label like "Company Address" indistinguishable from noise. Fall
+        // back to the label text (item.text) whenever value_text is empty.
+        text: item.kind === 'form_value' ? ((item.value_text as string)?.trim() || item.text) : item.text,
         text_type: item.text_type ?? null, // temporary diagnostic field — see if HANDWRITING/PRINTED classification is the real cause of missed stray marks
       }));
     extracted.stray_marks = strayMarks;

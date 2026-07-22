@@ -6,6 +6,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../theme/app_theme.dart';
 import '../utils/business_utils.dart';
+import '../navigation/app_router.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 
@@ -22,10 +23,259 @@ class _JobFormsScreenState extends State<JobFormsScreen> {
   List<Map<String, dynamic>> _forms = [];
   int? _previewingFormId;
 
+  // Forms Library — shared templates browsing, toggled in place of the
+  // normal job forms list rather than a separate route.
+  bool _showLibrary = false;
+  bool _libraryLoading = false;
+  List<Map<String, dynamic>> _libraryTemplates = [];
+  final TextEditingController _librarySearchCtrl = TextEditingController();
+  int? _libraryBusinessId;
+  String _libraryPlan = 'starter';
+  bool _libraryIsBeta = false;
+  int? _usingTemplateId;
+
   @override
   void initState() {
     super.initState();
     _load();
+  }
+
+  @override
+  void dispose() {
+    _librarySearchCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _openLibrary() async {
+    setState(() => _showLibrary = true);
+    if (_libraryBusinessId == null) {
+      final businessId = await getActiveBusinessId();
+      if (businessId != null && mounted) {
+        final biz = await _db.from('businesses').select('plan, is_beta').eq('id', businessId).maybeSingle();
+        if (!mounted) return;
+        setState(() {
+          _libraryBusinessId = businessId;
+          _libraryPlan = biz?['plan'] as String? ?? 'starter';
+          _libraryIsBeta = biz?['is_beta'] as bool? ?? false;
+        });
+      }
+    }
+    await _loadLibrary();
+  }
+
+  bool get _libraryAccessAllowed => _libraryIsBeta || _libraryPlan == 'growth' || _libraryPlan == 'pro';
+
+  Future<void> _loadLibrary() async {
+    setState(() => _libraryLoading = true);
+    try {
+      final data = await _db
+          .from('form_templates')
+          .select('id, business_id, title, description, min_tier, source_job_form_id, form_template_tags(tag_id, form_tags(name))')
+          .filter('deleted_at', 'is', null)
+          .order('title');
+      if (!mounted) return;
+      setState(() {
+        _libraryTemplates = List<Map<String, dynamic>>.from(data);
+        _libraryLoading = false;
+      });
+    } catch (e) {
+      debugPrint('Library load error: $e');
+      if (mounted) setState(() => _libraryLoading = false);
+    }
+  }
+
+  List<Map<String, dynamic>> get _filteredLibraryTemplates {
+    final query = _librarySearchCtrl.text.trim().toLowerCase();
+    if (query.isEmpty) return _libraryTemplates;
+    return _libraryTemplates.where((t) {
+      final title = (t['title'] as String? ?? '').toLowerCase();
+      final desc = (t['description'] as String? ?? '').toLowerCase();
+      return title.contains(query) || desc.contains(query);
+    }).toList();
+  }
+
+  Future<void> _useTemplate(Map<String, dynamic> template) async {
+    if (!_libraryAccessAllowed) {
+      showDialog(
+        context: context,
+        builder: (ctx) => _AiRecreationLockedDialog(currentPlan: _libraryPlan),
+      );
+      return;
+    }
+    final templateId = (template['id'] as num).toInt();
+    setState(() => _usingTemplateId = templateId);
+    try {
+      final businessId = _libraryBusinessId ?? await getActiveBusinessId();
+      final session = _db.auth.currentSession;
+      final res = await http.post(
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/job-form-editor'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ${session?.accessToken ?? ''}',
+        },
+        body: jsonEncode({
+          'action': 'use_template',
+          'form_template_id': templateId,
+          'business_id': businessId,
+        }),
+      );
+      if (!mounted) return;
+      if (res.statusCode != 200) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not add this template: ${res.body}')),
+        );
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('"${template['title']}" added to your Job Forms.')),
+      );
+      setState(() => _showLibrary = false);
+      await _load();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _usingTemplateId = null);
+    }
+  }
+
+  Future<void> _editTemplateTags(Map<String, dynamic> template) async {
+    var allTags = List<Map<String, dynamic>>.from(
+        await _db.from('form_tags').select('id, name').filter('deleted_at', 'is', null).order('name'));
+    final currentTagIds = <int>{
+      for (final t in List<dynamic>.from(template['form_template_tags'] as List? ?? []))
+        if ((t as Map)['tag_id'] != null) (t['tag_id'] as num).toInt(),
+    };
+    final selected = Set<int>.from(currentTagIds);
+    final newTagCtrl = TextEditingController();
+    if (!mounted) return;
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlgState) => AlertDialog(
+          backgroundColor: AppTheme.cardBg,
+          title: const Text('Edit Tags', style: TextStyle(color: AppTheme.textPrimary, fontSize: 15)),
+          content: SizedBox(
+            width: 340,
+            child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                children: allTags.map((tag) {
+                  final tagId = (tag['id'] as num).toInt();
+                  final isSelected = selected.contains(tagId);
+                  return MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    child: GestureDetector(
+                      onTap: () => setDlgState(() {
+                        if (isSelected) {
+                          selected.remove(tagId);
+                        } else {
+                          selected.add(tagId);
+                        }
+                      }),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: isSelected ? AppTheme.brand : AppTheme.pageBg,
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(color: isSelected ? AppTheme.brand : AppTheme.borderColor),
+                        ),
+                        child: Text(tag['name'] as String? ?? '',
+                            style: TextStyle(fontSize: 11, color: isSelected ? Colors.white : AppTheme.textSecondary)),
+                      ),
+                    ),
+                  );
+                }).toList(),
+              ),
+              const SizedBox(height: 12),
+              Row(children: [
+                Expanded(
+                  child: TextField(
+                    controller: newTagCtrl,
+                    style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary),
+                    decoration: InputDecoration(
+                      hintText: 'New tag name',
+                      isDense: true,
+                      filled: true,
+                      fillColor: AppTheme.pageBg,
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(6)),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                MouseRegion(
+                  cursor: SystemMouseCursors.click,
+                  child: TextButton(
+                    onPressed: () async {
+                      final name = newTagCtrl.text.trim();
+                      if (name.isEmpty) return;
+                      try {
+                        final session = _db.auth.currentSession;
+                        final res = await http.post(
+                          Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/job-form-editor'),
+                          headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': 'Bearer ${session?.accessToken ?? ''}',
+                          },
+                          body: jsonEncode({'action': 'create_tag', 'name': name}),
+                        );
+                        if (res.statusCode != 200) return;
+                        final body = jsonDecode(res.body) as Map<String, dynamic>;
+                        final newTag = Map<String, dynamic>.from(body['tag'] as Map);
+                        final newTagId = (newTag['id'] as num).toInt();
+                        if (!allTags.any((t) => (t['id'] as num).toInt() == newTagId)) {
+                          allTags = [...allTags, newTag]..sort((a, b) => (a['name'] as String).compareTo(b['name'] as String));
+                        }
+                        newTagCtrl.clear();
+                        setDlgState(() => selected.add(newTagId));
+                      } catch (_) {}
+                    },
+                    child: const Text('Add', style: TextStyle(fontSize: 12)),
+                  ),
+                ),
+              ]),
+            ]),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(false), child: const Text('Cancel')),
+            ElevatedButton(
+              onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(true),
+              style: ElevatedButton.styleFrom(backgroundColor: AppTheme.brand, foregroundColor: Colors.white, elevation: 0),
+              child: const Text('Save'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (saved != true) return;
+    try {
+      final session = _db.auth.currentSession;
+      final res = await http.post(
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/job-form-editor'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ${session?.accessToken ?? ''}',
+        },
+        body: jsonEncode({
+          'action': 'update_template_tags',
+          'form_template_id': template['id'],
+          'tag_ids': selected.toList(),
+        }),
+      );
+      if (!mounted) return;
+      if (res.statusCode != 200) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not save tags: ${res.body}')));
+        return;
+      }
+      await _loadLibrary();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
+    }
   }
 
   Future<void> _load() async {
@@ -183,6 +433,10 @@ class _JobFormsScreenState extends State<JobFormsScreen> {
       return const Center(child: CircularProgressIndicator(color: AppTheme.brand));
     }
 
+    if (_showLibrary) {
+      return _buildLibraryScreen();
+    }
+
     if (_forms.isEmpty) {
       return Center(
         child: Column(mainAxisSize: MainAxisSize.min, children: [
@@ -241,6 +495,21 @@ class _JobFormsScreenState extends State<JobFormsScreen> {
                 ),
               ),
             ),
+            const SizedBox(width: 10),
+            MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: OutlinedButton.icon(
+                onPressed: _openLibrary,
+                icon: const Icon(Icons.library_books_outlined, size: 16),
+                label: const Text('Forms Library'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppTheme.textSecondary,
+                  side: const BorderSide(color: AppTheme.borderColor),
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+              ),
+            ),
           ]),
         ]),
       );
@@ -280,6 +549,21 @@ class _JobFormsScreenState extends State<JobFormsScreen> {
                   elevation: 0,
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                   padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: OutlinedButton.icon(
+                onPressed: _openLibrary,
+                icon: const Icon(Icons.library_books_outlined, size: 16),
+                label: const Text('Forms Library'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppTheme.textSecondary,
+                  side: const BorderSide(color: AppTheme.borderColor),
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                 ),
               ),
             ),
@@ -397,6 +681,218 @@ class _JobFormsScreenState extends State<JobFormsScreen> {
               );
             },
           ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildLibraryScreen() {
+    final templates = _filteredLibraryTemplates;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+          child: Row(children: [
+            MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: OutlinedButton.icon(
+                onPressed: () => setState(() => _showLibrary = false),
+                icon: const Icon(Icons.arrow_back, size: 16),
+                label: const Text('Forms'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppTheme.textSecondary,
+                  side: const BorderSide(color: AppTheme.borderColor),
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+              ),
+            ),
+            const SizedBox(width: 16),
+            SizedBox(
+              width: 280,
+              child: TextField(
+                controller: _librarySearchCtrl,
+                onChanged: (_) => setState(() {}),
+                style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                decoration: InputDecoration(
+                  hintText: 'Search shared forms...',
+                  prefixIcon: const Icon(Icons.search, size: 18),
+                  isDense: true,
+                  filled: true,
+                  fillColor: AppTheme.cardBg,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
+                  enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
+                  focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide(color: AppTheme.brand, width: 1.5)),
+                ),
+              ),
+            ),
+            const Spacer(),
+            MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: OutlinedButton.icon(
+                onPressed: _openAiRecreation,
+                icon: const Icon(Icons.auto_awesome, size: 16),
+                label: const Text('Recreate with AI'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppTheme.brand,
+                  side: BorderSide(color: AppTheme.brand.withValues(alpha: 0.4)),
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: ElevatedButton.icon(
+                onPressed: () => _openBuilder(),
+                icon: const Icon(Icons.add, size: 16),
+                label: const Text('New Job Form'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppTheme.brand,
+                  foregroundColor: Colors.white,
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+                ),
+              ),
+            ),
+          ]),
+        ),
+        if (!_libraryAccessAllowed)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+            child: Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: AppTheme.pageBg,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: AppTheme.borderColor),
+              ),
+              child: Row(children: [
+                const Icon(Icons.lock_outline, size: 16, color: AppTheme.textSecondary),
+                const SizedBox(width: 10),
+                const Expanded(
+                  child: Text('You can browse the library, but using a template requires Growth or Pro.',
+                      style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+                ),
+              ]),
+            ),
+          ),
+        Expanded(
+          child: _libraryLoading
+              ? const Center(child: CircularProgressIndicator(color: AppTheme.brand))
+              : templates.isEmpty
+                  ? const Center(
+                      child: Text('No shared templates yet.', style: TextStyle(fontSize: 13, color: AppTheme.textSecondary)),
+                    )
+                  : ListView.builder(
+                      padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+                      itemCount: templates.length,
+                      itemBuilder: (_, i) {
+                        final t = templates[i];
+                        final title = t['title'] as String? ?? '';
+                        final description = t['description'] as String?;
+                        final isMine = _libraryBusinessId != null && t['business_id'] == _libraryBusinessId;
+                        final tagNames = List<dynamic>.from(t['form_template_tags'] as List? ?? [])
+                            .map((e) => (e as Map)['form_tags'] is Map ? (e['form_tags'] as Map)['name'] as String? : null)
+                            .whereType<String>()
+                            .toList();
+                        final templateId = (t['id'] as num).toInt();
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 10),
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: AppTheme.cardBg,
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: AppTheme.borderColor),
+                          ),
+                          child: Row(children: [
+                            Container(
+                              width: 40,
+                              height: 40,
+                              decoration: BoxDecoration(
+                                color: AppTheme.brand.withValues(alpha: 0.1),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              alignment: Alignment.center,
+                              child: const Icon(Icons.description_outlined, size: 18, color: AppTheme.brand),
+                            ),
+                            const SizedBox(width: 14),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(title, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+                                  if (description != null && description.isNotEmpty) ...[
+                                    const SizedBox(height: 2),
+                                    Text(description, style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                                  ],
+                                  if (tagNames.isNotEmpty) ...[
+                                    const SizedBox(height: 6),
+                                    Wrap(
+                                      spacing: 6,
+                                      runSpacing: 4,
+                                      children: tagNames.map((name) => Container(
+                                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                            decoration: BoxDecoration(
+                                              color: AppTheme.pageBg,
+                                              borderRadius: BorderRadius.circular(10),
+                                              border: Border.all(color: AppTheme.borderColor),
+                                            ),
+                                            child: Text(name, style: const TextStyle(fontSize: 10, color: AppTheme.textSecondary)),
+                                          )).toList(),
+                                    ),
+                                  ],
+                                ],
+                              ),
+                            ),
+                            if (isMine || AppRouter.cachedIsSuperuser == true) ...[
+                              MouseRegion(
+                                cursor: SystemMouseCursors.click,
+                                child: IconButton(
+                                  tooltip: 'Field Settings (Required / Editable)',
+                                  icon: const Icon(Icons.tune_rounded, size: 18, color: AppTheme.textSecondary),
+                                  onPressed: () => showDialog(
+                                    context: context,
+                                    builder: (ctx) => _FieldSettingsDialog(
+                                      jobFormId: (t['source_job_form_id'] as num).toInt(),
+                                      onSaved: _loadLibrary,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              MouseRegion(
+                                cursor: SystemMouseCursors.click,
+                                child: IconButton(
+                                  tooltip: 'Edit Tags',
+                                  icon: const Icon(Icons.sell_outlined, size: 18, color: AppTheme.textSecondary),
+                                  onPressed: () => _editTemplateTags(t),
+                                ),
+                              ),
+                            ],
+                            const SizedBox(width: 8),
+                            MouseRegion(
+                              cursor: SystemMouseCursors.click,
+                              child: ElevatedButton(
+                                onPressed: _usingTemplateId == templateId ? null : () => _useTemplate(t),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: AppTheme.brand,
+                                  foregroundColor: Colors.white,
+                                  elevation: 0,
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                ),
+                                child: _usingTemplateId == templateId
+                                    ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                                    : const Text('Use This Template', style: TextStyle(fontSize: 12)),
+                              ),
+                            ),
+                          ]),
+                        );
+                      },
+                    ),
         ),
       ],
     );
@@ -1121,6 +1617,8 @@ class _FieldSettingsDialogState extends State<_FieldSettingsDialog> {
   bool _mergeMode = false;
   final Set<String> _mergeSelection = {};
   final TransformationController _transformController = TransformationController();
+  List<Map<String, dynamic>> _photoMarkers = [];
+  String? _selectedMarkerId;
 
   double get _currentZoom => _transformController.value.getMaxScaleOnAxis();
 
@@ -1168,10 +1666,32 @@ class _FieldSettingsDialogState extends State<_FieldSettingsDialog> {
       final body = jsonDecode(res.body) as Map<String, dynamic>;
       final loadedFields = List<Map<String, dynamic>>.from(
           (body['fields'] as List? ?? []).map((f) => Map<String, dynamic>.from(f as Map)));
+      // Signature fields are never part of the fields array (they map to
+      // the form-level signature_box/requires_signature columns instead —
+      // see _saveAsTemplate in ai_form_recreation_screen.dart), so without
+      // this they'd have no Required/Editable controls anywhere. Represent
+      // it here as one more entry in the same list, tagged so save can
+      // route it back to signature_box instead of the fields column.
+      final sigBox = body['signature_box'] as Map<String, dynamic>?;
+      final requiresSignature = body['requires_signature'] as bool? ?? false;
+      if (requiresSignature && sigBox != null) {
+        loadedFields.add({
+          'id': 'signature_box',
+          'type': 'signature',
+          'label': 'Signature',
+          'required': sigBox['required'] as bool? ?? true,
+          'editable_by_field_agent': sigBox['editable_by_field_agent'] as bool? ?? true,
+          'page': sigBox['page'],
+          'box': sigBox['box'],
+          '_isSignatureBox': true,
+        });
+      }
       setState(() {
         _fields = loadedFields;
         _originalFieldCount = loadedFields.length;
         _pageUrls = List<String>.from(body['page_urls'] as List? ?? []);
+        _photoMarkers = List<Map<String, dynamic>>.from(
+            (body['photo_attachment_markers'] as List? ?? []).map((m) => Map<String, dynamic>.from(m as Map)));
         _loading = false;
       });
     } catch (e) {
@@ -1203,7 +1723,10 @@ class _FieldSettingsDialogState extends State<_FieldSettingsDialog> {
     setState(() {
       _mergeMode = !_mergeMode;
       _mergeSelection.clear();
-      if (_mergeMode) _selectedFieldId = null;
+      if (_mergeMode) {
+        _selectedFieldId = null;
+        _selectedMarkerId = null;
+      }
     });
   }
 
@@ -1211,6 +1734,12 @@ class _FieldSettingsDialogState extends State<_FieldSettingsDialog> {
     final id = f['id'] as String?;
     if (id == null) return;
     if (_mergeMode) {
+      if (f['_isSignatureBox'] == true) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('The signature field can\'t be merged with other fields.')),
+        );
+        return;
+      }
       setState(() {
         if (_mergeSelection.contains(id)) {
           _mergeSelection.remove(id);
@@ -1220,7 +1749,79 @@ class _FieldSettingsDialogState extends State<_FieldSettingsDialog> {
       });
       return;
     }
-    setState(() => _selectedFieldId = id);
+    setState(() {
+      _selectedFieldId = id;
+      _selectedMarkerId = null;
+    });
+  }
+
+  // Photo markers live in a separate list from fields (they map to
+  // job_forms.photo_attachment_markers, not the fields array), so they get
+  // their own selection state and their own tap/drag/delete handlers —
+  // selecting one always clears field selection and vice versa, since the
+  // sidebar can only show one thing's settings at a time.
+  void _handleMarkerTap(Map<String, dynamic> marker) {
+    if (_mergeMode) return;
+    setState(() {
+      _selectedFieldId = null;
+      _selectedMarkerId = marker['id'] as String?;
+    });
+  }
+
+  void _setMarkerBox(Map<String, dynamic> marker, Map<String, dynamic> newBox) {
+    setState(() => marker['box'] = newBox);
+  }
+
+  void _deletePhotoMarker(Map<String, dynamic> marker) {
+    setState(() {
+      _photoMarkers.remove(marker);
+      if (_selectedMarkerId == marker['id']) _selectedMarkerId = null;
+    });
+  }
+
+  Future<void> _addPhotoMarker() async {
+    final labelCtrl = TextEditingController();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.cardBg,
+        title: const Text('New Photo Marker', style: TextStyle(color: AppTheme.textPrimary, fontSize: 15)),
+        content: SizedBox(
+          width: 320,
+          child: TextField(
+            controller: labelCtrl,
+            autofocus: true,
+            style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+            decoration: InputDecoration(
+              hintText: 'e.g. Roof damage',
+              filled: true,
+              fillColor: AppTheme.pageBg,
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(false), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(true),
+            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.brand, foregroundColor: Colors.white, elevation: 0),
+            child: const Text('Add'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || labelCtrl.text.trim().isEmpty) return;
+    setState(() {
+      final newMarker = {
+        'id': 'photo_marker_${DateTime.now().millisecondsSinceEpoch}',
+        'label': labelCtrl.text.trim(),
+        'page': _currentPage,
+        'box': {'x': 10.0, 'y': 10.0, 'w': 20.0, 'h': 4.0},
+      };
+      _photoMarkers.add(newMarker);
+      _selectedFieldId = null;
+      _selectedMarkerId = newMarker['id'] as String;
+    });
   }
 
   void _mergeSelectedFields() {
@@ -1348,6 +1949,43 @@ class _FieldSettingsDialogState extends State<_FieldSettingsDialog> {
     });
   }
 
+  Widget _buildMarkerPanel(Map<String, dynamic> marker) {
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      const Text('Photo Marker', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: Colors.teal)),
+      const SizedBox(height: 10),
+      TextFormField(
+        key: ValueKey('marker_label_${marker['id']}'),
+        initialValue: marker['label'] as String? ?? '',
+        style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+        decoration: InputDecoration(
+          hintText: 'Marker label',
+          isDense: true,
+          filled: true,
+          fillColor: AppTheme.pageBg,
+          contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(6)),
+        ),
+        onChanged: (v) => marker['label'] = v,
+      ),
+      const SizedBox(height: 16),
+      MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: SizedBox(
+          width: double.infinity,
+          child: OutlinedButton.icon(
+            onPressed: () => _deletePhotoMarker(marker),
+            icon: const Icon(Icons.delete_outline, size: 15),
+            label: const Text('Delete Marker'),
+            style: OutlinedButton.styleFrom(
+              foregroundColor: AppTheme.error,
+              side: BorderSide(color: AppTheme.error.withValues(alpha: 0.4)),
+            ),
+          ),
+        ),
+      ),
+    ]);
+  }
+
   Future<void> _save() async {
     if (_fields.length < _originalFieldCount) {
       final confirmed = await showDialog<bool>(
@@ -1376,7 +2014,21 @@ class _FieldSettingsDialogState extends State<_FieldSettingsDialog> {
     }
     setState(() => _saving = true);
     try {
-      await _db.from('job_forms').update({'fields': _fields}).eq('id', widget.jobFormId);
+      final signatureEntry = _fields.firstWhere(
+        (f) => f['_isSignatureBox'] == true,
+        orElse: () => <String, dynamic>{},
+      );
+      final regularFields = _fields.where((f) => f['_isSignatureBox'] != true).toList();
+      final updatePayload = <String, dynamic>{'fields': regularFields, 'photo_attachment_markers': _photoMarkers};
+      if (signatureEntry.isNotEmpty) {
+        updatePayload['signature_box'] = {
+          'page': signatureEntry['page'],
+          'box': signatureEntry['box'],
+          'required': signatureEntry['required'] ?? true,
+          'editable_by_field_agent': signatureEntry['editable_by_field_agent'] ?? true,
+        };
+      }
+      await _db.from('job_forms').update(updatePayload).eq('id', widget.jobFormId);
       widget.onSaved();
       if (mounted) Navigator.of(context, rootNavigator: true).pop();
     } catch (e) {
@@ -1488,6 +2140,15 @@ class _FieldSettingsDialogState extends State<_FieldSettingsDialog> {
                           MouseRegion(
                             cursor: SystemMouseCursors.click,
                             child: IconButton(
+                              tooltip: 'Add Photo Marker',
+                              onPressed: _addPhotoMarker,
+                              icon: const Icon(Icons.add_photo_alternate_outlined, size: 20, color: Colors.teal),
+                            ),
+                          ),
+                          const SizedBox(width: 4),
+                          MouseRegion(
+                            cursor: SystemMouseCursors.click,
+                            child: IconButton(
                               tooltip: _mergeMode ? 'Exit Merge Mode' : 'Merge Fields',
                               onPressed: _toggleMergeMode,
                               icon: Icon(Icons.call_merge_rounded, size: 20, color: _mergeMode ? Colors.green : null),
@@ -1576,6 +2237,14 @@ class _FieldSettingsDialogState extends State<_FieldSettingsDialog> {
       (f) => f['id'] == _selectedFieldId,
       orElse: () => <String, dynamic>{},
     );
+    final pageMarkers = _photoMarkers.where((m) => (m['page'] as num?)?.toInt() == _currentPage).toList();
+    Map<String, dynamic>? selectedMarker;
+    for (final m in _photoMarkers) {
+      if (m['id'] == _selectedMarkerId) {
+        selectedMarker = m;
+        break;
+      }
+    }
 
     return Row(children: [
       Expanded(
@@ -1664,6 +2333,18 @@ class _FieldSettingsDialogState extends State<_FieldSettingsDialog> {
                           ),
                         );
                       }),
+                      ...pageMarkers.map((m) => _DraggablePhotoMarkerBox(
+                            key: ValueKey(m['id']),
+                            marker: m,
+                            containerW: finalW,
+                            containerH: h,
+                            zoomScale: _currentZoom,
+                            isSelected: !_mergeMode && m['id'] == _selectedMarkerId,
+                            onSelect: () => _handleMarkerTap(m),
+                            onDeleteTap: () => _deletePhotoMarker(m),
+                            onDragStart: () {},
+                            onCommit: (newBox) => _setMarkerBox(m, newBox),
+                          )),
                     ]),
                   ),
                   ),
@@ -1678,7 +2359,9 @@ class _FieldSettingsDialogState extends State<_FieldSettingsDialog> {
         flex: 2,
         child: Padding(
           padding: const EdgeInsets.all(16),
-          child: unplacedFields.isNotEmpty && !_mergeMode && selected.isEmpty
+          child: selectedMarker != null
+              ? _buildMarkerPanel(selectedMarker)
+              : unplacedFields.isNotEmpty && !_mergeMode && selected.isEmpty
               ? SingleChildScrollView(
                   child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                     Text('Not shown on page (${unplacedFields.length})',
@@ -1772,5 +2455,235 @@ class _FieldSettingsDialogState extends State<_FieldSettingsDialog> {
         ),
       ),
     ]);
+  }
+}
+
+Map<String, double> _applyMarkerBoxDelta(Map<String, double> base, String? handle, double dxPct, double dyPct) {
+  double x = base['x']!, y = base['y']!, w = base['w']!, h = base['h']!;
+  switch (handle) {
+    case null:
+      x += dxPct;
+      y += dyPct;
+      break;
+    case 'tl':
+      x += dxPct;
+      y += dyPct;
+      w -= dxPct;
+      h -= dyPct;
+      break;
+    case 'tr':
+      y += dyPct;
+      w += dxPct;
+      h -= dyPct;
+      break;
+    case 'bl':
+      x += dxPct;
+      w -= dxPct;
+      h += dyPct;
+      break;
+    case 'br':
+      w += dxPct;
+      h += dyPct;
+      break;
+    case 't':
+      y += dyPct;
+      h -= dyPct;
+      break;
+    case 'b':
+      h += dyPct;
+      break;
+    case 'l':
+      x += dxPct;
+      w -= dxPct;
+      break;
+    case 'r':
+      w += dxPct;
+      break;
+  }
+  return {'x': x, 'y': y, 'w': w, 'h': h};
+}
+
+// Draggable/resizable photo-marker box for Field Settings' visual canvas.
+// A trimmed, self-contained copy of ai_form_recreation_screen.dart's
+// _DraggableFieldBox drag math (that class is private to that file, so it
+// can't be imported directly) — scoped to just move/resize/delete, since
+// photo markers here don't need the clear/active-toggle affordances that
+// real fields have.
+class _DraggablePhotoMarkerBox extends StatefulWidget {
+  final Map<String, dynamic> marker;
+  final double containerW;
+  final double containerH;
+  final double zoomScale;
+  final bool isSelected;
+  final VoidCallback onSelect;
+  final VoidCallback onDeleteTap;
+  final VoidCallback onDragStart;
+  final void Function(Map<String, dynamic> newBox) onCommit;
+
+  const _DraggablePhotoMarkerBox({
+    super.key,
+    required this.marker,
+    required this.containerW,
+    required this.containerH,
+    this.zoomScale = 1.0,
+    required this.isSelected,
+    required this.onSelect,
+    required this.onDeleteTap,
+    required this.onDragStart,
+    required this.onCommit,
+  });
+
+  @override
+  State<_DraggablePhotoMarkerBox> createState() => _DraggablePhotoMarkerBoxState();
+}
+
+class _DraggablePhotoMarkerBoxState extends State<_DraggablePhotoMarkerBox> {
+  Offset _livePxDelta = Offset.zero;
+  bool _dragActive = false;
+  String? _activeHandle;
+
+  Map<String, double> get _baseBox {
+    final box = widget.marker['box'] as Map?;
+    return {
+      'x': (box?['x'] as num?)?.toDouble() ?? 0,
+      'y': (box?['y'] as num?)?.toDouble() ?? 0,
+      'w': (box?['w'] as num?)?.toDouble() ?? 20,
+      'h': (box?['h'] as num?)?.toDouble() ?? 4,
+    };
+  }
+
+  Map<String, double> _normalize(double x, double y, double w, double h) {
+    final nw = w.clamp(2.0, 100.0);
+    final nh = h.clamp(1.0, 100.0);
+    final nx = x.clamp(0.0, 100.0 - nw);
+    final ny = y.clamp(0.0, 100.0 - nh);
+    return {'x': nx, 'y': ny, 'w': nw, 'h': nh};
+  }
+
+  void _startDrag(String? handle) {
+    widget.onDragStart();
+    setState(() {
+      _dragActive = true;
+      _activeHandle = handle;
+      _livePxDelta = Offset.zero;
+    });
+  }
+
+  void _updateDrag(Offset delta) {
+    setState(() => _livePxDelta += delta / widget.zoomScale);
+  }
+
+  void _endDrag() {
+    final base = _baseBox;
+    final dxPct = (_livePxDelta.dx / widget.containerW) * 100;
+    final dyPct = (_livePxDelta.dy / widget.containerH) * 100;
+    final applied = _applyMarkerBoxDelta(base, _activeHandle, dxPct, dyPct);
+    final normalized = _normalize(applied['x']!, applied['y']!, applied['w']!, applied['h']!);
+    widget.onCommit(normalized);
+    setState(() {
+      _dragActive = false;
+      _activeHandle = null;
+      _livePxDelta = Offset.zero;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final base = _baseBox;
+    var live = base;
+    if (_dragActive) {
+      final dxPct = (_livePxDelta.dx / widget.containerW) * 100;
+      final dyPct = (_livePxDelta.dy / widget.containerH) * 100;
+      live = _applyMarkerBoxDelta(base, _activeHandle, dxPct, dyPct);
+    }
+    final x = live['x']!, y = live['y']!, w = live['w']!, h = live['h']!;
+    final left = widget.containerW * (x / 100);
+    final top = widget.containerH * (y / 100);
+    final boxW = widget.containerW * (w / 100);
+    final boxH = widget.containerH * (h / 100);
+
+    Widget handle({required String id, required double hx, required double hy, required MouseCursor cursor}) {
+      const hitSize = 20.0;
+      return Positioned(
+        left: hx - (hitSize / 2),
+        top: hy - (hitSize / 2),
+        child: MouseRegion(
+          cursor: cursor,
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onPanStart: (_) => _startDrag(id),
+            onPanUpdate: (details) => _updateDrag(details.delta),
+            onPanEnd: (_) => _endDrag(),
+            child: SizedBox(
+              width: hitSize,
+              height: hitSize,
+              child: Center(
+                child: Container(
+                  width: 11,
+                  height: 11,
+                  decoration: BoxDecoration(
+                    color: Colors.teal,
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.white, width: 1.5),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Positioned(
+      left: left,
+      top: top,
+      width: boxW,
+      height: boxH,
+      child: Stack(clipBehavior: Clip.none, children: [
+        GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: widget.onSelect,
+          onPanStart: (_) {
+            widget.onSelect();
+            _startDrag(null);
+          },
+          onPanUpdate: (details) => _updateDrag(details.delta),
+          onPanEnd: (_) => _endDrag(),
+          child: Container(
+            decoration: BoxDecoration(
+              border: Border.all(color: Colors.teal, width: widget.isSelected ? 2 : 1.5),
+              color: Colors.teal.withValues(alpha: widget.isSelected ? 0.25 : 0.15),
+            ),
+            child: const Center(child: Icon(Icons.add_photo_alternate_outlined, size: 14, color: Colors.teal)),
+          ),
+        ),
+        if (widget.isSelected) ...[
+          handle(id: 'tl', hx: 0, hy: 0, cursor: SystemMouseCursors.resizeUpLeft),
+          handle(id: 'tr', hx: boxW, hy: 0, cursor: SystemMouseCursors.resizeUpRight),
+          handle(id: 'bl', hx: 0, hy: boxH, cursor: SystemMouseCursors.resizeDownLeft),
+          handle(id: 'br', hx: boxW, hy: boxH, cursor: SystemMouseCursors.resizeDownRight),
+          handle(id: 't', hx: boxW / 2, hy: 0, cursor: SystemMouseCursors.resizeUpDown),
+          handle(id: 'b', hx: boxW / 2, hy: boxH, cursor: SystemMouseCursors.resizeUpDown),
+          handle(id: 'l', hx: 0, hy: boxH / 2, cursor: SystemMouseCursors.resizeLeftRight),
+          handle(id: 'r', hx: boxW, hy: boxH / 2, cursor: SystemMouseCursors.resizeLeftRight),
+          Positioned(
+            right: -10,
+            top: -10,
+            child: MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: GestureDetector(
+                onTap: widget.onDeleteTap,
+                child: Container(
+                  width: 20,
+                  height: 20,
+                  decoration: const BoxDecoration(color: AppTheme.error, shape: BoxShape.circle),
+                  child: const Icon(Icons.close, size: 13, color: Colors.white),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ]),
+    );
   }
 }
