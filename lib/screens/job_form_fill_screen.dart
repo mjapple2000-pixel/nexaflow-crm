@@ -45,6 +45,16 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
   String? _signatureSignedUrl;
   String _status = 'not_started';
 
+  // Visual form canvas (forms with background page images) — Stage B:
+  // foundation only, view + navigate the actual form image. Real inputs
+  // and photo-marker camera icons are wired on top of this in later stages.
+  List<String> _pageUrls = [];
+  List<Map<String, dynamic>> _photoMarkers = [];
+  Map<String, dynamic> _markerPhotos = {};
+  int _currentPageIndex = 0;
+  final PageController _pageController = PageController();
+  final TransformationController _transformController = TransformationController();
+
   final Map<String, TextEditingController> _controllers = {};
   final Map<String, FocusNode> _focusNodes = {};
 
@@ -84,6 +94,8 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
     }
     _signatureController.dispose();
     _signedByNameCtrl.dispose();
+    _pageController.dispose();
+    _transformController.dispose();
     super.dispose();
   }
 
@@ -126,6 +138,12 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
         _signatureUrl = data['signature_url'] as String?;
         _signatureSignedUrl = data['signature_signed_url'] as String?;
         _status = data['status'] as String? ?? 'not_started';
+        _pageUrls = List<String>.from(
+            (data['page_urls'] as List? ?? []).where((u) => u != null));
+        _photoMarkers = List<Map<String, dynamic>>.from(
+            (data['photo_attachment_markers'] as List? ?? [])
+                .map((m) => Map<String, dynamic>.from(m as Map)));
+        _markerPhotos = Map<String, dynamic>.from(data['marker_photos'] ?? {});
         _loading = false;
       });
 
@@ -915,6 +933,10 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
       );
     }
 
+    if (_pageUrls.isNotEmpty) {
+      return _buildVisualFormScaffold();
+    }
+
     return Scaffold(
       backgroundColor: AppTheme.pageBg,
       body: SafeArea(
@@ -1090,6 +1112,502 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
               ),
             ),
           ),
+        ),
+      ),
+    );
+  }
+
+  // Visual form scaffold — Stage B foundation. Swipe between pages,
+  // pinch-zoom/pan each one. Same 0.77 aspect-ratio-fit pattern already
+  // proven in Field Settings' visual canvas, sized for a phone instead
+  // of a desktop dialog. Inputs and photo markers land on top of this
+  // in later stages — this stage only proves navigation works.
+  Widget _buildVisualFormScaffold() {
+    return Scaffold(
+      backgroundColor: AppTheme.pageBg,
+      body: SafeArea(
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+              child: Row(
+                children: [
+                  InkWell(
+                    onTap: () => context.go('/hub/${widget.token}'),
+                    child: const Row(
+                      children: [
+                        Icon(Icons.arrow_back_rounded,
+                            size: 16, color: AppTheme.textSecondary),
+                        SizedBox(width: 4),
+                        Text('Back to Hub',
+                            style: TextStyle(
+                                fontSize: 12, color: AppTheme.textSecondary)),
+                      ],
+                    ),
+                  ),
+                  const Spacer(),
+                  Text(_formName,
+                      style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w700,
+                          color: AppTheme.textPrimary)),
+                  const Spacer(),
+                  AnimatedOpacity(
+                    opacity: _showSaved ? 1 : 0,
+                    duration: const Duration(milliseconds: 300),
+                    child: const Icon(Icons.check_circle_outline_rounded,
+                        size: 16, color: AppTheme.success),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: PageView.builder(
+                controller: _pageController,
+                itemCount: _pageUrls.length,
+                onPageChanged: (i) => setState(() {
+                  _currentPageIndex = i;
+                  _transformController.value = Matrix4.identity();
+                }),
+                itemBuilder: (ctx, i) {
+                  return LayoutBuilder(builder: (ctx, constraints) {
+                    const aspectRatio = 0.77;
+                    final w = constraints.maxWidth;
+                    final h = w / aspectRatio > constraints.maxHeight
+                        ? constraints.maxHeight
+                        : w / aspectRatio;
+                    final finalW = h * aspectRatio;
+                    final pageFields = _fieldsForPage(i + 1);
+                    // InteractiveViewer grabs every pointer-down inside its
+                    // child to check for pan/zoom before releasing it as a
+                    // tap — with lots of small interactive fields inside,
+                    // it was swallowing taps meant for them entirely. Fix:
+                    // InteractiveViewer wraps ONLY the image, and the real
+                    // fields render as a sibling layer on top, manually
+                    // kept in sync via the same TransformationController —
+                    // fields get taps directly (they're on top), empty
+                    // space and pinch-zoom still pass through to the image
+                    // underneath exactly as before.
+                    return Stack(
+                      children: [
+                        InteractiveViewer(
+                          transformationController: _transformController,
+                          minScale: 1.0,
+                          maxScale: 4.0,
+                          boundaryMargin: const EdgeInsets.all(80),
+                          child: Center(
+                            child: SizedBox(
+                              width: finalW,
+                              height: h,
+                              child: Image.network(_pageUrls[i], fit: BoxFit.fill),
+                            ),
+                          ),
+                        ),
+                        Center(
+                          child: SizedBox(
+                            width: finalW,
+                            height: h,
+                            child: AnimatedBuilder(
+                              animation: _transformController,
+                              builder: (ctx, _) => Transform(
+                                transform: _transformController.value,
+                                child: Stack(
+                                  children: pageFields
+                                      .map((f) => _buildPositionedField(f, finalW, h))
+                                      .toList(),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    );
+                  });
+                },
+              ),
+            ),
+            if (_pageUrls.length > 1)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: List.generate(_pageUrls.length, (i) {
+                    final isCurrent = i == _currentPageIndex;
+                    return Container(
+                      margin: const EdgeInsets.symmetric(horizontal: 3),
+                      width: isCurrent ? 18 : 6,
+                      height: 6,
+                      decoration: BoxDecoration(
+                        color: isCurrent ? AppTheme.brand : AppTheme.borderColor,
+                        borderRadius: BorderRadius.circular(3),
+                      ),
+                    );
+                  }),
+                ),
+              ),
+            _buildVisualBottomBar(),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // Bottom action area for the visual canvas — mirrors the completion /
+  // missing-fields / signature logic the plain-list scaffold already had.
+  // Unplaced fields (no saved position) and signature (no on-image
+  // position yet — that's Stage E) get temporary access points here
+  // rather than being lost when the visual scaffold replaced the list.
+  Widget _buildVisualBottomBar() {
+    final unplaced = _unplacedFields;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 14),
+      decoration: const BoxDecoration(
+        border: Border(top: BorderSide(color: AppTheme.borderColor)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              if (unplaced.isNotEmpty)
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _showUnplacedFieldsSheet,
+                    icon: const Icon(Icons.list_alt_rounded, size: 16),
+                    label: Text('More Fields (${unplaced.length})',
+                        style: const TextStyle(fontSize: 12)),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: AppTheme.textSecondary,
+                      side: const BorderSide(color: AppTheme.borderColor),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                  ),
+                ),
+              if (unplaced.isNotEmpty && _requiresSignature) const SizedBox(width: 8),
+              if (_requiresSignature)
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _showSignatureDialog,
+                    icon: Icon(
+                        _signatureUrl != null
+                            ? Icons.check_circle_outline_rounded
+                            : Icons.draw_outlined,
+                        size: 16,
+                        color: _signatureUrl != null ? AppTheme.success : null),
+                    label: Text(_signatureUrl != null ? 'Signed' : 'Signature',
+                        style: const TextStyle(fontSize: 12)),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor:
+                          _signatureUrl != null ? AppTheme.success : AppTheme.textSecondary,
+                      side: BorderSide(
+                          color: _signatureUrl != null
+                              ? AppTheme.success
+                              : AppTheme.borderColor),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          if (unplaced.isNotEmpty || _requiresSignature) const SizedBox(height: 10),
+          if (_status != 'completed' && _missingRequiredLabels.isEmpty)
+            ElevatedButton(
+              onPressed: _completing ? null : _completeForm,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.brand,
+                foregroundColor: Colors.white,
+                elevation: 0,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                textStyle: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
+              ),
+              child: _completing
+                  ? const SizedBox(
+                      height: 18,
+                      width: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                  : const Text('Complete Job Form'),
+            )
+          else if (_status != 'completed')
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: AppTheme.pageBg,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: AppTheme.borderColor),
+              ),
+              child: Text(
+                'Still needed: ${_missingRequiredLabels.join(', ')}',
+                style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
+              ),
+            )
+          else
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: AppTheme.success.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: AppTheme.success.withValues(alpha: 0.4)),
+              ),
+              child: const Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.check_circle_outline_rounded, size: 16, color: AppTheme.success),
+                  SizedBox(width: 6),
+                  Text('Job Form Completed',
+                      style: TextStyle(
+                          fontSize: 12, fontWeight: FontWeight.w700, color: AppTheme.success)),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  void _showUnplacedFieldsSheet() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => DraggableScrollableSheet(
+        initialChildSize: 0.6,
+        minChildSize: 0.3,
+        maxChildSize: 0.9,
+        expand: false,
+        builder: (ctx, scrollController) => Container(
+          decoration: const BoxDecoration(
+            color: AppTheme.pageBg,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          ),
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+          child: ListView(
+            controller: scrollController,
+            children: [
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  margin: const EdgeInsets.only(bottom: 16),
+                  decoration: BoxDecoration(
+                      color: AppTheme.borderColor, borderRadius: BorderRadius.circular(2)),
+                ),
+              ),
+              ..._unplacedFields.map(_buildField),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showSignatureDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) => Dialog(
+        backgroundColor: Colors.transparent,
+        insetPadding: const EdgeInsets.all(20),
+        child: SingleChildScrollView(child: _buildSignatureSection()),
+      ),
+    ).then((_) => setState(() {}));
+  }
+
+  bool _hasValidBox(Map<String, dynamic> field) {
+    final page = field['page'];
+    final box = field['box'] as Map?;
+    if (page == null || box == null) return false;
+    return box['x'] != null && box['y'] != null && box['w'] != null && box['h'] != null;
+  }
+
+  List<Map<String, dynamic>> _fieldsForPage(int pageNumber) {
+    return _fields.where((f) {
+      final page = f['page'] as num?;
+      return page != null && page.toInt() == pageNumber && _hasValidBox(f);
+    }).toList();
+  }
+
+  List<Map<String, dynamic>> get _unplacedFields =>
+      _fields.where((f) => !_hasValidBox(f)).toList();
+
+  Widget _buildPositionedField(Map<String, dynamic> field, double finalW, double h) {
+    final box = field['box'] as Map;
+    final x = (box['x'] as num).toDouble();
+    final y = (box['y'] as num).toDouble();
+    final bw = (box['w'] as num).toDouble();
+    final bh = (box['h'] as num).toDouble();
+    return Positioned(
+      left: finalW * (x / 100),
+      top: h * (y / 100),
+      width: finalW * (bw / 100),
+      height: h * (bh / 100),
+      child: _buildFieldInput(field),
+    );
+  }
+
+  // Renders the actual editable control for one field, positioned on the
+  // canvas. Respects editable_by_field_agent — finally wired in here
+  // rather than deferred again, since this rebuild touches every field's
+  // rendering anyway.
+  Widget _buildFieldInput(Map<String, dynamic> field) {
+    final id = field['id'] as String;
+    final type = field['type'] as String? ?? 'text';
+    final editable = field['editable_by_field_agent'] as bool? ?? true;
+    final required = field['required'] as bool? ?? false;
+
+    if (!editable) {
+      final val = _answers[id];
+      return Container(
+        decoration: BoxDecoration(
+          color: Colors.grey.withValues(alpha: 0.12),
+          border: Border.all(color: Colors.grey.withValues(alpha: 0.4)),
+          borderRadius: BorderRadius.circular(3),
+        ),
+        alignment: Alignment.centerLeft,
+        padding: const EdgeInsets.symmetric(horizontal: 4),
+        child: Text(
+          val == null || val.toString().isEmpty ? '' : val.toString(),
+          style: const TextStyle(fontSize: 10, color: AppTheme.textSecondary),
+          overflow: TextOverflow.ellipsis,
+        ),
+      );
+    }
+
+    switch (type) {
+      case 'checkbox':
+        final value = _answers[id] == true;
+        return GestureDetector(
+          onTap: () => _onFieldChanged(id, !value, save: true),
+          child: Container(
+            decoration: BoxDecoration(
+              border: Border.all(color: value ? AppTheme.success : AppTheme.brand, width: 1.5),
+              color: value
+                  ? AppTheme.success.withValues(alpha: 0.15)
+                  : Colors.white.withValues(alpha: 0.6),
+              borderRadius: BorderRadius.circular(3),
+            ),
+            alignment: Alignment.center,
+            child: value ? const Icon(Icons.check, size: 14, color: AppTheme.success) : null,
+          ),
+        );
+
+      case 'select':
+        final options =
+            field['options'] != null ? List<String>.from(field['options']) : <String>[];
+        final value = _answers[id] as String?;
+        return GestureDetector(
+          onTap: () => _showSelectSheet(id, options, value),
+          child: Container(
+            decoration: BoxDecoration(
+              border: Border.all(color: value == null ? AppTheme.brand : AppTheme.success),
+              color: Colors.white.withValues(alpha: 0.85),
+              borderRadius: BorderRadius.circular(3),
+            ),
+            alignment: Alignment.centerLeft,
+            padding: const EdgeInsets.symmetric(horizontal: 4),
+            child: Text(
+              value ?? 'Tap to select',
+              style: TextStyle(
+                  fontSize: 10,
+                  color: value == null ? AppTheme.textSecondary : AppTheme.textPrimary),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        );
+
+      case 'photo':
+        final photoAnswers = (_answers[id] as List?)?.cast<String>() ?? <String>[];
+        final isUploading = _uploadingFieldIds.contains(id);
+        return GestureDetector(
+          onTap: isUploading ? null : () => _showPhotoSourcePicker(id),
+          child: Container(
+            decoration: BoxDecoration(
+              border: Border.all(
+                  color: photoAnswers.isEmpty ? AppTheme.brand : AppTheme.success, width: 1.5),
+              color: Colors.white.withValues(alpha: 0.85),
+              borderRadius: BorderRadius.circular(3),
+            ),
+            alignment: Alignment.center,
+            child: isUploading
+                ? const SizedBox(
+                    width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2))
+                : Icon(
+                    photoAnswers.isEmpty
+                        ? Icons.add_a_photo_outlined
+                        : Icons.check_circle_outline_rounded,
+                    size: 14,
+                    color: photoAnswers.isEmpty ? AppTheme.brand : AppTheme.success,
+                  ),
+          ),
+        );
+
+      case 'number':
+      case 'text':
+      default:
+        final controller = _controllers[id];
+        final focusNode = _focusNodes[id];
+        final filled = (controller?.text.trim() ?? '').isNotEmpty;
+        return Container(
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.85),
+            border: Border.all(
+              color: required && !filled
+                  ? AppTheme.error
+                  : (filled ? AppTheme.success : AppTheme.brand),
+            ),
+            borderRadius: BorderRadius.circular(3),
+          ),
+          alignment: Alignment.center,
+          child: TextField(
+            controller: controller,
+            focusNode: focusNode,
+            keyboardType: type == 'number'
+                ? const TextInputType.numberWithOptions(decimal: true)
+                : TextInputType.text,
+            style: const TextStyle(fontSize: 10, color: AppTheme.textPrimary),
+            textAlignVertical: TextAlignVertical.center,
+            decoration: const InputDecoration(
+              isDense: true,
+              contentPadding: EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+              border: InputBorder.none,
+            ),
+            onChanged: (v) => setState(() => _dirty = true),
+          ),
+        );
+    }
+  }
+
+  void _showSelectSheet(String fieldId, List<String> options, String? current) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (_) => Container(
+        decoration: const BoxDecoration(
+          color: AppTheme.cardBg,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+        padding: const EdgeInsets.symmetric(vertical: 12),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 40,
+              height: 4,
+              margin: const EdgeInsets.only(bottom: 12),
+              decoration: BoxDecoration(
+                  color: AppTheme.borderColor, borderRadius: BorderRadius.circular(2)),
+            ),
+            for (final opt in options)
+              ListTile(
+                title:
+                    Text(opt, style: const TextStyle(fontSize: 14, color: AppTheme.textPrimary)),
+                trailing:
+                    opt == current ? const Icon(Icons.check, color: AppTheme.brand, size: 18) : null,
+                onTap: () {
+                  Navigator.pop(context);
+                  _onFieldChanged(fieldId, opt, save: true);
+                },
+              ),
+          ],
         ),
       ),
     );

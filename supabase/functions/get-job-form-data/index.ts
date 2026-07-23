@@ -121,7 +121,7 @@ Deno.serve(async (req) => {
     // ── 3. Load the template ──────────────────────────────────────────────────
     const { data: jobForm, error: formError } = await supabase
       .from("job_forms")
-      .select("id, name, form_type, fields, requires_signature")
+      .select("id, name, form_type, fields, requires_signature, background_pages, photo_attachment_markers")
       .eq("id", submission.job_form_id)
       .eq("business_id", businessId)
       .maybeSingle();
@@ -141,6 +141,35 @@ Deno.serve(async (req) => {
     const photoSignedUrlMap: Record<string, string | null> = Object.fromEntries(signedUrlEntries);
     const signatureSignedUrl = await getSignedUrl(submission.signature_url);
     const pdfSignedUrl = await getSignedUrl(submission.pdf_url);
+
+    // ── 3c. Page image signed URLs — Fill Screen needs these to render
+    // the actual form background and overlay tappable photo-marker icons
+    // on it, same signing pattern used for photos/signature/pdf above.
+    const backgroundPages: string[] = jobForm.background_pages ?? [];
+    const pageUrls = await Promise.all(backgroundPages.map((p) => getSignedUrl(p)));
+
+    // ── 3d. Existing marker photos — grouped by marker_id so the Fill
+    // Screen's gallery bottom sheet can show "already uploaded for Roof"
+    // without a separate round-trip. Real rows in job_form_photo_attachments
+    // (not the photo_urls/answers array pattern field-based photos use),
+    // scoped to this specific submission.
+    const { data: markerPhotoRows, error: markerPhotoError } = await supabase
+      .from("job_form_photo_attachments")
+      .select("id, marker_id, storage_path, created_at")
+      .eq("submission_id", submissionId)
+      .is("deleted_at", null)
+      .order("created_at", { ascending: true });
+
+    if (markerPhotoError) {
+      console.error("get-job-form-data marker photo lookup error:", markerPhotoError);
+    }
+
+    const markerPhotosMap: Record<string, { id: number; signed_url: string | null }[]> = {};
+    for (const row of markerPhotoRows ?? []) {
+      const signedUrl = await getSignedUrl(row.storage_path);
+      if (!markerPhotosMap[row.marker_id]) markerPhotosMap[row.marker_id] = [];
+      markerPhotosMap[row.marker_id].push({ id: row.id, signed_url: signedUrl });
+    }
 
     // ── 4. Appointment context (for header display) ──────────────────────────
     let appointmentInfo: any = null;
@@ -171,6 +200,9 @@ Deno.serve(async (req) => {
         form_type: jobForm.form_type,
         fields: jobForm.fields ?? [],
         requires_signature: jobForm.requires_signature === true,
+        page_urls: pageUrls,
+        photo_attachment_markers: jobForm.photo_attachment_markers ?? [],
+        marker_photos: markerPhotosMap,
         appointment_type: appointmentInfo?.appointment_type ?? null,
         lead_name: appointmentInfo?.lead_name ?? null,
         location: appointmentInfo?.location ?? null,

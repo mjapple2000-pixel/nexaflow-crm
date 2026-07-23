@@ -26,6 +26,8 @@ Deno.serve(async (req) => {
     let answers: any = null;
     let fieldId: string | null = null;
     let photoPath: string | null = null;
+    let markerId: string | null = null;
+    let photoAttachmentId: number | null = null;
     let signedByName: string | null = null;
     let file: File | null = null;
     let businessIdParam: number | null = null;
@@ -41,6 +43,9 @@ Deno.serve(async (req) => {
       fieldId = formData.get("field_id") as string | null;
       photoPath = formData.get("photo_path") as string | null;
       signedByName = formData.get("signed_by_name") as string | null;
+      markerId = formData.get("marker_id") as string | null;
+      const photoAttachmentIdRaw = formData.get("photo_attachment_id") as string | null;
+      photoAttachmentId = photoAttachmentIdRaw ? parseInt(photoAttachmentIdRaw) : null;
       file = formData.get("file") as File | null;
       const businessIdRaw = formData.get("business_id") as string | null;
       businessIdParam = businessIdRaw ? parseInt(businessIdRaw) : null;
@@ -53,6 +58,8 @@ Deno.serve(async (req) => {
       fieldId = body.field_id ?? null;
       photoPath = body.photo_path ?? null;
       signedByName = body.signed_by_name ?? null;
+      markerId = body.marker_id ?? null;
+      photoAttachmentId = body.photo_attachment_id ?? null;
       businessIdParam = body.business_id ?? null;
     }
 
@@ -65,7 +72,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    const validActions = ["save_answers", "upload_photo", "upload_signature", "delete_photo", "complete", "reopen_for_correction"];
+    const validActions = ["save_answers", "upload_photo", "upload_signature", "delete_photo", "upload_marker_photo", "delete_marker_photo", "complete", "reopen_for_correction"];
     if (!validActions.includes(action)) {
       return new Response(JSON.stringify({ error: "Invalid action" }), {
         status: 400,
@@ -269,6 +276,113 @@ Deno.serve(async (req) => {
       });
     }
 
+    // ── upload_marker_photo ────────────────────────────────────────────────
+    // Writes a real row into job_form_photo_attachments, keyed to a
+    // photo_attachment_marker's id — deliberately separate from
+    // upload_photo's photo_urls/answers array pattern, matching the
+    // schema decision made when this table was built (per-photo RLS
+    // scoping, clean individual soft-delete, real indexing at scale).
+    if (action === "upload_marker_photo") {
+      if (!file || !markerId) {
+        return new Response(JSON.stringify({ error: "file and marker_id are required" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
+      const path = `${hubToken.business_id}/${submissionId}/marker-${markerId}-${Date.now()}.${ext}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from(BUCKET)
+        .upload(path, file, { contentType: file.type || "image/jpeg" });
+
+      if (uploadError) {
+        return new Response(JSON.stringify({ error: "Error uploading photo: " + uploadError.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const { data: inserted, error: insertError } = await supabase
+        .from("job_form_photo_attachments")
+        .insert({
+          business_id: hubToken.business_id,
+          job_form_id: submission.job_form_id,
+          submission_id: submissionId,
+          marker_id: markerId,
+          storage_path: path,
+          uploaded_by_profile_id: hubToken.profile_id,
+        })
+        .select("id")
+        .single();
+
+      if (insertError) {
+        return new Response(JSON.stringify({ error: "Error saving photo reference: " + insertError.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      // Marker photos don't drive required-field validation the way
+      // field-based photos do (markers aren't in the fields array), but
+      // any upload still counts as progress on the form.
+      if (submission.status === "not_started") {
+        await supabase
+          .from("job_form_submissions")
+          .update({ status: "in_progress", completed_by_profile_id: hubToken.profile_id })
+          .eq("id", submissionId);
+      }
+
+      return new Response(JSON.stringify({ success: true, id: inserted.id, path }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    // ── delete_marker_photo ────────────────────────────────────────────────
+    if (action === "delete_marker_photo") {
+      if (!photoAttachmentId) {
+        return new Response(JSON.stringify({ error: "photo_attachment_id is required" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const { data: attachment, error: fetchError } = await supabase
+        .from("job_form_photo_attachments")
+        .select("id, storage_path, submission_id")
+        .eq("id", photoAttachmentId)
+        .eq("submission_id", submissionId)
+        .is("deleted_at", null)
+        .maybeSingle();
+
+      if (fetchError || !attachment) {
+        return new Response(JSON.stringify({ error: "Photo not found." }), {
+          status: 404,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      await supabase.storage.from(BUCKET).remove([attachment.storage_path]);
+
+      const { error: updateError } = await supabase
+        .from("job_form_photo_attachments")
+        .update({ deleted_at: new Date().toISOString() })
+        .eq("id", photoAttachmentId);
+
+      if (updateError) {
+        return new Response(JSON.stringify({ error: "Error removing photo: " + updateError.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      return new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
     // ── upload_signature ───────────────────────────────────────────────────
     if (action === "upload_signature") {
       if (!file) {
@@ -441,6 +555,14 @@ Deno.serve(async (req) => {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
+
+    // Fallback — validActions already guarantees action matches one of the
+    // blocks above, but TypeScript can't infer that from the code shape,
+    // so without this the function's return type is Response | undefined.
+    return new Response(JSON.stringify({ error: "Unhandled action" }), {
+      status: 400,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   } catch (err) {
     return new Response(
       JSON.stringify({ error: "Unexpected error: " + (err instanceof Error ? err.message : String(err)) }),
