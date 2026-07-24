@@ -2,12 +2,31 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:signature/signature.dart';
 import '../theme/app_theme.dart';
+
+bool _isAddressField(Map<String, dynamic> field) =>
+    (field['label'] as String? ?? '').toLowerCase().contains('address');
+
+// Caps a field at 3 lines by rejecting any edit that would introduce a
+// 4th — Enter still works to add lines 2 and 3, it just stops working
+// once the field is full, rather than growing without limit.
+class _MaxLinesInputFormatter extends TextInputFormatter {
+  final int maxLines;
+  const _MaxLinesInputFormatter(this.maxLines);
+
+  @override
+  TextEditingValue formatEditUpdate(TextEditingValue oldValue, TextEditingValue newValue) {
+    final lineCount = '\n'.allMatches(newValue.text).length + 1;
+    if (lineCount > maxLines) return oldValue;
+    return newValue;
+  }
+}
 
 class JobFormFillScreen extends StatefulWidget {
   final String token;
@@ -50,6 +69,7 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
   // and photo-marker camera icons are wired on top of this in later stages.
   List<String> _pageUrls = [];
   List<Map<String, dynamic>> _photoMarkers = [];
+  Map<String, dynamic>? _signatureBox;
   Map<String, dynamic> _markerPhotos = {};
   int _currentPageIndex = 0;
   final PageController _pageController = PageController();
@@ -143,6 +163,9 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
         _photoMarkers = List<Map<String, dynamic>>.from(
             (data['photo_attachment_markers'] as List? ?? [])
                 .map((m) => Map<String, dynamic>.from(m as Map)));
+        _signatureBox = data['signature_box'] != null
+            ? Map<String, dynamic>.from(data['signature_box'] as Map)
+            : null;
         _markerPhotos = Map<String, dynamic>.from(data['marker_photos'] ?? {});
         _loading = false;
       });
@@ -722,10 +745,14 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
 
       case 'text':
       default:
+        final isAddress = _isAddressField(field);
         input = TextFormField(
           controller: _controllers[id],
           focusNode: _focusNodes[id],
           maxLines: null,
+          keyboardType: isAddress ? TextInputType.multiline : null,
+          textInputAction: isAddress ? TextInputAction.newline : null,
+          inputFormatters: isAddress ? [const _MaxLinesInputFormatter(2)] : null,
           decoration: InputDecoration(
             filled: true,
             fillColor: AppTheme.pageBg,
@@ -734,6 +761,8 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
             border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(8),
                 borderSide: const BorderSide(color: AppTheme.borderColor)),
+            helperText: isAddress ? 'Press Enter for a new line (up to 2)' : null,
+            helperStyle: const TextStyle(fontSize: 10, color: AppTheme.textSecondary),
           ),
           onChanged: (v) => setState(() => _dirty = true),
         );
@@ -1178,49 +1207,41 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
                         : w / aspectRatio;
                     final finalW = h * aspectRatio;
                     final pageFields = _fieldsForPage(i + 1);
-                    // InteractiveViewer grabs every pointer-down inside its
-                    // child to check for pan/zoom before releasing it as a
-                    // tap — with lots of small interactive fields inside,
-                    // it was swallowing taps meant for them entirely. Fix:
-                    // InteractiveViewer wraps ONLY the image, and the real
-                    // fields render as a sibling layer on top, manually
-                    // kept in sync via the same TransformationController —
-                    // fields get taps directly (they're on top), empty
-                    // space and pinch-zoom still pass through to the image
-                    // underneath exactly as before.
-                    return Stack(
-                      children: [
-                        InteractiveViewer(
-                          transformationController: _transformController,
-                          minScale: 1.0,
-                          maxScale: 4.0,
-                          boundaryMargin: const EdgeInsets.all(80),
-                          child: Center(
-                            child: SizedBox(
-                              width: finalW,
-                              height: h,
-                              child: Image.network(_pageUrls[i], fit: BoxFit.fill),
-                            ),
-                          ),
-                        ),
-                        Center(
-                          child: SizedBox(
-                            width: finalW,
-                            height: h,
-                            child: AnimatedBuilder(
-                              animation: _transformController,
-                              builder: (ctx, _) => Transform(
-                                transform: _transformController.value,
-                                child: Stack(
-                                  children: pageFields
-                                      .map((f) => _buildPositionedField(f, finalW, h))
-                                      .toList(),
-                                ),
+                    final pageMarkers = _photoMarkers.where((m) => (m['page'] as num?)?.toInt() == i + 1).toList();
+                    final sigBox = _signatureBox;
+                    final sigOnThisPage = sigBox != null && (sigBox['page'] as num?)?.toInt() == i + 1 && sigBox['box'] != null;
+                    // Fields render inside the SAME Stack that's inside
+                    // InteractiveViewer's child — matching the proven,
+                    // working pattern already used in Field Settings.
+                    // A prior attempt split image and fields into two
+                    // manually-synced layers to work around a theorized
+                    // (never confirmed) tap-swallowing issue; that manual
+                    // Transform sync didn't match InteractiveViewer's real
+                    // transform math and caused drift on pan/zoom. Field
+                    // Settings never had this problem with the simple
+                    // single-Stack approach, so there's nothing to work
+                    // around — reverted to match it exactly.
+                    return InteractiveViewer(
+                      transformationController: _transformController,
+                      minScale: 1.0,
+                      maxScale: 4.0,
+                      boundaryMargin: const EdgeInsets.all(80),
+                      child: Center(
+                        child: SizedBox(
+                          width: finalW,
+                          height: h,
+                          child: Stack(
+                            children: [
+                              Positioned.fill(
+                                child: Image.network(_pageUrls[i], fit: BoxFit.fill),
                               ),
-                            ),
+                              ...pageFields.map((f) => _buildPositionedField(f, finalW, h)),
+                              ...pageMarkers.map((m) => _buildPositionedPhotoMarker(m, finalW, h)),
+                              if (sigOnThisPage) _buildPositionedSignatureBox(sigBox, finalW, h),
+                            ],
                           ),
                         ),
-                      ],
+                      ),
                     );
                   });
                 },
@@ -1429,12 +1450,230 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
   List<Map<String, dynamic>> get _unplacedFields =>
       _fields.where((f) => !_hasValidBox(f)).toList();
 
+  Widget _buildPositionedSignatureBox(Map<String, dynamic> sigBox, double finalW, double h) {
+    final box = sigBox['box'] as Map;
+    final x = (box['x'] as num).toDouble();
+    final y = (box['y'] as num).toDouble();
+    final bw = (box['w'] as num).toDouble();
+    final bh = (box['h'] as num).toDouble();
+    final signed = _signatureUrl != null;
+    return Positioned(
+      left: finalW * (x / 100),
+      top: h * (y / 100),
+      width: finalW * (bw / 100),
+      height: h * (bh / 100),
+      child: GestureDetector(
+        onTap: _showSignatureDialog,
+        child: Container(
+          decoration: BoxDecoration(
+            border: Border.all(color: signed ? AppTheme.success : AppTheme.brand, width: 1.5),
+            color: signed
+                ? AppTheme.success.withValues(alpha: 0.12)
+                : Colors.white.withValues(alpha: 0.7),
+            borderRadius: BorderRadius.circular(3),
+          ),
+          alignment: Alignment.center,
+          child: Icon(
+            signed ? Icons.check_circle_outline_rounded : Icons.draw_outlined,
+            size: 14,
+            color: signed ? AppTheme.success : AppTheme.brand,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPositionedPhotoMarker(Map<String, dynamic> marker, double finalW, double h) {
+    final box = marker['box'] as Map?;
+    if (box == null) return const SizedBox.shrink();
+    final x = (box['x'] as num).toDouble();
+    final y = (box['y'] as num).toDouble();
+    final bw = (box['w'] as num).toDouble();
+    final bh = (box['h'] as num).toDouble();
+    final markerId = marker['id'] as String;
+    final photos = (_markerPhotos[markerId] as List?) ?? [];
+    return Positioned(
+      left: finalW * (x / 100),
+      top: h * (y / 100),
+      width: finalW * (bw / 100),
+      height: h * (bh / 100),
+      child: GestureDetector(
+        onTap: () => _showMarkerPhotoSheet(marker),
+        child: Container(
+          decoration: BoxDecoration(
+            border: Border.all(color: photos.isEmpty ? Colors.teal : AppTheme.success, width: 1.5),
+            color: Colors.white.withValues(alpha: 0.85),
+            borderRadius: BorderRadius.circular(3),
+          ),
+          alignment: Alignment.center,
+          child: Icon(
+            photos.isEmpty ? Icons.add_a_photo_outlined : Icons.check_circle_outline_rounded,
+            size: 14,
+            color: photos.isEmpty ? Colors.teal : AppTheme.success,
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showMarkerPhotoSheet(Map<String, dynamic> marker) {
+    final markerId = marker['id'] as String;
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => StatefulBuilder(
+        builder: (ctx, setSheetState) {
+          final photos = List<Map<String, dynamic>>.from(
+              (_markerPhotos[markerId] as List? ?? []).map((p) => Map<String, dynamic>.from(p as Map)));
+          Future<void> upload(ImageSource source) async {
+            final XFile? picked = await _picker.pickImage(source: source, imageQuality: 85);
+            if (picked == null) return;
+            final bytes = await picked.readAsBytes();
+            final request = http.MultipartRequest('POST', Uri.parse('$_fnBase/submit-job-form-action'));
+            request.fields['token'] = widget.token;
+            request.fields['submission_id'] = widget.submissionId;
+            request.fields['action'] = 'upload_marker_photo';
+            request.fields['marker_id'] = markerId;
+            request.files.add(http.MultipartFile.fromBytes('file', bytes,
+                filename: picked.name.isNotEmpty ? picked.name : 'photo.jpg', contentType: MediaType('image', 'jpeg')));
+            final streamedRes = await request.send();
+            final res = await http.Response.fromStream(streamedRes);
+            if (res.statusCode == 200) {
+              final data = jsonDecode(res.body) as Map<String, dynamic>;
+              setState(() {
+                final list = List<Map<String, dynamic>>.from((_markerPhotos[markerId] as List? ?? []));
+                list.add({'id': data['id'], 'signed_url': null, '_localBytes': bytes});
+                _markerPhotos[markerId] = list;
+              });
+              setSheetState(() {});
+            }
+          }
+          Future<void> deletePhoto(int photoId) async {
+            final res = await http.post(
+              Uri.parse('$_fnBase/submit-job-form-action'),
+              headers: {'Content-Type': 'application/json'},
+              body: jsonEncode({
+                'token': widget.token,
+                'submission_id': widget.submissionId,
+                'action': 'delete_marker_photo',
+                'photo_attachment_id': photoId,
+              }),
+            );
+            if (res.statusCode == 200) {
+              setState(() {
+                final list = List<Map<String, dynamic>>.from((_markerPhotos[markerId] as List? ?? []));
+                list.removeWhere((p) => p['id'] == photoId);
+                _markerPhotos[markerId] = list;
+              });
+              setSheetState(() {});
+            }
+          }
+          return Container(
+            decoration: const BoxDecoration(
+              color: AppTheme.cardBg,
+              borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+            ),
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(marker['label'] as String? ?? 'Photo',
+                    style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+                const SizedBox(height: 12),
+                if (photos.isNotEmpty)
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: photos.map((p) {
+                      final url = p['signed_url'] as String?;
+                      final localBytes = p['_localBytes'] as Uint8List?;
+                      return Stack(clipBehavior: Clip.none, children: [
+                        GestureDetector(
+                          onTap: () => showDialog(
+                            context: context,
+                            builder: (dctx) => Dialog(
+                              backgroundColor: Colors.black,
+                              insetPadding: const EdgeInsets.all(20),
+                              child: localBytes != null
+                                  ? InteractiveViewer(child: Image.memory(localBytes))
+                                  : (url != null
+                                      ? InteractiveViewer(child: Image.network(url))
+                                      : const Padding(
+                                          padding: EdgeInsets.all(40),
+                                          child: Text('This photo could not be loaded.',
+                                              style: TextStyle(color: Colors.white, fontSize: 13)),
+                                        )),
+                            ),
+                          ),
+                          child: Container(
+                            width: 72,
+                            height: 72,
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: AppTheme.borderColor),
+                            ),
+                            clipBehavior: Clip.antiAlias,
+                            child: localBytes != null
+                                ? Image.memory(localBytes, fit: BoxFit.cover)
+                                : (url != null
+                                    ? Image.network(url, fit: BoxFit.cover)
+                                    : const Center(child: Icon(Icons.check_circle_outline_rounded, color: AppTheme.success))),
+                          ),
+                        ),
+                        Positioned(
+                          top: -6, right: -6,
+                          child: GestureDetector(
+                            onTap: () => deletePhoto(p['id'] as int),
+                            child: Container(
+                              width: 20, height: 20,
+                              decoration: const BoxDecoration(color: AppTheme.error, shape: BoxShape.circle),
+                              child: const Icon(Icons.close, size: 13, color: Colors.white),
+                            ),
+                          ),
+                        ),
+                      ]);
+                    }).toList(),
+                  ),
+                const SizedBox(height: 12),
+                Row(children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: () => upload(ImageSource.camera),
+                      icon: const Icon(Icons.camera_alt_outlined, size: 16),
+                      label: const Text('Take Photo'),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: () => upload(ImageSource.gallery),
+                      icon: const Icon(Icons.photo_library_outlined, size: 16),
+                      label: const Text('Upload'),
+                    ),
+                  ),
+                ]),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
   Widget _buildPositionedField(Map<String, dynamic> field, double finalW, double h) {
     final box = field['box'] as Map;
     final x = (box['x'] as num).toDouble();
     final y = (box['y'] as num).toDouble();
     final bw = (box['w'] as num).toDouble();
     final bh = (box['h'] as num).toDouble();
+    // Every field on a visual-recreation form sits at a fixed absolute
+    // position matching the printed page — there is no surrounding "row"
+    // that reflows to make room. Growing an address box's height would
+    // just overlap whatever's positioned below it (confirmed — this was
+    // tried and caused exactly that). The box stays at its original saved
+    // size; the TextField inside scrolls internally instead.
     return Positioned(
       left: finalW * (x / 100),
       top: h * (y / 100),
@@ -1485,8 +1724,17 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
                   : Colors.white.withValues(alpha: 0.6),
               borderRadius: BorderRadius.circular(3),
             ),
-            alignment: Alignment.center,
-            child: value ? const Icon(Icons.check, size: 14, color: AppTheme.success) : null,
+            child: value
+                ? const Center(
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Padding(
+                        padding: EdgeInsets.all(2),
+                        child: Icon(Icons.close, size: 14, color: AppTheme.success),
+                      ),
+                    ),
+                  )
+                : null,
           ),
         );
 
@@ -1546,33 +1794,78 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
         final controller = _controllers[id];
         final focusNode = _focusNodes[id];
         final filled = (controller?.text.trim() ?? '').isNotEmpty;
-        return Container(
-          decoration: BoxDecoration(
-            color: Colors.white.withValues(alpha: 0.85),
-            border: Border.all(
-              color: required && !filled
-                  ? AppTheme.error
-                  : (filled ? AppTheme.success : AppTheme.brand),
+        final isAddress = _isAddressField(field);
+
+        final borderColor = required && !filled
+            ? AppTheme.error
+            : (filled ? AppTheme.success : AppTheme.brand);
+
+        if (!isAddress) {
+          return Container(
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.85),
+              border: Border.all(color: borderColor),
+              borderRadius: BorderRadius.circular(3),
             ),
-            borderRadius: BorderRadius.circular(3),
-          ),
-          alignment: Alignment.center,
-          child: TextField(
-            controller: controller,
-            focusNode: focusNode,
-            keyboardType: type == 'number'
-                ? const TextInputType.numberWithOptions(decimal: true)
-                : TextInputType.text,
-            style: const TextStyle(fontSize: 10, color: AppTheme.textPrimary),
-            textAlignVertical: TextAlignVertical.center,
-            decoration: const InputDecoration(
-              isDense: true,
-              contentPadding: EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-              border: InputBorder.none,
+            alignment: Alignment.center,
+            child: TextField(
+              controller: controller,
+              focusNode: focusNode,
+              maxLines: 1,
+              keyboardType: type == 'number'
+                  ? const TextInputType.numberWithOptions(decimal: true)
+                  : TextInputType.text,
+              style: const TextStyle(fontSize: 10, color: AppTheme.textPrimary),
+              textAlignVertical: TextAlignVertical.center,
+              decoration: const InputDecoration(
+                isDense: true,
+                contentPadding: EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                border: InputBorder.none,
+              ),
+              onChanged: (v) => setState(() => _dirty = true),
             ),
-            onChanged: (v) => setState(() => _dirty = true),
-          ),
-        );
+          );
+        }
+
+        // Address: 2 lines must fit inside the box's real, unmodified
+        // size — the same shape used everywhere else on this printed
+        // form — so the font shrinks to fit rather than the box growing
+        // or the text scrolling. Same approach as fitFontSize in the PDF
+        // renderer, applied here to on-screen entry. 2 lines (not 3) is
+        // a deliberate choice to keep font size legible within a box
+        // sized for one printed line.
+        return LayoutBuilder(builder: (ctx, constraints) {
+          final lineHeightPx = constraints.maxHeight / 2;
+          final fontSize = (lineHeightPx * 0.62).clamp(6.0, 10.0);
+          return Container(
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.85),
+              border: Border.all(color: borderColor),
+              borderRadius: BorderRadius.circular(3),
+            ),
+            alignment: Alignment.topLeft,
+            clipBehavior: Clip.hardEdge,
+            child: TextField(
+              controller: controller,
+              focusNode: focusNode,
+              maxLines: 2,
+              minLines: 2,
+              inputFormatters: const [_MaxLinesInputFormatter(2)],
+              keyboardType: TextInputType.multiline,
+              textInputAction: TextInputAction.newline,
+              style: TextStyle(fontSize: fontSize, color: AppTheme.textPrimary, height: 1.0),
+              strutStyle: StrutStyle(fontSize: fontSize, height: 1.0),
+              textAlignVertical: TextAlignVertical.top,
+              decoration: const InputDecoration(
+                isDense: true,
+                isCollapsed: true,
+                contentPadding: EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                border: InputBorder.none,
+              ),
+              onChanged: (v) => setState(() => _dirty = true),
+            ),
+          );
+        });
     }
   }
 

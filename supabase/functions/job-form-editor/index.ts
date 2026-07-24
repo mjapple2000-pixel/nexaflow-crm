@@ -192,10 +192,28 @@ Deno.serve(async (req: Request) => {
 
       const { data: sourceForm, error: sourceErr } = await supabase
         .from('job_forms')
-        .select('fields, sections, signature_box, requires_signature, form_type, recreation_mode, background_pages, page_number_start, page_number_total_override')
+        .select('fields, sections, signature_box, requires_signature, form_type, recreation_mode, background_pages, page_number_start, page_number_total_override, photo_attachment_markers')
         .eq('id', template.source_job_form_id)
         .maybeSingle();
       if (sourceErr || !sourceForm) return jsonResponse({ error: 'Source form not found' }, 404);
+
+      // Defense in depth: even with the form_templates-level trigger, a
+      // template row could theoretically be repointed at a broken source
+      // via a path that bypasses that trigger (e.g. a future direct SQL
+      // edit before the trigger exists on a given environment). Refuse to
+      // copy a visual-recreation form that has fields but zero saved
+      // positions, rather than silently propagating the same corruption
+      // that hit job_forms.id=15 into every business that clicks "Use
+      // This Template."
+      if (sourceForm.recreation_mode === 'visual_recreation') {
+        const sourceFields: any[] = sourceForm.fields ?? [];
+        const boxedCount = sourceFields.filter((f) => f?.box != null).length;
+        if (sourceFields.length > 0 && boxedCount === 0) {
+          return jsonResponse({
+            error: 'This template\'s source form has no saved field positions and cannot be copied right now. It needs to be re-extracted or fixed before it can be shared.',
+          }, 409);
+        }
+      }
 
       // Create the new row FIRST (empty background_pages) so there's a
       // real id to build destination storage paths from — pages are
@@ -212,6 +230,7 @@ Deno.serve(async (req: Request) => {
           sections: sourceForm.sections ?? [],
           signature_box: sourceForm.signature_box ?? null,
           requires_signature: sourceForm.requires_signature ?? false,
+          photo_attachment_markers: sourceForm.photo_attachment_markers ?? [],
           recreation_mode: sourceForm.recreation_mode ?? 'standard',
           background_pages: [],
           page_number_start: sourceForm.page_number_start ?? 1,
@@ -249,7 +268,7 @@ Deno.serve(async (req: Request) => {
     // rather than incremental add/remove, simplest correct semantics for
     // a small multi-select UI.
     if (action === 'update_template_tags') {
-      const { form_template_id, tag_ids } = body;
+      const { form_template_id, tag_ids, title, description } = body;
       if (!form_template_id) return jsonResponse({ error: 'form_template_id is required' }, 400);
 
       const { data: template, error: templateErr } = await supabase
@@ -261,6 +280,25 @@ Deno.serve(async (req: Request) => {
 
       if (profile?.business_id && profile.business_id !== template.business_id) {
         return jsonResponse({ error: 'Not authorized to edit this template' }, 403);
+      }
+
+      // title/description are optional here — only sent (and only
+      // updated) when the caller is actually editing them, so a plain
+      // tag-only save from the existing Edit Tags dialog behaves exactly
+      // as before.
+      if (title !== undefined || description !== undefined) {
+        const metaUpdate: Record<string, unknown> = {};
+        if (title !== undefined) {
+          if (typeof title !== 'string' || !title.trim()) {
+            return jsonResponse({ error: 'title cannot be empty' }, 400);
+          }
+          metaUpdate.title = title.trim();
+        }
+        if (description !== undefined) {
+          metaUpdate.description = description === null ? null : String(description).trim() || null;
+        }
+        const { error: metaErr } = await supabase.from('form_templates').update(metaUpdate).eq('id', form_template_id);
+        if (metaErr) return jsonResponse({ error: 'Could not save title/description: ' + metaErr.message }, 500);
       }
 
       const tagIds: number[] = Array.isArray(tag_ids) ? tag_ids : [];

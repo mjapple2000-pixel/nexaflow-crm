@@ -150,16 +150,49 @@ class _JobFormsScreenState extends State<JobFormsScreen> {
     };
     final selected = Set<int>.from(currentTagIds);
     final newTagCtrl = TextEditingController();
+    final titleCtrl = TextEditingController(text: template['title'] as String? ?? '');
+    final descCtrl = TextEditingController(text: template['description'] as String? ?? '');
     if (!mounted) return;
     final saved = await showDialog<bool>(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDlgState) => AlertDialog(
           backgroundColor: AppTheme.cardBg,
-          title: const Text('Edit Tags', style: TextStyle(color: AppTheme.textPrimary, fontSize: 15)),
+          title: const Text('Edit Template', style: TextStyle(color: AppTheme.textPrimary, fontSize: 15)),
           content: SizedBox(
             width: 340,
             child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Text('Name', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
+              const SizedBox(height: 6),
+              TextField(
+                controller: titleCtrl,
+                style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                decoration: InputDecoration(
+                  isDense: true,
+                  filled: true,
+                  fillColor: AppTheme.pageBg,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(6)),
+                ),
+              ),
+              const SizedBox(height: 12),
+              const Text('Description', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
+              const SizedBox(height: 6),
+              TextField(
+                controller: descCtrl,
+                maxLines: 2,
+                style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                decoration: InputDecoration(
+                  isDense: true,
+                  filled: true,
+                  fillColor: AppTheme.pageBg,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(6)),
+                ),
+              ),
+              const SizedBox(height: 12),
+              const Text('Tags', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
+              const SizedBox(height: 6),
               Wrap(
                 spacing: 6,
                 runSpacing: 6,
@@ -264,6 +297,8 @@ class _JobFormsScreenState extends State<JobFormsScreen> {
           'action': 'update_template_tags',
           'form_template_id': template['id'],
           'tag_ids': selected.toList(),
+          'title': titleCtrl.text.trim(),
+          'description': descCtrl.text.trim(),
         }),
       );
       if (!mounted) return;
@@ -352,6 +387,10 @@ class _JobFormsScreenState extends State<JobFormsScreen> {
         onSaved: _load,
       ),
     );
+  }
+
+  void _handleFormTap(Map<String, dynamic> form) {
+    _openBuilder(existing: form);
   }
 
   Future<void> _openAiRecreation() async {
@@ -583,7 +622,7 @@ class _JobFormsScreenState extends State<JobFormsScreen> {
               return MouseRegion(
                 cursor: SystemMouseCursors.click,
                 child: GestureDetector(
-                  onTap: () => _openBuilder(existing: form),
+                  onTap: () => _handleFormTap(form),
                   child: Container(
                     margin: const EdgeInsets.only(bottom: 10),
                     padding: const EdgeInsets.all(16),
@@ -867,7 +906,7 @@ class _JobFormsScreenState extends State<JobFormsScreen> {
                               MouseRegion(
                                 cursor: SystemMouseCursors.click,
                                 child: IconButton(
-                                  tooltip: 'Edit Tags',
+                                  tooltip: 'Edit Template',
                                   icon: const Icon(Icons.sell_outlined, size: 18, color: AppTheme.textSecondary),
                                   onPressed: () => _editTemplateTags(t),
                                 ),
@@ -1033,6 +1072,7 @@ class _JobFormBuilderDialogState extends State<_JobFormBuilderDialog> {
   String? _error;
   int _fieldCounter = 0;
   int _originalFieldCount = 0;
+  bool _isVisualRecreation = false;
 
   static const _fieldTypes = ['checkbox', 'text', 'number', 'photo', 'select'];
   static const _formTypes = ['checklist', 'inspection', 'authorization', 'before_after_photo'];
@@ -1044,6 +1084,7 @@ class _JobFormBuilderDialogState extends State<_JobFormBuilderDialog> {
     _nameCtrl = TextEditingController(text: e?['name'] as String? ?? '');
     _formType = e?['form_type'] as String? ?? 'checklist';
     _requiresSignature = e?['requires_signature'] as bool? ?? false;
+    _isVisualRecreation = (e?['recreation_mode'] as String?) == 'visual_recreation';
 
     if (e != null) {
       final rawFields = List<dynamic>.from(e['fields'] as List? ?? []);
@@ -1173,18 +1214,20 @@ class _JobFormBuilderDialogState extends State<_JobFormBuilderDialog> {
       setState(() => _error = 'Form name is required');
       return;
     }
-    if (_fields.isEmpty) {
+    if (!_isVisualRecreation && _fields.isEmpty) {
       setState(() => _error = 'Add at least one field');
       return;
     }
-    for (final f in _fields) {
-      if (f.labelCtrl.text.trim().isEmpty) {
-        setState(() => _error = 'Every field needs a label');
-        return;
+    if (!_isVisualRecreation) {
+      for (final f in _fields) {
+        if (f.labelCtrl.text.trim().isEmpty) {
+          setState(() => _error = 'Every field needs a label');
+          return;
+        }
       }
     }
 
-    if (_fields.length < _originalFieldCount) {
+    if (!_isVisualRecreation && _fields.length < _originalFieldCount) {
       final confirmed = await showDialog<bool>(
         context: context,
         builder: (ctx) => AlertDialog(
@@ -1224,31 +1267,33 @@ class _JobFormBuilderDialogState extends State<_JobFormBuilderDialog> {
         return;
       }
 
-      final fieldsJson = _fields.map((f) {
-        final map = <String, dynamic>{
-          'id': f.id,
-          'type': f.type,
-          'label': f.labelCtrl.text.trim(),
-          'required': f.required,
-          'editable_by_field_agent': f.editableByFieldAgent,
-        };
-        if (f.type == 'select') {
-          map['options'] = f.optionsCtrl.text
-              .split(',')
-              .map((s) => s.trim())
-              .where((s) => s.isNotEmpty)
-              .toList();
-        }
-        return map;
-      }).toList();
-
-      final payload = {
+      final payload = <String, dynamic>{
         'business_id': businessId,
         'name': _nameCtrl.text.trim(),
         'form_type': _formType,
-        'fields': fieldsJson,
         'requires_signature': _requiresSignature,
       };
+
+      if (!_isVisualRecreation) {
+        final fieldsJson = _fields.map((f) {
+          final map = <String, dynamic>{
+            'id': f.id,
+            'type': f.type,
+            'label': f.labelCtrl.text.trim(),
+            'required': f.required,
+            'editable_by_field_agent': f.editableByFieldAgent,
+          };
+          if (f.type == 'select') {
+            map['options'] = f.optionsCtrl.text
+                .split(',')
+                .map((s) => s.trim())
+                .where((s) => s.isNotEmpty)
+                .toList();
+          }
+          return map;
+        }).toList();
+        payload['fields'] = fieldsJson;
+      }
 
       if (widget.existing != null) {
         await _db.from('job_forms').update(payload).eq('id', widget.existing!['id']);
@@ -1388,39 +1433,56 @@ class _JobFormBuilderDialogState extends State<_JobFormBuilderDialog> {
                     activeColor: AppTheme.brand,
                   ),
                 ]),
-                const SizedBox(height: 20),
-                Row(children: [
-                  const Text('Checklist Fields',
-                      style: TextStyle(
-                          fontSize: 12, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 0.5)),
-                  const Spacer(),
-                  MouseRegion(
-                    cursor: SystemMouseCursors.click,
-                    child: TextButton.icon(
-                      onPressed: _addField,
-                      icon: const Icon(Icons.add, size: 15),
-                      label: const Text('Add Field', style: TextStyle(fontSize: 12)),
-                      style: TextButton.styleFrom(foregroundColor: AppTheme.brand),
-                    ),
-                  ),
-                ]),
-                const SizedBox(height: 8),
-                if (_fields.isEmpty)
+                if (_isVisualRecreation) ...[
+                  const SizedBox(height: 20),
                   Container(
                     width: double.infinity,
-                    padding: const EdgeInsets.all(20),
+                    padding: const EdgeInsets.all(14),
                     decoration: BoxDecoration(
                       color: AppTheme.pageBg,
                       borderRadius: BorderRadius.circular(8),
                       border: Border.all(color: AppTheme.borderColor),
                     ),
-                    child: const Center(
-                      child: Text('No fields yet — tap "Add Field" to start building your checklist.',
-                          style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+                    child: const Text(
+                      'This form was built with AI Form Recreation. Fields and their positions on the page are managed from Field Settings, not here — use the tune icon on this form to adjust them.',
+                      style: TextStyle(fontSize: 12, color: AppTheme.textSecondary, height: 1.5),
                     ),
-                  )
-                else
-                  ...List.generate(_fields.length, (i) => _buildFieldRow(i, key: ValueKey(_fields[i].id))),
+                  ),
+                ] else ...[
+                  const SizedBox(height: 20),
+                  Row(children: [
+                    const Text('Checklist Fields',
+                        style: TextStyle(
+                            fontSize: 12, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 0.5)),
+                    const Spacer(),
+                    MouseRegion(
+                      cursor: SystemMouseCursors.click,
+                      child: TextButton.icon(
+                        onPressed: _addField,
+                        icon: const Icon(Icons.add, size: 15),
+                        label: const Text('Add Field', style: TextStyle(fontSize: 12)),
+                        style: TextButton.styleFrom(foregroundColor: AppTheme.brand),
+                      ),
+                    ),
+                  ]),
+                  const SizedBox(height: 8),
+                  if (_fields.isEmpty)
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(20),
+                      decoration: BoxDecoration(
+                        color: AppTheme.pageBg,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: AppTheme.borderColor),
+                      ),
+                      child: const Center(
+                        child: Text('No fields yet — tap "Add Field" to start building your checklist.',
+                            style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+                      ),
+                    )
+                  else
+                    ...List.generate(_fields.length, (i) => _buildFieldRow(i, key: ValueKey(_fields[i].id))),
+                ],
               ]),
             ),
           ),

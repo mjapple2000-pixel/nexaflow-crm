@@ -121,7 +121,7 @@ Deno.serve(async (req) => {
     // ── 3. Load the template ──────────────────────────────────────────────────
     const { data: jobForm, error: formError } = await supabase
       .from("job_forms")
-      .select("id, name, form_type, fields, requires_signature, background_pages, photo_attachment_markers")
+      .select("id, name, form_type, fields, requires_signature, background_pages, photo_attachment_markers, signature_box")
       .eq("id", submission.job_form_id)
       .eq("business_id", businessId)
       .maybeSingle();
@@ -200,6 +200,7 @@ Deno.serve(async (req) => {
         form_type: jobForm.form_type,
         fields: jobForm.fields ?? [],
         requires_signature: jobForm.requires_signature === true,
+        signature_box: jobForm.signature_box ?? null,
         page_urls: pageUrls,
         photo_attachment_markers: jobForm.photo_attachment_markers ?? [],
         marker_photos: markerPhotosMap,
