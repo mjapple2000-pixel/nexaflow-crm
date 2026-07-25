@@ -7,6 +7,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../theme/app_theme.dart';
 import '../utils/business_utils.dart';
 import '../navigation/app_router.dart';
+import '../widgets/attach_job_form_dialog.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 
@@ -560,6 +561,20 @@ class _JobFormsScreenState extends State<JobFormsScreen> {
         Padding(
           padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
           child: Row(children: [
+            MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: OutlinedButton.icon(
+                onPressed: () => context.go('/reporting?tab=2'),
+                icon: const Icon(Icons.fact_check_outlined, size: 16),
+                label: const Text('Completed'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppTheme.textSecondary,
+                  side: const BorderSide(color: AppTheme.borderColor),
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+              ),
+            ),
             const Spacer(),
             MouseRegion(
               cursor: SystemMouseCursors.click,
@@ -674,6 +689,21 @@ class _JobFormsScreenState extends State<JobFormsScreen> {
                               ],
                             ]),
                           ],
+                        ),
+                      ),
+                      MouseRegion(
+                        cursor: SystemMouseCursors.click,
+                        child: IconButton(
+                          tooltip: 'Attach to Lead',
+                          icon: const Icon(Icons.person_add_alt_outlined, size: 18, color: AppTheme.textSecondary),
+                          onPressed: () => showDialog(
+                            context: context,
+                            builder: (ctx) => AttachJobFormDialog(
+                              jobFormId: (form['id'] as num).toInt(),
+                              jobFormName: form['name'] as String? ?? 'Job Form',
+                              onSaved: _load,
+                            ),
+                          ),
                         ),
                       ),
                       MouseRegion(

@@ -12,7 +12,8 @@ import '../widgets/office_job_form_viewer_sheet.dart';
 // ─────────────────────────────────────────────
 
 class ReportingScreen extends StatefulWidget {
-  const ReportingScreen({super.key});
+  final int initialTabIndex;
+  const ReportingScreen({super.key, this.initialTabIndex = 0});
 
   @override
   State<ReportingScreen> createState() => _ReportingScreenState();
@@ -65,7 +66,7 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
   @override
   void initState() {
     super.initState();
-    _reportTabController = TabController(length: 3, vsync: this);
+    _reportTabController = TabController(length: 3, vsync: this, initialIndex: widget.initialTabIndex);
     _loadData().then((_) => _loadChecklistsReport());
   }
 

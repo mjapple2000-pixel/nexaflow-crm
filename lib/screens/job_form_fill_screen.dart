@@ -13,6 +13,9 @@ import '../theme/app_theme.dart';
 bool _isAddressField(Map<String, dynamic> field) =>
     (field['label'] as String? ?? '').toLowerCase().contains('address');
 
+bool _isDateField(Map<String, dynamic> field) =>
+    (field['label'] as String? ?? '').toLowerCase().contains('date');
+
 // Caps a field at 3 lines by rejecting any edit that would introduce a
 // 4th — Enter still works to add lines 2 and 3, it just stops working
 // once the field is full, rather than growing without limit.
@@ -1791,6 +1794,45 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
       case 'number':
       case 'text':
       default:
+        if (_isDateField(field)) {
+          final raw = _answers[id]?.toString();
+          final parsed = raw != null && raw.isNotEmpty ? DateTime.tryParse(raw) : null;
+          final displayText = parsed != null
+              ? '${parsed.month}/${parsed.day}/${parsed.year}'
+              : '';
+          final dateBorderColor = required && displayText.isEmpty
+              ? AppTheme.error
+              : (displayText.isNotEmpty ? AppTheme.success : AppTheme.brand);
+          return GestureDetector(
+            onTap: () async {
+              final picked = await showDatePicker(
+                context: context,
+                initialDate: parsed ?? DateTime.now(),
+                firstDate: DateTime(2000),
+                lastDate: DateTime(2100),
+              );
+              if (picked != null) {
+                _onFieldChanged(id, picked.toIso8601String().split('T').first, save: true);
+              }
+            },
+            child: Container(
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.85),
+                border: Border.all(color: dateBorderColor),
+                borderRadius: BorderRadius.circular(3),
+              ),
+              alignment: Alignment.center,
+              child: Text(
+                displayText.isEmpty ? 'Tap to set date' : displayText,
+                style: TextStyle(
+                    fontSize: 10,
+                    color: displayText.isEmpty ? AppTheme.textSecondary : AppTheme.textPrimary),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          );
+        }
+
         final controller = _controllers[id];
         final focusNode = _focusNodes[id];
         final filled = (controller?.text.trim() ?? '').isNotEmpty;

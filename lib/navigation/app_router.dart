@@ -519,7 +519,10 @@ class AppRouter {
           GoRoute(
             path: '/reporting',
             name: 'reporting',
-            builder: (context, state) => const ReportingScreen(),
+            builder: (context, state) {
+              final tab = int.tryParse(state.uri.queryParameters['tab'] ?? '0') ?? 0;
+              return ReportingScreen(initialTabIndex: tab);
+            },
           ),
           GoRoute(
             path: '/settings',

@@ -4873,7 +4873,10 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
     try {
       await _db
           .from('job_form_submissions')
-          .update({'deleted_at': DateTime.now().toUtc().toIso8601String()})
+          .update({
+            'deleted_at': DateTime.now().toUtc().toIso8601String(),
+            'appointment_id': null,
+          })
           .eq('id', submissionId);
       await _loadAttachedForms();
     } catch (e) {
@@ -5247,6 +5250,25 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
   }
 
   Future<void> _delete() async {
+    if (_attachedForms.isNotEmpty) {
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Cannot Delete Appointment'),
+          content: Text(
+            'This appointment has ${_attachedForms.length} attached job form${_attachedForms.length == 1 ? '' : 's'}. '
+            'Remove ${_attachedForms.length == 1 ? 'it' : 'them'} from the Job Forms section below before deleting this appointment.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(),
+              child: const Text('OK'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
     bool confirmed = false;
     await showDialog<void>(
       context: context,
@@ -5264,8 +5286,18 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
     );
     if (!confirmed || !mounted) return;
     setState(() => _deleting = true);
-    await _db.from('appointments').delete().eq('id', widget.appointment['id']);
-    widget.onUpdated();
+    try {
+      await _db.from('appointments').delete().eq('id', widget.appointment['id']);
+      if (!mounted) return;
+      widget.onUpdated();
+    } catch (e) {
+      debugPrint('Delete appointment error: $e');
+      if (!mounted) return;
+      setState(() => _deleting = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not delete: $e'), backgroundColor: AppTheme.error),
+      );
+    }
   }
 
   int? _assignedToProfileId() {
