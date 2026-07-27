@@ -40,6 +40,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
 
   String _statusFilter = 'All';
   final _statuses = ['All','New','Confirmed','Showed','No-Show','Cancelled','Completed','Invalid','Rescheduled'];
+  final _apptSearchCtrl = TextEditingController();
 
   int _panelTab = 0;
   final _usersSearchCtrl     = TextEditingController();
@@ -88,6 +89,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
     _usersSearchCtrl.dispose();
     _calendarsSearchCtrl.dispose();
     _groupsSearchCtrl.dispose();
+    _apptSearchCtrl.dispose();
     super.dispose();
   }
 
@@ -155,8 +157,37 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
   }
 
   List<Map<String, dynamic>> get _filtered {
-    if (_statusFilter == 'All') return _appointments;
-    return _appointments.where((a) => a['status'] == _statusFilter).toList();
+    var list = _statusFilter == 'All'
+        ? _appointments
+        : _appointments.where((a) => a['status'] == _statusFilter).toList();
+
+    final query = _apptSearchCtrl.text.trim().toLowerCase();
+    if (query.isNotEmpty) {
+      list = list.where((a) {
+        final name     = (a['appointment_name'] ?? '').toString().toLowerCase();
+        final leadName = (a['lead_name']  ?? '').toString().toLowerCase();
+        final phone    = (a['lead_phone'] ?? '').toString().toLowerCase();
+        final assigned = (a['assigned_to'] ?? '').toString().toLowerCase();
+        return name.contains(query) || leadName.contains(query) ||
+               phone.contains(query) || assigned.contains(query);
+      }).toList();
+    }
+
+    final now = DateTime.now();
+    final upcoming = list.where((a) {
+      final dt = DateTime.tryParse(a['start_date_time'] ?? '');
+      return dt != null && !dt.isBefore(now);
+    }).toList()
+      ..sort((a, b) => (DateTime.tryParse(a['start_date_time'] ?? '') ?? now)
+          .compareTo(DateTime.tryParse(b['start_date_time'] ?? '') ?? now));
+    final past = list.where((a) {
+      final dt = DateTime.tryParse(a['start_date_time'] ?? '');
+      return dt == null || dt.isBefore(now);
+    }).toList()
+      ..sort((a, b) => (DateTime.tryParse(b['start_date_time'] ?? '') ?? now)
+          .compareTo(DateTime.tryParse(a['start_date_time'] ?? '') ?? now));
+
+    return [...upcoming, ...past];
   }
 
   ({int startHour, int endHour}) _visibleHourRange() {
@@ -795,6 +826,28 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
           _MiniStat(label: 'No-Show',   value: '${_appointments.where((a) => a['status'] == 'No-Show' || a['status'] == 'No Show').length}', color: const Color(0xFFf59e0b)),
         ]),
         const SizedBox(height: 16),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: SizedBox(
+          width: 340,
+          child: TextField(
+            controller: _apptSearchCtrl,
+            onChanged: (_) => setState(() {}),
+            style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+            decoration: InputDecoration(
+              hintText: 'Search by name, phone, or assigned to...',
+              hintStyle: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+              prefixIcon: const Icon(Icons.search, size: 16, color: AppTheme.textSecondary),
+              filled: true, fillColor: AppTheme.cardBg,
+              contentPadding: const EdgeInsets.symmetric(vertical: 10),
+              border:        OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
+              enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
+              focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.brand)),
+            ),
+          ),
+          ),
+        ),
+        const SizedBox(height: 12),
         Row(children: [
           ..._statuses.map((s) {
             final selected = _statusFilter == s;
@@ -828,6 +881,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
                       decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: AppTheme.borderColor))),
                       child: const Row(children: [
                         Expanded(flex: 3, child: Text('APPOINTMENT', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
+                        Expanded(flex: 2, child: Text('DATE',        style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
                         Expanded(flex: 2, child: Text('CONTACT',     style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
                         Expanded(flex: 2, child: Text('TIME',        style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
                         Expanded(flex: 2, child: Text('TYPE',        style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
@@ -843,6 +897,8 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
                         final startDt = DateTime.tryParse(appt['start_date_time'] ?? '') ?? DateTime.now();
                         final endDt   = DateTime.tryParse(appt['end_date_time']   ?? '') ?? DateTime.now();
                         final status  = appt['status'] ?? 'New';
+                        const dateMonths = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+                        final dateLabel = '${dateMonths[startDt.month-1]} ${startDt.day}, ${startDt.year}';
                         return MouseRegion(cursor: SystemMouseCursors.click, child: InkWell(
                           onTap: () => _showAppointmentDetail(appt),
                           child: Padding(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12), child: Row(children: [
@@ -851,6 +907,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
                               const SizedBox(width: 10),
                               Expanded(child: Text(appt['appointment_name'] ?? 'Untitled', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: AppTheme.textPrimary))),
                             ])),
+                            Expanded(flex: 2, child: Text(dateLabel, style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary))),
                             Expanded(flex: 2, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                               Text(appt['lead_name'] ?? '—', style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary)),
                               if ((appt['lead_phone'] ?? '').isNotEmpty) Text(appt['lead_phone'], style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),

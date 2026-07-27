@@ -89,6 +89,7 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
   final ImagePicker _picker = ImagePicker();
   final Set<String> _uploadingFieldIds = {};
   final Map<String, Uint8List> _localPhotoBytes = {};
+  Uint8List? _localSignatureBytes;
 
   final SignatureController _signatureController = SignatureController(
     penStrokeWidth: 3,
@@ -537,6 +538,7 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
         final data = jsonDecode(res.body) as Map<String, dynamic>;
         setState(() {
           _signatureUrl = data['path'] as String?;
+          _localSignatureBytes = bytes;
           _resigning = false;
           _savingSignature = false;
         });
@@ -748,6 +750,48 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
 
       case 'text':
       default:
+        if (_isDateField(field)) {
+          final raw = _answers[id]?.toString();
+          final parsed = raw != null && raw.isNotEmpty ? DateTime.tryParse(raw) : null;
+          final displayText = parsed != null
+              ? '${parsed.month}/${parsed.day}/${parsed.year}'
+              : '';
+          input = InkWell(
+            borderRadius: BorderRadius.circular(8),
+            onTap: () async {
+              final picked = await showDatePicker(
+                context: context,
+                initialDate: parsed ?? DateTime.now(),
+                firstDate: DateTime(2000),
+                lastDate: DateTime(2100),
+              );
+              if (picked != null) {
+                _onFieldChanged(id, picked.toIso8601String().split('T').first, save: true);
+              }
+            },
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+              decoration: BoxDecoration(
+                color: AppTheme.pageBg,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: AppTheme.borderColor),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.calendar_today_outlined, size: 16, color: AppTheme.textSecondary),
+                  const SizedBox(width: 10),
+                  Text(
+                    displayText.isEmpty ? 'Tap to set date' : displayText,
+                    style: TextStyle(
+                        fontSize: 13,
+                        color: displayText.isEmpty ? AppTheme.textSecondary : AppTheme.textPrimary),
+                  ),
+                ],
+              ),
+            ),
+          );
+          break;
+        }
         final isAddress = _isAddressField(field);
         input = TextFormField(
           controller: _controllers[id],
@@ -1157,6 +1201,7 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
   Widget _buildVisualFormScaffold() {
     return Scaffold(
       backgroundColor: AppTheme.pageBg,
+      resizeToAvoidBottomInset: false,
       body: SafeArea(
         child: Column(
           children: [
@@ -1236,7 +1281,9 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
                           child: Stack(
                             children: [
                               Positioned.fill(
-                                child: Image.network(_pageUrls[i], fit: BoxFit.fill),
+                                child: RepaintBoundary(
+                                  child: Image.network(_pageUrls[i], fit: BoxFit.fill),
+                                ),
                               ),
                               ...pageFields.map((f) => _buildPositionedField(f, finalW, h)),
                               ...pageMarkers.map((m) => _buildPositionedPhotoMarker(m, finalW, h)),
@@ -1465,21 +1512,28 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
       top: h * (y / 100),
       width: finalW * (bw / 100),
       height: h * (bh / 100),
-      child: GestureDetector(
-        onTap: _showSignatureDialog,
-        child: Container(
-          decoration: BoxDecoration(
-            border: Border.all(color: signed ? AppTheme.success : AppTheme.brand, width: 1.5),
-            color: signed
-                ? AppTheme.success.withValues(alpha: 0.12)
-                : Colors.white.withValues(alpha: 0.7),
-            borderRadius: BorderRadius.circular(3),
-          ),
-          alignment: Alignment.center,
-          child: Icon(
-            signed ? Icons.check_circle_outline_rounded : Icons.draw_outlined,
-            size: 14,
-            color: signed ? AppTheme.success : AppTheme.brand,
+      child: RepaintBoundary(
+        child: GestureDetector(
+          onTap: _showSignatureDialog,
+          child: Container(
+            decoration: BoxDecoration(
+              border: Border.all(color: signed ? AppTheme.success : AppTheme.brand, width: 1.5),
+              color: signed
+                  ? Colors.white.withValues(alpha: 0.9)
+                  : Colors.white.withValues(alpha: 0.7),
+              borderRadius: BorderRadius.circular(3),
+            ),
+            alignment: Alignment.center,
+            clipBehavior: Clip.hardEdge,
+            child: signed
+                ? (_localSignatureBytes != null
+                    ? Image.memory(_localSignatureBytes!, fit: BoxFit.contain)
+                    : (_signatureSignedUrl != null
+                        ? Image.network(_signatureSignedUrl!, fit: BoxFit.contain,
+                            errorBuilder: (_, __, ___) => const Icon(
+                                Icons.check_circle_outline_rounded, size: 14, color: AppTheme.success))
+                        : const Icon(Icons.check_circle_outline_rounded, size: 14, color: AppTheme.success)))
+                : const Icon(Icons.draw_outlined, size: 14, color: AppTheme.brand),
           ),
         ),
       ),
@@ -1682,7 +1736,7 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
       top: h * (y / 100),
       width: finalW * (bw / 100),
       height: h * (bh / 100),
-      child: _buildFieldInput(field),
+      child: RepaintBoundary(child: _buildFieldInput(field)),
     );
   }
 
@@ -1815,21 +1869,26 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
                 _onFieldChanged(id, picked.toIso8601String().split('T').first, save: true);
               }
             },
-            child: Container(
-              decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: 0.85),
-                border: Border.all(color: dateBorderColor),
-                borderRadius: BorderRadius.circular(3),
-              ),
-              alignment: Alignment.center,
-              child: Text(
-                displayText.isEmpty ? 'Tap to set date' : displayText,
-                style: TextStyle(
-                    fontSize: 10,
-                    color: displayText.isEmpty ? AppTheme.textSecondary : AppTheme.textPrimary),
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
+            child: LayoutBuilder(builder: (ctx, constraints) {
+              final fontSize = (constraints.maxHeight * 0.55).clamp(6.0, 11.0);
+              return Container(
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.85),
+                  border: Border.all(color: dateBorderColor),
+                  borderRadius: BorderRadius.circular(3),
+                ),
+                alignment: Alignment.center,
+                clipBehavior: Clip.hardEdge,
+                child: Text(
+                  displayText.isEmpty ? 'Tap to set date' : displayText,
+                  style: TextStyle(
+                      fontSize: fontSize,
+                      color: displayText.isEmpty ? AppTheme.textSecondary : AppTheme.textPrimary),
+                  overflow: TextOverflow.ellipsis,
+                  maxLines: 1,
+                ),
+              );
+            }),
           );
         }
 
@@ -1843,29 +1902,37 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
             : (filled ? AppTheme.success : AppTheme.brand);
 
         if (!isAddress) {
-          return Container(
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.85),
-              border: Border.all(color: borderColor),
-              borderRadius: BorderRadius.circular(3),
-            ),
-            alignment: Alignment.center,
-            child: TextField(
-              controller: controller,
-              focusNode: focusNode,
-              maxLines: 1,
-              keyboardType: type == 'number'
-                  ? const TextInputType.numberWithOptions(decimal: true)
-                  : TextInputType.text,
-              style: const TextStyle(fontSize: 10, color: AppTheme.textPrimary),
-              textAlignVertical: TextAlignVertical.center,
-              decoration: const InputDecoration(
-                isDense: true,
-                contentPadding: EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                border: InputBorder.none,
-              ),
-              onChanged: (v) => setState(() => _dirty = true),
-            ),
+          final displayValue = controller?.text.trim() ?? '';
+          return GestureDetector(
+            onTap: () => _showCanvasTextEditDialog(id,
+                label: field['label'] as String? ?? '', isNumber: type == 'number'),
+            child: LayoutBuilder(builder: (ctx, constraints) {
+              final fontSize = (constraints.maxHeight * 0.72).clamp(8.0, 13.0);
+              return Container(
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.85),
+                  border: Border.all(color: borderColor),
+                  borderRadius: BorderRadius.circular(1),
+                ),
+                alignment: Alignment.center,
+                padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 0),
+                clipBehavior: Clip.hardEdge,
+                child: displayValue.isEmpty
+                    ? null
+                    : Text(
+                        displayValue,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontSize: fontSize,
+                          height: 1.0,
+                          color: AppTheme.textPrimary,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+              );
+            }),
           );
         }
 
@@ -1909,6 +1976,47 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
           );
         });
     }
+  }
+
+  void _showCanvasTextEditDialog(String fieldId, {String label = '', bool isNumber = false}) {
+    final ctrl = TextEditingController(text: _answers[fieldId]?.toString() ?? '');
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.cardBg,
+        title: label.isNotEmpty
+            ? Text(label, style: const TextStyle(fontSize: 14, color: AppTheme.textPrimary))
+            : null,
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          keyboardType:
+              isNumber ? const TextInputType.numberWithOptions(decimal: true) : TextInputType.text,
+          style: const TextStyle(fontSize: 14, color: AppTheme.textPrimary),
+          decoration: InputDecoration(
+            filled: true,
+            fillColor: AppTheme.pageBg,
+            contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.of(ctx, rootNavigator: true).pop();
+              _controllers[fieldId]?.text = ctrl.text;
+              _onFieldChanged(fieldId, ctrl.text, save: true);
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.brand, foregroundColor: Colors.white),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
   }
 
   void _showSelectSheet(String fieldId, List<String> options, String? current) {
