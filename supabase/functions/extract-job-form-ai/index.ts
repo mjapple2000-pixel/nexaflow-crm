@@ -472,9 +472,6 @@ Deno.serve(async (req: Request) => {
     const stageStart = Date.now();
     const ocrItems: Array<Record<string, unknown>> = [];
     const idCounter = { n: 1 };
-    let rawPage2Bottom: any[] = []; // TEMPORARY DIAGNOSTIC
-    let rawPage1InspectorBand: any[] = []; // TEMPORARY DIAGNOSTIC — tracking down missing "Company Address"
-    let rawPage1DoorTable: any[] = []; // TEMPORARY DIAGNOSTIC — tracking down split Door table rows
 
     // Download + Textract each page CONCURRENTLY. Page images are
     // deliberately NOT sent to GPT anymore (see below) — we only need the
@@ -501,71 +498,6 @@ Deno.serve(async (req: Request) => {
         const blocks = textractRes.Blocks ?? [];
         const tableRegions = parseTableBlocks(blocks, pageNum, ocrItems, idCounter);
         parseTextractBlocks(blocks, pageNum, ocrItems, idCounter, tableRegions);
-        // TEMPORARY DIAGNOSTIC — capture every raw block near the bottom
-        // third of page 2 (BlockType + text + geometry + confidence),
-        // regardless of type, so we can see whether Textract produced ANY
-        // block for the circled "A" initials that our pipeline currently
-        // never surfaces, versus it genuinely detecting nothing there.
-        if (pageNum === 2) {
-          rawPage2Bottom = blocks
-            .filter((b: any) => (b.Geometry?.BoundingBox?.Top ?? 0) > 0.75)
-            .map((b: any) => ({
-              type: b.BlockType,
-              text: b.Text ?? null,
-              confidence: b.Confidence ?? null,
-              box: toBoxPct(b.Geometry),
-            }));
-        }
-        // TEMPORARY DIAGNOSTIC — every raw block (any type) in the vertical
-        // band covering the Inspector section on page 1, to see exactly how
-        // Textract classified "Company Address" (or whether it exists as a
-        // block at all) instead of guessing.
-        if (pageNum === 1) {
-          rawPage1InspectorBand = blocks
-            .filter((b: any) => {
-              const top = b.Geometry?.BoundingBox?.Top ?? -1;
-              return top > 0.44 && top < 0.62;
-            })
-            .map((b: any) => ({
-              type: b.BlockType,
-              text: b.Text ?? null,
-              confidence: b.Confidence ?? null,
-              box: toBoxPct(b.Geometry),
-            }));
-        }
-        // TEMPORARY DIAGNOSTIC — every raw block covering the Door table
-        // (rows 2-4: Door Location/ID, Type of Door, Operation Type), to see
-        // whether "Swinging Door with Builders Hardware" is one MERGED_CELL
-        // or multiple separate CELLs, and which raw CELLs (if any) a
-        // MERGED_CELL references — instead of guessing at the fix.
-        if (pageNum === 1) {
-          const mergedCellChildIds = new Set<string>();
-          for (const b of blocks) {
-            if (b.BlockType === 'MERGED_CELL') {
-              const childIds = (b.Relationships ?? [])
-                .filter((r: any) => r.Type === 'CHILD')
-                .flatMap((r: any) => r.Ids);
-              for (const id of childIds) mergedCellChildIds.add(id);
-            }
-          }
-          rawPage1DoorTable = blocks
-            .filter((b: any) => {
-              const top = b.Geometry?.BoundingBox?.Top ?? -1;
-              return top > 0.60 && top < 0.72;
-            })
-            .map((b: any) => ({
-              id: b.Id,
-              type: b.BlockType,
-              text: b.Text ?? null,
-              rowIndex: b.RowIndex ?? null,
-              columnIndex: b.ColumnIndex ?? null,
-              rowSpan: b.RowSpan ?? null,
-              columnSpan: b.ColumnSpan ?? null,
-              isChildOfMergedCell: mergedCellChildIds.has(b.Id),
-              confidence: b.Confidence ?? null,
-              box: toBoxPct(b.Geometry),
-            }));
-        }
       } catch (textractErr) {
         console.error(`Textract error on page ${pageNum}:`, textractErr);
       }
@@ -784,20 +716,6 @@ Deno.serve(async (req: Request) => {
         text_type: item.text_type ?? null, // temporary diagnostic field — see if HANDWRITING/PRINTED classification is the real cause of missed stray marks
       }));
     extracted.stray_marks = strayMarks;
-
-    // TEMPORARY DIAGNOSTIC — dumps every raw 'line' item Textract detected
-    // on page 2, before any claiming/filtering/dedupe logic touches it.
-    // This lets us see ground truth (does Textract even detect the "A"
-    // initials as separate items? are they merged into the adjacent
-    // sentence's LINE block? something else?) instead of guessing at a
-    // filter rule. Remove this block once #2 (missing page 2 initials) is
-    // diagnosed and fixed — it's not meant to ship long-term.
-    extracted.debug_raw_lines_page2 = ocrItems
-      .filter((item) => item.kind === 'line' && item.page === 2)
-      .map((item) => ({ id: item.id, text: item.text, box: item.box }));
-    extracted.debug_raw_blocks_page2_bottom = rawPage2Bottom;
-    extracted.debug_raw_blocks_page1_inspector = rawPage1InspectorBand;
-    extracted.debug_raw_blocks_page1_door_table = rawPage1DoorTable;
 
     await supabase.from('job_form_ai_drafts').update({
       status: 'ready_for_review',

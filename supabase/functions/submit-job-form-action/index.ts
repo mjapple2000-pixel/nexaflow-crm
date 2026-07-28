@@ -31,6 +31,9 @@ Deno.serve(async (req) => {
     let signedByName: string | null = null;
     let file: File | null = null;
     let businessIdParam: number | null = null;
+    let saveAsDefault = false;
+    let imageType: string | null = null;
+    let pageNumber: number | null = null;
 
     if (contentType.includes("multipart/form-data")) {
       const formData = await req.formData();
@@ -49,6 +52,10 @@ Deno.serve(async (req) => {
       file = formData.get("file") as File | null;
       const businessIdRaw = formData.get("business_id") as string | null;
       businessIdParam = businessIdRaw ? parseInt(businessIdRaw) : null;
+      saveAsDefault = (formData.get("save_as_default") as string | null) === "true";
+      imageType = formData.get("image_type") as string | null;
+      const pageNumberRaw = formData.get("page_number") as string | null;
+      pageNumber = pageNumberRaw ? parseInt(pageNumberRaw) : null;
     } else {
       const body = await req.json();
       token = body.token;
@@ -61,6 +68,8 @@ Deno.serve(async (req) => {
       markerId = body.marker_id ?? null;
       photoAttachmentId = body.photo_attachment_id ?? null;
       businessIdParam = body.business_id ?? null;
+      saveAsDefault = body.save_as_default === true;
+      imageType = body.image_type ?? null;
     }
 
     const authHeader = req.headers.get("Authorization");
@@ -72,7 +81,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    const validActions = ["save_answers", "upload_photo", "upload_signature", "delete_photo", "upload_marker_photo", "delete_marker_photo", "complete", "reopen_for_correction"];
+    const validActions = ["save_answers", "upload_photo", "upload_signature", "upload_initials", "apply_saved_image", "clear_signature", "clear_initials", "delete_photo", "upload_marker_photo", "delete_marker_photo", "upload_rendered_page", "complete", "reopen_for_correction"];
     if (!validActions.includes(action)) {
       return new Response(JSON.stringify({ error: "Invalid action" }), {
         status: 400,
@@ -147,7 +156,7 @@ Deno.serve(async (req) => {
     // ── 2. Load + validate submission belongs to this business ───────────────
     const { data: submission, error: subError } = await supabase
       .from("job_form_submissions")
-      .select("id, business_id, photo_urls, status, job_form_id, answers, appointment_id")
+      .select("id, business_id, photo_urls, status, job_form_id, answers, appointment_id, rendered_page_urls")
       .eq("id", submissionId)
       .eq("business_id", hubToken.business_id)
       .is("deleted_at", null)
@@ -383,6 +392,63 @@ Deno.serve(async (req) => {
       });
     }
 
+    // ── upload_rendered_page ────────────────────────────────────────────────
+    // Real screenshot of one background page's fully-rendered canvas (Fill
+    // Screen's RepaintBoundary.toImage() capture), uploaded per page at
+    // submit time. Stored as a page-ordered array so the PDF generator can
+    // use these captured images directly instead of re-deriving the same
+    // layout server-side from raw field coordinates — eliminates drift
+    // between what the tech actually saw and what the PDF shows.
+    if (action === "upload_rendered_page") {
+      if (!file || !pageNumber || pageNumber < 1) {
+        return new Response(JSON.stringify({ error: "file and a valid page_number are required" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      const path = `${hubToken.business_id}/${submissionId}/rendered-page-${pageNumber}-${Date.now()}.png`;
+
+      const { error: uploadError } = await supabase.storage
+        .from(BUCKET)
+        .upload(path, file, { contentType: file.type || "image/png" });
+
+      if (uploadError) {
+        return new Response(JSON.stringify({ error: "Error uploading rendered page: " + uploadError.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const existingRendered: string[] = Array.isArray(submission.rendered_page_urls)
+        ? [...submission.rendered_page_urls]
+        : [];
+      // Old renders for this page (if the tech re-submits after a
+      // correction) get removed from storage rather than left as orphans —
+      // this array is always the CURRENT true state, not a history.
+      const staleIndex = pageNumber - 1;
+      if (existingRendered[staleIndex]) {
+        await supabase.storage.from(BUCKET).remove([existingRendered[staleIndex]]);
+      }
+      existingRendered[staleIndex] = path;
+
+      const { error: updateError } = await supabase
+        .from("job_form_submissions")
+        .update({ rendered_page_urls: existingRendered })
+        .eq("id", submissionId);
+
+      if (updateError) {
+        return new Response(JSON.stringify({ error: "Error saving rendered page reference: " + updateError.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      return new Response(JSON.stringify({ success: true, path }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
     // ── upload_signature ───────────────────────────────────────────────────
     if (action === "upload_signature") {
       if (!file) {
@@ -420,7 +486,208 @@ Deno.serve(async (req) => {
         });
       }
 
+      if (saveAsDefault && hubToken.profile_id) {
+        await supabase
+          .from("profiles")
+          .update({ saved_signature_url: path })
+          .eq("id", hubToken.profile_id);
+      }
+
       return new Response(JSON.stringify({ success: true, path }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    // ── upload_initials ───────────────────────────────────────────────────
+    // Deliberately separate from upload_signature: each Initials cell has
+    // its own field_id and stores into answers[fieldId], not the single
+    // form-level signature_url column — every cell independently signed,
+    // never auto-filled from another cell.
+    if (action === "upload_initials") {
+      if (!file || !fieldId) {
+        return new Response(JSON.stringify({ error: "file and field_id are required" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      const path = `${hubToken.business_id}/${submissionId}/initials-${fieldId}-${Date.now()}.png`;
+
+      const { error: uploadError } = await supabase.storage
+        .from(BUCKET)
+        .upload(path, file, { contentType: file.type || "image/png" });
+
+      if (uploadError) {
+        return new Response(JSON.stringify({ error: "Error uploading initials: " + uploadError.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const currentAnswers = submission.answers ?? {};
+      const updatedAnswers = { ...currentAnswers, [fieldId]: path };
+
+      const { error: updateError } = await supabase
+        .from("job_form_submissions")
+        .update({
+          answers: updatedAnswers,
+          completed_by_profile_id: hubToken.profile_id,
+          status: submission.status === "not_started" ? "in_progress" : submission.status,
+        })
+        .eq("id", submissionId);
+
+      if (updateError) {
+        return new Response(JSON.stringify({ error: "Error saving initials reference: " + updateError.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      if (saveAsDefault && hubToken.profile_id) {
+        await supabase
+          .from("profiles")
+          .update({ saved_initials_url: path })
+          .eq("id", hubToken.profile_id);
+      }
+
+      return new Response(JSON.stringify({ success: true, path }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    // ── apply_saved_image ───────────────────────────────────────────────────
+    // Pulls in the tech's already-saved signature/initials (profile first,
+    // business default as fallback) without re-uploading — just references
+    // the same storage path.
+    if (action === "apply_saved_image") {
+      if (!imageType || (imageType !== "signature" && imageType !== "initials")) {
+        return new Response(JSON.stringify({ error: "image_type must be 'signature' or 'initials'" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      if (imageType === "initials" && !fieldId) {
+        return new Response(JSON.stringify({ error: "field_id is required for initials" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      let savedPath: string | null = null;
+      if (hubToken.profile_id) {
+        const { data: profileRow } = await supabase
+          .from("profiles")
+          .select("saved_signature_url, saved_initials_url")
+          .eq("id", hubToken.profile_id)
+          .maybeSingle();
+        savedPath = imageType === "signature" ? profileRow?.saved_signature_url ?? null : profileRow?.saved_initials_url ?? null;
+      }
+      if (!savedPath) {
+        const { data: bizRow } = await supabase
+          .from("businesses")
+          .select("default_signature_url, default_initials_url")
+          .eq("id", hubToken.business_id)
+          .maybeSingle();
+        savedPath = imageType === "signature" ? bizRow?.default_signature_url ?? null : bizRow?.default_initials_url ?? null;
+      }
+
+      if (!savedPath) {
+        return new Response(JSON.stringify({ error: "No saved image available." }), {
+          status: 404,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      if (imageType === "signature") {
+        const { error: updateError } = await supabase
+          .from("job_form_submissions")
+          .update({
+            signature_url: savedPath,
+            signed_by_name: signedByName ?? profile?.full_name ?? null,
+            signed_at: new Date().toISOString(),
+          })
+          .eq("id", submissionId);
+        if (updateError) {
+          return new Response(JSON.stringify({ error: "Error applying signature: " + updateError.message }), {
+            status: 500,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+      } else {
+        const currentAnswers = submission.answers ?? {};
+        const updatedAnswers = { ...currentAnswers, [fieldId as string]: savedPath };
+        const { error: updateError } = await supabase
+          .from("job_form_submissions")
+          .update({
+            answers: updatedAnswers,
+            completed_by_profile_id: hubToken.profile_id,
+            status: submission.status === "not_started" ? "in_progress" : submission.status,
+          })
+          .eq("id", submissionId);
+        if (updateError) {
+          return new Response(JSON.stringify({ error: "Error applying initials: " + updateError.message }), {
+            status: 500,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+      }
+
+      return new Response(JSON.stringify({ success: true, path: savedPath }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    // ── clear_signature ─────────────────────────────────────────────────────
+    // Fully unsigns the form-level signature — distinct from clearing the
+    // in-progress drawing pad client-side. Lets a tech back out of a wrong
+    // signature entirely and start over.
+    if (action === "clear_signature") {
+      const { error: updateError } = await supabase
+        .from("job_form_submissions")
+        .update({ signature_url: null, signed_by_name: null, signed_at: null })
+        .eq("id", submissionId);
+
+      if (updateError) {
+        return new Response(JSON.stringify({ error: "Error clearing signature: " + updateError.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      return new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    // ── clear_initials ──────────────────────────────────────────────────────
+    // Removes a single Initials cell's saved answer, keyed by field_id —
+    // every other cell on the form is untouched.
+    if (action === "clear_initials") {
+      if (!fieldId) {
+        return new Response(JSON.stringify({ error: "field_id is required" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      const currentAnswers = { ...(submission.answers ?? {}) };
+      delete currentAnswers[fieldId];
+
+      const { error: updateError } = await supabase
+        .from("job_form_submissions")
+        .update({ answers: currentAnswers })
+        .eq("id", submissionId);
+
+      if (updateError) {
+        return new Response(JSON.stringify({ error: "Error clearing initials: " + updateError.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      return new Response(JSON.stringify({ success: true }), {
         status: 200,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });

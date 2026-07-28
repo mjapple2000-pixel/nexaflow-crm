@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:http/http.dart' as http;
@@ -15,6 +17,8 @@ bool _isAddressField(Map<String, dynamic> field) =>
 
 bool _isDateField(Map<String, dynamic> field) =>
     (field['label'] as String? ?? '').toLowerCase().contains('date');
+
+bool _isInitialsField(Map<String, dynamic> field) => field['is_initials'] == true;
 
 // Caps a field at 3 lines by rejecting any edit that would introduce a
 // 4th — Enter still works to add lines 2 and 3, it just stops working
@@ -77,6 +81,12 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
   int _currentPageIndex = 0;
   final PageController _pageController = PageController();
   final TransformationController _transformController = TransformationController();
+  // One capture key per background page — lets the PDF generator use a
+  // real screenshot of the exact rendered canvas (background + every
+  // positioned field/marker/signature) instead of separately re-deriving
+  // that same layout server-side. Populated once _pageUrls is known.
+  List<GlobalKey> _pageCaptureKeys = [];
+  bool _capturingPages = false;
 
   final Map<String, TextEditingController> _controllers = {};
   final Map<String, FocusNode> _focusNodes = {};
@@ -90,6 +100,11 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
   final Set<String> _uploadingFieldIds = {};
   final Map<String, Uint8List> _localPhotoBytes = {};
   Uint8List? _localSignatureBytes;
+  Map<String, String?> _initialsSignedUrls = {};
+  String? _savedSignatureSignedUrl;
+  String? _savedInitialsSignedUrl;
+  final Map<String, Uint8List> _localInitialsBytes = {};
+  bool _signatureSaveAsDefault = false;
 
   final SignatureController _signatureController = SignatureController(
     penStrokeWidth: 3,
@@ -100,6 +115,7 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
   bool _resigning = false;
   bool _savingSignature = false;
   bool _completing = false;
+  bool _signatureOpenedAsDialog = false;
 
   @override
   void initState() {
@@ -171,9 +187,13 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
             ? Map<String, dynamic>.from(data['signature_box'] as Map)
             : null;
         _markerPhotos = Map<String, dynamic>.from(data['marker_photos'] ?? {});
+        _initialsSignedUrls = Map<String, String?>.from(data['initials_signed_urls'] ?? {});
+        _savedSignatureSignedUrl = data['saved_signature_signed_url'] as String?;
+        _savedInitialsSignedUrl = data['saved_initials_signed_url'] as String?;
         _loading = false;
       });
 
+      _pageCaptureKeys = List.generate(_pageUrls.length, (_) => GlobalKey());
       _initControllers();
       _startPeriodicSave();
     } catch (e) {
@@ -447,8 +467,88 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
     );
   }
 
+  // Screenshots each background page's fully-rendered canvas at native
+  // resolution — unaffected by whatever zoom the tech left the page at,
+  // since RepaintBoundary.toImage() always rasters its own subtree,
+  // ignoring the ancestor InteractiveViewer's transform. Runs at submit
+  // time so it reflects the FINAL filled state, not a mid-fill snapshot.
+  Future<List<Uint8List>> _captureAllPages() async {
+    final captured = <Uint8List>[];
+    final originalPage = _currentPageIndex;
+    for (var i = 0; i < _pageUrls.length; i++) {
+      if (i != _currentPageIndex) {
+        _pageController.jumpToPage(i);
+        // Let the jump settle and that page's images finish laying out
+        // before capturing — capturing in the same frame as the jump can
+        // grab a partially-built page.
+        await Future.delayed(const Duration(milliseconds: 300));
+      }
+      final key = i < _pageCaptureKeys.length ? _pageCaptureKeys[i] : null;
+      final boundary = key?.currentContext?.findRenderObject() as RenderRepaintBoundary?;
+      if (boundary == null) continue;
+      final image = await boundary.toImage(pixelRatio: 3.0);
+      final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+      if (byteData != null) captured.add(byteData.buffer.asUint8List());
+    }
+    if (originalPage != _currentPageIndex) {
+      _pageController.jumpToPage(originalPage);
+    }
+    return captured;
+  }
+
+  Future<bool> _uploadRenderedPages(List<Uint8List> pages) async {
+    for (var i = 0; i < pages.length; i++) {
+      final request = http.MultipartRequest('POST', Uri.parse('$_fnBase/submit-job-form-action'));
+      request.fields['token'] = widget.token;
+      request.fields['submission_id'] = widget.submissionId;
+      request.fields['action'] = 'upload_rendered_page';
+      request.fields['page_number'] = '${i + 1}';
+      request.files.add(http.MultipartFile.fromBytes('file', pages[i],
+          filename: 'page-${i + 1}.png', contentType: MediaType('image', 'png')));
+      final streamedRes = await request.send();
+      final res = await http.Response.fromStream(streamedRes);
+      if (!mounted) return false;
+      if (res.statusCode != 200) return false;
+    }
+    return true;
+  }
+
   Future<void> _completeForm() async {
     setState(() => _completing = true);
+    // Visual-recreation forms need their filled canvas captured and
+    // uploaded BEFORE the submission is marked complete — the PDF
+    // generator will read these captured pages directly, so completing
+    // without a successful capture would leave nothing to render from.
+    if (_pageUrls.isNotEmpty) {
+      setState(() => _capturingPages = true);
+      final captured = await _captureAllPages();
+      if (!mounted) return;
+      if (captured.length != _pageUrls.length) {
+        setState(() {
+          _capturingPages = false;
+          _completing = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Could not capture all pages — please try again.'),
+          backgroundColor: AppTheme.error,
+        ));
+        return;
+      }
+      final uploaded = await _uploadRenderedPages(captured);
+      if (!mounted) return;
+      if (!uploaded) {
+        setState(() {
+          _capturingPages = false;
+          _completing = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Could not save the filled form pages — please try again.'),
+          backgroundColor: AppTheme.error,
+        ));
+        return;
+      }
+      setState(() => _capturingPages = false);
+    }
     try {
       final res = await http.post(
         Uri.parse('$_fnBase/submit-job-form-action'),
@@ -523,6 +623,9 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
       if (_signedByNameCtrl.text.trim().isNotEmpty) {
         request.fields['signed_by_name'] = _signedByNameCtrl.text.trim();
       }
+      if (_signatureSaveAsDefault) {
+        request.fields['save_as_default'] = 'true';
+      }
       request.files.add(http.MultipartFile.fromBytes(
         'file',
         bytes,
@@ -542,6 +645,10 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
           _resigning = false;
           _savingSignature = false;
         });
+        if (_signatureSaveAsDefault) await _refreshSavedDefaults();
+        if (_signatureOpenedAsDialog && mounted && Navigator.of(context, rootNavigator: true).canPop()) {
+          Navigator.of(context, rootNavigator: true).pop();
+        }
       } else {
         setState(() => _savingSignature = false);
         if (mounted) {
@@ -554,6 +661,157 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
     } catch (e) {
       if (!mounted) return;
       setState(() => _savingSignature = false);
+    }
+  }
+
+  Future<void> _uploadSignatureFromLibrary() async {
+    final XFile? picked = await _picker.pickImage(source: ImageSource.gallery, imageQuality: 85);
+    if (picked == null) return;
+    if (!mounted) return;
+    setState(() => _savingSignature = true);
+    try {
+      final bytes = await picked.readAsBytes();
+      if (!mounted) return;
+      final request = http.MultipartRequest('POST', Uri.parse('$_fnBase/submit-job-form-action'));
+      request.fields['token'] = widget.token;
+      request.fields['submission_id'] = widget.submissionId;
+      request.fields['action'] = 'upload_signature';
+      if (_signedByNameCtrl.text.trim().isNotEmpty) {
+        request.fields['signed_by_name'] = _signedByNameCtrl.text.trim();
+      }
+      if (_signatureSaveAsDefault) {
+        request.fields['save_as_default'] = 'true';
+      }
+      request.files.add(http.MultipartFile.fromBytes(
+        'file',
+        bytes,
+        filename: picked.name.isNotEmpty ? picked.name : 'signature.jpg',
+        contentType: MediaType('image', 'jpeg'),
+      ));
+      final streamedRes = await request.send();
+      final res = await http.Response.fromStream(streamedRes);
+      if (!mounted) return;
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        setState(() {
+          _signatureUrl = data['path'] as String?;
+          _localSignatureBytes = bytes;
+          _resigning = false;
+          _savingSignature = false;
+        });
+        if (_signatureSaveAsDefault) await _refreshSavedDefaults();
+        if (_signatureOpenedAsDialog && mounted && Navigator.of(context, rootNavigator: true).canPop()) {
+          Navigator.of(context, rootNavigator: true).pop();
+        }
+      } else {
+        setState(() => _savingSignature = false);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('Signature upload failed — please try again.'),
+            backgroundColor: AppTheme.error,
+          ));
+        }
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _savingSignature = false);
+    }
+  }
+
+  // _signatureUrl only ever needs a null-check elsewhere (required-field
+  // validation, "signed" UI state) — it never gets re-displayed as a raw
+  // path, so a sentinel here is safe. The real signed URL for display
+  // comes from _savedSignatureSignedUrl, already resolved server-side.
+  Future<void> _useSavedSignature() async {
+    if (_savedSignatureSignedUrl == null) return;
+    setState(() => _savingSignature = true);
+    try {
+      final res = await http.post(
+        Uri.parse('$_fnBase/submit-job-form-action'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'token': widget.token,
+          'submission_id': widget.submissionId,
+          'action': 'apply_saved_image',
+          'image_type': 'signature',
+          if (_signedByNameCtrl.text.trim().isNotEmpty) 'signed_by_name': _signedByNameCtrl.text.trim(),
+        }),
+      );
+      if (!mounted) return;
+      if (res.statusCode == 200) {
+        setState(() {
+          _signatureUrl = 'saved';
+          _signatureSignedUrl = _savedSignatureSignedUrl;
+          _localSignatureBytes = null;
+          _resigning = false;
+          _savingSignature = false;
+        });
+        if (_signatureOpenedAsDialog && mounted && Navigator.of(context, rootNavigator: true).canPop()) {
+          Navigator.of(context, rootNavigator: true).pop();
+        }
+      } else {
+        setState(() => _savingSignature = false);
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _savingSignature = false);
+    }
+  }
+
+  // Cheap refresh of just the two "saved default" signed URLs, without
+  // reloading the whole form (which would reset controllers, dirty state,
+  // etc). Called after any save-as-default so "Use My Saved..." reflects
+  // the newest image in the SAME session, not only after a full reload.
+  Future<void> _refreshSavedDefaults() async {
+    try {
+      final uri = Uri.parse('$_fnBase/get-job-form-data').replace(
+        queryParameters: {
+          'token': widget.token,
+          'submission_id': widget.submissionId,
+        },
+      );
+      final res = await http.get(uri);
+      if (!mounted) return;
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        setState(() {
+          _savedSignatureSignedUrl = data['saved_signature_signed_url'] as String?;
+          _savedInitialsSignedUrl = data['saved_initials_signed_url'] as String?;
+        });
+      }
+    } catch (e) {
+      if (!mounted) return;
+    }
+  }
+
+  Future<void> _clearSignature({required void Function(VoidCallback) onRebuilt}) async {
+    try {
+      final res = await http.post(
+        Uri.parse('$_fnBase/submit-job-form-action'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'token': widget.token,
+          'submission_id': widget.submissionId,
+          'action': 'clear_signature',
+        }),
+      );
+      if (!mounted) return;
+      if (res.statusCode == 200) {
+        onRebuilt(() {
+          _signatureUrl = null;
+          _signatureSignedUrl = null;
+          _localSignatureBytes = null;
+          _resigning = true;
+          _signatureController.clear();
+        });
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Could not clear signature — please try again.'),
+          backgroundColor: AppTheme.error,
+        ));
+      }
+    } catch (e) {
+      if (!mounted) return;
     }
   }
 
@@ -849,7 +1107,18 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
     );
   }
 
-  Widget _buildSignatureSection() {
+  Widget _buildSignatureSection({void Function(void Function())? onLocalRebuild}) {
+    // The signature dialog is a separately-built Navigator route, so a
+    // plain setState() on this State object doesn't reach it — its content
+    // was already built once when showDialog's builder ran. onLocalRebuild
+    // is the dialog's own StatefulBuilder setState, threaded in so both the
+    // outer screen and the open dialog update together — same pattern
+    // already used for the Initials and marker-photo dialogs.
+    void triggerRebuild(VoidCallback fn) {
+      setState(fn);
+      onLocalRebuild?.call(() {});
+    }
+
     if (_signatureUrl != null && !_resigning) {
       return Container(
         margin: const EdgeInsets.only(bottom: 12),
@@ -869,7 +1138,12 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
                   style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
             ),
             TextButton(
-              onPressed: () => setState(() => _resigning = true),
+              onPressed: () => _clearSignature(onRebuilt: triggerRebuild),
+              child: const Text('Clear',
+                  style: TextStyle(fontSize: 12, color: AppTheme.error)),
+            ),
+            TextButton(
+              onPressed: () => triggerRebuild(() => _resigning = true),
               child: const Text('Re-sign',
                   style: TextStyle(fontSize: 12, color: AppTheme.brand)),
             ),
@@ -895,6 +1169,17 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
                   fontWeight: FontWeight.w600,
                   color: AppTheme.textPrimary)),
           const SizedBox(height: 8),
+          if (_savedSignatureSignedUrl != null) ...[
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: _savingSignature ? null : _useSavedSignature,
+                icon: const Icon(Icons.bookmark_outline_rounded, size: 16),
+                label: const Text('Use My Saved Signature', style: TextStyle(fontSize: 12)),
+              ),
+            ),
+            const SizedBox(height: 10),
+          ],
           TextField(
             controller: _signedByNameCtrl,
             style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary),
@@ -928,10 +1213,16 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
             children: [
               TextButton(
                 onPressed: () => _signatureController.clear(),
-                child: const Text('Clear',
+                child: const Text('Clear Drawing',
                     style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
               ),
               const Spacer(),
+              OutlinedButton.icon(
+                onPressed: _savingSignature ? null : _uploadSignatureFromLibrary,
+                icon: const Icon(Icons.photo_library_outlined, size: 14),
+                label: const Text('Upload', style: TextStyle(fontSize: 12)),
+              ),
+              const SizedBox(width: 8),
               ElevatedButton(
                 onPressed: _savingSignature ? null : _saveSignature,
                 style: ElevatedButton.styleFrom(
@@ -951,6 +1242,17 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
               ),
             ],
           ),
+          const SizedBox(height: 8),
+          Row(children: [
+            Checkbox(
+              value: _signatureSaveAsDefault,
+              onChanged: (v) => triggerRebuild(() => _signatureSaveAsDefault = v ?? false),
+            ),
+            const Expanded(
+              child: Text('Save as my default signature for next time',
+                  style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+            ),
+          ]),
         ],
       ),
     );
@@ -1275,20 +1577,23 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
                       maxScale: 4.0,
                       boundaryMargin: const EdgeInsets.all(80),
                       child: Center(
-                        child: SizedBox(
-                          width: finalW,
-                          height: h,
-                          child: Stack(
-                            children: [
-                              Positioned.fill(
-                                child: RepaintBoundary(
-                                  child: Image.network(_pageUrls[i], fit: BoxFit.fill),
+                        child: RepaintBoundary(
+                          key: i < _pageCaptureKeys.length ? _pageCaptureKeys[i] : null,
+                          child: SizedBox(
+                            width: finalW,
+                            height: h,
+                            child: Stack(
+                              children: [
+                                Positioned.fill(
+                                  child: RepaintBoundary(
+                                    child: Image.network(_pageUrls[i], fit: BoxFit.fill),
+                                  ),
                                 ),
-                              ),
-                              ...pageFields.map((f) => _buildPositionedField(f, finalW, h)),
-                              ...pageMarkers.map((m) => _buildPositionedPhotoMarker(m, finalW, h)),
-                              if (sigOnThisPage) _buildPositionedSignatureBox(sigBox, finalW, h),
-                            ],
+                                ...pageFields.map((f) => _buildPositionedField(f, finalW, h)),
+                                ...pageMarkers.map((m) => _buildPositionedPhotoMarker(m, finalW, h)),
+                                if (sigOnThisPage) _buildPositionedSignatureBox(sigBox, finalW, h),
+                              ],
+                            ),
                           ),
                         ),
                       ),
@@ -1473,14 +1778,22 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
   }
 
   void _showSignatureDialog() {
+    _signatureOpenedAsDialog = true;
     showDialog(
       context: context,
-      builder: (ctx) => Dialog(
-        backgroundColor: Colors.transparent,
-        insetPadding: const EdgeInsets.all(20),
-        child: SingleChildScrollView(child: _buildSignatureSection()),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlgState) => Dialog(
+          backgroundColor: Colors.transparent,
+          insetPadding: const EdgeInsets.all(20),
+          child: SingleChildScrollView(
+            child: _buildSignatureSection(onLocalRebuild: setDlgState),
+          ),
+        ),
       ),
-    ).then((_) => setState(() {}));
+    ).then((_) {
+      _signatureOpenedAsDialog = false;
+      setState(() {});
+    });
   }
 
   bool _hasValidBox(Map<String, dynamic> field) {
@@ -1554,19 +1867,21 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
       top: h * (y / 100),
       width: finalW * (bw / 100),
       height: h * (bh / 100),
-      child: GestureDetector(
-        onTap: () => _showMarkerPhotoSheet(marker),
-        child: Container(
-          decoration: BoxDecoration(
-            border: Border.all(color: photos.isEmpty ? Colors.teal : AppTheme.success, width: 1.5),
-            color: Colors.white.withValues(alpha: 0.85),
-            borderRadius: BorderRadius.circular(3),
-          ),
-          alignment: Alignment.center,
-          child: Icon(
-            photos.isEmpty ? Icons.add_a_photo_outlined : Icons.check_circle_outline_rounded,
-            size: 14,
-            color: photos.isEmpty ? Colors.teal : AppTheme.success,
+      child: RepaintBoundary(
+        child: GestureDetector(
+          onTap: () => _showMarkerPhotoSheet(marker),
+          child: Container(
+            decoration: BoxDecoration(
+              border: Border.all(color: photos.isEmpty ? Colors.teal : AppTheme.success, width: 1.5),
+              color: Colors.white.withValues(alpha: 0.85),
+              borderRadius: BorderRadius.circular(3),
+            ),
+            alignment: Alignment.center,
+            child: Icon(
+              photos.isEmpty ? Icons.add_a_photo_outlined : Icons.check_circle_outline_rounded,
+              size: 14,
+              color: photos.isEmpty ? Colors.teal : AppTheme.success,
+            ),
           ),
         ),
       ),
@@ -1740,6 +2055,40 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
     );
   }
 
+  double _measureTextWidth(String text, double fontSize, FontWeight weight) {
+    final painter = TextPainter(
+      text: TextSpan(
+        text: text,
+        style: TextStyle(fontSize: fontSize, fontWeight: weight, height: 1.0),
+      ),
+      maxLines: 1,
+      textDirection: TextDirection.ltr,
+    )..layout();
+    return painter.width;
+  }
+
+  // Word/Publisher-style autofit: start from the height-derived font size,
+  // then step down until the text's real measured width fits the box.
+  // Height alone isn't enough — a short box can still be wide enough for
+  // a large font, but a longer value ("Test Tech (QA)") needs the width
+  // check too, or it overflows past the box edge instead of shrinking.
+  double _fitFontSizeForBox({
+    required String text,
+    required double maxWidth,
+    required double maxHeight,
+    required double heightMultiplier,
+    required double minSize,
+    required double maxSize,
+    FontWeight weight = FontWeight.w500,
+  }) {
+    double fontSize = (maxHeight * heightMultiplier).clamp(minSize, maxSize);
+    if (text.isEmpty || maxWidth <= 0) return fontSize;
+    while (fontSize > minSize && _measureTextWidth(text, fontSize, weight) > maxWidth) {
+      fontSize -= 0.5;
+    }
+    return fontSize;
+  }
+
   // Renders the actual editable control for one field, positioned on the
   // canvas. Respects editable_by_field_agent — finally wired in here
   // rather than deferred again, since this rebuild touches every field's
@@ -1749,6 +2098,13 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
     final type = field['type'] as String? ?? 'text';
     final editable = field['editable_by_field_agent'] as bool? ?? true;
     final required = field['required'] as bool? ?? false;
+
+    // Initials are checked before the editable/type switch — like the
+    // signature box, signing is the field's whole purpose, so it's never
+    // gated behind editable_by_field_agent the way a text value would be.
+    if (_isInitialsField(field)) {
+      return _buildInitialsCanvasBox(field);
+    }
 
     if (!editable) {
       final val = _answers[id];
@@ -1907,7 +2263,15 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
             onTap: () => _showCanvasTextEditDialog(id,
                 label: field['label'] as String? ?? '', isNumber: type == 'number'),
             child: LayoutBuilder(builder: (ctx, constraints) {
-              final fontSize = (constraints.maxHeight * 0.72).clamp(8.0, 13.0);
+              const horizontalPadding = 6.0; // 3px each side, matches padding below
+              final fontSize = _fitFontSizeForBox(
+                text: displayValue,
+                maxWidth: constraints.maxWidth - horizontalPadding,
+                maxHeight: constraints.maxHeight,
+                heightMultiplier: 0.72,
+                minSize: 6.0,
+                maxSize: 12.0,
+              );
               return Container(
                 decoration: BoxDecoration(
                   color: Colors.white.withValues(alpha: 0.85),
@@ -1976,6 +2340,258 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
           );
         });
     }
+  }
+
+  Widget _buildInitialsCanvasBox(Map<String, dynamic> field) {
+    final id = field['id'] as String;
+    final signedUrl = _initialsSignedUrls[id];
+    final localBytes = _localInitialsBytes[id];
+    final signed = signedUrl != null || localBytes != null;
+    return GestureDetector(
+      onTap: () => _showInitialsCaptureDialog(id, field['label'] as String? ?? 'Initials', alreadySigned: signed),
+      child: Container(
+        decoration: BoxDecoration(
+          border: Border.all(color: signed ? AppTheme.success : AppTheme.brand, width: 1.5),
+          color: signed ? Colors.white.withValues(alpha: 0.9) : Colors.white.withValues(alpha: 0.7),
+          borderRadius: BorderRadius.circular(3),
+        ),
+        alignment: Alignment.center,
+        clipBehavior: Clip.hardEdge,
+        child: signed
+            ? (localBytes != null
+                ? Image.memory(localBytes, fit: BoxFit.contain)
+                : (signedUrl != null
+                    ? Image.network(signedUrl, fit: BoxFit.contain,
+                        errorBuilder: (_, __, ___) => const Icon(
+                            Icons.check_circle_outline_rounded, size: 12, color: AppTheme.success))
+                    : const Icon(Icons.check_circle_outline_rounded, size: 12, color: AppTheme.success)))
+            : const Icon(Icons.draw_outlined, size: 12, color: AppTheme.brand),
+      ),
+    );
+  }
+
+  // Each Initials cell is signed independently — no shared "sign once,
+  // apply everywhere" shortcut, per explicit product decision (an
+  // inspection's whole point is a real per-item check). "Use My Saved"
+  // still applies the tech's own saved initials image into THIS one
+  // cell only — it doesn't propagate to any other cell.
+  Future<void> _clearInitials(String fieldId) async {
+    try {
+      final res = await http.post(
+        Uri.parse('$_fnBase/submit-job-form-action'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'token': widget.token,
+          'submission_id': widget.submissionId,
+          'action': 'clear_initials',
+          'field_id': fieldId,
+        }),
+      );
+      if (!mounted) return;
+      if (res.statusCode == 200) {
+        setState(() {
+          _initialsSignedUrls.remove(fieldId);
+          _localInitialsBytes.remove(fieldId);
+        });
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Could not clear initials — please try again.'),
+          backgroundColor: AppTheme.error,
+        ));
+      }
+    } catch (e) {
+      if (!mounted) return;
+    }
+  }
+
+  void _showInitialsCaptureDialog(String fieldId, String label, {bool alreadySigned = false}) {
+    final localSigCtrl = SignatureController(
+      penStrokeWidth: 3,
+      penColor: Colors.black,
+      exportBackgroundColor: Colors.white,
+    );
+    bool saveAsDefault = false;
+    bool submitting = false;
+    showDialog(
+      context: context,
+      builder: (dctx) => StatefulBuilder(
+        builder: (dctx, setDlgState) {
+          Future<void> upload(Uint8List bytes, {String filename = 'initials.png', String mime = 'png'}) async {
+            setDlgState(() => submitting = true);
+            try {
+              final request =
+                  http.MultipartRequest('POST', Uri.parse('$_fnBase/submit-job-form-action'));
+              request.fields['token'] = widget.token;
+              request.fields['submission_id'] = widget.submissionId;
+              request.fields['action'] = 'upload_initials';
+              request.fields['field_id'] = fieldId;
+              if (saveAsDefault) request.fields['save_as_default'] = 'true';
+              request.files.add(http.MultipartFile.fromBytes('file', bytes,
+                  filename: filename, contentType: MediaType('image', mime)));
+              final streamedRes = await request.send();
+              final res = await http.Response.fromStream(streamedRes);
+              if (!mounted) return;
+              if (res.statusCode == 200) {
+                setState(() {
+                  _localInitialsBytes[fieldId] = bytes;
+                  _dirty = false;
+                });
+                if (saveAsDefault) await _refreshSavedDefaults();
+                Navigator.of(dctx, rootNavigator: true).pop();
+              } else {
+                setDlgState(() => submitting = false);
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                  content: Text('Could not save initials — please try again.'),
+                  backgroundColor: AppTheme.error,
+                ));
+              }
+            } catch (e) {
+              if (!mounted) return;
+              setDlgState(() => submitting = false);
+            }
+          }
+
+          Future<void> useSaved() async {
+            setDlgState(() => submitting = true);
+            try {
+              final res = await http.post(
+                Uri.parse('$_fnBase/submit-job-form-action'),
+                headers: {'Content-Type': 'application/json'},
+                body: jsonEncode({
+                  'token': widget.token,
+                  'submission_id': widget.submissionId,
+                  'action': 'apply_saved_image',
+                  'image_type': 'initials',
+                  'field_id': fieldId,
+                }),
+              );
+              if (!mounted) return;
+              if (res.statusCode == 200) {
+                setState(() {
+                  _initialsSignedUrls[fieldId] = _savedInitialsSignedUrl;
+                  _localInitialsBytes.remove(fieldId);
+                });
+                Navigator.of(dctx, rootNavigator: true).pop();
+              } else {
+                setDlgState(() => submitting = false);
+              }
+            } catch (e) {
+              if (!mounted) return;
+              setDlgState(() => submitting = false);
+            }
+          }
+
+          Future<void> pickFromLibrary() async {
+            final XFile? picked = await _picker.pickImage(source: ImageSource.gallery, imageQuality: 85);
+            if (picked == null) return;
+            final bytes = await picked.readAsBytes();
+            await upload(bytes, filename: picked.name.isNotEmpty ? picked.name : 'initials.jpg', mime: 'jpeg');
+          }
+
+          Future<void> saveDrawn() async {
+            if (localSigCtrl.isEmpty) {
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                content: Text('Please sign before saving.'),
+                backgroundColor: AppTheme.error,
+              ));
+              return;
+            }
+            final bytes = await localSigCtrl.toPngBytes();
+            if (bytes == null) return;
+            await upload(bytes);
+          }
+
+          return AlertDialog(
+            backgroundColor: AppTheme.cardBg,
+            title: Row(children: [
+              Expanded(child: Text(label, style: const TextStyle(fontSize: 14, color: AppTheme.textPrimary))),
+              if (alreadySigned)
+                TextButton(
+                  onPressed: submitting
+                      ? null
+                      : () {
+                          Navigator.of(dctx, rootNavigator: true).pop();
+                          _clearInitials(fieldId);
+                        },
+                  child: const Text('Clear', style: TextStyle(fontSize: 12, color: AppTheme.error)),
+                ),
+            ]),
+            content: SizedBox(
+              width: 320,
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                if (_savedInitialsSignedUrl != null) ...[
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: submitting ? null : useSaved,
+                      icon: const Icon(Icons.bookmark_outline_rounded, size: 16),
+                      label: const Text('Use My Saved Initials', style: TextStyle(fontSize: 12)),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  const Row(children: [
+                    Expanded(child: Divider()),
+                    Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 8),
+                      child: Text('or', style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                    ),
+                    Expanded(child: Divider()),
+                  ]),
+                  const SizedBox(height: 12),
+                ],
+                Container(
+                  height: 120,
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: AppTheme.borderColor),
+                  ),
+                  child: Signature(controller: localSigCtrl, backgroundColor: Colors.white),
+                ),
+                const SizedBox(height: 8),
+                Row(children: [
+                  TextButton(
+                    onPressed: () => localSigCtrl.clear(),
+                    child: const Text('Clear Drawing', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+                  ),
+                  const Spacer(),
+                  OutlinedButton.icon(
+                    onPressed: submitting ? null : pickFromLibrary,
+                    icon: const Icon(Icons.photo_library_outlined, size: 14),
+                    label: const Text('Upload', style: TextStyle(fontSize: 12)),
+                  ),
+                ]),
+                const SizedBox(height: 8),
+                Row(children: [
+                  Checkbox(
+                    value: saveAsDefault,
+                    onChanged: (v) => setDlgState(() => saveAsDefault = v ?? false),
+                  ),
+                  const Expanded(
+                    child: Text('Save as my default initials for next time',
+                        style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                  ),
+                ]),
+              ]),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dctx, rootNavigator: true).pop(),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                onPressed: submitting ? null : saveDrawn,
+                style: ElevatedButton.styleFrom(backgroundColor: AppTheme.brand, foregroundColor: Colors.white),
+                child: submitting
+                    ? const SizedBox(
+                        width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                    : const Text('Save'),
+              ),
+            ],
+          );
+        },
+      ),
+    ).then((_) => localSigCtrl.dispose());
   }
 
   void _showCanvasTextEditDialog(String fieldId, {String label = '', bool isNumber = false}) {

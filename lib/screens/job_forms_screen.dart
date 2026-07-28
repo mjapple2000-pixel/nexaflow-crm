@@ -2132,9 +2132,15 @@ class _FieldSettingsDialogState extends State<_FieldSettingsDialog> {
     }
   }
 
+  void _setIsInitials(Map<String, dynamic> field, bool v) {
+    setState(() => field['is_initials'] = v);
+  }
+
   Widget _toggleRow(Map<String, dynamic> field) {
     final required = field['required'] as bool? ?? false;
     final editable = field['editable_by_field_agent'] as bool? ?? true;
+    final isInitials = field['is_initials'] as bool? ?? false;
+    final isSignatureBox = field['_isSignatureBox'] == true;
     return Row(children: [
       SizedBox(
         height: 22, width: 38,
@@ -2153,6 +2159,20 @@ class _FieldSettingsDialogState extends State<_FieldSettingsDialog> {
         ),
       ),
       const Text('Editable', style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+      // Signature already has its own dedicated mechanism (signature_box
+      // column, requires_signature toggle) — offering "Initials" on that
+      // same entry would be a second, conflicting way to do the same job.
+      if (!isSignatureBox) ...[
+        const SizedBox(width: 12),
+        SizedBox(
+          height: 22, width: 38,
+          child: Transform.scale(
+            scale: 0.65,
+            child: Switch(value: isInitials, onChanged: (v) => _setIsInitials(field, v), activeColor: Colors.teal),
+          ),
+        ),
+        const Text('Initials', style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+      ],
     ]);
   }
 

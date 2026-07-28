@@ -77,6 +77,82 @@ function fitFontSize(font: any, text: string, maxWidthPt: number, defaultSize: n
   return size;
 }
 
+async function generateFromRenderedPages(
+  { submission, jobForm, submission_id, businessRow }: { submission: any; jobForm: any; submission_id: number; businessRow: any }
+) {
+  try {
+    const pdfSettings = businessRow?.pdf_settings ?? {};
+    const showPageNumbers = pdfSettings.show_page_numbers !== false;
+    const renderedPages: string[] = submission.rendered_page_urls ?? [];
+
+    const pdfDoc = await PDFDocument.create();
+    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+
+    // Each captured page already IS the complete, final look — background,
+    // every answer, checkbox mark, initials image, and signature all baked
+    // in by the Fill Screen's own render at submit time. Nothing gets
+    // stamped or drawn on top here except page numbers, which are the one
+    // thing that's a display setting rather than part of the filled form
+    // itself — same principle already used in generatePreviewPdf.
+    for (let i = 0; i < renderedPages.length; i++) {
+      const { data: imgBlob, error: dlErr } = await supabase.storage.from(BUCKET).download(renderedPages[i]);
+      if (dlErr || !imgBlob) {
+        console.error(`Failed to load rendered page ${i + 1}:`, dlErr?.message);
+        continue;
+      }
+      const imgBytes = new Uint8Array(await imgBlob.arrayBuffer());
+      const embeddedImg = await embedImageAuto(pdfDoc, imgBytes);
+      const { width: imgW, height: imgH } = embeddedImg.scale(1);
+
+      const page = pdfDoc.addPage([imgW, imgH]);
+      page.drawImage(embeddedImg, { x: 0, y: 0, width: imgW, height: imgH });
+    }
+
+    if (showPageNumbers) {
+      const startNum = jobForm.page_number_start ?? 1;
+      const allOutputPages = pdfDoc.getPages();
+      const totalNum = jobForm.page_number_total_override ?? allOutputPages.length;
+      allOutputPages.forEach((p: any, idx: number) => {
+        p.drawText(`Page ${startNum + idx} of ${totalNum}`, {
+          x: p.getWidth() - 100,
+          y: 14,
+          size: 8,
+          font,
+          color: rgb(0.42, 0.42, 0.46),
+        });
+      });
+    }
+
+    const pdfBytes = await pdfDoc.save();
+    const pdfPath = `${submission.business_id}/${submission_id}/completed-form.pdf`;
+
+    const { error: uploadError } = await supabase.storage
+      .from(BUCKET)
+      .upload(pdfPath, pdfBytes, { contentType: "application/pdf", upsert: true });
+
+    if (uploadError) {
+      return new Response(JSON.stringify({ error: "PDF upload failed: " + uploadError.message }), {
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    await supabase.from("job_form_submissions").update({ pdf_url: pdfPath }).eq("id", submission_id);
+
+    const { data: signed } = await supabase.storage.from(BUCKET).createSignedUrl(pdfPath, 3600);
+
+    return new Response(JSON.stringify({ success: true, path: pdfPath, url: signed?.signedUrl }), {
+      status: 200,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  } catch (err) {
+    return new Response(
+      JSON.stringify({ error: "Rendered-page PDF error: " + (err instanceof Error ? err.message : String(err)) }),
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
+  }
+}
+
 async function generateVisualRecreationPdf(
   { submission, jobForm, submission_id, businessRow }: { submission: any; jobForm: any; submission_id: number; businessRow: any }
 ) {
@@ -135,6 +211,44 @@ async function generateVisualRecreationPdf(
         const type = field.type ?? "text";
         const raw = answers[field.id];
 
+        // Initials cells store a single storage path (same shape as the
+        // main signature), not typed text — field.type is still "text"
+        // (they're built from table_cell OCR data), so this MUST be
+        // checked before the generic text branch below, or the raw
+        // storage path gets printed as literal text instead of the image
+        // it points to.
+        if (field.is_initials === true) {
+          if (field.box && raw) {
+            const { xPt, yBaselinePt, boxWidthPt, boxHeightPt } = boxToPdfPoint(field.box, imgW, imgH);
+            page.drawRectangle({
+              x: xPt - 2,
+              y: yBaselinePt - 2,
+              width: boxWidthPt + 4,
+              height: boxHeightPt + 4,
+              color: rgb(1, 1, 1),
+            });
+            try {
+              const { data: initialsData } = await supabase.storage.from(BUCKET).download(String(raw));
+              if (initialsData) {
+                const initialsImg = await embedImageAuto(pdfDoc, new Uint8Array(await initialsData.arrayBuffer()));
+                const scale = Math.min(boxWidthPt / initialsImg.width, boxHeightPt / initialsImg.height, 1) ||
+                  (boxWidthPt / initialsImg.width);
+                const drawW = initialsImg.width * scale;
+                const drawH = initialsImg.height * scale;
+                page.drawImage(initialsImg, {
+                  x: xPt + (boxWidthPt - drawW) / 2,
+                  y: yBaselinePt + (boxHeightPt - drawH) / 2,
+                  width: drawW,
+                  height: drawH,
+                });
+              }
+            } catch (e) {
+              console.error("Initials embed error:", e);
+            }
+          }
+          continue;
+        }
+
         if (type === "photo") {
           continue; // no natural placement on a fixed background page
         }
@@ -188,7 +302,15 @@ async function generateVisualRecreationPdf(
             height: boxHeightPt + 4,
             color: rgb(1, 1, 1),
           });
-          const size = fitFontSize(font, text, boxWidthPt, RECREATION_FONT_SIZE);
+          // fitFontSize alone only ever shrinks for WIDTH — on a box this
+          // short (many NFPA-style rows are ~1.7-1.9% of page height),
+          // RECREATION_FONT_SIZE (20) massively overflows the box
+          // vertically into whatever field is drawn below it. Derive a
+          // height-based starting size first (same 0.72 ratio already
+          // proven correct in the Fill Screen's own autofit), then still
+          // let fitFontSize shrink further if the text is also too wide.
+          const heightBasedSize = Math.max(7, Math.min(RECREATION_FONT_SIZE, boxHeightPt * 0.72));
+          const size = fitFontSize(font, text, boxWidthPt, heightBasedSize);
           page.drawText(text, { x: xPt, y: yBaselinePt, size, font, color: rgb(0.75, 0, 0) });
         }
       }
@@ -555,7 +677,7 @@ Deno.serve(async (req) => {
 
     const { data: submission, error: subError } = await supabase
       .from("job_form_submissions")
-      .select("id, business_id, job_form_id, appointment_id, answers, photo_urls, signature_url, signed_by_name, signed_at, status")
+      .select("id, business_id, job_form_id, appointment_id, answers, photo_urls, signature_url, signed_by_name, signed_at, status, rendered_page_urls")
       .eq("id", submission_id)
       .maybeSingle();
 
@@ -584,6 +706,15 @@ Deno.serve(async (req) => {
     // the background image, so this branch only ever draws answer values
     // on top — nothing else — to stay visually faithful to the source.
     if (jobForm?.recreation_mode === "visual_recreation" && Array.isArray(jobForm?.background_pages) && jobForm.background_pages.length > 0) {
+      // Real screenshots of the tech's own filled-in canvas, captured by
+      // the Fill Screen at submit time — always preferred over re-deriving
+      // the layout server-side from raw field coordinates, since the
+      // screenshot IS what the tech actually saw, pixel for pixel. Older
+      // submissions completed before this capture existed fall back to the
+      // stamping renderer below.
+      if (Array.isArray(submission.rendered_page_urls) && submission.rendered_page_urls.length > 0) {
+        return await generateFromRenderedPages({ submission, jobForm, submission_id, businessRow });
+      }
       return await generateVisualRecreationPdf({ submission, jobForm, submission_id, businessRow });
     }
 

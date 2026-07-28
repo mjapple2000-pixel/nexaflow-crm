@@ -47,6 +47,7 @@ Deno.serve(async (req) => {
 
     // ── 1. Resolve caller: hub token (field) OR Supabase session (office) ────
     let businessId: number;
+    let profileId: number | null = null;
 
     if (token) {
       const { data: hubToken, error: tokenError } = await supabase
@@ -62,6 +63,7 @@ Deno.serve(async (req) => {
         });
       }
       businessId = hubToken.business_id;
+      profileId = hubToken.profile_id;
     } else {
       const { data: userData, error: userError } = await supabase.auth.getUser(
         authHeader!.replace("Bearer ", "")
@@ -74,7 +76,7 @@ Deno.serve(async (req) => {
       }
       const { data: profile, error: profileError } = await supabase
         .from("profiles")
-        .select("business_id")
+        .select("id, business_id")
         .eq("user_id", userData.user.id)
         .maybeSingle();
 
@@ -95,6 +97,7 @@ Deno.serve(async (req) => {
         }
       } else {
         businessId = profile.business_id;
+        profileId = profile.id;
       }
     }
 
@@ -171,6 +174,45 @@ Deno.serve(async (req) => {
       markerPhotosMap[row.marker_id].push({ id: row.id, signed_url: signedUrl });
     }
 
+    // ── 3e. Per-field Initials answers — each is_initials field's answer
+    // is a single storage path in submission.answers[field.id] (not a list,
+    // unlike photo fields). Signed individually so the Fill Screen can show
+    // what's already signed without a separate round-trip.
+    const initialsFields: any[] = (jobForm.fields ?? []).filter((f: any) => f.is_initials === true);
+    const initialsSignedUrls: Record<string, string | null> = {};
+    for (const f of initialsFields) {
+      const answerPath = (submission.answers as any)?.[f.id];
+      if (typeof answerPath === "string" && answerPath) {
+        initialsSignedUrls[f.id] = await getSignedUrl(answerPath);
+      }
+    }
+
+    // ── 3f. Saved signature/initials for this tech — profile first,
+    // business default as fallback, per the design decided when
+    // saved_signature_url/saved_initials_url were added.
+    let savedSignatureUrl: string | null = null;
+    let savedInitialsUrl: string | null = null;
+    if (profileId) {
+      const { data: profileRow } = await supabase
+        .from("profiles")
+        .select("saved_signature_url, saved_initials_url")
+        .eq("id", profileId)
+        .maybeSingle();
+      savedSignatureUrl = profileRow?.saved_signature_url ?? null;
+      savedInitialsUrl = profileRow?.saved_initials_url ?? null;
+    }
+    if (!savedSignatureUrl || !savedInitialsUrl) {
+      const { data: bizRow } = await supabase
+        .from("businesses")
+        .select("default_signature_url, default_initials_url")
+        .eq("id", businessId)
+        .maybeSingle();
+      if (!savedSignatureUrl) savedSignatureUrl = bizRow?.default_signature_url ?? null;
+      if (!savedInitialsUrl) savedInitialsUrl = bizRow?.default_initials_url ?? null;
+    }
+    const savedSignatureSignedUrl = await getSignedUrl(savedSignatureUrl);
+    const savedInitialsSignedUrl = await getSignedUrl(savedInitialsUrl);
+
     // ── 4. Appointment context (for header display) ──────────────────────────
     let appointmentInfo: any = null;
     if (submission.appointment_id) {
@@ -204,6 +246,9 @@ Deno.serve(async (req) => {
         page_urls: pageUrls,
         photo_attachment_markers: jobForm.photo_attachment_markers ?? [],
         marker_photos: markerPhotosMap,
+        initials_signed_urls: initialsSignedUrls,
+        saved_signature_signed_url: savedSignatureSignedUrl,
+        saved_initials_signed_url: savedInitialsSignedUrl,
         appointment_type: appointmentInfo?.appointment_type ?? null,
         lead_name: appointmentInfo?.lead_name ?? null,
         location: appointmentInfo?.location ?? null,

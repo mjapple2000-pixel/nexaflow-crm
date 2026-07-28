@@ -333,6 +333,25 @@ class _OfficeJobFormViewerSheetState extends State<OfficeJobFormViewerSheet> {
                       ),
                     ),
             ),
+            // Regenerate stays available even after a PDF already exists —
+            // a completed submission's underlying data (rendered pages,
+            // answers) can still change on the server side (e.g. a rebuilt
+            // renderer, a corrected field), and there was previously no way
+            // to get a fresh PDF without an actual new submission.
+            if (_pdfSignedUrl != null) ...[
+              const SizedBox(height: 8),
+              SizedBox(
+                width: double.infinity,
+                child: TextButton.icon(
+                  onPressed: _generatingPdf ? null : _generatePdf,
+                  icon: _generatingPdf
+                      ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Icon(Icons.refresh_rounded, size: 15, color: AppTheme.textSecondary),
+                  label: Text(_generatingPdf ? 'Regenerating...' : 'Regenerate PDF',
+                      style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+                ),
+              ),
+            ],
             const SizedBox(height: 16),
             ..._fields.map(_buildAnswerField),
             if (_signatureSignedUrl != null)
