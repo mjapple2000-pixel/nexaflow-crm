@@ -73,7 +73,7 @@ Deno.serve(async (req) => {
 
     let submissionsQuery = supabase
       .from("job_form_submissions")
-      .select("id, job_form_id, appointment_id, completed_by_profile_id, status, updated_at")
+      .select("id, job_form_id, appointment_id, completed_by_profile_id, status, updated_at, submission_label")
       .eq("business_id", businessId)
       .is("deleted_at", null)
       .gte("updated_at", since)
@@ -133,6 +133,7 @@ Deno.serve(async (req) => {
         submission_id: r.id,
         status: r.status,
         form_name: form?.name ?? "Unknown Form",
+        submission_label: r.submission_label ?? null,
         completed_by_name: appt?.assigned_to ?? completedBy?.full_name ?? "—",
         appointment_id: r.appointment_id,
         appointment_type: appt?.appointment_type ?? null,
@@ -146,6 +147,7 @@ Deno.serve(async (req) => {
       merged = merged.filter(
         (m) =>
           m.form_name.toLowerCase().includes(searchTerm) ||
+          (m.submission_label ?? "").toLowerCase().includes(searchTerm) ||
           m.completed_by_name.toLowerCase().includes(searchTerm) ||
           (m.lead_name ?? "").toLowerCase().includes(searchTerm)
       );

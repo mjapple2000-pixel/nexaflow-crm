@@ -108,6 +108,55 @@ async function generateFromRenderedPages(
       page.drawImage(embeddedImg, { x: 0, y: 0, width: imgW, height: imgH });
     }
 
+    // Photo markers only ever show a camera/checkmark icon on the Fill
+    // Screen canvas — the actual photo is never part of the captured
+    // screenshot pages above. Each uploaded marker photo gets its own
+    // appended page here instead, labeled with the marker's name, so
+    // nothing the tech actually photographed is lost from the PDF.
+    const markers: any[] = jobForm.photo_attachment_markers ?? [];
+    const markerLabelById = new Map<string, string>();
+    for (const m of markers) {
+      if (m?.id) markerLabelById.set(String(m.id), m.label ?? "Photo");
+    }
+
+    const { data: markerPhotos } = await supabase
+      .from("job_form_photo_attachments")
+      .select("marker_id, storage_path, created_at")
+      .eq("submission_id", submission_id)
+      .is("deleted_at", null)
+      .order("marker_id", { ascending: true })
+      .order("created_at", { ascending: true });
+
+    for (const photo of markerPhotos ?? []) {
+      try {
+        const { data: photoBlob, error: photoDlErr } = await supabase.storage.from(BUCKET).download(photo.storage_path);
+        if (photoDlErr || !photoBlob) {
+          console.error(`Failed to load marker photo ${photo.storage_path}:`, photoDlErr?.message);
+          continue;
+        }
+        const photoBytes = new Uint8Array(await photoBlob.arrayBuffer());
+        const embeddedPhoto = await embedImageAuto(pdfDoc, photoBytes);
+
+        const photoPage = pdfDoc.addPage([PAGE_W, PAGE_H]);
+        const label = markerLabelById.get(String(photo.marker_id)) ?? "Photo";
+        photoPage.drawText(label, { x: MARGIN, y: PAGE_H - MARGIN, size: 14, font, color: TEXT_DARK });
+
+        const maxW = PAGE_W - MARGIN * 2;
+        const maxH = PAGE_H - MARGIN * 2 - 30;
+        const scale = Math.min(maxW / embeddedPhoto.width, maxH / embeddedPhoto.height, 1);
+        const drawW = embeddedPhoto.width * scale;
+        const drawH = embeddedPhoto.height * scale;
+        photoPage.drawImage(embeddedPhoto, {
+          x: MARGIN + (maxW - drawW) / 2,
+          y: MARGIN,
+          width: drawW,
+          height: drawH,
+        });
+      } catch (e) {
+        console.error("Marker photo embed error:", e);
+      }
+    }
+
     if (showPageNumbers) {
       const startNum = jobForm.page_number_start ?? 1;
       const allOutputPages = pdfDoc.getPages();
@@ -690,7 +739,7 @@ Deno.serve(async (req) => {
 
     const { data: jobForm } = await supabase
       .from("job_forms")
-      .select("name, fields, recreation_mode, background_pages, signature_box, page_number_start, page_number_total_override")
+      .select("name, fields, recreation_mode, background_pages, signature_box, page_number_start, page_number_total_override, photo_attachment_markers")
       .eq("id", submission.job_form_id)
       .maybeSingle();
 

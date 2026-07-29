@@ -3784,6 +3784,7 @@ class _AppointmentFormTabState extends State<_AppointmentFormTab> {
         'start_date_time':  _startDt.toUtc().toIso8601String(),
         'end_date_time':    _endDt.toUtc().toIso8601String(),
         'location':         _locationCtrl.text.trim(),
+        'lead_id':          _selectedLeadId != null ? int.tryParse(_selectedLeadId!) : null,
         'lead_name':        _contactCtrl.text.trim(),
         'lead_phone':       _phoneCtrl.text.trim(),
         'lead_email':       _emailCtrl.text.trim(),
@@ -4852,7 +4853,7 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
       final apptId = widget.appointment['id'] as int;
       final subs = await _db
           .from('job_form_submissions')
-          .select('id, status, job_form_id')
+          .select('id, status, job_form_id, submission_label')
           .eq('appointment_id', apptId)
           .filter('deleted_at', 'is', null)
           .order('created_at', ascending: true);
@@ -4876,6 +4877,7 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
         return {
           ...s,
           'form_name': form?['name'] ?? 'Unknown Form',
+          'submission_label': s['submission_label'],
         };
       }).toList();
 
@@ -4955,8 +4957,16 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
   }
 
   void _showAttachFormSheet(BuildContext context) {
-    final attachedFormIds = _attachedForms.map((s) => s['job_form_id']).toSet();
-    final unattached = _availableJobForms.where((f) => !attachedFormIds.contains(f['id'])).toList();
+    // Only block re-attaching a form that has an INCOMPLETE submission on
+    // this appointment — a completed one is done, and the same form may
+    // legitimately need to be filled out again for the same customer
+    // (e.g. a follow-up inspection). Blocking on any prior attachment,
+    // completed or not, was the actual bug here.
+    final incompleteFormIds = _attachedForms
+        .where((s) => (s['status'] as String? ?? '') != 'completed')
+        .map((s) => s['job_form_id'])
+        .toSet();
+    final unattached = _availableJobForms.where((f) => !incompleteFormIds.contains(f['id'])).toList();
 
     showModalBottomSheet(
       context: context,
@@ -5878,12 +5888,19 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
                 final name = sub['form_name'] as String? ?? 'Unknown Form';
                 final color = _formStatusColor(status);
                 final isCompleted = status == 'completed';
+                final label = sub['submission_label'] as String?;
                 final rowContent = Row(children: [
                   const Icon(Icons.assignment_outlined, size: 14, color: AppTheme.textSecondary),
                   const SizedBox(width: 8),
-                  Expanded(child: Text(name,
-                      style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary),
-                      overflow: TextOverflow.ellipsis)),
+                  Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text(name,
+                        style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary),
+                        overflow: TextOverflow.ellipsis),
+                    if (label != null && label.isNotEmpty)
+                      Text(label,
+                          style: const TextStyle(fontSize: 10, color: AppTheme.brand, fontStyle: FontStyle.italic),
+                          overflow: TextOverflow.ellipsis),
+                  ])),
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
                     decoration: BoxDecoration(

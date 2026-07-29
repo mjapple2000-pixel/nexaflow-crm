@@ -241,6 +241,7 @@ class _AttachJobFormDialogState extends State<AttachJobFormDialog> {
             'start_date_time': _startDt.toUtc().toIso8601String(),
             'end_date_time': _endDt.toUtc().toIso8601String(),
             'location': _locationCtrl.text.trim(),
+            'lead_id': leadId != null ? int.tryParse(leadId) : null,
             'lead_name': _contactCtrl.text.trim(),
             'lead_phone': _phoneCtrl.text.trim(),
             'lead_email': _emailCtrl.text.trim(),

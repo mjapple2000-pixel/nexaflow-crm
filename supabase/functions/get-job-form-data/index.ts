@@ -33,23 +33,52 @@ Deno.serve(async (req) => {
   try {
     const url = new URL(req.url);
     const token = url.searchParams.get("token");
+    const viewToken = url.searchParams.get("view_token");
     const submissionIdParam = url.searchParams.get("submission_id");
-    const submissionId = submissionIdParam ? parseInt(submissionIdParam) : null;
+    let submissionId = submissionIdParam ? parseInt(submissionIdParam) : null;
     const authHeader = req.headers.get("Authorization");
     const businessIdParam = url.searchParams.get("business_id");
 
-    if (!submissionId || (!token && !authHeader)) {
+    if (!viewToken && (!submissionId || (!token && !authHeader))) {
       return new Response(JSON.stringify({ error: "submission_id and either token or a session are required" }), {
         status: 400,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    // ── 1. Resolve caller: hub token (field) OR Supabase session (office) ────
+    // ── 1. Resolve caller: view token (read-only lead link), hub token
+    // (field), OR Supabase session (office). view_token identifies its OWN
+    // submission directly — a lead's link never carries a submission_id,
+    // only the token — and is deliberately never given a profileId, since
+    // there's no concept of "which tech is viewing" here and this path
+    // must never be able to save anything. This function only ever reads,
+    // so no further write-guarding is needed beyond that.
     let businessId: number;
     let profileId: number | null = null;
 
-    if (token) {
+    if (viewToken) {
+      const { data: viewSub, error: viewSubError } = await supabase
+        .from("job_form_submissions")
+        .select("id, business_id, status")
+        .eq("view_token", viewToken)
+        .is("deleted_at", null)
+        .maybeSingle();
+
+      if (viewSubError || !viewSub) {
+        return new Response(JSON.stringify({ error: "This link is no longer valid." }), {
+          status: 404,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      if (viewSub.status !== "completed") {
+        return new Response(JSON.stringify({ error: "This form is not ready to view yet." }), {
+          status: 404,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      businessId = viewSub.business_id;
+      submissionId = viewSub.id;
+    } else if (token) {
       const { data: hubToken, error: tokenError } = await supabase
         .from("employee_hub_tokens")
         .select("id, profile_id, business_id, revoked_at")
@@ -104,7 +133,7 @@ Deno.serve(async (req) => {
     // ── 2. Load submission, scoped to this business ──────────────────────────
     const { data: submission, error: subError } = await supabase
       .from("job_form_submissions")
-      .select("id, job_form_id, appointment_id, status, answers, photo_urls, signature_url, signed_by_name, signed_at, business_id, pdf_url")
+      .select("id, job_form_id, appointment_id, status, answers, photo_urls, signature_url, signed_by_name, signed_at, business_id, pdf_url, submission_label")
       .eq("id", submissionId)
       .eq("business_id", businessId)
       .is("deleted_at", null)
@@ -229,6 +258,7 @@ Deno.serve(async (req) => {
       JSON.stringify({
         submission_id: submission.id,
         status: submission.status,
+        submission_label: submission.submission_label ?? null,
         answers: submission.answers ?? {},
         photo_urls: rawPhotoUrls,
         photo_signed_urls: photoSignedUrlMap,

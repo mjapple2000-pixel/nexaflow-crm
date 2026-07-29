@@ -23,6 +23,7 @@ class _JobFormsScreenState extends State<JobFormsScreen> {
   bool _loading = true;
   List<Map<String, dynamic>> _forms = [];
   int? _previewingFormId;
+  final TextEditingController _formsSearchCtrl = TextEditingController();
 
   // Forms Library — shared templates browsing, toggled in place of the
   // normal job forms list rather than a separate route.
@@ -44,6 +45,7 @@ class _JobFormsScreenState extends State<JobFormsScreen> {
   @override
   void dispose() {
     _librarySearchCtrl.dispose();
+    _formsSearchCtrl.dispose();
     super.dispose();
   }
 
@@ -95,6 +97,48 @@ class _JobFormsScreenState extends State<JobFormsScreen> {
     }).toList();
   }
 
+  Future<String?> _promptForTemplateName(String defaultName) async {
+    final ctrl = TextEditingController(text: defaultName);
+    final result = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.cardBg,
+        title: const Text('Name This Form', style: TextStyle(color: AppTheme.textPrimary, fontSize: 15)),
+        content: SizedBox(
+          width: 320,
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            const Text(
+              'This is your own copy — name it whatever makes sense for your business. This does not change the shared template.',
+              style: TextStyle(fontSize: 12, color: AppTheme.textSecondary, height: 1.4),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: ctrl,
+              autofocus: true,
+              style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+              decoration: InputDecoration(
+                isDense: true,
+                filled: true,
+                fillColor: AppTheme.pageBg,
+                contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(6)),
+              ),
+            ),
+          ]),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(ctrl.text.trim().isEmpty ? defaultName : ctrl.text.trim()),
+            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.brand, foregroundColor: Colors.white, elevation: 0),
+            child: const Text('Add to My Forms'),
+          ),
+        ],
+      ),
+    );
+    return result;
+  }
+
   Future<void> _useTemplate(Map<String, dynamic> template) async {
     if (!_libraryAccessAllowed) {
       showDialog(
@@ -104,6 +148,8 @@ class _JobFormsScreenState extends State<JobFormsScreen> {
       return;
     }
     final templateId = (template['id'] as num).toInt();
+    final chosenName = await _promptForTemplateName(template['title'] as String? ?? 'Job Form');
+    if (chosenName == null) return;
     setState(() => _usingTemplateId = templateId);
     try {
       final businessId = _libraryBusinessId ?? await getActiveBusinessId();
@@ -118,6 +164,7 @@ class _JobFormsScreenState extends State<JobFormsScreen> {
           'action': 'use_template',
           'form_template_id': templateId,
           'business_id': businessId,
+          'name': chosenName,
         }),
       );
       if (!mounted) return;
@@ -128,7 +175,7 @@ class _JobFormsScreenState extends State<JobFormsScreen> {
         return;
       }
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('"${template['title']}" added to your Job Forms.')),
+        SnackBar(content: Text('"$chosenName" added to your Job Forms.')),
       );
       setState(() => _showLibrary = false);
       await _load();
@@ -467,6 +514,12 @@ class _JobFormsScreenState extends State<JobFormsScreen> {
         _ => AppTheme.textSecondary,
       };
 
+  List<Map<String, dynamic>> get _filteredForms {
+    final query = _formsSearchCtrl.text.trim().toLowerCase();
+    if (query.isEmpty) return _forms;
+    return _forms.where((f) => (f['name'] as String? ?? '').toLowerCase().contains(query)).toList();
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_loading) {
@@ -561,6 +614,26 @@ class _JobFormsScreenState extends State<JobFormsScreen> {
         Padding(
           padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
           child: Row(children: [
+            SizedBox(
+              width: 240,
+              child: TextField(
+                controller: _formsSearchCtrl,
+                onChanged: (_) => setState(() {}),
+                style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                decoration: InputDecoration(
+                  hintText: 'Search job forms...',
+                  prefixIcon: const Icon(Icons.search, size: 18),
+                  isDense: true,
+                  filled: true,
+                  fillColor: AppTheme.cardBg,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
+                  enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
+                  focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide(color: AppTheme.brand, width: 1.5)),
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
             MouseRegion(
               cursor: SystemMouseCursors.click,
               child: OutlinedButton.icon(
@@ -624,11 +697,18 @@ class _JobFormsScreenState extends State<JobFormsScreen> {
           ]),
         ),
         Expanded(
-          child: ListView.builder(
+          child: _filteredForms.isEmpty
+              ? Center(
+                  child: Text(
+                    'No forms match "${_formsSearchCtrl.text.trim()}"',
+                    style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary),
+                  ),
+                )
+              : ListView.builder(
             padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
-            itemCount: _forms.length,
+            itemCount: _filteredForms.length,
             itemBuilder: (_, i) {
-              final form = _forms[i];
+              final form = _filteredForms[i];
               final name = form['name'] as String? ?? '';
               final type = form['form_type'] as String? ?? 'checklist';
               final requiresSig = form['requires_signature'] as bool? ?? false;
@@ -829,6 +909,27 @@ class _JobFormsScreenState extends State<JobFormsScreen> {
               ),
             ),
           ]),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+          child: Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: AppTheme.pageBg,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: AppTheme.borderColor),
+            ),
+            child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Icon(Icons.info_outline_rounded, size: 16, color: AppTheme.textSecondary),
+              const SizedBox(width: 10),
+              const Expanded(
+                child: Text(
+                  'Forms Library templates are created and shared by other businesses using this platform. Vantagecaretech LLC does not review, endorse, or verify the accuracy, legality, or ownership of any shared template. By using or publishing a template here, you confirm you have the right to share its content and agree that Vantagecaretech LLC is not responsible for any errors, omissions, or intellectual property claims arising from templates you create, share, or use through this library.',
+                  style: TextStyle(fontSize: 11, color: AppTheme.textSecondary, height: 1.5),
+                ),
+              ),
+            ]),
+          ),
         ),
         if (!_libraryAccessAllowed)
           Padding(

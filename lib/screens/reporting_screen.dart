@@ -29,6 +29,9 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
   String? _checklistsError;
   String _checklistStatusFilter = 'all'; // all | not_started | started
   final _checklistSearchCtrl = TextEditingController();
+  final Set<int> _selectedSubmissionIds = {};
+  bool _sendingBulkEmail = false;
+  bool _resolvingRecipients = false;
 
   bool _loading = true;
   String? _error;
@@ -307,9 +310,10 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
     if (q.isEmpty) return _checklistSubmissions;
     return _checklistSubmissions.where((s) {
       final form = (s['form_name'] ?? '').toString().toLowerCase();
+      final label = (s['submission_label'] ?? '').toString().toLowerCase();
       final by = (s['completed_by_name'] ?? '').toString().toLowerCase();
       final lead = (s['lead_name'] ?? '').toString().toLowerCase();
-      return form.contains(q) || by.contains(q) || lead.contains(q);
+      return form.contains(q) || label.contains(q) || by.contains(q) || lead.contains(q);
     }).toList();
   }
 
@@ -341,6 +345,294 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
         backgroundColor: AppTheme.error,
       ));
     }
+  }
+
+  void _confirmDeleteSubmission(Map<String, dynamic> row) {
+    final submissionId = row['submission_id'] as int?;
+    if (submissionId == null) return;
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.cardBg,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        title: const Text('Delete Job Form Submission?',
+            style: TextStyle(color: AppTheme.textPrimary, fontSize: 15, fontWeight: FontWeight.w700)),
+        content: Text(
+          'This removes "${row['form_name'] ?? 'this form'}" for ${row['lead_name'] ?? 'this customer'} from Job Forms. '
+          'This cannot be undone.',
+          style: const TextStyle(color: AppTheme.textSecondary, fontSize: 13),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(),
+            child: const Text('Cancel', style: TextStyle(color: AppTheme.textSecondary)),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.of(ctx, rootNavigator: true).pop();
+              _deleteSubmission(submissionId);
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.error,
+              foregroundColor: Colors.white,
+              elevation: 0,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Soft delete, matching the pattern already established in
+  // job_forms_screen.dart's _detachForm — nulls appointment_id (not just
+  // deleted_at) so the appointment's own Job Forms section correctly
+  // stops showing it too, rather than leaving a dangling reference.
+  Future<void> _deleteSubmission(int submissionId) async {
+    try {
+      await _supabase.from('job_form_submissions').update({
+        'deleted_at': DateTime.now().toUtc().toIso8601String(),
+        'appointment_id': null,
+      }).eq('id', submissionId);
+      _selectedSubmissionIds.remove(submissionId);
+      await _loadChecklistsReport();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Failed to delete: $e'),
+        backgroundColor: AppTheme.error,
+      ));
+    }
+  }
+
+  // Sends every selected submission's forms to their respective leads —
+  // email-job-forms auto-groups by lead server-side, so a selection
+  // spanning multiple customers correctly becomes one email per customer,
+  // not one email listing everyone's forms together. No override_email
+  // here (unlike the single-form send) since a manually-typed address
+  // would incorrectly apply to every recipient in a mixed-lead batch.
+  // Resolves which lead(s) the current selection will actually email, so
+  // the dialog can show the real address(es) instead of sending blind.
+  // Goes submission -> appointment -> appointments.lead_id -> leads.lead_email,
+  // the same chain email-job-forms uses server-side, kept in sync with it.
+  Future<Map<String, dynamic>> _resolveSelectedRecipients() async {
+    final selectedRows = _checklistSubmissions
+        .where((r) => _selectedSubmissionIds.contains(r['submission_id'] as int?))
+        .toList();
+    final appointmentIds = selectedRows
+        .map((r) => r['appointment_id'] as int?)
+        .whereType<int>()
+        .toSet()
+        .toList();
+    final unlinkedCount = selectedRows.length - appointmentIds.length;
+
+    if (appointmentIds.isEmpty) {
+      return {'groups': <Map<String, dynamic>>[], 'unlinked': selectedRows.length};
+    }
+
+    final appts = await _supabase
+        .from('appointments')
+        .select('id, lead_id')
+        .inFilter('id', appointmentIds);
+    final leadIds = List<Map<String, dynamic>>.from(appts)
+        .map((a) => a['lead_id'] as int?)
+        .whereType<int>()
+        .toSet()
+        .toList();
+
+    final apptsWithoutLead = List<Map<String, dynamic>>.from(appts).where((a) => a['lead_id'] == null).length;
+
+    if (leadIds.isEmpty) {
+      return {'groups': <Map<String, dynamic>>[], 'unlinked': unlinkedCount + apptsWithoutLead};
+    }
+
+    final leads = await _supabase
+        .from('leads')
+        .select('id, lead_name, lead_email')
+        .inFilter('id', leadIds);
+
+    return {
+      'groups': List<Map<String, dynamic>>.from(leads),
+      'unlinked': unlinkedCount + apptsWithoutLead,
+    };
+  }
+
+  Future<void> _sendBulkEmail({required bool includePdf, required bool includeViewLink, String? overrideEmail}) async {
+    if (_selectedSubmissionIds.isEmpty || _businessId == null) return;
+    setState(() => _sendingBulkEmail = true);
+    try {
+      final token = _supabase.auth.currentSession?.accessToken;
+      if (token == null) throw Exception('Not authenticated');
+      final res = await http.post(
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/email-job-forms'),
+        headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'business_id': _businessId,
+          'submission_ids': _selectedSubmissionIds.toList(),
+          'include_pdf': includePdf,
+          'include_view_link': includeViewLink,
+          if (overrideEmail != null && overrideEmail.trim().isNotEmpty) 'override_email': overrideEmail.trim(),
+        }),
+      );
+      if (!mounted) return;
+      final data = res.statusCode == 200 ? jsonDecode(res.body) as Map<String, dynamic> : null;
+      final results = data != null ? List<dynamic>.from(data['results'] ?? []) : [];
+      final sentCount = results.where((r) => r['sent'] == true).length;
+      final failedCount = results.length - sentCount;
+      final skippedCount = data != null ? List<dynamic>.from(data['skipped'] ?? []).length : 0;
+
+      if (res.statusCode == 200 && results.isNotEmpty) {
+        setState(() => _selectedSubmissionIds.clear());
+        final parts = <String>['$sentCount email${sentCount == 1 ? '' : 's'} sent'];
+        if (failedCount > 0) parts.add('$failedCount failed');
+        if (skippedCount > 0) parts.add('$skippedCount form${skippedCount == 1 ? '' : 's'} skipped (no linked lead)');
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(parts.join(' · ')),
+          backgroundColor: failedCount > 0 ? AppTheme.error : AppTheme.success,
+        ));
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(data?['error'] as String? ?? 'Send failed.'),
+          backgroundColor: AppTheme.error,
+        ));
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Network error — please try again.'),
+        backgroundColor: AppTheme.error,
+      ));
+    } finally {
+      if (mounted) setState(() => _sendingBulkEmail = false);
+    }
+  }
+
+  Future<void> _showBulkEmailDialog() async {
+    setState(() => _resolvingRecipients = true);
+    Map<String, dynamic> resolved;
+    try {
+      resolved = await _resolveSelectedRecipients();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _resolvingRecipients = false);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Could not look up recipients: $e'),
+        backgroundColor: AppTheme.error,
+      ));
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _resolvingRecipients = false);
+
+    final groups = List<Map<String, dynamic>>.from(resolved['groups'] as List);
+    final unlinked = resolved['unlinked'] as int;
+    // Editing only makes sense when the whole selection resolves to
+    // exactly one recipient — a typed override can't be applied per-lead
+    // across a mixed batch, and email-job-forms only accepts one.
+    final singleGroup = groups.length == 1 ? groups.first : null;
+    final emailCtrl = TextEditingController(text: singleGroup?['lead_email'] as String? ?? '');
+
+    bool includePdf = true;
+    bool includeViewLink = true;
+    showDialog(
+      context: context,
+      builder: (dctx) => StatefulBuilder(
+        builder: (dctx, setDlgState) => AlertDialog(
+          backgroundColor: AppTheme.cardBg,
+          title: Text('Email ${_selectedSubmissionIds.length} Selected Form${_selectedSubmissionIds.length == 1 ? '' : 's'}',
+              style: const TextStyle(fontSize: 15, color: AppTheme.textPrimary)),
+          content: SizedBox(
+            width: 360,
+            child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+              if (groups.isEmpty)
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: AppTheme.error.withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Text(
+                    'None of the selected forms are linked to a lead with an email on file — nothing will send.',
+                    style: TextStyle(fontSize: 12, color: AppTheme.error),
+                  ),
+                )
+              else if (singleGroup != null) ...[
+                const Text('Recipient', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
+                const SizedBox(height: 6),
+                Text(singleGroup['lead_name'] as String? ?? '', style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary)),
+                const SizedBox(height: 6),
+                TextField(
+                  controller: emailCtrl,
+                  style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                  decoration: InputDecoration(
+                    hintText: 'Recipient email',
+                    isDense: true,
+                    filled: true,
+                    fillColor: AppTheme.pageBg,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(6)),
+                  ),
+                ),
+              ] else ...[
+                const Text('Recipients', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
+                const SizedBox(height: 6),
+                ...groups.map((g) => Padding(
+                      padding: const EdgeInsets.only(bottom: 4),
+                      child: Text(
+                        '${g['lead_name'] ?? 'Unknown'} — ${g['lead_email'] ?? 'no email on file'}',
+                        style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary),
+                      ),
+                    )),
+                const SizedBox(height: 4),
+                const Text('Multiple recipients — email addresses can\'t be edited for a mixed batch.',
+                    style: TextStyle(fontSize: 11, color: AppTheme.textSecondary, fontStyle: FontStyle.italic)),
+              ],
+              if (unlinked > 0) ...[
+                const SizedBox(height: 8),
+                Text('$unlinked selected form${unlinked == 1 ? '' : 's'} will be skipped (no linked lead).',
+                    style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+              ],
+              const SizedBox(height: 14),
+              CheckboxListTile(
+                value: includePdf,
+                onChanged: (v) => setDlgState(() => includePdf = v ?? false),
+                title: const Text('Include PDF link', style: TextStyle(fontSize: 13, color: AppTheme.textPrimary)),
+                controlAffinity: ListTileControlAffinity.leading,
+                contentPadding: EdgeInsets.zero,
+                dense: true,
+              ),
+              CheckboxListTile(
+                value: includeViewLink,
+                onChanged: (v) => setDlgState(() => includeViewLink = v ?? false),
+                title: const Text('Include read-only "View Online" link',
+                    style: TextStyle(fontSize: 13, color: AppTheme.textPrimary)),
+                controlAffinity: ListTileControlAffinity.leading,
+                contentPadding: EdgeInsets.zero,
+                dense: true,
+              ),
+            ]),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.of(dctx, rootNavigator: true).pop(), child: const Text('Cancel')),
+            ElevatedButton(
+              onPressed: (groups.isEmpty || (!includePdf && !includeViewLink))
+                  ? null
+                  : () {
+                      Navigator.of(dctx, rootNavigator: true).pop();
+                      _sendBulkEmail(
+                        includePdf: includePdf,
+                        includeViewLink: includeViewLink,
+                        overrideEmail: singleGroup != null ? emailCtrl.text : null,
+                      );
+                    },
+              style: ElevatedButton.styleFrom(backgroundColor: AppTheme.brand, foregroundColor: Colors.white, elevation: 0),
+              child: const Text('Send'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   @override
@@ -567,7 +859,46 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
               ),
             ),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 12),
+          Row(children: [
+            TextButton.icon(
+              onPressed: rows.where((r) => (r['status'] as String? ?? '') == 'completed').isEmpty
+                  ? null
+                  : () => setState(() {
+                        _selectedSubmissionIds.addAll(rows
+                            .where((r) => (r['status'] as String? ?? '') == 'completed')
+                            .map((r) => r['submission_id'] as int));
+                      }),
+              icon: const Icon(Icons.checklist_rounded, size: 15),
+              label: Text('Select All${_checklistSearchCtrl.text.trim().isNotEmpty ? ' Matching' : ''} Completed'),
+              style: TextButton.styleFrom(foregroundColor: AppTheme.textSecondary),
+            ),
+            if (_selectedSubmissionIds.isNotEmpty) ...[
+              const SizedBox(width: 8),
+              TextButton(
+                onPressed: () => setState(() => _selectedSubmissionIds.clear()),
+                child: const Text('Clear Selection'),
+              ),
+              const Spacer(),
+              Text('${_selectedSubmissionIds.length} selected',
+                  style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+              const SizedBox(width: 12),
+              ElevatedButton.icon(
+                onPressed: (_sendingBulkEmail || _resolvingRecipients) ? null : _showBulkEmailDialog,
+                icon: (_sendingBulkEmail || _resolvingRecipients)
+                    ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                    : const Icon(Icons.email_outlined, size: 15, color: Colors.white),
+                label: Text(_sendingBulkEmail ? 'Sending...' : (_resolvingRecipients ? 'Looking up...' : 'Email Selected to Lead')),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppTheme.brand,
+                  foregroundColor: Colors.white,
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+              ),
+            ],
+          ]),
+          const SizedBox(height: 12),
           Expanded(
             child: _loadingChecklists
                 ? const Center(child: CircularProgressIndicator())
@@ -585,12 +916,14 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
                               Container(
                                 padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                                 decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: AppTheme.borderColor))),
-                                child: const Row(children: [
-                                  Expanded(flex: 3, child: Text('FORM', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
-                                  Expanded(flex: 2, child: Text('STATUS', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
-                                  Expanded(flex: 2, child: Text('TECHNICIAN', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
-                                  Expanded(flex: 3, child: Text('CUSTOMER / LOCATION', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
-                                  Expanded(flex: 2, child: Text('UPDATED', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
+                                child: Row(children: [
+                                  const SizedBox(width: 32),
+                                  const Expanded(flex: 3, child: Text('FORM', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
+                                  const Expanded(flex: 2, child: Text('STATUS', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
+                                  const Expanded(flex: 2, child: Text('TECHNICIAN', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
+                                  const Expanded(flex: 3, child: Text('CUSTOMER / LOCATION', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
+                                  const Expanded(flex: 2, child: Text('UPDATED', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 1))),
+                                  const SizedBox(width: 36),
                                 ]),
                               ),
                               Expanded(child: ListView.separated(
@@ -600,10 +933,31 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
                                   final row = rows[i];
                                   final status = row['status'] as String? ?? 'not_started';
                                   final isCompleted = status == 'completed';
+                                  final submissionId = row['submission_id'] as int?;
+                                  final isSelected = submissionId != null && _selectedSubmissionIds.contains(submissionId);
                                   final content = Padding(
                                     padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                                     child: Row(children: [
-                                      Expanded(flex: 3, child: Text(row['form_name'] ?? '', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: AppTheme.textPrimary))),
+                                      SizedBox(
+                                        width: 32,
+                                        child: isCompleted && submissionId != null
+                                            ? Checkbox(
+                                                value: isSelected,
+                                                onChanged: (v) => setState(() {
+                                                  if (v == true) {
+                                                    _selectedSubmissionIds.add(submissionId);
+                                                  } else {
+                                                    _selectedSubmissionIds.remove(submissionId);
+                                                  }
+                                                }),
+                                              )
+                                            : null,
+                                      ),
+                                      Expanded(flex: 3, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                        Text(row['form_name'] ?? '', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: AppTheme.textPrimary)),
+                                        if ((row['submission_label'] as String?)?.isNotEmpty == true)
+                                          Text(row['submission_label'], style: const TextStyle(fontSize: 11, color: AppTheme.brand, fontStyle: FontStyle.italic), overflow: TextOverflow.ellipsis),
+                                      ])),
                                       Expanded(flex: 2, child: _checklistStatusBadge(status)),
                                       Expanded(flex: 2, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                                         Text(row['completed_by_name'] ?? '—', style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary), overflow: TextOverflow.ellipsis),
@@ -637,6 +991,14 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
                                           Text(row['location'], style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary), overflow: TextOverflow.ellipsis),
                                       ])),
                                       Expanded(flex: 2, child: Text(_fmtChecklistDate(row['updated_at']), style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary))),
+                                      SizedBox(
+                                        width: 36,
+                                        child: IconButton(
+                                          tooltip: 'Delete Submission',
+                                          icon: const Icon(Icons.delete_outline, size: 17, color: AppTheme.textSecondary),
+                                          onPressed: () => _confirmDeleteSubmission(row),
+                                        ),
+                                      ),
                                     ]),
                                   );
                                   return isCompleted

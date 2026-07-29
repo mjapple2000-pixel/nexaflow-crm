@@ -43,6 +43,7 @@ import '../screens/client_hub_screen.dart';
 import '../screens/employee_hub_screen.dart';
 import '../screens/job_form_fill_screen.dart';
 import '../screens/completed_job_form_viewer.dart';
+import '../screens/job_form_view_screen.dart';
 import '../screens/timesheets_screen.dart';
 import '../screens/routes_screen.dart';
 import '../screens/ai_form_recreation_screen.dart';
@@ -75,6 +76,8 @@ class AppRouter {
       if (loc.startsWith('/hub/') || realPath.startsWith('/hub/')) return null;
       if (loc.startsWith('/hub')) return null;
       if (realPath.contains('/hub/')) return null;
+      if (loc.startsWith('/form-view/') || realPath.startsWith('/form-view/')) return null;
+      if (realPath.contains('/form-view/')) return null;
       final session = Supabase.instance.client.auth.currentSession;
       final isLoggedIn = session != null;
       final isLoginPage = loc == '/login';
@@ -248,6 +251,13 @@ class AppRouter {
         builder: (context, state) => CompletedJobFormViewer(
           token: state.pathParameters['token']!,
           submissionId: state.pathParameters['submissionId']!,
+        ),
+      ),
+      GoRoute(
+        path: '/form-view/:token',
+        name: 'job-form-lead-view',
+        builder: (context, state) => JobFormViewScreen(
+          viewToken: state.pathParameters['token']!,
         ),
       ),
       GoRoute(

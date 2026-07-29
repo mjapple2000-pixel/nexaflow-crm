@@ -34,6 +34,7 @@ Deno.serve(async (req) => {
     let saveAsDefault = false;
     let imageType: string | null = null;
     let pageNumber: number | null = null;
+    let submissionLabel: string | null = null;
 
     if (contentType.includes("multipart/form-data")) {
       const formData = await req.formData();
@@ -56,6 +57,7 @@ Deno.serve(async (req) => {
       imageType = formData.get("image_type") as string | null;
       const pageNumberRaw = formData.get("page_number") as string | null;
       pageNumber = pageNumberRaw ? parseInt(pageNumberRaw) : null;
+      submissionLabel = formData.get("label") as string | null;
     } else {
       const body = await req.json();
       token = body.token;
@@ -70,6 +72,7 @@ Deno.serve(async (req) => {
       businessIdParam = body.business_id ?? null;
       saveAsDefault = body.save_as_default === true;
       imageType = body.image_type ?? null;
+      submissionLabel = body.label ?? null;
     }
 
     const authHeader = req.headers.get("Authorization");
@@ -81,7 +84,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    const validActions = ["save_answers", "upload_photo", "upload_signature", "upload_initials", "apply_saved_image", "clear_signature", "clear_initials", "delete_photo", "upload_marker_photo", "delete_marker_photo", "upload_rendered_page", "complete", "reopen_for_correction"];
+    const validActions = ["save_answers", "upload_photo", "upload_signature", "upload_initials", "apply_saved_image", "clear_signature", "clear_initials", "delete_photo", "upload_marker_photo", "delete_marker_photo", "upload_rendered_page", "set_label", "complete", "reopen_for_correction"];
     if (!validActions.includes(action)) {
       return new Response(JSON.stringify({ error: "Invalid action" }), {
         status: 400,
@@ -188,6 +191,32 @@ Deno.serve(async (req) => {
 
       if (updateError) {
         return new Response(JSON.stringify({ error: "Error saving answers: " + updateError.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    // ── set_label ─────────────────────────────────────────────────────────
+    // A short, tech-chosen nickname for THIS submission only — never
+    // touches job_forms.name (the formal template name). Purely a
+    // search/identification aid so office staff can tell apart many
+    // submissions of the same template (e.g. "Fresh Test" used on 20
+    // different jobs). Empty string clears it back to null, same as
+    // clear_signature/clear_initials treat their fields.
+    if (action === "set_label") {
+      const trimmed = (submissionLabel ?? "").trim();
+      const { error: updateError } = await supabase
+        .from("job_form_submissions")
+        .update({ submission_label: trimmed.length > 0 ? trimmed : null })
+        .eq("id", submissionId);
+
+      if (updateError) {
+        return new Response(JSON.stringify({ error: "Error saving label: " + updateError.message }), {
           status: 500,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });

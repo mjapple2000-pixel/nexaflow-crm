@@ -57,6 +57,8 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
 
   String _formName = '';
   String _formType = '';
+  final TextEditingController _labelCtrl = TextEditingController();
+  bool _savingLabel = false;
   List<Map<String, dynamic>> _fields = [];
   bool _requiresSignature = false;
 
@@ -134,6 +136,7 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
     }
     _signatureController.dispose();
     _signedByNameCtrl.dispose();
+    _labelCtrl.dispose();
     _pageController.dispose();
     _transformController.dispose();
     super.dispose();
@@ -167,6 +170,7 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
       setState(() {
         _formName = data['form_name'] as String? ?? 'Job Form';
         _formType = data['form_type'] as String? ?? '';
+        _labelCtrl.text = data['submission_label'] as String? ?? '';
         _fields = List<Map<String, dynamic>>.from(data['fields'] ?? []);
         _requiresSignature = data['requires_signature'] as bool? ?? false;
         _appointmentType = data['appointment_type'] as String? ?? '';
@@ -275,6 +279,62 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
       if (!mounted) return;
       setState(() => _saving = false);
     }
+  }
+
+  Future<void> _saveLabel(String value) async {
+    setState(() => _savingLabel = true);
+    try {
+      final res = await http.post(
+        Uri.parse('$_fnBase/submit-job-form-action'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'token': widget.token,
+          'submission_id': widget.submissionId,
+          'action': 'set_label',
+          'label': value,
+        }),
+      );
+      if (!mounted) return;
+      setState(() => _savingLabel = false);
+      if (res.statusCode == 200) {
+        setState(() {
+          _showSaved = true;
+        });
+        Future.delayed(const Duration(seconds: 2), () {
+          if (mounted) setState(() => _showSaved = false);
+        });
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _savingLabel = false);
+    }
+  }
+
+  Widget _buildLabelField() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+      child: TextField(
+        controller: _labelCtrl,
+        onSubmitted: _saveLabel,
+        onTapOutside: (_) => _saveLabel(_labelCtrl.text),
+        style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+        decoration: InputDecoration(
+          hintText: 'Label this submission (optional) — e.g. "Front unit — leak"',
+          hintStyle: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+          isDense: true,
+          filled: true,
+          fillColor: AppTheme.cardBg,
+          prefixIcon: const Icon(Icons.label_outline_rounded, size: 16, color: AppTheme.textSecondary),
+          suffixIcon: _savingLabel
+              ? const Padding(
+                  padding: EdgeInsets.all(12),
+                  child: SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2)))
+              : null,
+          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
+        ),
+      ),
+    );
   }
 
   void _showPhotoSourcePicker(String fieldId) {
@@ -1383,7 +1443,9 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
                         style: const TextStyle(
                             fontSize: 12, color: AppTheme.textSecondary)),
                   ],
-                  const SizedBox(height: 20),
+                  const SizedBox(height: 16),
+                  _buildLabelField(),
+                  const SizedBox(height: 4),
                   ..._fields.map(_buildField),
                   if (_requiresSignature) _buildSignatureSection(),
                   const SizedBox(height: 8),
@@ -1540,8 +1602,11 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
                 ],
               ),
             ),
+            _buildLabelField(),
             Expanded(
-              child: PageView.builder(
+              child: Stack(
+                children: [
+                  PageView.builder(
                 controller: _pageController,
                 itemCount: _pageUrls.length,
                 onPageChanged: (i) => setState(() {
@@ -1600,6 +1665,38 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
                     );
                   });
                 },
+                  ),
+                  if (_pageUrls.length > 1 && _currentPageIndex > 0)
+                    Positioned(
+                      left: 8,
+                      top: 0,
+                      bottom: 0,
+                      child: Center(
+                        child: _pageArrowButton(
+                          icon: Icons.chevron_left_rounded,
+                          onTap: () => _pageController.previousPage(
+                            duration: const Duration(milliseconds: 250),
+                            curve: Curves.easeOut,
+                          ),
+                        ),
+                      ),
+                    ),
+                  if (_pageUrls.length > 1 && _currentPageIndex < _pageUrls.length - 1)
+                    Positioned(
+                      right: 8,
+                      top: 0,
+                      bottom: 0,
+                      child: Center(
+                        child: _pageArrowButton(
+                          icon: Icons.chevron_right_rounded,
+                          onTap: () => _pageController.nextPage(
+                            duration: const Duration(milliseconds: 250),
+                            curve: Curves.easeOut,
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
               ),
             ),
             if (_pageUrls.length > 1)
@@ -1623,6 +1720,21 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
               ),
             _buildVisualBottomBar(),
           ],
+        ),
+      ),
+    );
+  }
+
+  Widget _pageArrowButton({required IconData icon, required VoidCallback onTap}) {
+    return Material(
+      color: Colors.black.withValues(alpha: 0.35),
+      shape: const CircleBorder(),
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(6),
+          child: Icon(icon, size: 28, color: Colors.white),
         ),
       ),
     );

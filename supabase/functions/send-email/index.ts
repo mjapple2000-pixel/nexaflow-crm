@@ -10,7 +10,7 @@ serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
 
   try {
-    const { lead_ids, subject, body, business_id } = await req.json()
+    const { lead_ids, subject, body, business_id, override_email } = await req.json()
 
     if (!lead_ids?.length || !subject?.trim() || !body?.trim() || !business_id) {
       return new Response(JSON.stringify({ error: 'Missing required fields' }),
@@ -40,7 +40,12 @@ serve(async (req) => {
     const errors: string[] = []
 
     for (const lead of leads ?? []) {
-      if (!lead.lead_email) { skipped++; continue }
+      // override_email lets a caller send to a manually-typed/edited address
+      // instead of the lead's email on file — falls back to lead.lead_email
+      // exactly as before when not provided, so send-quote and send-invoice
+      // (which never pass this) are completely unaffected.
+      const destinationEmail = override_email || lead.lead_email
+      if (!destinationEmail) { skipped++; continue }
 
       try {
         // Personalize body — swap {{name}} if used
@@ -50,7 +55,7 @@ serve(async (req) => {
         // Send via Mailgun
         const formData = new FormData()
         formData.append('from', fromAddress)
-        formData.append('to', `${lead.lead_name} <${lead.lead_email}>`)
+        formData.append('to', `${lead.lead_name} <${destinationEmail}>`)
         formData.append('subject', personalizedSubject)
         formData.append('text', personalizedBody)
         // Also send HTML version with line breaks preserved

@@ -178,7 +178,7 @@ Deno.serve(async (req: Request) => {
     // exactly why this has to be an edge function action rather than a
     // direct Flutter insert.
     if (action === 'use_template') {
-      const { form_template_id } = body;
+      const { form_template_id, name } = body;
       if (!form_template_id) return jsonResponse({ error: 'form_template_id is required' }, 400);
       if (!resolvedBusinessId) return jsonResponse({ error: 'Could not resolve requesting business' }, 401);
 
@@ -224,7 +224,11 @@ Deno.serve(async (req: Request) => {
         .from('job_forms')
         .insert({
           business_id: resolvedBusinessId,
-          name: template.title,
+          // Optional override so the requesting business can name their
+          // own copy independently of the shared template's original
+          // title — falls back to the template title when not provided,
+          // preserving the old behavior for any other caller of this action.
+          name: (typeof name === 'string' && name.trim()) ? name.trim() : template.title,
           form_type: sourceForm.form_type,
           fields: sourceForm.fields ?? [],
           sections: sourceForm.sections ?? [],

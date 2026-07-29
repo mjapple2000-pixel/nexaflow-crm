@@ -35,6 +35,7 @@ class _OfficeJobFormViewerSheetState extends State<OfficeJobFormViewerSheet> {
   String _appointmentType = '';
   String _leadName = '';
   String _location = '';
+  bool _sendingEmail = false;
 
   @override
   void initState() {
@@ -142,6 +143,123 @@ class _OfficeJobFormViewerSheetState extends State<OfficeJobFormViewerSheet> {
     } finally {
       if (mounted) setState(() => _generatingPdf = false);
     }
+  }
+
+  Future<void> _sendEmailToLead({
+    required bool includePdf,
+    required bool includeViewLink,
+    required String overrideEmail,
+  }) async {
+    setState(() => _sendingEmail = true);
+    try {
+      final token = _db.auth.currentSession?.accessToken;
+      if (token == null) throw Exception('Not authenticated');
+      final res = await http.post(
+        Uri.parse('$_fnBase/email-job-forms'),
+        headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'business_id': widget.businessId,
+          'submission_ids': [widget.submissionId],
+          'include_pdf': includePdf,
+          'include_view_link': includeViewLink,
+          if (overrideEmail.trim().isNotEmpty) 'override_email': overrideEmail.trim(),
+        }),
+      );
+      if (!mounted) return;
+      final data = res.statusCode == 200 ? jsonDecode(res.body) as Map<String, dynamic> : null;
+      final results = data != null ? List<dynamic>.from(data['results'] ?? []) : [];
+      final failed = results.where((r) => r['sent'] != true).toList();
+
+      if (res.statusCode == 200 && failed.isEmpty && results.isNotEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Email sent.'),
+          backgroundColor: AppTheme.success,
+        ));
+      } else {
+        final reason = failed.isNotEmpty
+            ? (failed.first['reason'] as String? ?? 'Send failed.')
+            : (data?['error'] as String? ?? 'Send failed.');
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(reason),
+          backgroundColor: AppTheme.error,
+        ));
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Network error — please try again.'),
+        backgroundColor: AppTheme.error,
+      ));
+    } finally {
+      if (mounted) setState(() => _sendingEmail = false);
+    }
+  }
+
+  void _showEmailDialog() {
+    bool includePdf = true;
+    bool includeViewLink = true;
+    final emailCtrl = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (dctx) => StatefulBuilder(
+        builder: (dctx, setDlgState) => AlertDialog(
+          backgroundColor: AppTheme.cardBg,
+          title: const Text('Email to Lead', style: TextStyle(fontSize: 15, color: AppTheme.textPrimary)),
+          content: SizedBox(
+            width: 340,
+            child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+              TextField(
+                controller: emailCtrl,
+                style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                decoration: InputDecoration(
+                  hintText: _leadName.isNotEmpty ? "Leave blank to use $_leadName's email on file" : 'Recipient email',
+                  isDense: true,
+                  filled: true,
+                  fillColor: AppTheme.pageBg,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(6)),
+                ),
+              ),
+              const SizedBox(height: 14),
+              CheckboxListTile(
+                value: includePdf,
+                onChanged: (v) => setDlgState(() => includePdf = v ?? false),
+                title: const Text('Include PDF link', style: TextStyle(fontSize: 13, color: AppTheme.textPrimary)),
+                controlAffinity: ListTileControlAffinity.leading,
+                contentPadding: EdgeInsets.zero,
+                dense: true,
+              ),
+              CheckboxListTile(
+                value: includeViewLink,
+                onChanged: (v) => setDlgState(() => includeViewLink = v ?? false),
+                title: const Text('Include read-only "View Online" link',
+                    style: TextStyle(fontSize: 13, color: AppTheme.textPrimary)),
+                controlAffinity: ListTileControlAffinity.leading,
+                contentPadding: EdgeInsets.zero,
+                dense: true,
+              ),
+            ]),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.of(dctx, rootNavigator: true).pop(), child: const Text('Cancel')),
+            ElevatedButton(
+              onPressed: (!includePdf && !includeViewLink)
+                  ? null
+                  : () {
+                      Navigator.of(dctx, rootNavigator: true).pop();
+                      _sendEmailToLead(
+                        includePdf: includePdf,
+                        includeViewLink: includeViewLink,
+                        overrideEmail: emailCtrl.text,
+                      );
+                    },
+              style: ElevatedButton.styleFrom(backgroundColor: AppTheme.brand, foregroundColor: Colors.white, elevation: 0),
+              child: const Text('Send'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _downloadPdf() async {
@@ -333,6 +451,23 @@ class _OfficeJobFormViewerSheetState extends State<OfficeJobFormViewerSheet> {
                       ),
                     ),
             ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: _sendingEmail ? null : _showEmailDialog,
+                icon: _sendingEmail
+                    ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.email_outlined, size: 16, color: AppTheme.brand),
+                label: Text(_sendingEmail ? 'Sending...' : 'Email to Lead',
+                    style: const TextStyle(fontSize: 13, color: AppTheme.brand, fontWeight: FontWeight.w600)),
+                style: OutlinedButton.styleFrom(
+                  side: const BorderSide(color: AppTheme.brand),
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+              ),
+            ),
             // Regenerate stays available even after a PDF already exists —
             // a completed submission's underlying data (rendered pages,
             // answers) can still change on the server side (e.g. a rebuilt
@@ -342,13 +477,18 @@ class _OfficeJobFormViewerSheetState extends State<OfficeJobFormViewerSheet> {
               const SizedBox(height: 8),
               SizedBox(
                 width: double.infinity,
-                child: TextButton.icon(
+                child: OutlinedButton.icon(
                   onPressed: _generatingPdf ? null : _generatePdf,
                   icon: _generatingPdf
                       ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
                       : const Icon(Icons.refresh_rounded, size: 15, color: AppTheme.textSecondary),
                   label: Text(_generatingPdf ? 'Regenerating...' : 'Regenerate PDF',
-                      style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+                      style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary, fontWeight: FontWeight.w600)),
+                  style: OutlinedButton.styleFrom(
+                    side: const BorderSide(color: AppTheme.borderColor),
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
                 ),
               ),
             ],
