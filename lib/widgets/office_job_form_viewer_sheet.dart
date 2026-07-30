@@ -1,9 +1,12 @@
 import 'dart:convert';
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 import '../theme/app_theme.dart';
+
+const _siteBase = 'https://nexaflow-crm.web.app';
 
 class OfficeJobFormViewerSheet extends StatefulWidget {
   final int submissionId;
@@ -32,6 +35,7 @@ class _OfficeJobFormViewerSheetState extends State<OfficeJobFormViewerSheet> {
   String? _pdfUrl;
   String? _pdfSignedUrl;
   bool _generatingPdf = false;
+  bool _openingViewOnline = false;
   String _appointmentType = '';
   String _leadName = '';
   String _location = '';
@@ -142,6 +146,49 @@ class _OfficeJobFormViewerSheetState extends State<OfficeJobFormViewerSheet> {
       ));
     } finally {
       if (mounted) setState(() => _generatingPdf = false);
+    }
+  }
+
+  // Same-shaped RFC4122 v4 token as email-job-forms' server-side
+  // crypto.randomUUID() — matched in format in case view_token is a
+  // Postgres `uuid`-typed column, not just free text.
+  String _generateUuidV4() {
+    final rand = Random.secure();
+    final bytes = List<int>.generate(16, (_) => rand.nextInt(256));
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    String hex(int start, int len) =>
+        bytes.sublist(start, start + len).map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    return '${hex(0, 4)}-${hex(4, 2)}-${hex(6, 2)}-${hex(8, 2)}-${hex(10, 6)}';
+  }
+
+  // Lets office staff preview the exact read-only page a Lead will see —
+  // reuses the submission's view_token, generating one if this is the
+  // first time either this or the email flow has needed it.
+  Future<void> _openViewOnline() async {
+    setState(() => _openingViewOnline = true);
+    try {
+      final row = await _db
+          .from('job_form_submissions')
+          .select('view_token')
+          .eq('id', widget.submissionId)
+          .maybeSingle();
+      String? token = row?['view_token'] as String?;
+      if (token == null) {
+        token = _generateUuidV4();
+        await _db.from('job_form_submissions').update({'view_token': token}).eq('id', widget.submissionId);
+      }
+      if (!mounted) return;
+      final uri = Uri.parse('$_siteBase/form-view/$token');
+      await launchUrl(uri, webOnlyWindowName: '_blank');
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Could not open the online view — please try again.'),
+        backgroundColor: AppTheme.error,
+      ));
+    } finally {
+      if (mounted) setState(() => _openingViewOnline = false);
     }
   }
 
@@ -463,6 +510,23 @@ class _OfficeJobFormViewerSheetState extends State<OfficeJobFormViewerSheet> {
                     style: const TextStyle(fontSize: 13, color: AppTheme.brand, fontWeight: FontWeight.w600)),
                 style: OutlinedButton.styleFrom(
                   side: const BorderSide(color: AppTheme.brand),
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: _openingViewOnline ? null : _openViewOnline,
+                icon: _openingViewOnline
+                    ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.open_in_new_rounded, size: 16, color: AppTheme.textSecondary),
+                label: Text(_openingViewOnline ? 'Opening...' : 'View Online',
+                    style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary, fontWeight: FontWeight.w600)),
+                style: OutlinedButton.styleFrom(
+                  side: const BorderSide(color: AppTheme.borderColor),
                   padding: const EdgeInsets.symmetric(vertical: 12),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                 ),

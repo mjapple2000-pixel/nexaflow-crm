@@ -420,12 +420,12 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
     final selectedRows = _checklistSubmissions
         .where((r) => _selectedSubmissionIds.contains(r['submission_id'] as int?))
         .toList();
+    final unlinkedCount = selectedRows.where((r) => r['appointment_id'] == null).length;
     final appointmentIds = selectedRows
         .map((r) => r['appointment_id'] as int?)
         .whereType<int>()
         .toSet()
         .toList();
-    final unlinkedCount = selectedRows.length - appointmentIds.length;
 
     if (appointmentIds.isEmpty) {
       return {'groups': <Map<String, dynamic>>[], 'unlinked': selectedRows.length};

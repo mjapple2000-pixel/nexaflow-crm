@@ -133,7 +133,7 @@ Deno.serve(async (req) => {
     // ── 2. Load submission, scoped to this business ──────────────────────────
     const { data: submission, error: subError } = await supabase
       .from("job_form_submissions")
-      .select("id, job_form_id, appointment_id, status, answers, photo_urls, signature_url, signed_by_name, signed_at, business_id, pdf_url, submission_label")
+      .select("id, job_form_id, appointment_id, status, answers, photo_urls, signature_url, signed_by_name, signed_at, business_id, pdf_url, submission_label, extra_pages")
       .eq("id", submissionId)
       .eq("business_id", businessId)
       .is("deleted_at", null)
@@ -179,6 +179,22 @@ Deno.serve(async (req) => {
     // on it, same signing pattern used for photos/signature/pdf above.
     const backgroundPages: string[] = jobForm.background_pages ?? [];
     const pageUrls = await Promise.all(backgroundPages.map((p) => getSignedUrl(p)));
+
+    // Sign each extra-page row's initials image, if any — mirrors the
+    // pattern used for initialsSignedUrls on real template fields, just
+    // scoped to this submission's own extra_pages structure instead.
+    const rawExtraPages: any[] = submission.extra_pages ?? [];
+    const extraPagesSigned = await Promise.all(
+      rawExtraPages.map(async (p: any) => ({
+        ...p,
+        sections: await Promise.all(
+          (p.sections ?? []).map(async (s: any) => ({
+            ...s,
+            initials_signed_url: s.initials_path ? await getSignedUrl(s.initials_path) : null,
+          }))
+        ),
+      }))
+    );
 
     // ── 3d. Existing marker photos — grouped by marker_id so the Fill
     // Screen's gallery bottom sheet can show "already uploaded for Roof"
@@ -275,6 +291,7 @@ Deno.serve(async (req) => {
         signature_box: jobForm.signature_box ?? null,
         page_urls: pageUrls,
         photo_attachment_markers: jobForm.photo_attachment_markers ?? [],
+        extra_pages: extraPagesSigned,
         marker_photos: markerPhotosMap,
         initials_signed_urls: initialsSignedUrls,
         saved_signature_signed_url: savedSignatureSignedUrl,

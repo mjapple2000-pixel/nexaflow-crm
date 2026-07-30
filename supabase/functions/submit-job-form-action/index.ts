@@ -35,6 +35,10 @@ Deno.serve(async (req) => {
     let imageType: string | null = null;
     let pageNumber: number | null = null;
     let submissionLabel: string | null = null;
+    let sectionId: string | null = null;
+    let sectionText: string | null = null;
+    let rowCount: number | null = null;
+    let sectionColumn: string | null = null;
 
     if (contentType.includes("multipart/form-data")) {
       const formData = await req.formData();
@@ -58,6 +62,7 @@ Deno.serve(async (req) => {
       const pageNumberRaw = formData.get("page_number") as string | null;
       pageNumber = pageNumberRaw ? parseInt(pageNumberRaw) : null;
       submissionLabel = formData.get("label") as string | null;
+      sectionId = formData.get("section_id") as string | null;
     } else {
       const body = await req.json();
       token = body.token;
@@ -73,6 +78,11 @@ Deno.serve(async (req) => {
       saveAsDefault = body.save_as_default === true;
       imageType = body.image_type ?? null;
       submissionLabel = body.label ?? null;
+      sectionId = body.section_id ?? null;
+      sectionText = body.section_text ?? null;
+      pageNumber = typeof body.page_number === "number" ? body.page_number : null;
+      rowCount = typeof body.row_count === "number" ? body.row_count : null;
+      sectionColumn = body.column ?? null;
     }
 
     const authHeader = req.headers.get("Authorization");
@@ -84,7 +94,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    const validActions = ["save_answers", "upload_photo", "upload_signature", "upload_initials", "apply_saved_image", "clear_signature", "clear_initials", "delete_photo", "upload_marker_photo", "delete_marker_photo", "upload_rendered_page", "set_label", "complete", "reopen_for_correction"];
+    const validActions = ["save_answers", "upload_photo", "upload_signature", "upload_initials", "apply_saved_image", "clear_signature", "clear_initials", "delete_photo", "upload_marker_photo", "delete_marker_photo", "upload_rendered_page", "set_label", "complete", "reopen_for_correction", "add_page", "update_extra_page_section", "merge_extra_page_row", "unmerge_extra_page_row", "upload_extra_page_initials", "clear_extra_page_initials", "delete_extra_page", "apply_saved_extra_page_initials"];
     if (!validActions.includes(action)) {
       return new Response(JSON.stringify({ error: "Invalid action" }), {
         status: 400,
@@ -159,7 +169,7 @@ Deno.serve(async (req) => {
     // ── 2. Load + validate submission belongs to this business ───────────────
     const { data: submission, error: subError } = await supabase
       .from("job_form_submissions")
-      .select("id, business_id, photo_urls, status, job_form_id, answers, appointment_id, rendered_page_urls")
+      .select("id, business_id, photo_urls, status, job_form_id, answers, appointment_id, rendered_page_urls, extra_pages")
       .eq("id", submissionId)
       .eq("business_id", hubToken.business_id)
       .is("deleted_at", null)
@@ -478,6 +488,384 @@ Deno.serve(async (req) => {
       });
     }
 
+    // ── add_page ──────────────────────────────────────────────────────────
+    // Appends a blank, submission-only page — never touches job_forms.
+    // background_pages, so the shared template is unaffected. Cornell-style:
+    // starts with 3 empty sections a tech can merge down to 2 or 1.
+    if (action === "add_page") {
+      const existingExtra: any[] = Array.isArray(submission.extra_pages) ? [...submission.extra_pages] : [];
+      const count = rowCount && rowCount > 0 ? rowCount : 8;
+      const newPage = {
+        page_number: existingExtra.length + 1,
+        sections: Array.from({ length: count }, (_, i) => ({
+          id: `sec_${Date.now()}_${i + 1}`,
+          text_a: "",
+          text_b: "",
+          merged: false,
+          initials_path: null,
+        })),
+      };
+      existingExtra.push(newPage);
+
+      const { error: updateError } = await supabase
+        .from("job_form_submissions")
+        .update({ extra_pages: existingExtra })
+        .eq("id", submissionId);
+
+      if (updateError) {
+        return new Response(JSON.stringify({ error: "Error adding page: " + updateError.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ success: true, extra_pages: existingExtra }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    // ── delete_extra_page ───────────────────────────────────────────────────
+    // Removes exactly one tech-added blank page from THIS submission's own
+    // extra_pages array — never touches job_forms.background_pages, so the
+    // real scanned pages can never be deleted through this action. Remaining
+    // pages are renumbered sequentially (1, 2, 3...) so page_number stays
+    // contiguous for _fieldsForPage-style lookups and PDF ordering. Any
+    // orphaned per-row initials images in storage are left in place (small,
+    // rare, not worth the extra round-trips to clean up here).
+    if (action === "delete_extra_page") {
+      if (pageNumber == null) {
+        return new Response(JSON.stringify({ error: "page_number is required" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      const existingExtra: any[] = Array.isArray(submission.extra_pages) ? [...submission.extra_pages] : [];
+      const filtered = existingExtra.filter((p) => p.page_number !== pageNumber);
+      if (filtered.length === existingExtra.length) {
+        return new Response(JSON.stringify({ error: "Page not found." }), {
+          status: 404,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      const renumbered = filtered
+        .sort((a, b) => a.page_number - b.page_number)
+        .map((p, idx) => ({ ...p, page_number: idx + 1 }));
+
+      const { error: updateError } = await supabase
+        .from("job_form_submissions")
+        .update({ extra_pages: renumbered })
+        .eq("id", submissionId);
+
+      if (updateError) {
+        return new Response(JSON.stringify({ error: "Error deleting page: " + updateError.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      return new Response(JSON.stringify({ success: true, extra_pages: renumbered }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    // ── update_extra_page_section ───────────────────────────────────────────
+    if (action === "update_extra_page_section") {
+      if (pageNumber == null || !sectionId) {
+        return new Response(JSON.stringify({ error: "page_number and section_id are required" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      const existingExtra: any[] = Array.isArray(submission.extra_pages) ? [...submission.extra_pages] : [];
+      const page = existingExtra.find((p) => p.page_number === pageNumber);
+      if (!page) {
+        return new Response(JSON.stringify({ error: "Page not found." }), {
+          status: 404,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      const section = page.sections.find((s: any) => s.id === sectionId);
+      if (!section) {
+        return new Response(JSON.stringify({ error: "Section not found." }), {
+          status: 404,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      const col = sectionColumn === "text_b" ? "text_b" : "text_a";
+      section[col] = sectionText ?? "";
+
+      const { error: updateError } = await supabase
+        .from("job_form_submissions")
+        .update({ extra_pages: existingExtra })
+        .eq("id", submissionId);
+
+      if (updateError) {
+        return new Response(JSON.stringify({ error: "Error saving section: " + updateError.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    // ── merge_extra_page_row ────────────────────────────────────────────────
+    // Horizontal, single-row merge: combines text_a and text_b of ONE row
+    // into one wide cell for that row only. Initials and every other row
+    // are untouched. Repeatable/reversible via unmerge_extra_page_row.
+    if (action === "merge_extra_page_row") {
+      if (pageNumber == null || !sectionId) {
+        return new Response(JSON.stringify({ error: "page_number and section_id are required" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      const existingExtra: any[] = Array.isArray(submission.extra_pages) ? [...submission.extra_pages] : [];
+      const page = existingExtra.find((p) => p.page_number === pageNumber);
+      if (!page) {
+        return new Response(JSON.stringify({ error: "Page not found." }), {
+          status: 404,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      const section = page.sections.find((s: any) => s.id === sectionId);
+      if (!section) {
+        return new Response(JSON.stringify({ error: "Section not found." }), {
+          status: 404,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const combined = [section.text_a, section.text_b]
+        .filter((t: string) => t && t.trim())
+        .join(" ");
+      section.text_a = combined;
+      section.text_b = "";
+      section.merged = true;
+
+      const { error: updateError } = await supabase
+        .from("job_form_submissions")
+        .update({ extra_pages: existingExtra })
+        .eq("id", submissionId);
+
+      if (updateError) {
+        return new Response(JSON.stringify({ error: "Error merging row: " + updateError.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ success: true, extra_pages: existingExtra }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    // ── unmerge_extra_page_row ──────────────────────────────────────────────
+    // Flips a merged row back to two columns. Combined text stays sitting
+    // in text_a rather than being split apart.
+    if (action === "unmerge_extra_page_row") {
+      if (pageNumber == null || !sectionId) {
+        return new Response(JSON.stringify({ error: "page_number and section_id are required" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      const existingExtra: any[] = Array.isArray(submission.extra_pages) ? [...submission.extra_pages] : [];
+      const page = existingExtra.find((p) => p.page_number === pageNumber);
+      if (!page) {
+        return new Response(JSON.stringify({ error: "Page not found." }), {
+          status: 404,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      const section = page.sections.find((s: any) => s.id === sectionId);
+      if (!section) {
+        return new Response(JSON.stringify({ error: "Section not found." }), {
+          status: 404,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      section.merged = false;
+
+      const { error: updateError } = await supabase
+        .from("job_form_submissions")
+        .update({ extra_pages: existingExtra })
+        .eq("id", submissionId);
+
+      if (updateError) {
+        return new Response(JSON.stringify({ error: "Error unmerging row: " + updateError.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ success: true, extra_pages: existingExtra }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    // ── upload_extra_page_initials ─────────────────────────────────────────
+    // Per-row initials on a tech-added blank page — a separate storage path
+    // from upload_initials (which writes into answers[field.id] for real
+    // template fields), since this row has no job_forms.fields entry —
+    // it lives entirely inside this submission's own extra_pages JSON.
+    if (action === "upload_extra_page_initials") {
+      if (!file || pageNumber == null || !sectionId) {
+        return new Response(JSON.stringify({ error: "file, page_number, and section_id are required" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      const path = `${hubToken.business_id}/${submissionId}/extra-initials-${pageNumber}-${sectionId}-${Date.now()}.png`;
+
+      const { error: uploadError } = await supabase.storage
+        .from(BUCKET)
+        .upload(path, file, { contentType: file.type || "image/png" });
+
+      if (uploadError) {
+        return new Response(JSON.stringify({ error: "Error uploading initials: " + uploadError.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const existingExtra: any[] = Array.isArray(submission.extra_pages) ? [...submission.extra_pages] : [];
+      const page = existingExtra.find((p) => p.page_number === pageNumber);
+      const section = page?.sections?.find((s: any) => s.id === sectionId);
+      if (!page || !section) {
+        return new Response(JSON.stringify({ error: "Page or section not found." }), {
+          status: 404,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      section.initials_path = path;
+
+      const { error: updateError } = await supabase
+        .from("job_form_submissions")
+        .update({ extra_pages: existingExtra })
+        .eq("id", submissionId);
+
+      if (updateError) {
+        return new Response(JSON.stringify({ error: "Error saving initials: " + updateError.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      if (saveAsDefault && hubToken.profile_id) {
+        await supabase.from("profiles").update({ saved_initials_url: path }).eq("id", hubToken.profile_id);
+      }
+
+      return new Response(JSON.stringify({ success: true, path }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    // ── apply_saved_extra_page_initials ─────────────────────────────────────
+    // "Use My Saved Initials" for a tech-added page row — mirrors
+    // apply_saved_image's profile-then-business lookup, but writes into
+    // this submission's own extra_pages instead of answers[field.id].
+    if (action === "apply_saved_extra_page_initials") {
+      if (pageNumber == null || !sectionId) {
+        return new Response(JSON.stringify({ error: "page_number and section_id are required" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      let savedPath: string | null = null;
+      if (hubToken.profile_id) {
+        const { data: profileRow } = await supabase
+          .from("profiles")
+          .select("saved_initials_url")
+          .eq("id", hubToken.profile_id)
+          .maybeSingle();
+        savedPath = profileRow?.saved_initials_url ?? null;
+      }
+      if (!savedPath) {
+        const { data: bizRow } = await supabase
+          .from("businesses")
+          .select("default_initials_url")
+          .eq("id", hubToken.business_id)
+          .maybeSingle();
+        savedPath = bizRow?.default_initials_url ?? null;
+      }
+      if (!savedPath) {
+        return new Response(JSON.stringify({ error: "No saved image available." }), {
+          status: 404,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const existingExtra: any[] = Array.isArray(submission.extra_pages) ? [...submission.extra_pages] : [];
+      const page = existingExtra.find((p) => p.page_number === pageNumber);
+      const section = page?.sections?.find((s: any) => s.id === sectionId);
+      if (!page || !section) {
+        return new Response(JSON.stringify({ error: "Page or section not found." }), {
+          status: 404,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      section.initials_path = savedPath;
+
+      const { error: applyUpdateError } = await supabase
+        .from("job_form_submissions")
+        .update({ extra_pages: existingExtra })
+        .eq("id", submissionId);
+
+      if (applyUpdateError) {
+        return new Response(JSON.stringify({ error: "Error applying initials: " + applyUpdateError.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      return new Response(JSON.stringify({ success: true, path: savedPath }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    // ── clear_extra_page_initials ────────────────────────────────────────
+    if (action === "clear_extra_page_initials") {
+      if (pageNumber == null || !sectionId) {
+        return new Response(JSON.stringify({ error: "page_number and section_id are required" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      const existingExtra: any[] = Array.isArray(submission.extra_pages) ? [...submission.extra_pages] : [];
+      const page = existingExtra.find((p) => p.page_number === pageNumber);
+      const section = page?.sections?.find((s: any) => s.id === sectionId);
+      if (!page || !section) {
+        return new Response(JSON.stringify({ error: "Page or section not found." }), {
+          status: 404,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      section.initials_path = null;
+
+      const { error: updateError } = await supabase
+        .from("job_form_submissions")
+        .update({ extra_pages: existingExtra })
+        .eq("id", submissionId);
+
+      if (updateError) {
+        return new Response(JSON.stringify({ error: "Error clearing initials: " + updateError.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      return new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
     // ── upload_signature ───────────────────────────────────────────────────
     if (action === "upload_signature") {
       if (!file) {
@@ -779,6 +1167,21 @@ Deno.serve(async (req) => {
           status: 500,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
+      }
+
+      // Auto-regenerate the PDF on every completion (including resubmits
+      // after a correction) — non-blocking, never fails the request. This
+      // is the same call the office "Regenerate PDF" button makes; doing
+      // it automatically here means the PDF is never stale relative to
+      // what's actually in the database or the captured canvas.
+      try {
+        await fetch("https://rllriopqojaraceytdno.supabase.co/functions/v1/generate-job-form-pdf", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ submission_id: submissionId }),
+        });
+      } catch (e) {
+        console.error("Auto-regenerate PDF error:", e);
       }
 
       // Fire job_form_completed automation trigger — non-blocking, never fails the request

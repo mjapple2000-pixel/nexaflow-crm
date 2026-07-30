@@ -157,6 +157,47 @@ async function generateFromRenderedPages(
       }
     }
 
+    // Regular photo-TYPE fields (not markers) also only ever show a
+    // checkmark icon on the Fill Screen canvas — never the actual image —
+    // so like marker photos, they're never present in the captured
+    // screenshot pages above and must be appended separately here too.
+    // Distinct storage path (submission.answers[field.id], written by
+    // upload_photo) from marker photos (job_form_photo_attachments table).
+    const photoFields: any[] = (jobForm.fields ?? []).filter((f: any) => f.type === "photo");
+    const answers = submission.answers ?? {};
+    for (const field of photoFields) {
+      const paths: string[] = Array.isArray(answers[field.id]) ? answers[field.id] : [];
+      for (const path of paths) {
+        try {
+          const { data: photoBlob, error: photoDlErr } = await supabase.storage.from(BUCKET).download(path);
+          if (photoDlErr || !photoBlob) {
+            console.error(`Failed to load field photo ${path}:`, photoDlErr?.message);
+            continue;
+          }
+          const photoBytes = new Uint8Array(await photoBlob.arrayBuffer());
+          const embeddedPhoto = await embedImageAuto(pdfDoc, photoBytes);
+
+          const photoPage = pdfDoc.addPage([PAGE_W, PAGE_H]);
+          const label = field.label ?? "Photo";
+          photoPage.drawText(label, { x: MARGIN, y: PAGE_H - MARGIN, size: 14, font, color: TEXT_DARK });
+
+          const maxW = PAGE_W - MARGIN * 2;
+          const maxH = PAGE_H - MARGIN * 2 - 30;
+          const scale = Math.min(maxW / embeddedPhoto.width, maxH / embeddedPhoto.height, 1);
+          const drawW = embeddedPhoto.width * scale;
+          const drawH = embeddedPhoto.height * scale;
+          photoPage.drawImage(embeddedPhoto, {
+            x: MARGIN + (maxW - drawW) / 2,
+            y: MARGIN,
+            width: drawW,
+            height: drawH,
+          });
+        } catch (e) {
+          console.error("Field photo embed error:", e);
+        }
+      }
+    }
+
     if (showPageNumbers) {
       const startNum = jobForm.page_number_start ?? 1;
       const allOutputPages = pdfDoc.getPages();

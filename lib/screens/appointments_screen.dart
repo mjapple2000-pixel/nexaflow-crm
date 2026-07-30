@@ -4957,16 +4957,11 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
   }
 
   void _showAttachFormSheet(BuildContext context) {
-    // Only block re-attaching a form that has an INCOMPLETE submission on
-    // this appointment — a completed one is done, and the same form may
-    // legitimately need to be filled out again for the same customer
-    // (e.g. a follow-up inspection). Blocking on any prior attachment,
-    // completed or not, was the actual bug here.
-    final incompleteFormIds = _attachedForms
-        .where((s) => (s['status'] as String? ?? '') != 'completed')
-        .map((s) => s['job_form_id'])
-        .toSet();
-    final unattached = _availableJobForms.where((f) => !incompleteFormIds.contains(f['id'])).toList();
+    // No filtering by prior attachment at all — the same form can be
+    // attached to the same appointment any number of times. Techs
+    // distinguish duplicates using submission_label. No DB uniqueness
+    // constraint exists on job_form_submissions to conflict with this.
+    final unattached = _availableJobForms;
 
     showModalBottomSheet(
       context: context,

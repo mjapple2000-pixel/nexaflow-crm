@@ -196,6 +196,16 @@ Deno.serve(async (req) => {
         const formName = formNameById.get(s.job_form_id) ?? "Job Form";
         const formLines: string[] = [`<strong>${formName}</strong>`];
 
+        // Resolve once per submission and reuse for both links below —
+        // calling ensureViewToken twice against the same stale s.view_token
+        // generated two different tokens and only the second write ever
+        // survived in the database, silently breaking whichever link was
+        // built first.
+        let resolvedToken: string | null = null;
+        if (includePdf || includeViewLink) {
+          resolvedToken = await ensureViewToken(s.id, s.view_token);
+        }
+
         if (includePdf) {
           // Generate the PDF now if it doesn't exist yet — a permanent
           // per-submission link is only useful once there's something for
@@ -215,16 +225,14 @@ Deno.serve(async (req) => {
             }
           }
           if (pdfUrl) {
-            const token = await ensureViewToken(s.id, s.view_token);
-            formLines.push(`<a href="${FN_BASE}/get-job-form-pdf-link?token=${token}">Download PDF</a>`);
+            formLines.push(`<a href="${FN_BASE}/get-job-form-pdf-link?token=${resolvedToken}">Download PDF</a>`);
           } else {
             formLines.push("(PDF could not be generated)");
           }
         }
 
         if (includeViewLink) {
-          const token = await ensureViewToken(s.id, s.view_token);
-          formLines.push(`<a href="${SITE_BASE}/form-view/${token}">View Online</a>`);
+          formLines.push(`<a href="${SITE_BASE}/form-view/${resolvedToken}">View Online</a>`);
         }
 
         lines.push(formLines.join(" — "));

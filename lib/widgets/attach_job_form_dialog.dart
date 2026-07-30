@@ -49,6 +49,8 @@ class _AttachJobFormDialogState extends State<AttachJobFormDialog> {
   DateTime _startDt = DateTime.now().add(const Duration(hours: 1));
   DateTime _endDt = DateTime.now().add(const Duration(hours: 2));
 
+  int _quantity = 1;
+
   bool _loading = true;
   bool _saving = false;
   String? _error;
@@ -256,12 +258,18 @@ class _AttachJobFormDialogState extends State<AttachJobFormDialog> {
 
       final apptId = newAppt?['id'];
 
-      await _db.from('job_form_submissions').insert({
-        'business_id': businessId,
-        'job_form_id': widget.jobFormId,
-        'appointment_id': apptId,
-        'status': 'not_started',
-      });
+      // Insert one submission row per requested copy — all attached to the
+      // same appointment. Techs tell duplicates apart later using
+      // submission_label on the Fill Screen.
+      await _db.from('job_form_submissions').insert(List.generate(
+        _quantity,
+        (_) => {
+          'business_id': businessId,
+          'job_form_id': widget.jobFormId,
+          'appointment_id': apptId,
+          'status': 'not_started',
+        },
+      ));
 
       // Same appointment_booked automation trigger every other
       // appointment-creation path fires, and the same location geocode —
@@ -532,6 +540,55 @@ class _AttachJobFormDialogState extends State<AttachJobFormDialog> {
                       const SizedBox(height: 6),
                       _textField(_locationCtrl, hint: 'Job site address'),
                       const SizedBox(height: 14),
+                      _label('How Many Copies?'),
+                      const SizedBox(height: 4),
+                      const Text(
+                          'Create multiple copies of this form on the same appointment — e.g. one per unit or room.',
+                          style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                      const SizedBox(height: 6),
+                      Row(children: [
+                        MouseRegion(
+                          cursor: SystemMouseCursors.click,
+                          child: GestureDetector(
+                            onTap: _quantity > 1 ? () => setState(() => _quantity--) : null,
+                            child: Container(
+                              width: 32,
+                              height: 32,
+                              decoration: BoxDecoration(
+                                  color: AppTheme.pageBg,
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(color: AppTheme.borderColor)),
+                              alignment: Alignment.center,
+                              child: Icon(Icons.remove, size: 16,
+                                  color: _quantity > 1 ? AppTheme.textPrimary : AppTheme.textMuted),
+                            ),
+                          ),
+                        ),
+                        Container(
+                          width: 48,
+                          alignment: Alignment.center,
+                          child: Text('$_quantity',
+                              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+                        ),
+                        MouseRegion(
+                          cursor: SystemMouseCursors.click,
+                          child: GestureDetector(
+                            onTap: _quantity < 20 ? () => setState(() => _quantity++) : null,
+                            child: Container(
+                              width: 32,
+                              height: 32,
+                              decoration: BoxDecoration(
+                                  color: AppTheme.pageBg,
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(color: AppTheme.borderColor)),
+                              alignment: Alignment.center,
+                              child: Icon(Icons.add, size: 16,
+                                  color: _quantity < 20 ? AppTheme.textPrimary : AppTheme.textMuted),
+                            ),
+                          ),
+                        ),
+                      ]),
+                      const SizedBox(height: 14),
                       Row(children: [
                         Expanded(child: _dateTimeField('Start', _startDt, () => _pickDateTime(true))),
                         const SizedBox(width: 12),
@@ -578,7 +635,7 @@ class _AttachJobFormDialogState extends State<AttachJobFormDialog> {
                               width: 16,
                               height: 16,
                               child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                          : const Text('Create & Attach'),
+                          : Text(_quantity > 1 ? 'Create & Attach ($_quantity)' : 'Create & Attach'),
                     ),
                   ]),
                 ),

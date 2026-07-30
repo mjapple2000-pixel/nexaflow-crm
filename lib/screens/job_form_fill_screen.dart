@@ -80,6 +80,16 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
   List<Map<String, dynamic>> _photoMarkers = [];
   Map<String, dynamic>? _signatureBox;
   Map<String, dynamic> _markerPhotos = {};
+  List<Map<String, dynamic>> _extraPages = [];
+  bool _addingPage = false;
+  // Computed once from the real form's own field positions so an added
+  // blank page's header/footer/border crop lines up with wherever THIS
+  // form's actual content starts and ends — never hardcoded, since every
+  // AI-recreated form has different margins.
+  double _extraPageHeaderFrac = 0.12;
+  double _extraPageFooterFrac = 0.08;
+  double _extraPageLeftFrac = 0.03;
+  double _extraPageRightFrac = 0.03;
   int _currentPageIndex = 0;
   final PageController _pageController = PageController();
   final TransformationController _transformController = TransformationController();
@@ -106,7 +116,15 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
   String? _savedSignatureSignedUrl;
   String? _savedInitialsSignedUrl;
   final Map<String, Uint8List> _localInitialsBytes = {};
+  final Map<String, Uint8List> _extraPageInitialsLocalBytes = {};
   bool _signatureSaveAsDefault = false;
+  // Cached from whatever page is currently being rendered — every page
+  // shares the same aspect-ratio math, so this stays valid regardless of
+  // which page is on screen. Used to estimate how many ruled rows will
+  // fit before the tech even taps Add Page.
+  double _lastCanvasFinalW = 0;
+  double _lastCanvasH = 0;
+  
 
   final SignatureController _signatureController = SignatureController(
     penStrokeWidth: 3,
@@ -191,13 +209,16 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
             ? Map<String, dynamic>.from(data['signature_box'] as Map)
             : null;
         _markerPhotos = Map<String, dynamic>.from(data['marker_photos'] ?? {});
+        _extraPages = List<Map<String, dynamic>>.from(
+            (data['extra_pages'] as List? ?? []).map((p) => Map<String, dynamic>.from(p as Map)));
         _initialsSignedUrls = Map<String, String?>.from(data['initials_signed_urls'] ?? {});
         _savedSignatureSignedUrl = data['saved_signature_signed_url'] as String?;
         _savedInitialsSignedUrl = data['saved_initials_signed_url'] as String?;
         _loading = false;
       });
 
-      _pageCaptureKeys = List.generate(_pageUrls.length, (_) => GlobalKey());
+      _pageCaptureKeys = List.generate(_pageUrls.length + _extraPages.length, (_) => GlobalKey());
+      _computeExtraPageFrame();
       _initControllers();
       _startPeriodicSave();
     } catch (e) {
@@ -333,6 +354,692 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
           contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
           border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
         ),
+      ),
+    );
+  }
+
+// Derives the frame proportions for an added blank page from the real
+  // form's own field layout — top of the header region is wherever the
+  // topmost real field starts on page 1 (everything above that is
+  // logo/banner/instructions), bottom of the footer region is wherever
+  // the last field on the last page ends, and side margins come from the
+  // widest field extents across every page. Falls back to the defaults
+  // above if a form has no placed fields yet.
+  void _computeExtraPageFrame() {
+    if (_pageUrls.isEmpty) return;
+    final page1Fields = _fields.where((f) => (f['page'] as num?)?.toInt() == 1 && _hasValidBox(f)).toList();
+    final lastPageNum = _pageUrls.length;
+    final lastPageFields = _fields.where((f) => (f['page'] as num?)?.toInt() == lastPageNum && _hasValidBox(f)).toList();
+    final allPlacedFields = _fields.where(_hasValidBox).toList();
+
+    if (page1Fields.isNotEmpty) {
+      final minY = page1Fields.map((f) => (f['box']['y'] as num).toDouble()).reduce((a, b) => a < b ? a : b);
+      _extraPageHeaderFrac = (minY / 100).clamp(0.06, 0.35);
+    }
+    if (lastPageFields.isNotEmpty) {
+      final maxBottom = lastPageFields
+          .map((f) => (f['box']['y'] as num).toDouble() + (f['box']['h'] as num).toDouble())
+          .reduce((a, b) => a > b ? a : b);
+      _extraPageFooterFrac = ((100 - maxBottom) / 100).clamp(0.02, 0.25);
+    }
+    if (allPlacedFields.isNotEmpty) {
+      final minX = allPlacedFields.map((f) => (f['box']['x'] as num).toDouble()).reduce((a, b) => a < b ? a : b);
+      final maxRight = allPlacedFields
+          .map((f) => (f['box']['x'] as num).toDouble() + (f['box']['w'] as num).toDouble())
+          .reduce((a, b) => a > b ? a : b);
+      _extraPageLeftFrac = (minX / 100 * 0.6).clamp(0.0, 0.08);
+      _extraPageRightFrac = ((100 - maxRight) / 100 * 0.6).clamp(0.0, 0.08);
+    }
+  }
+
+// Estimates how many 28px rows fit in the notes area of whatever page
+  // size was last measured, so a freshly-added page arrives already full
+  // of real, functional rows instead of a fixed count that leaves dead
+  // space or overflows. Falls back to 8 if nothing's been measured yet
+  // (e.g. Add Page tapped before any page finished its first layout).
+  int _computeExtraPageRowCount() {
+    if (_lastCanvasH <= 0) return 8;
+    final tableH = _lastCanvasH * (1 - _extraPageHeaderFrac - _extraPageFooterFrac) - 51;
+    final count = (tableH / 28.0).floor();
+    return count.clamp(3, 20);
+  }
+
+  Future<void> _addExtraPage() async {
+    setState(() => _addingPage = true);
+    try {
+      final res = await http.post(
+        Uri.parse('$_fnBase/submit-job-form-action'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'token': widget.token,
+          'submission_id': widget.submissionId,
+          'action': 'add_page',
+          'row_count': _computeExtraPageRowCount(),
+        }),
+      );
+      if (!mounted) return;
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        setState(() {
+          _extraPages = List<Map<String, dynamic>>.from(
+              (data['extra_pages'] as List).map((p) => Map<String, dynamic>.from(p as Map)));
+          _pageCaptureKeys = List.generate(_pageUrls.length + _extraPages.length, (_) => GlobalKey());
+        });
+        final newIndex = _totalPageCount - 1;
+        _pageController.animateToPage(newIndex,
+            duration: const Duration(milliseconds: 250), curve: Curves.easeOut);
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Could not add a page — please try again.'),
+          backgroundColor: AppTheme.error,
+        ));
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Network error — please try again.'),
+        backgroundColor: AppTheme.error,
+      ));
+    } finally {
+      if (mounted) setState(() => _addingPage = false);
+    }
+  }
+
+  Future<void> _confirmDeleteExtraPage(int pageNumber) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.cardBg,
+        title: const Text('Delete This Page?', style: TextStyle(fontSize: 14, color: AppTheme.textPrimary)),
+        content: const Text(
+          'This removes the added notes page, including any notes and initials on it. This cannot be undone.',
+          style: TextStyle(fontSize: 13, color: AppTheme.textSecondary),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(false), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(true),
+            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.error, foregroundColor: Colors.white),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await _deleteExtraPage(pageNumber);
+  }
+
+  // Only ever called on a tech-added blank page — background pages from
+  // the real scanned form have no delete affordance anywhere in the UI,
+  // so there's no path for this to touch job_forms.background_pages.
+  Future<void> _deleteExtraPage(int pageNumber) async {
+    try {
+      final res = await http.post(
+        Uri.parse('$_fnBase/submit-job-form-action'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'token': widget.token,
+          'submission_id': widget.submissionId,
+          'action': 'delete_extra_page',
+          'page_number': pageNumber,
+        }),
+      );
+      if (!mounted) return;
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        setState(() {
+          _extraPages = List<Map<String, dynamic>>.from(
+              (data['extra_pages'] as List).map((p) => Map<String, dynamic>.from(p as Map)));
+          _pageCaptureKeys = List.generate(_pageUrls.length + _extraPages.length, (_) => GlobalKey());
+          if (_currentPageIndex >= _totalPageCount) {
+            _currentPageIndex = _totalPageCount - 1;
+          }
+        });
+        if (_pageController.hasClients) {
+          _pageController.jumpToPage(_currentPageIndex.clamp(0, _totalPageCount - 1));
+        }
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Could not delete page — please try again.'),
+          backgroundColor: AppTheme.error,
+        ));
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Network error — please try again.'),
+        backgroundColor: AppTheme.error,
+      ));
+    }
+  }
+
+  Future<void> _saveExtraPageSectionColumn(int pageNumber, String sectionId, String column, String text) async {
+    try {
+      await http.post(
+        Uri.parse('$_fnBase/submit-job-form-action'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'token': widget.token,
+          'submission_id': widget.submissionId,
+          'action': 'update_extra_page_section',
+          'page_number': pageNumber,
+          'section_id': sectionId,
+          'column': column,
+          'section_text': text,
+        }),
+      );
+    } catch (e) {
+      debugPrint('Save section error: $e');
+    }
+  }
+
+  // Horizontal merge — combines text_a and text_b of ONE row into a
+  // single wide cell for that row only. Initials and every other row are
+  // untouched. Reversible: unmerging just flips the row back to two
+  // columns; the combined text stays in text_a rather than being lost.
+  Future<void> _toggleRowMerge(int pageNumber, Map<String, dynamic> section) async {
+    final merged = section['merged'] == true;
+    final action = merged ? 'unmerge_extra_page_row' : 'merge_extra_page_row';
+    try {
+      final res = await http.post(
+        Uri.parse('$_fnBase/submit-job-form-action'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'token': widget.token,
+          'submission_id': widget.submissionId,
+          'action': action,
+          'page_number': pageNumber,
+          'section_id': section['id'],
+        }),
+      );
+      if (!mounted) return;
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        setState(() {
+          _extraPages = List<Map<String, dynamic>>.from(
+              (data['extra_pages'] as List).map((p) => Map<String, dynamic>.from(p as Map)));
+        });
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Could not update the row — please try again.'),
+          backgroundColor: AppTheme.error,
+        ));
+      }
+    } catch (e) {
+      debugPrint('Row merge/unmerge error: $e');
+    }
+  }
+
+
+  void _editExtraPageSection(int pageNumber, Map<String, dynamic> section, String column) {
+    final ctrl = TextEditingController(text: section[column] as String? ?? '');
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.cardBg,
+        title: const Text('Edit Note', style: TextStyle(fontSize: 14, color: AppTheme.textPrimary)),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          maxLines: 8,
+          minLines: 4,
+          style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+          decoration: InputDecoration(
+            filled: true,
+            fillColor: AppTheme.pageBg,
+            contentPadding: const EdgeInsets.all(10),
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.of(ctx, rootNavigator: true).pop();
+              // section is the SAME object stored in _extraPages — see the
+              // fix in _buildExtraPageView removing the per-item deep copy.
+              // Mutating it here is what makes this edit actually stick.
+              setState(() => section[column] = ctrl.text);
+              _saveExtraPageSectionColumn(pageNumber, section['id'] as String, column, ctrl.text);
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.brand, foregroundColor: Colors.white),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+  }
+
+Widget _buildExtraPageInitialsCell(int pageNumber, Map<String, dynamic> section) {
+    final sectionId = section['id'] as String;
+    final localBytes = _extraPageInitialsLocalBytes[sectionId];
+    final signedUrl = section['initials_signed_url'] as String?;
+    final signed = localBytes != null || signedUrl != null;
+    return GestureDetector(
+      onTap: () => _showExtraPageInitialsDialog(pageNumber, section),
+      child: Container(
+        color: Colors.white,
+        alignment: Alignment.center,
+        child: signed
+            ? (localBytes != null
+                ? Image.memory(localBytes, fit: BoxFit.contain)
+                : Image.network(signedUrl!, fit: BoxFit.contain,
+                    errorBuilder: (_, __, ___) => const Icon(
+                        Icons.check_circle_outline_rounded, size: 14, color: AppTheme.success)))
+            : const Icon(Icons.draw_outlined, size: 14, color: AppTheme.textSecondary),
+      ),
+    );
+  }
+
+  Future<void> _clearExtraPageInitials(int pageNumber, Map<String, dynamic> section) async {
+    try {
+      final res = await http.post(
+        Uri.parse('$_fnBase/submit-job-form-action'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'token': widget.token,
+          'submission_id': widget.submissionId,
+          'action': 'clear_extra_page_initials',
+          'page_number': pageNumber,
+          'section_id': section['id'],
+        }),
+      );
+      if (!mounted) return;
+      if (res.statusCode == 200) {
+        setState(() {
+          section['initials_signed_url'] = null;
+          _extraPageInitialsLocalBytes.remove(section['id']);
+        });
+      }
+    } catch (e) {
+      debugPrint('Clear extra page initials error: $e');
+    }
+  }
+
+  void _showExtraPageInitialsDialog(int pageNumber, Map<String, dynamic> section) {
+    final sectionId = section['id'] as String;
+    final signed = _extraPageInitialsLocalBytes[sectionId] != null || section['initials_signed_url'] != null;
+    final localSigCtrl = SignatureController(
+      penStrokeWidth: 3,
+      penColor: Colors.black,
+      exportBackgroundColor: Colors.white,
+    );
+    bool saveAsDefault = false;
+    bool submitting = false;
+    showDialog(
+      context: context,
+      builder: (dctx) => StatefulBuilder(
+        builder: (dctx, setDlgState) {
+          Future<void> upload(Uint8List bytes, {String filename = 'initials.png', String mime = 'png'}) async {
+            setDlgState(() => submitting = true);
+            try {
+              final request = http.MultipartRequest('POST', Uri.parse('$_fnBase/submit-job-form-action'));
+              request.fields['token'] = widget.token;
+              request.fields['submission_id'] = widget.submissionId;
+              request.fields['action'] = 'upload_extra_page_initials';
+              request.fields['page_number'] = '$pageNumber';
+              request.fields['section_id'] = sectionId;
+              if (saveAsDefault) request.fields['save_as_default'] = 'true';
+              request.files.add(http.MultipartFile.fromBytes('file', bytes,
+                  filename: filename, contentType: MediaType('image', mime)));
+              final streamedRes = await request.send();
+              final res = await http.Response.fromStream(streamedRes);
+              if (!mounted) return;
+              if (res.statusCode == 200) {
+                setState(() => _extraPageInitialsLocalBytes[sectionId] = bytes);
+                if (saveAsDefault) await _refreshSavedDefaults();
+                Navigator.of(dctx, rootNavigator: true).pop();
+              } else {
+                setDlgState(() => submitting = false);
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                  content: Text('Could not save initials — please try again.'),
+                  backgroundColor: AppTheme.error,
+                ));
+              }
+            } catch (e) {
+              if (!mounted) return;
+              setDlgState(() => submitting = false);
+            }
+          }
+
+          Future<void> useSaved() async {
+            setDlgState(() => submitting = true);
+            try {
+              final res = await http.post(
+                Uri.parse('$_fnBase/submit-job-form-action'),
+                headers: {'Content-Type': 'application/json'},
+                body: jsonEncode({
+                  'token': widget.token,
+                  'submission_id': widget.submissionId,
+                  'action': 'apply_saved_extra_page_initials',
+                  'page_number': pageNumber,
+                  'section_id': sectionId,
+                }),
+              );
+              if (!mounted) return;
+              if (res.statusCode == 200) {
+                setState(() {
+                  section['initials_signed_url'] = _savedInitialsSignedUrl;
+                  _extraPageInitialsLocalBytes.remove(sectionId);
+                });
+                Navigator.of(dctx, rootNavigator: true).pop();
+              } else {
+                setDlgState(() => submitting = false);
+              }
+            } catch (e) {
+              if (!mounted) return;
+              setDlgState(() => submitting = false);
+            }
+          }
+
+          Future<void> pickFromLibrary() async {
+            final XFile? picked = await _picker.pickImage(source: ImageSource.gallery, imageQuality: 85);
+            if (picked == null) return;
+            final bytes = await picked.readAsBytes();
+            await upload(bytes, filename: picked.name.isNotEmpty ? picked.name : 'initials.jpg', mime: 'jpeg');
+          }
+
+          Future<void> saveDrawn() async {
+            if (localSigCtrl.isEmpty) {
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                content: Text('Please sign before saving.'),
+                backgroundColor: AppTheme.error,
+              ));
+              return;
+            }
+            final bytes = await localSigCtrl.toPngBytes();
+            if (bytes == null) return;
+            await upload(bytes);
+          }
+
+          return AlertDialog(
+            backgroundColor: AppTheme.cardBg,
+            title: Row(children: [
+              const Expanded(child: Text('Initials', style: TextStyle(fontSize: 14, color: AppTheme.textPrimary))),
+              if (signed)
+                TextButton(
+                  onPressed: submitting
+                      ? null
+                      : () {
+                          Navigator.of(dctx, rootNavigator: true).pop();
+                          _clearExtraPageInitials(pageNumber, section);
+                        },
+                  child: const Text('Clear', style: TextStyle(fontSize: 12, color: AppTheme.error)),
+                ),
+            ]),
+            content: SizedBox(
+              width: 320,
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                if (_savedInitialsSignedUrl != null) ...[
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: submitting ? null : useSaved,
+                      icon: const Icon(Icons.bookmark_outline_rounded, size: 16),
+                      label: const Text('Use My Saved Initials', style: TextStyle(fontSize: 12)),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  const Row(children: [
+                    Expanded(child: Divider()),
+                    Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 8),
+                      child: Text('or', style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                    ),
+                    Expanded(child: Divider()),
+                  ]),
+                  const SizedBox(height: 12),
+                ],
+                Container(
+                  height: 120,
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: AppTheme.borderColor),
+                  ),
+                  child: Signature(controller: localSigCtrl, backgroundColor: Colors.white),
+                ),
+                const SizedBox(height: 8),
+                Row(children: [
+                  TextButton(
+                    onPressed: () => localSigCtrl.clear(),
+                    child: const Text('Clear Drawing', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+                  ),
+                  const Spacer(),
+                  OutlinedButton.icon(
+                    onPressed: submitting ? null : pickFromLibrary,
+                    icon: const Icon(Icons.photo_library_outlined, size: 14),
+                    label: const Text('Upload', style: TextStyle(fontSize: 12)),
+                  ),
+                ]),
+                const SizedBox(height: 8),
+                Row(children: [
+                  Checkbox(
+                    value: saveAsDefault,
+                    onChanged: (v) => setDlgState(() => saveAsDefault = v ?? false),
+                  ),
+                  const Expanded(
+                    child: Text('Save as my default initials for next time',
+                        style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                  ),
+                ]),
+              ]),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.of(dctx, rootNavigator: true).pop(), child: const Text('Cancel')),
+              ElevatedButton(
+                onPressed: submitting ? null : saveDrawn,
+                style: ElevatedButton.styleFrom(backgroundColor: AppTheme.brand, foregroundColor: Colors.white),
+                child: submitting
+                    ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                    : const Text('Save'),
+              ),
+            ],
+          );
+        },
+      ),
+    ).then((_) => localSigCtrl.dispose());
+  }
+
+  // Crops a single edge strip out of a full page image by rendering the
+  // WHOLE image at its true finalW x h size inside an OverflowBox clipped
+  // down to just one edge — since every strip is the same image at the
+  // same absolute size/position, stacking top+bottom+left+right strips
+  // recreates the original page's header, footer, and border with no
+  // seams, because the pixels are literally identical where they overlap.
+  Widget _framedEdgeStrip({
+    required String url,
+    required double finalW,
+    required double h,
+    required Alignment alignment,
+    double? stripW,
+    double? stripH,
+  }) {
+    return SizedBox(
+      width: stripW ?? finalW,
+      height: stripH ?? h,
+      child: ClipRect(
+        child: OverflowBox(
+          minWidth: finalW,
+          maxWidth: finalW,
+          minHeight: h,
+          maxHeight: h,
+          alignment: alignment,
+          child: Image.network(url, width: finalW, height: h, fit: BoxFit.fill),
+        ),
+      ),
+    );
+  }
+
+  // A blank, submission-only page framed to look like part of the same
+  // document — the header/border comes from page 1's real image, the
+  // footer from the last real page's image, cropped at boundaries derived
+  // from where this form's own fields actually start/end (see
+  // _computeExtraPageFrame). Never touches job_forms.background_pages —
+  // still purely submission-local. Cornell-notes layout in the middle:
+  // 3 stacked sections the tech can tap to fill in, mergeable down to
+  // fewer. Wrapped in RepaintBoundary + a capture key exactly like
+  // background pages, so _captureAllPages picks it up identically — the
+  // PDF generator needs zero changes, since it just appends whatever
+  // rendered pages already exist in order.
+  Widget _extraPageTextCell(int pageNumber, Map<String, dynamic> section, String column) {
+    final text = section[column] as String? ?? '';
+    return GestureDetector(
+      onTap: () => _editExtraPageSection(pageNumber, section, column),
+      child: Container(
+        color: Colors.white,
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        alignment: Alignment.centerLeft,
+        child: Text(
+          text.isNotEmpty ? text : 'Tap to add notes...',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            fontSize: 11,
+            color: text.isNotEmpty ? AppTheme.textPrimary : AppTheme.textSecondary,
+          ),
+        ),
+      ),
+    );
+  }
+
+  // One full row: Initials, then either text_a + text_b as two cells, or
+  // one wide cell spanning both if this row has been merged. A small
+  // tap target on the right toggles merge/unmerge for just this row.
+  Widget _buildExtraPageRow(int pageNumber, Map<String, dynamic> section, bool isLastRow) {
+    final merged = section['merged'] == true;
+    return Container(
+      height: 28,
+      decoration: BoxDecoration(
+        border: Border(bottom: isLastRow ? BorderSide.none : const BorderSide(color: AppTheme.borderColor)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SizedBox(
+            width: 40,
+            child: Container(
+              decoration: const BoxDecoration(
+                border: Border(right: BorderSide(color: AppTheme.borderColor)),
+              ),
+              child: _buildExtraPageInitialsCell(pageNumber, section),
+            ),
+          ),
+          if (merged)
+            Expanded(child: _extraPageTextCell(pageNumber, section, 'text_a'))
+          else ...[
+            Expanded(
+              child: Container(
+                decoration: const BoxDecoration(
+                  border: Border(right: BorderSide(color: AppTheme.borderColor)),
+                ),
+                child: _extraPageTextCell(pageNumber, section, 'text_a'),
+              ),
+            ),
+            Expanded(child: _extraPageTextCell(pageNumber, section, 'text_b')),
+          ],
+          GestureDetector(
+            onTap: () => _toggleRowMerge(pageNumber, section),
+            child: Container(
+              width: 20,
+              decoration: const BoxDecoration(
+                border: Border(left: BorderSide(color: AppTheme.borderColor)),
+              ),
+              alignment: Alignment.center,
+              child: Icon(
+                merged ? Icons.call_split_rounded : Icons.call_merge_rounded,
+                size: 12,
+                color: AppTheme.textSecondary,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildExtraPageView(Map<String, dynamic> page, GlobalKey captureKey, double finalW, double h) {
+    final pageNumber = page['page_number'] as int;
+    // No per-item deep copy — these Map instances must be the SAME objects
+    // stored inside page['sections'] (and therefore _extraPages). Mutating
+    // section[column] or section['initials_signed_url'] elsewhere in this
+    // file only works because it's the real object; a deep copy here
+    // silently discards every such edit on the very next rebuild.
+    final sections = List<Map<String, dynamic>>.from(page['sections'] as List);
+
+    final headerH = h * _extraPageHeaderFrac;
+    final footerH = h * _extraPageFooterFrac;
+    final leftW = finalW * _extraPageLeftFrac;
+    final rightW = finalW * _extraPageRightFrac;
+    final headerUrl = _pageUrls.first;
+    final footerUrl = _pageUrls.last;
+
+    return RepaintBoundary(
+      key: captureKey,
+      child: Container(
+        width: finalW,
+        height: h,
+        color: Colors.white,
+        child: Stack(children: [
+          Positioned(
+            left: 0, top: 0, bottom: 0,
+            child: _framedEdgeStrip(
+                url: headerUrl, finalW: finalW, h: h, alignment: Alignment.centerLeft, stripW: leftW, stripH: h),
+          ),
+          Positioned(
+            right: 0, top: 0, bottom: 0,
+            child: _framedEdgeStrip(
+                url: headerUrl, finalW: finalW, h: h, alignment: Alignment.centerRight, stripW: rightW, stripH: h),
+          ),
+          Positioned(
+            left: 0, right: 0, top: 0,
+            child: _framedEdgeStrip(
+                url: headerUrl, finalW: finalW, h: h, alignment: Alignment.topCenter, stripH: headerH),
+          ),
+          Positioned(
+            left: 0, right: 0, bottom: 0,
+            child: _framedEdgeStrip(
+                url: footerUrl, finalW: finalW, h: h, alignment: Alignment.bottomCenter, stripH: footerH),
+          ),
+          Positioned(
+            left: leftW, right: rightW, top: headerH, bottom: footerH,
+            child: Container(
+              color: Colors.white,
+              padding: const EdgeInsets.all(12),
+              child: Column(children: [
+                Row(children: [
+                  const Text('Notes',
+                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+                  const Spacer(),
+                  TextButton.icon(
+                    onPressed: () => _confirmDeleteExtraPage(pageNumber),
+                    icon: const Icon(Icons.delete_outline_rounded, size: 14),
+                    label: const Text('Delete Page', style: TextStyle(fontSize: 10)),
+                    style: TextButton.styleFrom(foregroundColor: AppTheme.error),
+                  ),
+                ]),
+                const SizedBox(height: 6),
+                // Each row: Initials | text_a | text_b, or Initials | one
+                // wide merged cell if that row's two text columns have
+                // been combined (tap the merge/split icon on the row).
+                Expanded(
+                  child: SingleChildScrollView(
+                    child: Container(
+                      decoration: BoxDecoration(border: Border.all(color: AppTheme.borderColor)),
+                      child: Column(
+                        children: List.generate(sections.length, (idx) {
+                          final s = sections[idx];
+                          final isLast = idx == sections.length - 1;
+                          return _buildExtraPageRow(pageNumber, s, isLast);
+                        }),
+                      ),
+                    ),
+                  ),
+                ),
+              ]),
+            ),
+          ),
+        ]),
       ),
     );
   }
@@ -535,7 +1242,7 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
   Future<List<Uint8List>> _captureAllPages() async {
     final captured = <Uint8List>[];
     final originalPage = _currentPageIndex;
-    for (var i = 0; i < _pageUrls.length; i++) {
+    for (var i = 0; i < _totalPageCount; i++) {
       if (i != _currentPageIndex) {
         _pageController.jumpToPage(i);
         // Let the jump settle and that page's images finish laying out
@@ -583,7 +1290,7 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
       setState(() => _capturingPages = true);
       final captured = await _captureAllPages();
       if (!mounted) return;
-      if (captured.length != _pageUrls.length) {
+      if (captured.length != _totalPageCount) {
         setState(() {
           _capturingPages = false;
           _completing = false;
@@ -1608,7 +2315,7 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
                 children: [
                   PageView.builder(
                 controller: _pageController,
-                itemCount: _pageUrls.length,
+                itemCount: _totalPageCount,
                 onPageChanged: (i) => setState(() {
                   _currentPageIndex = i;
                   _transformController.value = Matrix4.identity();
@@ -1621,6 +2328,19 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
                         ? constraints.maxHeight
                         : w / aspectRatio;
                     final finalW = h * aspectRatio;
+                    _lastCanvasFinalW = finalW;
+                    _lastCanvasH = h;
+                    if (i >= _pageUrls.length) {
+                      final extraPage = _extraPages[i - _pageUrls.length];
+                      final captureKey = i < _pageCaptureKeys.length ? _pageCaptureKeys[i] : GlobalKey();
+                      return InteractiveViewer(
+                        transformationController: _transformController,
+                        minScale: 1.0,
+                        maxScale: 4.0,
+                        boundaryMargin: const EdgeInsets.all(80),
+                        child: Center(child: _buildExtraPageView(extraPage, captureKey, finalW, h)),
+                      );
+                    }
                     final pageFields = _fieldsForPage(i + 1);
                     final pageMarkers = _photoMarkers.where((m) => (m['page'] as num?)?.toInt() == i + 1).toList();
                     final sigBox = _signatureBox;
@@ -1666,7 +2386,7 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
                   });
                 },
                   ),
-                  if (_pageUrls.length > 1 && _currentPageIndex > 0)
+                  if (_totalPageCount > 1 && _currentPageIndex > 0)
                     Positioned(
                       left: 8,
                       top: 0,
@@ -1681,7 +2401,7 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
                         ),
                       ),
                     ),
-                  if (_pageUrls.length > 1 && _currentPageIndex < _pageUrls.length - 1)
+                  if (_totalPageCount > 1 && _currentPageIndex < _totalPageCount - 1)
                     Positioned(
                       right: 8,
                       top: 0,
@@ -1699,12 +2419,12 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
                 ],
               ),
             ),
-            if (_pageUrls.length > 1)
+            if (_totalPageCount > 1)
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 12),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.center,
-                  children: List.generate(_pageUrls.length, (i) {
+                  children: List.generate(_totalPageCount, (i) {
                     final isCurrent = i == _currentPageIndex;
                     return Container(
                       margin: const EdgeInsets.symmetric(horizontal: 3),
@@ -1757,6 +2477,21 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
         children: [
           Row(
             children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _addingPage ? null : _addExtraPage,
+                  icon: _addingPage
+                      ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Icon(Icons.note_add_outlined, size: 16),
+                  label: Text(_addingPage ? 'Adding...' : 'Add Page', style: const TextStyle(fontSize: 12)),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppTheme.textSecondary,
+                    side: const BorderSide(color: AppTheme.borderColor),
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
               if (unplaced.isNotEmpty)
                 Expanded(
                   child: OutlinedButton.icon(
@@ -1924,6 +2659,8 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
 
   List<Map<String, dynamic>> get _unplacedFields =>
       _fields.where((f) => !_hasValidBox(f)).toList();
+
+  int get _totalPageCount => _pageUrls.length + _extraPages.length;
 
   Widget _buildPositionedSignatureBox(Map<String, dynamic> sigBox, double finalW, double h) {
     final box = sigBox['box'] as Map;
@@ -2504,6 +3241,7 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
         setState(() {
           _initialsSignedUrls.remove(fieldId);
           _localInitialsBytes.remove(fieldId);
+          _answers.remove(fieldId);
         });
       } else {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
@@ -2544,8 +3282,15 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
               final res = await http.Response.fromStream(streamedRes);
               if (!mounted) return;
               if (res.statusCode == 200) {
+                // upload_initials saves the path server-side, but complete's
+                // 'answers' payload overwrites the whole column from this
+                // client's local _answers map — without this, that overwrite
+                // silently erases the initials the moment the form is
+                // completed, even though the upload itself succeeded.
+                final data = jsonDecode(res.body) as Map<String, dynamic>;
                 setState(() {
                   _localInitialsBytes[fieldId] = bytes;
+                  _answers[fieldId] = data['path'];
                   _dirty = false;
                 });
                 if (saveAsDefault) await _refreshSavedDefaults();
@@ -2579,9 +3324,11 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
               );
               if (!mounted) return;
               if (res.statusCode == 200) {
+                final data = jsonDecode(res.body) as Map<String, dynamic>;
                 setState(() {
                   _initialsSignedUrls[fieldId] = _savedInitialsSignedUrl;
                   _localInitialsBytes.remove(fieldId);
+                  _answers[fieldId] = data['path'];
                 });
                 Navigator.of(dctx, rootNavigator: true).pop();
               } else {
