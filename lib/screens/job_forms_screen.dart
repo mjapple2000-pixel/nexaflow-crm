@@ -189,6 +189,65 @@ class _JobFormsScreenState extends State<JobFormsScreen> {
     }
   }
 
+  Future<void> _deleteTemplate(Map<String, dynamic> template) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.cardBg,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        title: const Text('Delete Template?',
+            style: TextStyle(color: AppTheme.textPrimary, fontSize: 15, fontWeight: FontWeight.w700)),
+        content: Text(
+            'This will remove "${template['title']}" from the Forms Library. Businesses that already added it to their own Job Forms keep their copy.',
+            style: const TextStyle(color: AppTheme.textSecondary, fontSize: 13)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(false),
+            child: const Text('Cancel', style: TextStyle(color: AppTheme.textSecondary)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.error,
+              foregroundColor: Colors.white,
+              elevation: 0,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      final session = _db.auth.currentSession;
+      final res = await http.post(
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/job-form-editor'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ${session?.accessToken ?? ''}',
+        },
+        body: jsonEncode({
+          'action': 'delete_template',
+          'form_template_id': template['id'],
+        }),
+      );
+      if (!mounted) return;
+      if (res.statusCode != 200) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not delete template: ${res.body}')),
+        );
+        return;
+      }
+      await _loadLibrary();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not delete template: $e')),
+      );
+    }
+  }
+
   Future<void> _editTemplateTags(Map<String, dynamic> template) async {
     var allTags = List<Map<String, dynamic>>.from(
         await _db.from('form_tags').select('id, name').filter('deleted_at', 'is', null).order('name'));
@@ -1040,6 +1099,14 @@ class _JobFormsScreenState extends State<JobFormsScreen> {
                                   tooltip: 'Edit Template',
                                   icon: const Icon(Icons.sell_outlined, size: 18, color: AppTheme.textSecondary),
                                   onPressed: () => _editTemplateTags(t),
+                                ),
+                              ),
+                              MouseRegion(
+                                cursor: SystemMouseCursors.click,
+                                child: IconButton(
+                                  tooltip: 'Delete Template',
+                                  icon: const Icon(Icons.delete_outline, size: 18, color: AppTheme.textSecondary),
+                                  onPressed: () => _deleteTemplate(t),
                                 ),
                               ),
                             ],
@@ -2161,6 +2228,21 @@ class _FieldSettingsDialogState extends State<_FieldSettingsDialog> {
         onChanged: (v) => marker['label'] = v,
       ),
       const SizedBox(height: 16),
+      Row(children: [
+        SizedBox(
+          height: 22, width: 38,
+          child: Transform.scale(
+            scale: 0.65,
+            child: Switch(
+              value: marker['required'] as bool? ?? false,
+              onChanged: (v) => setState(() => marker['required'] = v),
+              activeColor: AppTheme.brand,
+            ),
+          ),
+        ),
+        const Text('Required', style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+      ]),
+      const SizedBox(height: 16),
       MouseRegion(
         cursor: SystemMouseCursors.click,
         child: SizedBox(
@@ -2640,8 +2722,23 @@ class _FieldSettingsDialogState extends State<_FieldSettingsDialog> {
                       style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
                 )
               : Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text(selected['label'] as String? ?? selected['id'] as String? ?? 'Field',
-                      style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+                  if (selected['_isSignatureBox'] == true)
+                    Text(selected['label'] as String? ?? selected['id'] as String? ?? 'Field',
+                        style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))
+                  else
+                    TextFormField(
+                      key: ValueKey('field_label_${selected['id']}'),
+                      initialValue: selected['label'] as String? ?? selected['id'] as String? ?? 'Field',
+                      style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: AppTheme.textPrimary),
+                      decoration: InputDecoration(
+                        isDense: true,
+                        filled: true,
+                        fillColor: AppTheme.pageBg,
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(6)),
+                      ),
+                      onChanged: (v) => selected['label'] = v,
+                    ),
                   const SizedBox(height: 16),
                   _toggleRow(selected),
                   const SizedBox(height: 24),

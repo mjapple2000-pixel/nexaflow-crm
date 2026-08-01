@@ -203,7 +203,7 @@ Deno.serve(async (req) => {
     // scoped to this specific submission.
     const { data: markerPhotoRows, error: markerPhotoError } = await supabase
       .from("job_form_photo_attachments")
-      .select("id, marker_id, storage_path, created_at")
+      .select("id, marker_id, storage_path, created_at, latitude, longitude, captured_at")
       .eq("submission_id", submissionId)
       .is("deleted_at", null)
       .order("created_at", { ascending: true });
@@ -216,7 +216,13 @@ Deno.serve(async (req) => {
     for (const row of markerPhotoRows ?? []) {
       const signedUrl = await getSignedUrl(row.storage_path);
       if (!markerPhotosMap[row.marker_id]) markerPhotosMap[row.marker_id] = [];
-      markerPhotosMap[row.marker_id].push({ id: row.id, signed_url: signedUrl });
+      markerPhotosMap[row.marker_id].push({
+        id: row.id,
+        signed_url: signedUrl,
+        lat: row.latitude,
+        lng: row.longitude,
+        captured_at: row.captured_at,
+      });
     }
 
     // ── 3e. Per-field Initials answers — each is_initials field's answer

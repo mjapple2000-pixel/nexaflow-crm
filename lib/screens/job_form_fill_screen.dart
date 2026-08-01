@@ -10,6 +10,7 @@ import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:signature/signature.dart';
+import 'package:geolocator/geolocator.dart';
 import '../theme/app_theme.dart';
 
 bool _isAddressField(Map<String, dynamic> field) =>
@@ -19,6 +20,32 @@ bool _isDateField(Map<String, dynamic> field) =>
     (field['label'] as String? ?? '').toLowerCase().contains('date');
 
 bool _isInitialsField(Map<String, dynamic> field) => field['is_initials'] == true;
+
+// Best-effort GPS capture for photo evidence — never blocks or fails a
+// photo upload. Returns null on denied permission, disabled service, or
+// timeout, exactly like every other photo-related error path in this file.
+Future<Position?> _tryGetLocation() async {
+  try {
+    final enabled = await Geolocator.isLocationServiceEnabled();
+    if (!enabled) return null;
+    var permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+    }
+    if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
+      return null;
+    }
+    return await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high)
+        .timeout(const Duration(seconds: 8));
+  } catch (_) {
+    return null;
+  }
+}
+
+// A photo answer entry may be a legacy bare path string (pre-GPS-stamping
+// submissions) or a {path, lat, lng, captured_at} map — always extract
+// the path this way rather than assuming the format.
+String _photoPath(dynamic entry) => entry is Map ? (entry['path'] as String? ?? '') : entry.toString();
 
 // Caps a field at 3 lines by rejecting any edit that would introduce a
 // 4th — Enter still works to add lines 2 and 3, it just stops working
@@ -1117,6 +1144,8 @@ Widget _buildExtraPageInitialsCell(int pageNumber, Map<String, dynamic> section)
     try {
       final bytes = await picked.readAsBytes();
       if (!mounted) return;
+      final position = await _tryGetLocation();
+      if (!mounted) return;
 
       final request = http.MultipartRequest(
         'POST',
@@ -1126,6 +1155,10 @@ Widget _buildExtraPageInitialsCell(int pageNumber, Map<String, dynamic> section)
       request.fields['submission_id'] = widget.submissionId;
       request.fields['action'] = 'upload_photo';
       request.fields['field_id'] = fieldId;
+      if (position != null) {
+        request.fields['lat'] = '${position.latitude}';
+        request.fields['lng'] = '${position.longitude}';
+      }
       request.files.add(http.MultipartFile.fromBytes(
         'file',
         bytes,
@@ -1142,9 +1175,13 @@ Widget _buildExtraPageInitialsCell(int pageNumber, Map<String, dynamic> section)
         final path = data['path'] as String?;
         if (path != null) {
           setState(() {
-            final existing =
-                (_answers[fieldId] as List?)?.cast<String>().toList() ?? <String>[];
-            existing.add(path);
+            final existing = (_answers[fieldId] as List?)?.toList() ?? [];
+            existing.add({
+              'path': path,
+              'lat': position?.latitude,
+              'lng': position?.longitude,
+              'captured_at': DateTime.now().toUtc().toIso8601String(),
+            });
             _answers[fieldId] = existing;
             _localPhotoBytes[path] = bytes;
             _showSaved = true;
@@ -1593,13 +1630,19 @@ Widget _buildExtraPageInitialsCell(int pageNumber, Map<String, dynamic> section)
       if (type == 'checkbox') {
         filled = val == true;
       } else if (type == 'photo') {
-        filled = ((val as List?)?.cast<String>() ?? <String>[]).isNotEmpty;
+        filled = ((val as List?) ?? []).isNotEmpty;
       } else {
         filled = (val?.toString().trim() ?? '').isNotEmpty;
       }
       if (!filled) missing.add(field['label'] as String? ?? 'Field');
     }
     if (_requiresSignature && _signatureUrl == null) missing.add('Signature');
+    for (final marker in _photoMarkers) {
+      if (marker['required'] != true) continue;
+      final markerId = marker['id'] as String?;
+      final photos = (_markerPhotos[markerId] as List?) ?? [];
+      if (photos.isEmpty) missing.add(marker['label'] as String? ?? 'Photo');
+    }
     return missing;
   }
 
@@ -1693,7 +1736,7 @@ Widget _buildExtraPageInitialsCell(int pageNumber, Map<String, dynamic> section)
         break;
 
       case 'photo':
-        final photoAnswers = (_answers[id] as List?)?.cast<String>() ?? <String>[];
+        final photoAnswers = ((_answers[id] as List?) ?? []).map(_photoPath).toList();
         final isUploading = _uploadingFieldIds.contains(id);
         input = Wrap(
           spacing: 8,
@@ -2711,6 +2754,8 @@ Widget _buildExtraPageInitialsCell(int pageNumber, Map<String, dynamic> section)
     final bh = (box['h'] as num).toDouble();
     final markerId = marker['id'] as String;
     final photos = (_markerPhotos[markerId] as List?) ?? [];
+    final markerRequired = marker['required'] == true;
+    final emptyColor = markerRequired ? AppTheme.error : Colors.teal;
     return Positioned(
       left: finalW * (x / 100),
       top: h * (y / 100),
@@ -2721,7 +2766,7 @@ Widget _buildExtraPageInitialsCell(int pageNumber, Map<String, dynamic> section)
           onTap: () => _showMarkerPhotoSheet(marker),
           child: Container(
             decoration: BoxDecoration(
-              border: Border.all(color: photos.isEmpty ? Colors.teal : AppTheme.success, width: 1.5),
+              border: Border.all(color: photos.isEmpty ? emptyColor : AppTheme.success, width: 1.5),
               color: Colors.white.withValues(alpha: 0.85),
               borderRadius: BorderRadius.circular(3),
             ),
@@ -2729,7 +2774,7 @@ Widget _buildExtraPageInitialsCell(int pageNumber, Map<String, dynamic> section)
             child: Icon(
               photos.isEmpty ? Icons.add_a_photo_outlined : Icons.check_circle_outline_rounded,
               size: 14,
-              color: photos.isEmpty ? Colors.teal : AppTheme.success,
+              color: photos.isEmpty ? emptyColor : AppTheme.success,
             ),
           ),
         ),
@@ -2751,11 +2796,16 @@ Widget _buildExtraPageInitialsCell(int pageNumber, Map<String, dynamic> section)
             final XFile? picked = await _picker.pickImage(source: source, imageQuality: 85);
             if (picked == null) return;
             final bytes = await picked.readAsBytes();
+            final position = await _tryGetLocation();
             final request = http.MultipartRequest('POST', Uri.parse('$_fnBase/submit-job-form-action'));
             request.fields['token'] = widget.token;
             request.fields['submission_id'] = widget.submissionId;
             request.fields['action'] = 'upload_marker_photo';
             request.fields['marker_id'] = markerId;
+            if (position != null) {
+              request.fields['lat'] = '${position.latitude}';
+              request.fields['lng'] = '${position.longitude}';
+            }
             request.files.add(http.MultipartFile.fromBytes('file', bytes,
                 filename: picked.name.isNotEmpty ? picked.name : 'photo.jpg', contentType: MediaType('image', 'jpeg')));
             final streamedRes = await request.send();
@@ -2957,17 +3007,18 @@ Widget _buildExtraPageInitialsCell(int pageNumber, Map<String, dynamic> section)
 
     if (!editable) {
       final val = _answers[id];
+      final hasValue = val != null && val.toString().isNotEmpty;
       return Container(
         decoration: BoxDecoration(
-          color: Colors.grey.withValues(alpha: 0.12),
+          color: hasValue ? Colors.white.withValues(alpha: 0.85) : Colors.transparent,
           border: Border.all(color: Colors.grey.withValues(alpha: 0.4)),
           borderRadius: BorderRadius.circular(3),
         ),
         alignment: Alignment.centerLeft,
         padding: const EdgeInsets.symmetric(horizontal: 4),
         child: Text(
-          val == null || val.toString().isEmpty ? '' : val.toString(),
-          style: const TextStyle(fontSize: 10, color: AppTheme.textSecondary),
+          hasValue ? val.toString() : '',
+          style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.textPrimary),
           overflow: TextOverflow.ellipsis,
         ),
       );
@@ -3025,7 +3076,7 @@ Widget _buildExtraPageInitialsCell(int pageNumber, Map<String, dynamic> section)
         );
 
       case 'photo':
-        final photoAnswers = (_answers[id] as List?)?.cast<String>() ?? <String>[];
+        final photoAnswers = ((_answers[id] as List?) ?? []).map(_photoPath).toList();
         final isUploading = _uploadingFieldIds.contains(id);
         return GestureDetector(
           onTap: isUploading ? null : () => _showPhotoSourcePicker(id),
@@ -3197,7 +3248,7 @@ Widget _buildExtraPageInitialsCell(int pageNumber, Map<String, dynamic> section)
     final localBytes = _localInitialsBytes[id];
     final signed = signedUrl != null || localBytes != null;
     return GestureDetector(
-      onTap: () => _showInitialsCaptureDialog(id, field['label'] as String? ?? 'Initials', alreadySigned: signed),
+      onTap: () => _showInitialsCaptureDialog(id, 'Initials', alreadySigned: signed),
       child: Container(
         decoration: BoxDecoration(
           border: Border.all(color: signed ? AppTheme.success : AppTheme.brand, width: 1.5),

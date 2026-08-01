@@ -39,6 +39,8 @@ Deno.serve(async (req) => {
     let sectionText: string | null = null;
     let rowCount: number | null = null;
     let sectionColumn: string | null = null;
+    let latParam: number | null = null;
+    let lngParam: number | null = null;
 
     if (contentType.includes("multipart/form-data")) {
       const formData = await req.formData();
@@ -63,6 +65,10 @@ Deno.serve(async (req) => {
       pageNumber = pageNumberRaw ? parseInt(pageNumberRaw) : null;
       submissionLabel = formData.get("label") as string | null;
       sectionId = formData.get("section_id") as string | null;
+      const latRaw = formData.get("lat") as string | null;
+      latParam = latRaw ? parseFloat(latRaw) : null;
+      const lngRaw = formData.get("lng") as string | null;
+      lngParam = lngRaw ? parseFloat(lngRaw) : null;
     } else {
       const body = await req.json();
       token = body.token;
@@ -262,7 +268,8 @@ Deno.serve(async (req) => {
       const updatedUrls = [...(submission.photo_urls ?? []), path];
       const currentAnswers = submission.answers ?? {};
       const existingFieldPhotos = Array.isArray(currentAnswers[fieldId]) ? currentAnswers[fieldId] : [];
-      const updatedAnswers = { ...currentAnswers, [fieldId]: [...existingFieldPhotos, path] };
+      const photoEntry = { path, lat: latParam, lng: lngParam, captured_at: new Date().toISOString() };
+      const updatedAnswers = { ...currentAnswers, [fieldId]: [...existingFieldPhotos, photoEntry] };
 
       const { error: updateError } = await supabase
         .from("job_form_submissions")
@@ -360,6 +367,9 @@ Deno.serve(async (req) => {
           marker_id: markerId,
           storage_path: path,
           uploaded_by_profile_id: hubToken.profile_id,
+          latitude: latParam,
+          longitude: lngParam,
+          captured_at: new Date().toISOString(),
         })
         .select("id")
         .single();
@@ -1114,7 +1124,7 @@ Deno.serve(async (req) => {
     if (action === "complete") {
       const { data: jobForm } = await supabase
         .from("job_forms")
-        .select("fields, requires_signature")
+        .select("fields, requires_signature, photo_attachment_markers")
         .eq("id", submission.job_form_id)
         .maybeSingle();
 
@@ -1129,12 +1139,26 @@ Deno.serve(async (req) => {
         return val === null || val === undefined || val === "";
       });
 
-      if (missingRequired.length > 0) {
+      const requiredMarkers: any[] = (jobForm?.photo_attachment_markers ?? []).filter((m: any) => m.required === true);
+      let missingMarkerLabels: string[] = [];
+      if (requiredMarkers.length > 0) {
+        const { data: markerPhotoRows } = await supabase
+          .from("job_form_photo_attachments")
+          .select("marker_id")
+          .eq("submission_id", submissionId)
+          .is("deleted_at", null);
+        const markerIdsWithPhotos = new Set((markerPhotoRows ?? []).map((r: any) => r.marker_id));
+        missingMarkerLabels = requiredMarkers
+          .filter((m: any) => !markerIdsWithPhotos.has(m.id))
+          .map((m: any) => m.label ?? "Photo marker");
+      }
+
+      if (missingRequired.length > 0 || missingMarkerLabels.length > 0) {
         return new Response(
           JSON.stringify({
             error: "required_fields_missing",
             message: "Some required fields are still blank.",
-            missing_fields: missingRequired.map((f: any) => f.label),
+            missing_fields: [...missingRequired.map((f: any) => f.label), ...missingMarkerLabels],
           }),
           { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );

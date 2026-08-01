@@ -29,6 +29,8 @@ class _OfficeJobFormViewerSheetState extends State<OfficeJobFormViewerSheet> {
   List<Map<String, dynamic>> _fields = [];
   Map<String, dynamic> _answers = {};
   Map<String, String?> _photoSignedUrls = {};
+  List<Map<String, dynamic>> _photoMarkers = [];
+  Map<String, dynamic> _markerPhotos = {};
   String? _signatureSignedUrl;
   String? _signedByName;
   String? _signedAt;
@@ -68,6 +70,9 @@ class _OfficeJobFormViewerSheetState extends State<OfficeJobFormViewerSheet> {
         _fields = List<Map<String, dynamic>>.from(data['fields'] ?? []);
         _answers = Map<String, dynamic>.from(data['answers'] ?? {});
         _photoSignedUrls = Map<String, String?>.from(data['photo_signed_urls'] ?? {});
+        _photoMarkers = List<Map<String, dynamic>>.from(
+            (data['photo_attachment_markers'] as List? ?? []).map((m) => Map<String, dynamic>.from(m as Map)));
+        _markerPhotos = Map<String, dynamic>.from(data['marker_photos'] ?? {});
         _signatureSignedUrl = data['signature_signed_url'] as String?;
         _signedByName = data['signed_by_name'] as String?;
         _signedAt = data['signed_at'] as String?;
@@ -338,6 +343,125 @@ class _OfficeJobFormViewerSheetState extends State<OfficeJobFormViewerSheet> {
     return '${months[dt.month-1]} ${dt.day} · $h:$m ${dt.hour < 12 ? 'AM' : 'PM'}';
   }
 
+  Widget _buildPhotoThumb(String? signedUrl) {
+    return GestureDetector(
+      onTap: signedUrl != null ? () => _showPhotoPreview(signedUrl) : null,
+      child: Container(
+        width: 64, height: 64, clipBehavior: Clip.antiAlias,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: AppTheme.borderColor),
+          color: AppTheme.pageBg,
+        ),
+        child: signedUrl != null
+            ? Image.network(signedUrl, fit: BoxFit.cover,
+                errorBuilder: (_, __, ___) => const Center(
+                    child: Icon(Icons.broken_image_outlined, size: 18, color: AppTheme.textSecondary)))
+            : const Center(child: Icon(Icons.image_outlined, size: 18, color: AppTheme.textSecondary)),
+      ),
+    );
+  }
+
+  // GPS is best-effort at capture time — legitimately null for denied
+  // permission, desktop testing, or a pre-GPS-stamping submission.
+  Widget _buildPhotoMeta(num? lat, num? lng, String? capturedAt) {
+    final parsed = capturedAt != null ? DateTime.tryParse(capturedAt) : null;
+    final timeText = parsed != null ? _formatSignedAt(capturedAt) : null;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (timeText != null && timeText.isNotEmpty)
+          Row(children: [
+            const Icon(Icons.access_time_rounded, size: 12, color: AppTheme.textSecondary),
+            const SizedBox(width: 4),
+            Text(timeText, style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+          ]),
+        if (lat != null && lng != null) ...[
+          const SizedBox(height: 2),
+          MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: GestureDetector(
+              onTap: () => launchUrl(Uri.parse('https://www.google.com/maps?q=$lat,$lng'),
+                  webOnlyWindowName: '_blank'),
+              child: Row(children: [
+                const Icon(Icons.location_on_outlined, size: 12, color: AppTheme.brand),
+                const SizedBox(width: 4),
+                Text('${lat.toStringAsFixed(5)}, ${lng.toStringAsFixed(5)}',
+                    style: const TextStyle(
+                        fontSize: 11, color: AppTheme.brand, decoration: TextDecoration.underline)),
+              ]),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildMarkerAnswerField(Map<String, dynamic> marker) {
+    final markerId = marker['id'] as String?;
+    final required = marker['required'] == true;
+    final photos = (_markerPhotos[markerId] as List?) ?? [];
+    Widget content;
+    if (photos.isEmpty) {
+      content = Text(
+        required ? 'No photo attached — required' : 'No photos',
+        style: TextStyle(fontSize: 12, color: required ? AppTheme.error : AppTheme.textSecondary),
+      );
+    } else {
+      content = Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: photos.map((p) {
+          final photo = Map<String, dynamic>.from(p as Map);
+          final signedUrl = photo['signed_url'] as String?;
+          final lat = photo['lat'] as num?;
+          final lng = photo['lng'] as num?;
+          final capturedAt = photo['captured_at'] as String?;
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _buildPhotoThumb(signedUrl),
+                const SizedBox(width: 10),
+                Expanded(child: _buildPhotoMeta(lat, lng, capturedAt)),
+              ],
+            ),
+          );
+        }).toList(),
+      );
+    }
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppTheme.pageBg,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: AppTheme.borderColor),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Text(marker['label'] as String? ?? 'Photo',
+              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
+          if (required) ...[
+            const SizedBox(width: 6),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: AppTheme.brand.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: const Text('Required',
+                  style: TextStyle(fontSize: 9, fontWeight: FontWeight.w700, color: AppTheme.brand)),
+            ),
+          ],
+        ]),
+        const SizedBox(height: 6),
+        content,
+      ]),
+    );
+  }
+
   Widget _buildAnswerField(Map<String, dynamic> field) {
     final id = field['id'] as String;
     final type = field['type'] as String? ?? 'text';
@@ -356,28 +480,32 @@ class _OfficeJobFormViewerSheetState extends State<OfficeJobFormViewerSheet> {
         ]);
         break;
       case 'photo':
-        final photoAnswers = (raw as List?)?.cast<String>() ?? <String>[];
-        content = photoAnswers.isEmpty
+        final photoEntries = (raw as List?) ?? [];
+        content = photoEntries.isEmpty
             ? const Text('No photos', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary))
-            : Wrap(spacing: 8, runSpacing: 8, children: photoAnswers.map((path) {
-                final signedUrl = _photoSignedUrls[path];
-                return GestureDetector(
-                  onTap: signedUrl != null ? () => _showPhotoPreview(signedUrl) : null,
-                  child: Container(
-                    width: 64, height: 64, clipBehavior: Clip.antiAlias,
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: AppTheme.borderColor),
-                      color: AppTheme.pageBg,
+            : Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: photoEntries.map((entry) {
+                  // A bare string means this photo predates GPS stamping —
+                  // handled the same way, just with no metadata to show.
+                  final path = entry is Map ? entry['path'] as String? : entry?.toString();
+                  final lat = entry is Map ? entry['lat'] as num? : null;
+                  final lng = entry is Map ? entry['lng'] as num? : null;
+                  final capturedAt = entry is Map ? entry['captured_at'] as String? : null;
+                  final signedUrl = path != null ? _photoSignedUrls[path] : null;
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _buildPhotoThumb(signedUrl),
+                        const SizedBox(width: 10),
+                        Expanded(child: _buildPhotoMeta(lat, lng, capturedAt)),
+                      ],
                     ),
-                    child: signedUrl != null
-                        ? Image.network(signedUrl, fit: BoxFit.cover,
-                            errorBuilder: (_, __, ___) => const Center(
-                                child: Icon(Icons.broken_image_outlined, size: 18, color: AppTheme.textSecondary)))
-                        : const Center(child: Icon(Icons.image_outlined, size: 18, color: AppTheme.textSecondary)),
-                  ),
-                );
-              }).toList());
+                  );
+                }).toList(),
+              );
         break;
       default:
         final text = raw == null || raw.toString().trim().isEmpty ? '—' : raw.toString();
@@ -557,7 +685,7 @@ class _OfficeJobFormViewerSheetState extends State<OfficeJobFormViewerSheet> {
               ),
             ],
             const SizedBox(height: 16),
-            ..._fields.map(_buildAnswerField),
+            ..._photoMarkers.map(_buildMarkerAnswerField),
             if (_signatureSignedUrl != null)
               Container(
                 margin: const EdgeInsets.only(bottom: 10),
@@ -586,6 +714,8 @@ class _OfficeJobFormViewerSheetState extends State<OfficeJobFormViewerSheet> {
                   ),
                 ]),
               ),
+            if (_photoMarkers.isNotEmpty || _signatureSignedUrl != null) const SizedBox(height: 6),
+            ..._fields.map(_buildAnswerField),
           ],
         ]),
       ),

@@ -60,7 +60,7 @@ Deno.serve(async (req: Request) => {
     // other action operates on a specific job_forms row the caller must
     // own, so that lookup + ownership check stays shared here.
     let jobForm: any = null;
-    if (action !== 'use_template' && action !== 'update_template_tags' && action !== 'create_tag') {
+    if (action !== 'use_template' && action !== 'update_template_tags' && action !== 'create_tag' && action !== 'delete_template') {
       if (!job_form_id) {
         return jsonResponse({ error: 'job_form_id is required for this action' }, 400);
       }
@@ -313,6 +313,35 @@ Deno.serve(async (req: Request) => {
         const { error: insErr } = await supabase.from('form_template_tags').insert(rows);
         if (insErr) return jsonResponse({ error: 'Could not save new tags: ' + insErr.message }, 500);
       }
+      return jsonResponse({ success: true });
+    }
+
+    // Soft-deletes a shared template from the Forms Library. This is the
+    // sanctioned write path around form_templates for delete specifically —
+    // RLS on this table stayed unresolved after extensive investigation
+    // (see July 30-31 handoffs), so ownership is enforced here in code
+    // instead, same pattern as update_template_tags above.
+    if (action === 'delete_template') {
+      const { form_template_id } = body;
+      if (!form_template_id) return jsonResponse({ error: 'form_template_id is required' }, 400);
+
+      const { data: template, error: templateErr } = await supabase
+        .from('form_templates')
+        .select('id, business_id')
+        .eq('id', form_template_id)
+        .maybeSingle();
+      if (templateErr || !template) return jsonResponse({ error: 'Template not found' }, 404);
+
+      if (profile?.business_id && profile.business_id !== template.business_id) {
+        return jsonResponse({ error: 'Not authorized to delete this template' }, 403);
+      }
+
+      const { error: delErr } = await supabase
+        .from('form_templates')
+        .update({ deleted_at: new Date().toISOString() })
+        .eq('id', form_template_id);
+      if (delErr) return jsonResponse({ error: 'Could not delete template: ' + delErr.message }, 500);
+
       return jsonResponse({ success: true });
     }
 

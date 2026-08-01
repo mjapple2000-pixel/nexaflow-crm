@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:http/http.dart' as http;
+import 'package:url_launcher/url_launcher.dart';
 import '../theme/app_theme.dart';
 
 class CompletedJobFormViewer extends StatefulWidget {
@@ -34,6 +35,8 @@ class _CompletedJobFormViewerState extends State<CompletedJobFormViewer> {
 
   Map<String, dynamic> _answers = {};
   Map<String, String?> _photoSignedUrls = {};
+  List<Map<String, dynamic>> _photoMarkers = [];
+  Map<String, dynamic> _markerPhotos = {};
   String? _signatureSignedUrl;
   String? _signedByName;
   String? _signedAt;
@@ -78,6 +81,9 @@ class _CompletedJobFormViewerState extends State<CompletedJobFormViewer> {
         _location = data['location'] as String? ?? '';
         _answers = Map<String, dynamic>.from(data['answers'] ?? {});
         _photoSignedUrls = Map<String, String?>.from(data['photo_signed_urls'] ?? {});
+        _photoMarkers = List<Map<String, dynamic>>.from(
+            (data['photo_attachment_markers'] as List? ?? []).map((m) => Map<String, dynamic>.from(m as Map)));
+        _markerPhotos = Map<String, dynamic>.from(data['marker_photos'] ?? {});
         _signatureSignedUrl = data['signature_signed_url'] as String?;
         _signedByName = data['signed_by_name'] as String?;
         _signedAt = data['signed_at'] as String?;
@@ -99,6 +105,137 @@ class _CompletedJobFormViewerState extends State<CompletedJobFormViewer> {
         backgroundColor: Colors.black,
         insetPadding: const EdgeInsets.all(20),
         child: InteractiveViewer(child: Image.network(url)),
+      ),
+    );
+  }
+
+  Widget _buildPhotoThumb(String? url) {
+    return GestureDetector(
+      onTap: url != null ? () => _showPhotoPreview(url) : null,
+      child: Container(
+        width: 64,
+        height: 64,
+        clipBehavior: Clip.antiAlias,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: AppTheme.borderColor),
+          color: AppTheme.pageBg,
+        ),
+        child: url != null
+            ? Image.network(url, fit: BoxFit.cover,
+                errorBuilder: (_, __, ___) => const Icon(
+                    Icons.broken_image_outlined, size: 18, color: AppTheme.textSecondary))
+            : const Icon(Icons.image_outlined, size: 18, color: AppTheme.textSecondary),
+      ),
+    );
+  }
+
+  // GPS is best-effort at capture time — may legitimately be null (denied
+  // permission, desktop testing, or a pre-GPS-stamping submission), so
+  // this must degrade gracefully rather than assume both values exist.
+  Widget _buildPhotoMeta(num? lat, num? lng, String? capturedAt) {
+    final parsed = capturedAt != null ? DateTime.tryParse(capturedAt) : null;
+    final timeText = parsed?.toLocal().toString().split('.').first;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (timeText != null)
+          Row(children: [
+            const Icon(Icons.access_time_rounded, size: 12, color: AppTheme.textSecondary),
+            const SizedBox(width: 4),
+            Text(timeText, style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+          ]),
+        if (lat != null && lng != null) ...[
+          const SizedBox(height: 2),
+          MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: GestureDetector(
+              onTap: () => launchUrl(Uri.parse('https://www.google.com/maps?q=$lat,$lng'),
+                  webOnlyWindowName: '_blank'),
+              child: Row(children: [
+                const Icon(Icons.location_on_outlined, size: 12, color: AppTheme.brand),
+                const SizedBox(width: 4),
+                Text('${lat.toStringAsFixed(5)}, ${lng.toStringAsFixed(5)}',
+                    style: const TextStyle(
+                        fontSize: 11, color: AppTheme.brand, decoration: TextDecoration.underline)),
+              ]),
+            ),
+          ),
+        ] else if (timeText != null)
+          const Padding(
+            padding: EdgeInsets.only(top: 2),
+            child: Text('No location captured',
+                style: TextStyle(fontSize: 10, color: AppTheme.textSecondary)),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildMarkerPhotoRow(Map<String, dynamic> marker) {
+    final markerId = marker['id'] as String?;
+    final required = marker['required'] == true;
+    final photos = (_markerPhotos[markerId] as List?) ?? [];
+    Widget content;
+    if (photos.isEmpty) {
+      content = Text(
+        required ? 'No photo attached — required' : 'No photos',
+        style: TextStyle(fontSize: 12, color: required ? AppTheme.error : AppTheme.textSecondary),
+      );
+    } else {
+      content = Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: photos.map((p) {
+          final photo = Map<String, dynamic>.from(p as Map);
+          final url = photo['signed_url'] as String?;
+          final lat = photo['lat'] as num?;
+          final lng = photo['lng'] as num?;
+          final capturedAt = photo['captured_at'] as String?;
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _buildPhotoThumb(url),
+                const SizedBox(width: 10),
+                Expanded(child: _buildPhotoMeta(lat, lng, capturedAt)),
+              ],
+            ),
+          );
+        }).toList(),
+      );
+    }
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppTheme.cardBg,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppTheme.borderColor),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(children: [
+            Text(marker['label'] as String? ?? 'Photo',
+                style: const TextStyle(
+                    fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
+            if (required) ...[
+              const SizedBox(width: 6),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: AppTheme.brand.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: const Text('Required',
+                    style: TextStyle(fontSize: 9, fontWeight: FontWeight.w700, color: AppTheme.brand)),
+              ),
+            ],
+          ]),
+          const SizedBox(height: 6),
+          content,
+        ],
       ),
     );
   }
@@ -128,34 +265,31 @@ class _CompletedJobFormViewerState extends State<CompletedJobFormViewer> {
         break;
 
       case 'photo':
-        final paths = (value as List?)?.cast<String>() ?? <String>[];
-        if (paths.isEmpty) {
+        final photoEntries = (value as List?) ?? [];
+        if (photoEntries.isEmpty) {
           content = const Text('No photos',
               style: TextStyle(fontSize: 12, color: AppTheme.textSecondary));
         } else {
-          content = Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: paths.map((p) {
-              final url = _photoSignedUrls[p];
-              return GestureDetector(
-                onTap: url != null ? () => _showPhotoPreview(url) : null,
-                child: Container(
-                  width: 64,
-                  height: 64,
-                  clipBehavior: Clip.antiAlias,
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: AppTheme.borderColor),
-                    color: AppTheme.pageBg,
-                  ),
-                  child: url != null
-                      ? Image.network(url, fit: BoxFit.cover,
-                          errorBuilder: (_, __, ___) => const Icon(
-                              Icons.broken_image_outlined,
-                              size: 18, color: AppTheme.textSecondary))
-                      : const Icon(Icons.image_outlined,
-                          size: 18, color: AppTheme.textSecondary),
+          // Entries are {path, lat, lng, captured_at} objects going
+          // forward; a bare string means a photo captured before GPS
+          // stamping existed — handled the same way, just with no metadata.
+          content = Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: photoEntries.map((entry) {
+              final path = entry is Map ? entry['path'] as String? : entry?.toString();
+              final lat = entry is Map ? entry['lat'] as num? : null;
+              final lng = entry is Map ? entry['lng'] as num? : null;
+              final capturedAt = entry is Map ? entry['captured_at'] as String? : null;
+              final url = path != null ? _photoSignedUrls[path] : null;
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _buildPhotoThumb(url),
+                    const SizedBox(width: 10),
+                    Expanded(child: _buildPhotoMeta(lat, lng, capturedAt)),
+                  ],
                 ),
               );
             }).toList(),
@@ -315,6 +449,7 @@ class _CompletedJobFormViewerState extends State<CompletedJobFormViewer> {
                   ],
                   const SizedBox(height: 20),
                   ..._fields.map(_buildAnswerRow),
+                  ..._photoMarkers.map(_buildMarkerPhotoRow),
                   if (_requiresSignature) ...[
                     Container(
                       margin: const EdgeInsets.only(bottom: 10),

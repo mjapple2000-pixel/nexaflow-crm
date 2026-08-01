@@ -228,9 +228,53 @@ function parseTableBlocks(
     const tableBox = toBoxPct(table.Geometry);
     if (tableBox) tableRegions.push(tableBox);
 
+    // Textract sometimes fuses the section's own banner text (e.g. "Visual
+    // Inspection") into the table as its own RowIndex 1 — that row's cells
+    // don't map one-to-one onto real columns (the banner text spans across
+    // cells, typically leaving the last column empty), unlike a genuine
+    // header row where every column has real header text. Detect the real
+    // header row by scanning down from Row 1 for the first row where every
+    // column has non-empty text; falls back to Row 1 if nothing better is
+    // found, so this never behaves worse than before for tables that were
+    // already correct (e.g. Table 3).
+    const rowIndices: number[] = Array.from(new Set<number>(cells.map((c: any) => c.RowIndex as number))).sort((a: number, b: number) => a - b);
+    // Only Row 1 and Row 2 are ever checked as header candidates — a fused
+    // banner can only push the real header down by exactly one row, never
+    // deeper. Scanning further risks a genuine DATA row (e.g. one full of
+    // checkboxes) being misidentified as the header, which would wrongly
+    // cause that row and every row above it to be skipped — silently
+    // deleting an entire section (this happened to the Door/Operation Type
+    // table, whose Operation Type row has 3 checkbox cells).
+    const isFullHeaderRow = (rowIndex: number): boolean => {
+      const rowCells = cells.filter((c: any) => c.RowIndex === rowIndex);
+      return Array.from({ length: columnCount }, (_: unknown, i: number) => i + 1).every((col: number) => {
+        const cell = rowCells.find((c: any) => c.ColumnIndex === col);
+        if (!cell) return false;
+        // Word-only text — a checkbox cell renders via getBlockText() as
+        // literal "[ ]"/"[X]", which would count as "filled" and cause a
+        // checkbox-heavy data row to be mistaken for the header.
+        const wordChildIds = (cell.Relationships ?? [])
+          .filter((r: any) => r.Type === 'CHILD')
+          .flatMap((r: any) => r.Ids);
+        const wordOnlyText = wordChildIds
+          .map((id: string) => blockMap.get(id))
+          .filter((c: any) => c?.BlockType === 'WORD')
+          .map((c: any) => c.Text)
+          .join(' ')
+          .trim();
+        return wordOnlyText.length > 0;
+      });
+    };
+
+    let headerRowIndex = rowIndices[0] ?? 1;
+    const row2 = rowIndices[1];
+    if (row2 !== undefined && !isFullHeaderRow(headerRowIndex) && isFullHeaderRow(row2)) {
+      headerRowIndex = row2;
+    }
+
     const headerByCol = new Map<number, string>();
     for (const cell of cells) {
-      if (cell.RowIndex === 1) {
+      if (cell.RowIndex === headerRowIndex) {
         headerByCol.set(cell.ColumnIndex, getBlockText(cell, blockMap).trim());
       }
     }
@@ -241,7 +285,7 @@ function parseTableBlocks(
     // instead — that's what caused most Initials/Deficiencies misses: GPT
     // had no row/column to anchor a floating scrap of handwriting to.
     for (const cell of cells) {
-      if (cell.RowIndex === 1) continue; // header row — already consumed above to label columns, not an answer cell itself
+      if (cell.RowIndex <= headerRowIndex) continue; // header row (and any banner row(s) fused above it) — not an answer cell
 
       // Some cells (e.g. "Signage complies with the following: [ ] Does
       // not exceed... [ ] Is attached...") contain real checkbox marks
@@ -596,6 +640,18 @@ Deno.serve(async (req: Request) => {
       if (!VALID_FIELD_TYPES.has(field.type)) {
         console.error(`Invalid field type "${field.type}" on field ${field.id}, defaulting to "text"`);
         field.type = 'text';
+      }
+      // GPT inconsistently classifies signature lines as plain "text" —
+      // confirmed on a real form where "Inspector Signature" came back as
+      // type "text" and silently saved as an ordinary field instead of
+      // becoming the form's real signature_box. A label containing
+      // "signature" is a reliable, deterministic signal independent of
+      // whatever GPT decided, so it force-corrects the type here rather
+      // than relying on the model to get it right every time. Only applies
+      // when GPT said "text" — never overrides a deliberate photo/select/
+      // checkbox classification on a field that merely mentions the word.
+      if (field.type === 'text' && typeof field.label === 'string' && /signature/i.test(field.label)) {
+        field.type = 'signature';
       }
       if (field.source_item_id) {
         const item = ocrById.get(field.source_item_id);

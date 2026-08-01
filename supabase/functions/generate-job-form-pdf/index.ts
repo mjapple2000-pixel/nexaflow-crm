@@ -50,6 +50,28 @@ function wrapText(text: string, font: any, size: number, maxWidth: number): stri
   return lines;
 }
 
+// entry may be a legacy bare storage-path string (pre-GPS-stamping) or a
+// {path, lat, lng, captured_at} object — always resolve the real path
+// this way rather than assuming the shape, since a raw object passed to
+// storage.download() fails silently instead of throwing something clear.
+function photoPathOf(entry: any): string {
+  return entry && typeof entry === "object" ? String(entry.path ?? "") : String(entry ?? "");
+}
+
+function photoEntryCaption(entry: any): string {
+  if (!entry || typeof entry !== "object") return "";
+  const parts: string[] = [];
+  if (entry.captured_at) {
+    try {
+      parts.push(new Date(entry.captured_at).toLocaleString());
+    } catch (_) { /* ignore unparsable date */ }
+  }
+  if (entry.lat != null && entry.lng != null) {
+    parts.push(`${Number(entry.lat).toFixed(5)}, ${Number(entry.lng).toFixed(5)}`);
+  }
+  return parts.join("   ·   ");
+}
+
 const RECREATION_FONT_SIZE = 20;
 const CHECK_MARK_SIZE = 12;
 
@@ -121,7 +143,7 @@ async function generateFromRenderedPages(
 
     const { data: markerPhotos } = await supabase
       .from("job_form_photo_attachments")
-      .select("marker_id, storage_path, created_at")
+      .select("marker_id, storage_path, created_at, latitude, longitude, captured_at")
       .eq("submission_id", submission_id)
       .is("deleted_at", null)
       .order("marker_id", { ascending: true })
@@ -140,9 +162,13 @@ async function generateFromRenderedPages(
         const photoPage = pdfDoc.addPage([PAGE_W, PAGE_H]);
         const label = markerLabelById.get(String(photo.marker_id)) ?? "Photo";
         photoPage.drawText(label, { x: MARGIN, y: PAGE_H - MARGIN, size: 14, font, color: TEXT_DARK });
+        const caption = photoEntryCaption({ lat: photo.latitude, lng: photo.longitude, captured_at: photo.captured_at });
+        if (caption) {
+          photoPage.drawText(caption, { x: MARGIN, y: PAGE_H - MARGIN - 16, size: 9, font, color: TEXT_SECONDARY });
+        }
 
         const maxW = PAGE_W - MARGIN * 2;
-        const maxH = PAGE_H - MARGIN * 2 - 30;
+        const maxH = PAGE_H - MARGIN * 2 - (caption ? 46 : 30);
         const scale = Math.min(maxW / embeddedPhoto.width, maxH / embeddedPhoto.height, 1);
         const drawW = embeddedPhoto.width * scale;
         const drawH = embeddedPhoto.height * scale;
@@ -166,8 +192,10 @@ async function generateFromRenderedPages(
     const photoFields: any[] = (jobForm.fields ?? []).filter((f: any) => f.type === "photo");
     const answers = submission.answers ?? {};
     for (const field of photoFields) {
-      const paths: string[] = Array.isArray(answers[field.id]) ? answers[field.id] : [];
-      for (const path of paths) {
+      const entries: any[] = Array.isArray(answers[field.id]) ? answers[field.id] : [];
+      for (const entry of entries) {
+        const path = photoPathOf(entry);
+        if (!path) continue;
         try {
           const { data: photoBlob, error: photoDlErr } = await supabase.storage.from(BUCKET).download(path);
           if (photoDlErr || !photoBlob) {
@@ -180,9 +208,13 @@ async function generateFromRenderedPages(
           const photoPage = pdfDoc.addPage([PAGE_W, PAGE_H]);
           const label = field.label ?? "Photo";
           photoPage.drawText(label, { x: MARGIN, y: PAGE_H - MARGIN, size: 14, font, color: TEXT_DARK });
+          const caption = photoEntryCaption(entry);
+          if (caption) {
+            photoPage.drawText(caption, { x: MARGIN, y: PAGE_H - MARGIN - 16, size: 9, font, color: TEXT_SECONDARY });
+          }
 
           const maxW = PAGE_W - MARGIN * 2;
-          const maxH = PAGE_H - MARGIN * 2 - 30;
+          const maxH = PAGE_H - MARGIN * 2 - (caption ? 46 : 30);
           const scale = Math.min(maxW / embeddedPhoto.width, maxH / embeddedPhoto.height, 1);
           const drawW = embeddedPhoto.width * scale;
           const drawH = embeddedPhoto.height * scale;
@@ -943,12 +975,14 @@ Deno.serve(async (req) => {
         page.drawText(value, { x: MARGIN, y, size: 12, font, color: TEXT_DARK });
         y -= 20;
       } else if (type === "photo") {
-        const paths: string[] = Array.isArray(raw) ? raw : [];
-        if (paths.length === 0) {
+        const entries: any[] = Array.isArray(raw) ? raw : [];
+        if (entries.length === 0) {
           page.drawText("No photos", { x: MARGIN, y, size: 10, font, color: TEXT_SECONDARY });
           y -= 20;
         } else {
-          for (const path of paths) {
+          for (const entry of entries) {
+            const path = photoPathOf(entry);
+            if (!path) continue;
             try {
               const { data: fileData } = await supabase.storage.from(BUCKET).download(path);
               if (!fileData) continue;
@@ -959,13 +993,20 @@ Deno.serve(async (req) => {
               const scale = maxW / img.width;
               const drawW = maxW;
               const drawH = img.height * scale;
-              newPageIfNeeded(drawH + 14);
+              const caption = photoEntryCaption(entry);
+              newPageIfNeeded(drawH + (caption ? 28 : 14));
               page.drawRectangle({
                 x: MARGIN - 4, y: y - drawH - 4, width: drawW + 8, height: drawH + 8,
                 borderColor: BORDER_LIGHT, borderWidth: 1, color: rgb(1, 1, 1),
               });
               page.drawImage(img, { x: MARGIN, y: y - drawH, width: drawW, height: drawH });
-              y -= drawH + 14;
+              y -= drawH + 12;
+              if (caption) {
+                page.drawText(caption, { x: MARGIN, y, size: 8, font, color: TEXT_SECONDARY });
+                y -= 14;
+              } else {
+                y -= 2;
+              }
             } catch (e) {
               console.error("Photo embed error for", path, e);
             }
