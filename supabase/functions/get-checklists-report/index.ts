@@ -18,6 +18,8 @@ Deno.serve(async (req) => {
   try {
     const url = new URL(req.url);
     const dateRangeDays = parseInt(url.searchParams.get("date_range_days") ?? "30");
+    const startDateParam = url.searchParams.get("start_date");
+    const endDateParam = url.searchParams.get("end_date");
     const searchTerm = url.searchParams.get("search")?.trim().toLowerCase() ?? "";
     const businessIdParam = url.searchParams.get("business_id");
     const authHeader = req.headers.get("Authorization");
@@ -69,15 +71,26 @@ Deno.serve(async (req) => {
     }
 
     // ── 2. Load completed submissions in the date range ───────────────────────
-    const since = new Date(Date.now() - dateRangeDays * 24 * 60 * 60 * 1000).toISOString();
+    // Explicit start_date/end_date (from the Forms tab's own date-range
+    // picker) take priority over the day-bucket when both are present —
+    // independent of the 7d/30d/90d chips elsewhere on the Reporting
+    // screen, which only ever send date_range_days.
+    const hasExplicitRange = !!(startDateParam && endDateParam);
+    const since = hasExplicitRange
+      ? new Date(startDateParam!).toISOString()
+      : new Date(Date.now() - dateRangeDays * 24 * 60 * 60 * 1000).toISOString();
 
     let submissionsQuery = supabase
       .from("job_form_submissions")
-      .select("id, job_form_id, appointment_id, completed_by_profile_id, status, updated_at, submission_label")
+      .select("id, job_form_id, appointment_id, completed_by_profile_id, status, updated_at, submission_label, answers, signature_url")
       .eq("business_id", businessId)
       .is("deleted_at", null)
       .gte("updated_at", since)
       .order("updated_at", { ascending: false });
+
+    if (hasExplicitRange) {
+      submissionsQuery = submissionsQuery.lte("updated_at", new Date(endDateParam!).toISOString());
+    }
 
     if (statusFilter === "started") {
       submissionsQuery = submissionsQuery.eq("status", "in_progress");
@@ -108,9 +121,11 @@ Deno.serve(async (req) => {
     const profileIds = [...new Set(rows.map((r) => r.completed_by_profile_id).filter(Boolean))];
     const appointmentIds = [...new Set(rows.map((r) => r.appointment_id).filter(Boolean))];
 
-    const [{ data: jobForms }, { data: profiles }, { data: appointments }] = await Promise.all([
+    const submissionIds = rows.map((r) => r.id);
+
+    const [{ data: jobForms }, { data: profiles }, { data: appointments }, { data: markerPhotos }] = await Promise.all([
       jobFormIds.length
-        ? supabase.from("job_forms").select("id, name").in("id", jobFormIds)
+        ? supabase.from("job_forms").select("id, name, fields, requires_signature, photo_attachment_markers").in("id", jobFormIds)
         : Promise.resolve({ data: [] }),
       profileIds.length
         ? supabase.from("profiles").select("id, full_name").in("id", profileIds)
@@ -118,17 +133,72 @@ Deno.serve(async (req) => {
       appointmentIds.length
         ? supabase.from("appointments").select("id, appointment_type, lead_name, location, assigned_to").in("id", appointmentIds)
         : Promise.resolve({ data: [] }),
+      supabase.from("job_form_photo_attachments").select("submission_id, marker_id").in("submission_id", submissionIds).is("deleted_at", null),
     ]);
 
     const formsById = Object.fromEntries((jobForms ?? []).map((f) => [f.id, f]));
     const profilesById = Object.fromEntries((profiles ?? []).map((p) => [p.id, p]));
     const appointmentsById = Object.fromEntries((appointments ?? []).map((a) => [a.id, a]));
 
+    // One grouped map for every required marker's actual photo count
+    // across all these submissions, instead of a query per marker per
+    // submission — keyed by "submissionId:markerId", same pattern as
+    // get-employee-hub-data uses for the same computation.
+    const markerPhotoCounts = new Map<string, number>();
+    for (const p of markerPhotos ?? []) {
+      const key = `${p.submission_id}:${p.marker_id}`;
+      markerPhotoCounts.set(key, (markerPhotoCounts.get(key) ?? 0) + 1);
+    }
+
+    // Mirrors job_form_fill_screen.dart's _missingRequiredLabels and
+    // get-employee-hub-data's countRequired exactly — required
+    // text/number/checkbox/select/photo fields, required photo markers,
+    // and the signature if requires_signature — so this report's badge
+    // never disagrees with what actually blocks Fill Screen completion
+    // or the Employee Hub's own badge for the same submission.
+    function countRequired(form: any, sub: any): { total: number; missing: number } {
+      const fields: any[] = form?.fields ?? [];
+      const answers = sub.answers ?? {};
+      let total = 0;
+      let missing = 0;
+
+      for (const f of fields) {
+        if (f.required !== true) continue;
+        total++;
+        const val = answers[f.id];
+        let filled: boolean;
+        if (f.type === "checkbox") {
+          filled = val === true;
+        } else if (f.type === "photo") {
+          filled = Array.isArray(val) && val.length > 0;
+        } else {
+          filled = val != null && String(val).trim() !== "";
+        }
+        if (!filled) missing++;
+      }
+
+      if (form?.requires_signature) {
+        total++;
+        if (!sub.signature_url) missing++;
+      }
+
+      const markers: any[] = form?.photo_attachment_markers ?? [];
+      for (const m of markers) {
+        if (m.required !== true) continue;
+        total++;
+        const count = markerPhotoCounts.get(`${sub.id}:${m.id}`) ?? 0;
+        if (count === 0) missing++;
+      }
+
+      return { total, missing };
+    }
+
     // ── 4. Merge + optional search filter (form name or completed-by name) ────
     let merged = rows.map((r) => {
       const form = formsById[r.job_form_id];
       const completedBy = profilesById[r.completed_by_profile_id];
       const appt = appointmentsById[r.appointment_id];
+      const { total, missing } = countRequired(form, r);
       return {
         submission_id: r.id,
         status: r.status,
@@ -140,6 +210,8 @@ Deno.serve(async (req) => {
         lead_name: appt?.lead_name ?? null,
         location: appt?.location ?? null,
         updated_at: r.updated_at,
+        total_required: total,
+        missing_required: r.status === "completed" ? 0 : missing,
       };
     });
 

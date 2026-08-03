@@ -142,9 +142,22 @@ Deno.serve(async (req) => {
     const jobFormIds = [...new Set(validSubmissions.map((s) => s.job_form_id))];
     const { data: jobForms } = await supabase
       .from("job_forms")
-      .select("id, name")
+      .select("id, name, photo_attachment_markers")
       .in("id", jobFormIds);
     const formNameById = new Map((jobForms ?? []).map((f) => [f.id, f.name]));
+    // marker_id -> label, keyed by job_form_id, so a photo attachment's
+    // marker_id (free text, not a FK) can be resolved back to a
+    // human-readable label for the email — same shape as
+    // photo_attachment_markers everywhere else in the job-forms family.
+    const markerLabelByForm = new Map<number, Map<string, string>>();
+    for (const f of jobForms ?? []) {
+      const markers = Array.isArray(f.photo_attachment_markers) ? f.photo_attachment_markers : [];
+      const labelMap = new Map<string, string>();
+      for (const m of markers) {
+        if (m?.id) labelMap.set(m.id, m.label ?? "Photo");
+      }
+      markerLabelByForm.set(f.id, labelMap);
+    }
 
     // ── 3. Group valid submissions by lead_id ───────────────────────────────
     const groups = new Map<number, typeof validSubmissions>();
@@ -235,7 +248,9 @@ Deno.serve(async (req) => {
           formLines.push(`<a href="${SITE_BASE}/form-view/${resolvedToken}">View Online</a>`);
         }
 
-        lines.push(formLines.join(" — "));
+        const photosHtml = await buildMarkerPhotosHtml(s.id, s.job_form_id, markerLabelByForm);
+
+        lines.push(formLines.join(" — ") + photosHtml);
       }
 
       const subject = group.length === 1
@@ -293,4 +308,59 @@ async function ensureViewToken(submissionId: number, existing: string | null): P
   const token = randomToken();
   await supabase.from("job_form_submissions").update({ view_token: token }).eq("id", submissionId);
   return token;
+}
+
+// Builds an inline HTML block of every marker photo attached to a
+// submission — thumbnail, captured timestamp, and a tappable Google
+// Maps link per photo — so a client reading the email can see exactly
+// where each photo was taken without opening the PDF or View Online
+// link. GPS is best-effort at capture time and legitimately absent for
+// some photos; those just render without a map link.
+async function buildMarkerPhotosHtml(
+  submissionId: number,
+  jobFormId: number,
+  markerLabelByForm: Map<number, Map<string, string>>
+): Promise<string> {
+  const { data: attachments } = await supabase
+    .from("job_form_photo_attachments")
+    .select("marker_id, storage_path, latitude, longitude, captured_at")
+    .eq("submission_id", submissionId)
+    .is("deleted_at", null);
+
+  if (!attachments || attachments.length === 0) return "";
+
+  const labelMap = markerLabelByForm.get(jobFormId) ?? new Map<string, string>();
+  const rows: string[] = [];
+
+  for (const a of attachments) {
+    const { data: signed } = await supabase.storage
+      .from("job-form-media")
+      .createSignedUrl(a.storage_path, 60 * 60 * 24 * 7); // 7 days — long enough to read an email, short enough not to be a permanent public link
+    const url = signed?.signedUrl;
+    if (!url) continue;
+
+    const label = labelMap.get(a.marker_id) ?? "Photo";
+    const timeText = a.captured_at
+      ? new Date(a.captured_at).toLocaleString("en-US", {
+          month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+        })
+      : null;
+    const mapLink =
+      a.latitude != null && a.longitude != null
+        ? `<a href="https://www.google.com/maps?q=${a.latitude},${a.longitude}" style="color:#2563eb;text-decoration:underline;">${a.latitude.toFixed(5)}, ${a.longitude.toFixed(5)}</a>`
+        : "";
+
+    rows.push(`
+      <table style="margin-top:8px;" cellpadding="0" cellspacing="0"><tr>
+        <td style="padding-right:10px;"><a href="${url}"><img src="${url}" width="64" height="64" style="border-radius:6px;border:1px solid #e5e7eb;object-fit:cover;" /></a></td>
+        <td style="font-size:12px;color:#6b7280;vertical-align:top;">
+          <div style="font-weight:600;color:#374151;">${label}</div>
+          ${timeText ? `<div>${timeText}</div>` : ""}
+          ${mapLink ? `<div>${mapLink}</div>` : ""}
+        </td>
+      </tr></table>
+    `);
+  }
+
+  return rows.length ? `<div style="margin-top:6px;">${rows.join("")}</div>` : "";
 }

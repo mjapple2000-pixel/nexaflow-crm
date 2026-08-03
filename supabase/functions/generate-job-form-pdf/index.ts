@@ -960,10 +960,27 @@ Deno.serve(async (req) => {
     y = PAGE_H - bandHeight - 28;
 
     // ── Fields ──────────────────────────────────────────────────────────────
+    // Same "differs from the field before it" grouping logic already used
+    // in the Builder and Fill Screen — a visual separator only, not a
+    // forced page break, so a short section doesn't waste a page. Fields
+    // with no section (or any AI-recreated form, which never sets this
+    // key) draw exactly as before, with no header at all.
+    let previousSection: string | null = null;
     for (const field of fields) {
       const label = (field.label ?? "").toUpperCase();
       const type = field.type ?? "text";
       const raw = answers[field.id];
+      const currentSection = (field.section ?? "").trim();
+
+      if (currentSection && currentSection !== previousSection) {
+        newPageIfNeeded(34);
+        if (previousSection !== null) y -= 6; // extra breathing room above a section that isn't the very first thing on the page
+        page.drawText(currentSection.toUpperCase(), { x: MARGIN, y, size: 13, font: boldFont, color: TEXT_DARK });
+        y -= 8;
+        page.drawLine({ start: { x: MARGIN, y }, end: { x: PAGE_W - MARGIN, y }, thickness: 1, color: BRAND });
+        y -= 16;
+      }
+      previousSection = currentSection || previousSection;
 
       newPageIfNeeded(60);
       page.drawRectangle({ x: MARGIN - 10, y: y - 4, width: 3, height: 14, color: ACCENT });
@@ -974,6 +991,21 @@ Deno.serve(async (req) => {
         const value = raw === true ? "Yes" : "No";
         page.drawText(value, { x: MARGIN, y, size: 12, font, color: TEXT_DARK });
         y -= 20;
+      } else if (type === "long_text") {
+        // Routes into the exact same wrapText path the default text
+        // branch below already uses — long_text never needed its own
+        // wrapping logic, just its own case so it isn't confused with a
+        // short-answer field anywhere else. newPageIfNeeded per line
+        // means a long answer flows across a page break instead of
+        // getting cut off or overflowing the bottom margin.
+        const text = raw === null || raw === undefined || raw === "" ? "—" : String(raw);
+        const lines = wrapText(text, font, 12, contentWidth);
+        for (const line of lines) {
+          newPageIfNeeded(16);
+          page.drawText(line, { x: MARGIN, y, size: 12, font, color: TEXT_DARK });
+          y -= 16;
+        }
+        y -= 4;
       } else if (type === "photo") {
         const entries: any[] = Array.isArray(raw) ? raw : [];
         if (entries.length === 0) {

@@ -5,7 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:universal_html/html.dart' as html;
+import 'dart:js_interop';
+import 'package:web/web.dart' as web;
 import '../theme/app_theme.dart';
 import '../utils/business_utils.dart';
 
@@ -494,12 +495,17 @@ class _ContactsScreenState extends State<ContactsScreen> {
       }
       final csv   = const ListToCsvConverter().convert(rows);
       final bytes = utf8.encode(csv);
-      final blob  = html.Blob([bytes], 'text/csv');
-      final url   = html.Url.createObjectUrlFromBlob(blob);
-      html.AnchorElement(href: url)
-        ..setAttribute('download', 'contacts_${DateTime.now().millisecondsSinceEpoch}.csv')
+      final blob = web.Blob(
+        [bytes.toJS].toJS,
+        web.BlobPropertyBag(type: 'text/csv'),
+      );
+      final url = web.URL.createObjectURL(blob);
+      web.HTMLAnchorElement()
+        ..href = url
+        ..style.display = 'none'
+        ..download = 'contacts_${DateTime.now().millisecondsSinceEpoch}.csv'
         ..click();
-      html.Url.revokeObjectUrl(url);
+      web.URL.revokeObjectURL(url);
       _snack('Exported ${_filtered.length} contacts.');
     } catch (e) { _snack('Export failed: $e'); }
   }

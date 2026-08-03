@@ -33,6 +33,7 @@ import '../screens/reviews_screen.dart';
 import '../screens/public_booking_screen.dart';
 import '../screens/jobs_screen.dart';
 import '../screens/jobs_overview_screen.dart';
+import '../screens/jobs_manage_forms_screen.dart';
 import '../screens/quotes_screen.dart';
 import '../screens/quote_detail_screen.dart';
 import '../screens/new_quote_screen.dart';
@@ -480,6 +481,11 @@ class AppRouter {
               final tab = int.tryParse(state.uri.queryParameters['tab'] ?? '0') ?? 0;
               return JobsScreen(initialTab: tab);
             },
+          ),
+          GoRoute(
+            path: '/jobs/manage-forms',
+            name: 'jobs-manage-forms',
+            builder: (context, state) => const JobsManageFormsScreen(),
           ),
           GoRoute(
             path: '/jobs/quotes/new',

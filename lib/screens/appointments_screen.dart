@@ -4846,6 +4846,53 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
     }
   }
 
+  // Mirrors job_form_fill_screen.dart's _missingRequiredLabels and the
+  // same computation already used server-side in get-employee-hub-data
+  // and get-checklists-report — required text/number/checkbox/select/photo
+  // fields, required signature, required photo markers — kept in sync so
+  // the appointment-completion guardrail below never disagrees with what
+  // actually blocks Fill Screen completion or the badge shown elsewhere.
+  Map<String, int> _countRequiredForForm(
+    Map<String, dynamic>? form,
+    Map<String, dynamic> sub,
+    Map<String, int> markerPhotoCounts,
+  ) {
+    final fields = List<Map<String, dynamic>>.from(form?['fields'] as List? ?? []);
+    final answers = Map<String, dynamic>.from(sub['answers'] as Map? ?? {});
+    var total = 0;
+    var missing = 0;
+
+    for (final f in fields) {
+      if (f['required'] != true) continue;
+      total++;
+      final val = answers[f['id']];
+      bool filled;
+      if (f['type'] == 'checkbox') {
+        filled = val == true;
+      } else if (f['type'] == 'photo') {
+        filled = (val as List?)?.isNotEmpty == true;
+      } else {
+        filled = val != null && val.toString().trim().isNotEmpty;
+      }
+      if (!filled) missing++;
+    }
+
+    if (form?['requires_signature'] == true) {
+      total++;
+      if (sub['signature_url'] == null) missing++;
+    }
+
+    final markers = List<Map<String, dynamic>>.from(form?['photo_attachment_markers'] as List? ?? []);
+    for (final m in markers) {
+      if (m['required'] != true) continue;
+      total++;
+      final count = markerPhotoCounts['${sub['id']}:${m['id']}'] ?? 0;
+      if (count == 0) missing++;
+    }
+
+    return {'total': total, 'missing': missing};
+  }
+
   Future<void> _loadAttachedForms() async {
     if (!mounted) return;
     setState(() => _loadingForms = true);
@@ -4853,7 +4900,7 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
       final apptId = widget.appointment['id'] as int;
       final subs = await _db
           .from('job_form_submissions')
-          .select('id, status, job_form_id, submission_label')
+          .select('id, status, job_form_id, submission_label, answers, signature_url')
           .eq('appointment_id', apptId)
           .filter('deleted_at', 'is', null)
           .order('created_at', ascending: true);
@@ -4868,16 +4915,31 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
       final formIds = subsList.map((s) => s['job_form_id']).whereType<int>().toSet().toList();
       final forms = await _db
           .from('job_forms')
-          .select('id, name')
+          .select('id, name, fields, requires_signature, photo_attachment_markers')
           .inFilter('id', formIds);
       final formsById = {for (final f in List<Map<String, dynamic>>.from(forms)) f['id']: f};
 
+      final subIds = subsList.map((s) => s['id']).toList();
+      final markerPhotos = await _db
+          .from('job_form_photo_attachments')
+          .select('submission_id, marker_id')
+          .inFilter('submission_id', subIds)
+          .filter('deleted_at', 'is', null);
+      final markerPhotoCounts = <String, int>{};
+      for (final p in List<Map<String, dynamic>>.from(markerPhotos)) {
+        final key = '${p['submission_id']}:${p['marker_id']}';
+        markerPhotoCounts[key] = (markerPhotoCounts[key] ?? 0) + 1;
+      }
+
       final merged = subsList.map((s) {
         final form = formsById[s['job_form_id']];
+        final counts = _countRequiredForForm(form, s, markerPhotoCounts);
         return {
           ...s,
           'form_name': form?['name'] ?? 'Unknown Form',
           'submission_label': s['submission_label'],
+          'total_required': counts['total'],
+          'missing_required': s['status'] == 'completed' ? 0 : counts['missing'],
         };
       }).toList();
 
@@ -5225,7 +5287,77 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
     );
   }
 
+  // Soft warning, matching Jobber's own confirmed behavior: a visit can
+  // still be marked complete with an unfinished checklist — the person
+  // just gets a chance to go back first. Only fires when status is
+  // actually changing TO Completed (not on every save of an
+  // already-completed appointment), and only for forms that have
+  // required fields still missing — an attached-but-optional form never
+  // blocks anything.
+  Future<bool> _confirmCompleteWithIncompleteFormsIfNeeded() async {
+    final prevStatus = (widget.appointment['status'] ?? '').toString().toLowerCase();
+    final newStatus = _status.toLowerCase();
+    if (newStatus != 'completed' || prevStatus == newStatus) return true;
+
+    final incomplete = _attachedForms.where((f) => (f['missing_required'] as int? ?? 0) > 0).toList();
+    if (incomplete.isEmpty) return true;
+
+    final proceed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.cardBg,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        title: const Text('Job Form Not Finished',
+            style: TextStyle(color: AppTheme.textPrimary, fontSize: 15, fontWeight: FontWeight.w700)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              incomplete.length == 1
+                  ? 'This appointment has a job form that isn\'t finished yet:'
+                  : 'This appointment has ${incomplete.length} job forms that aren\'t finished yet:',
+              style: const TextStyle(color: AppTheme.textSecondary, fontSize: 13),
+            ),
+            const SizedBox(height: 10),
+            ...incomplete.map((f) => Padding(
+                  padding: const EdgeInsets.only(bottom: 4),
+                  child: Text(
+                    '• ${f['form_name']} — ${(f['total_required'] as int) - (f['missing_required'] as int)} of ${f['total_required']} required',
+                    style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13),
+                  ),
+                )),
+            const SizedBox(height: 10),
+            const Text(
+              'You can go back and finish it, or complete the appointment anyway and leave it unfinished.',
+              style: TextStyle(color: AppTheme.textSecondary, fontSize: 12),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(false),
+            child: const Text('Go Back', style: TextStyle(color: AppTheme.textSecondary)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.brand,
+              foregroundColor: Colors.white,
+              elevation: 0,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            child: const Text('Complete Anyway'),
+          ),
+        ],
+      ),
+    );
+    return proceed == true;
+  }
+
   Future<void> _save() async {
+    final shouldProceed = await _confirmCompleteWithIncompleteFormsIfNeeded();
+    if (!shouldProceed) return;
     setState(() => _saving = true);
     try {
       await _db.from('appointments').update({

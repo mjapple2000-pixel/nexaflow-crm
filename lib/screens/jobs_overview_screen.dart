@@ -51,6 +51,13 @@ class JobsOverviewScreen extends StatelessWidget {
                     description: 'Build and manage team routes for the day.',
                     onTap: () => context.go('/routes'),
                   ),
+                  _OverviewCard(
+                    icon: Icons.checklist_rtl_rounded,
+                    color: const Color(0xFF8B5CF6),
+                    title: 'Manage Job Forms',
+                    description: 'Usage stats, archive, and auto-attach settings for every job form.',
+                    onTap: () => context.go('/jobs/manage-forms'),
+                  ),
                 ],
               ),
             ),

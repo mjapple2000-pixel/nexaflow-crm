@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'dart:js_interop';
+import 'package:web/web.dart' as web;
 import '../theme/app_theme.dart';
 import '../widgets/clickable.dart';
 import '../utils/business_utils.dart';
@@ -29,6 +31,10 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
   String? _checklistsError;
   String _checklistStatusFilter = 'all'; // all | not_started | started
   final _checklistSearchCtrl = TextEditingController();
+  // Independent of the 7d/30d/90d chips above — when both are set, they
+  // override the day-bucket for the Forms tab's load and its CSV export.
+  DateTime? _checklistStartDate;
+  DateTime? _checklistEndDate;
   final Set<int> _selectedSubmissionIds = {};
   bool _sendingBulkEmail = false;
   bool _resolvingRecipients = false;
@@ -282,9 +288,12 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
     try {
       final token = _supabase.auth.currentSession?.accessToken;
       if (token == null) return;
+      final hasCustomRange = _checklistStartDate != null && _checklistEndDate != null;
       final uri = Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/get-checklists-report')
           .replace(queryParameters: {
-        'date_range_days': _range,
+        if (hasCustomRange) 'start_date': _checklistStartDate!.toUtc().toIso8601String(),
+        if (hasCustomRange) 'end_date': _checklistEndDate!.toUtc().toIso8601String(),
+        if (!hasCustomRange) 'date_range_days': _range,
         'status_filter': _checklistStatusFilter,
         if (_businessId != null) 'business_id': '$_businessId',
       });
@@ -328,6 +337,51 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
         onSent: _loadChecklistsReport,
       ),
     );
+  }
+
+  // Two taps of the same showDatePicker widget already used everywhere
+  // else in the app (appointment start/end times, booking dialogs) —
+  // deliberately not Flutter's showDateRangePicker, which renders as a
+  // completely different, much clunkier full-screen widget.
+  Future<void> _pickChecklistDateRange() async {
+    final start = await showDatePicker(
+      context: context,
+      initialDate: _checklistStartDate ?? DateTime.now(),
+      firstDate: DateTime(2020),
+      lastDate: DateTime.now(),
+      helpText: 'Start Date',
+    );
+    if (start == null || !mounted) return;
+    final end = await showDatePicker(
+      context: context,
+      initialDate: _checklistEndDate != null && _checklistEndDate!.isAfter(start) ? _checklistEndDate! : start,
+      firstDate: start,
+      lastDate: DateTime.now(),
+      helpText: 'End Date',
+    );
+    if (end == null) return;
+    setState(() {
+      _checklistStartDate = start;
+      // End of the selected day, not midnight, so the last day of the
+      // range is fully included rather than excluded.
+      _checklistEndDate = DateTime(end.year, end.month, end.day, 23, 59, 59);
+    });
+    _loadChecklistsReport();
+  }
+
+  void _clearChecklistDateRange() {
+    setState(() {
+      _checklistStartDate = null;
+      _checklistEndDate = null;
+    });
+    _loadChecklistsReport();
+  }
+
+  String _fmtChecklistRangeLabel() {
+    if (_checklistStartDate == null || _checklistEndDate == null) return 'Date Range';
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    String fmt(DateTime d) => '${months[d.month-1]} ${d.day}';
+    return '${fmt(_checklistStartDate!)} – ${fmt(_checklistEndDate!)}';
   }
 
   Future<void> _reassignForm(int? appointmentId, Map<String, dynamic> member) async {
@@ -723,7 +777,11 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
     final active = _range == value;
     return Clickable(
       onTap: () {
-        setState(() => _range = value);
+        setState(() {
+          _range = value;
+          _checklistStartDate = null;
+          _checklistEndDate = null;
+        });
         _loadData();
         _loadChecklistsReport();
       },
@@ -836,7 +894,39 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
             _checklistFilterChip('Started', 'started'),
             const SizedBox(width: 8),
             _checklistFilterChip('Not Started', 'not_started'),
+            const SizedBox(width: 8),
+            OutlinedButton.icon(
+              onPressed: _pickChecklistDateRange,
+              icon: const Icon(Icons.date_range_rounded, size: 15),
+              label: Text(_fmtChecklistRangeLabel()),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: _checklistStartDate != null ? AppTheme.brand : AppTheme.textSecondary,
+                side: BorderSide(color: _checklistStartDate != null ? AppTheme.brand : AppTheme.borderColor),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+            ),
+            if (_checklistStartDate != null)
+              IconButton(
+                tooltip: 'Clear custom date range',
+                onPressed: _clearChecklistDateRange,
+                icon: const Icon(Icons.close, size: 16, color: AppTheme.textSecondary),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+              ),
             const Spacer(),
+            OutlinedButton.icon(
+              onPressed: _filteredChecklistSubmissions.isEmpty ? null : _downloadChecklistsCsv,
+              icon: const Icon(Icons.download_rounded, size: 15),
+              label: const Text('Download CSV'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: AppTheme.textSecondary,
+                side: const BorderSide(color: AppTheme.borderColor),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+            ),
+            const SizedBox(width: 8),
             IconButton(onPressed: _loadChecklistsReport, icon: const Icon(Icons.refresh, size: 18, color: AppTheme.textSecondary)),
           ]),
           const SizedBox(height: 12),
@@ -958,7 +1048,11 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
                                         if ((row['submission_label'] as String?)?.isNotEmpty == true)
                                           Text(row['submission_label'], style: const TextStyle(fontSize: 11, color: AppTheme.brand, fontStyle: FontStyle.italic), overflow: TextOverflow.ellipsis),
                                       ])),
-                                      Expanded(flex: 2, child: _checklistStatusBadge(status)),
+                                      Expanded(flex: 2, child: _checklistStatusBadge(
+                                        status,
+                                        totalRequired: row['total_required'] as int? ?? 0,
+                                        missingRequired: row['missing_required'] as int? ?? 0,
+                                      )),
                                       Expanded(flex: 2, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                                         Text(row['completed_by_name'] ?? '—', style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary), overflow: TextOverflow.ellipsis),
                                         const SizedBox(height: 4),
@@ -1033,13 +1127,20 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
     );
   }
 
-  Widget _checklistStatusBadge(String status) {
-    final label = switch (status) {
-      'not_started' => 'Not Started',
-      'in_progress' => 'In Progress',
-      'completed' => 'Completed',
-      _ => status,
-    };
+  Widget _checklistStatusBadge(String status, {int totalRequired = 0, int missingRequired = 0}) {
+    // Matches Jobber's own model (and the Employee Hub chip's behavior):
+    // any non-completed row shows "X of Y required" — including "0 of Y"
+    // for a form that's never been opened — a completed row shows the
+    // plain status label since there's nothing left to count.
+    final completedRequired = totalRequired - missingRequired;
+    final label = status == 'completed' || totalRequired == 0
+        ? switch (status) {
+            'not_started' => 'Not Started',
+            'in_progress' => 'In Progress',
+            'completed' => 'Completed',
+            _ => status,
+          }
+        : '$completedRequired of $totalRequired required';
     final color = switch (status) {
       'not_started' => AppTheme.textSecondary,
       'in_progress' => const Color(0xFFF59E0B),
@@ -1058,6 +1159,69 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
     if (dt == null) return '—';
     const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
     return '${months[dt.month-1]} ${dt.day}';
+  }
+
+  // Wraps a value in quotes and escapes any internal quotes only if the
+  // value actually needs it (contains a comma, quote, or newline) — safe
+  // for the common no-punctuation case, correct for the rare one.
+  String _csvCell(dynamic value) {
+    final text = (value ?? '').toString();
+    if (text.contains(',') || text.contains('"') || text.contains('\n')) {
+      return '"${text.replaceAll('"', '""')}"';
+    }
+    return text;
+  }
+
+  // Exports exactly what's currently on screen — respects both the
+  // status filter chips and the search box, same "download what I'm
+  // looking at" principle as the existing bulk-email selection. This is
+  // an internal office/owner export (never seen by a customer or field
+  // tech), triggered client-side from data already loaded for the table,
+  // so there's no server round-trip or email attachment involved.
+  void _downloadChecklistsCsv() {
+    final rows = _filteredChecklistSubmissions;
+    final buffer = StringBuffer();
+    buffer.writeln([
+      'Form', 'Label', 'Status', 'Completed Required', 'Total Required',
+      'Technician', 'Customer', 'Location', 'Updated',
+    ].map(_csvCell).join(','));
+
+    for (final row in rows) {
+      final totalRequired = row['total_required'] as int? ?? 0;
+      final missingRequired = row['missing_required'] as int? ?? 0;
+      final completedRequired = totalRequired - missingRequired;
+      final statusLabel = switch (row['status'] as String? ?? '') {
+        'not_started' => 'Not Started',
+        'in_progress' => 'In Progress',
+        'completed' => 'Completed',
+        final s => s,
+      };
+      buffer.writeln([
+        row['form_name'],
+        row['submission_label'],
+        statusLabel,
+        completedRequired,
+        totalRequired,
+        row['completed_by_name'],
+        row['lead_name'],
+        row['location'],
+        _fmtChecklistDate(row['updated_at']),
+      ].map(_csvCell).join(','));
+    }
+
+    final bytes = utf8.encode(buffer.toString());
+    final blob = web.Blob(
+      [bytes.toJS].toJS,
+      web.BlobPropertyBag(type: 'text/csv'),
+    );
+    final url = web.URL.createObjectURL(blob);
+    final dateStr = DateTime.now().toIso8601String().split('T').first;
+    web.HTMLAnchorElement()
+      ..href = url
+      ..style.display = 'none'
+      ..download = 'job-forms-report-$dateStr.csv'
+      ..click();
+    web.URL.revokeObjectURL(url);
   }
 
   // ── Stat Cards ────────────────────────────

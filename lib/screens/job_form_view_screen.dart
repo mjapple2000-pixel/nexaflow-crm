@@ -117,6 +117,38 @@ class _JobFormViewScreenState extends State<JobFormViewScreen> {
     }
   }
 
+  void _showLongTextDialog(String label, String text) {
+    showDialog(
+      context: context,
+      builder: (ctx) => Dialog(
+        backgroundColor: AppTheme.cardBg,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        child: Container(
+          width: 400,
+          constraints: const BoxConstraints(maxHeight: 500),
+          padding: const EdgeInsets.all(20),
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(label, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+            const SizedBox(height: 12),
+            Flexible(
+              child: SingleChildScrollView(
+                child: Text(text, style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary, height: 1.5)),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton(
+                onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(),
+                child: const Text('Close'),
+              ),
+            ),
+          ]),
+        ),
+      ),
+    );
+  }
+
   void _showImagePreview(String? signedUrl) {
     if (signedUrl == null) return;
     showDialog(
@@ -452,6 +484,28 @@ class _JobFormViewScreenState extends State<JobFormViewScreen> {
                 child: Icon(Icons.image_outlined, size: 14, color: AppTheme.brand),
               ),
             );
+    } else if (type == 'long_text') {
+      final raw = _answers[id];
+      final text = raw == null || raw.toString().trim().isEmpty ? '' : raw.toString();
+      // The on-page box stays a single truncated line, matching its fixed
+      // printed position — same as every other field on this canvas.
+      // Tapping it opens the full answer instead, since a long-answer
+      // response is exactly the case where the printed box is too small
+      // to show everything that was actually typed.
+      content = LayoutBuilder(builder: (ctx, constraints) {
+        final fontSize = (constraints.maxHeight * 0.6).clamp(6.0, 11.0);
+        return GestureDetector(
+          onTap: text.isEmpty ? null : () => _showLongTextDialog(field['label'] as String? ?? 'Answer', text),
+          child: Center(
+            child: Text(
+              text,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: fontSize, color: AppTheme.textPrimary),
+            ),
+          ),
+        );
+      });
     } else {
       final raw = _answers[id];
       final text = raw == null || raw.toString().trim().isEmpty ? '' : raw.toString();

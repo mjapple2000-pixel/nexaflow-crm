@@ -631,7 +631,14 @@ class _AppointmentCard extends StatelessWidget {
     final dt = appt['scheduled_at'] != null
         ? DateTime.tryParse(appt['scheduled_at'] as String)?.toLocal()
         : null;
-    final timeStr = dt != null ? _time(dt) : '';
+    // A form reopened for correction (or simply never finished) can now
+    // surface here from a past date, not just today — show the date
+    // alongside the time in that case so it's not mistaken for one of
+    // today's jobs. Today's own appointments keep the plain time-only
+    // display they've always had.
+    final now = DateTime.now();
+    final isToday = dt != null && dt.year == now.year && dt.month == now.month && dt.day == now.day;
+    final timeStr = dt == null ? '' : (isToday ? _time(dt) : '${_shortDate(dt)} · ${_time(dt)}');
     final type = appt['appointment_type'] as String? ?? 'Appointment';
     final leadName = appt['lead_name'] as String? ?? '';
     final address = appt['lead_address'] as String? ?? '';
@@ -703,6 +710,8 @@ class _AppointmentCard extends StatelessWidget {
     final ampm = dt.hour < 12 ? 'AM' : 'PM';
     return '$h:$min $ampm';
   }
+
+  String _shortDate(DateTime dt) => '${dt.month}/${dt.day}';
 }
 
 // ── Job form chip (tappable, links to the field fill-out screen) ──────────────
@@ -788,6 +797,16 @@ class _JobFormChip extends StatelessWidget {
     final status = form['status'] as String? ?? 'not_started';
     final formName = form['form_name'] as String? ?? 'Job Form';
     final submissionId = form['submission_id'];
+    final totalRequired = form['total_required'] as int? ?? 0;
+    final missingRequired = form['missing_required'] as int? ?? 0;
+    final completedRequired = totalRequired - missingRequired;
+    // Matches Jobber's own model: any non-completed form shows "X of Y
+    // required" (including 0 of Y for a form that's never been opened),
+    // a completed form shows the plain status label instead — no count
+    // needed once everything's done.
+    final statusText = status == 'completed' || totalRequired == 0
+        ? _formStatusLabel(status)
+        : '$completedRequired of $totalRequired required';
 
     return InkWell(
       onTap: () => context.go('/hub/$token/job-form/$submissionId'),
@@ -810,7 +829,7 @@ class _JobFormChip extends StatelessWidget {
                     fontWeight: FontWeight.w600,
                     color: _formStatusColor(status))),
             const SizedBox(width: 5),
-            Text('· ${_formStatusLabel(status)}',
+            Text('· $statusText',
                 style: TextStyle(fontSize: 11, color: _formStatusColor(status))),
           ],
         ),

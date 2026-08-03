@@ -318,6 +318,12 @@ class _AppNavBarState extends State<AppNavBar> {
           route: '/routes',
           active: location.startsWith('/routes'),
         ),
+        _NavItem(
+          icon: Icons.checklist_rtl_rounded,
+          label: 'Manage Job Forms',
+          route: '/jobs/manage-forms',
+          active: location.startsWith('/jobs/manage-forms'),
+        ),
       ],
     );
   }

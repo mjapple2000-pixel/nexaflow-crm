@@ -1231,6 +1231,7 @@ class _FieldDraft {
   bool required;
   bool editableByFieldAgent;
   final TextEditingController optionsCtrl;
+  final TextEditingController sectionCtrl;
 
   _FieldDraft({
     required this.id,
@@ -1239,12 +1240,15 @@ class _FieldDraft {
     required this.required,
     this.editableByFieldAgent = true,
     required String options,
+    String section = '',
   })  : labelCtrl = TextEditingController(text: label),
-        optionsCtrl = TextEditingController(text: options);
+        optionsCtrl = TextEditingController(text: options),
+        sectionCtrl = TextEditingController(text: section);
 
   void dispose() {
     labelCtrl.dispose();
     optionsCtrl.dispose();
+    sectionCtrl.dispose();
   }
 }
 
@@ -1272,7 +1276,7 @@ class _JobFormBuilderDialogState extends State<_JobFormBuilderDialog> {
   int _originalFieldCount = 0;
   bool _isVisualRecreation = false;
 
-  static const _fieldTypes = ['checkbox', 'text', 'number', 'photo', 'select'];
+  static const _fieldTypes = ['checkbox', 'text', 'long_text', 'number', 'photo', 'select'];
   static const _formTypes = ['checklist', 'inspection', 'authorization', 'before_after_photo'];
 
   @override
@@ -1310,6 +1314,7 @@ class _JobFormBuilderDialogState extends State<_JobFormBuilderDialog> {
           required: map['required'] as bool? ?? false,
           editableByFieldAgent: map['editable_by_field_agent'] as bool? ?? true,
           options: options,
+          section: map['section'] as String? ?? '',
         ));
       }
     }
@@ -1480,6 +1485,7 @@ class _JobFormBuilderDialogState extends State<_JobFormBuilderDialog> {
             'label': f.labelCtrl.text.trim(),
             'required': f.required,
             'editable_by_field_agent': f.editableByFieldAgent,
+            if (f.sectionCtrl.text.trim().isNotEmpty) 'section': f.sectionCtrl.text.trim(),
           };
           if (f.type == 'select') {
             map['options'] = f.optionsCtrl.text
@@ -1511,6 +1517,7 @@ class _JobFormBuilderDialogState extends State<_JobFormBuilderDialog> {
   String _fieldTypeLabel(String type) => switch (type) {
         'checkbox' => 'Checkbox',
         'text' => 'Text',
+        'long_text' => 'Long Answer',
         'number' => 'Number',
         'photo' => 'Photo',
         'select' => 'Dropdown',
@@ -1679,7 +1686,27 @@ class _JobFormBuilderDialogState extends State<_JobFormBuilderDialog> {
                       ),
                     )
                   else
-                    ...List.generate(_fields.length, (i) => _buildFieldRow(i, key: ValueKey(_fields[i].id))),
+                    ...List.generate(_fields.length, (i) {
+                      final currentSection = _fields[i].sectionCtrl.text.trim();
+                      final previousSection = i == 0 ? null : _fields[i - 1].sectionCtrl.text.trim();
+                      final showHeader = currentSection.isNotEmpty && currentSection != previousSection;
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          if (showHeader)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 12, bottom: 6),
+                              child: Text(currentSection.toUpperCase(),
+                                  style: const TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w700,
+                                      color: AppTheme.brand,
+                                      letterSpacing: 0.5)),
+                            ),
+                          _buildFieldRow(i, key: ValueKey(_fields[i].id)),
+                        ],
+                      );
+                    }),
                 ],
               ]),
             ),
@@ -1805,6 +1832,28 @@ class _JobFormBuilderDialogState extends State<_JobFormBuilderDialog> {
             ),
           ),
         ],
+        const SizedBox(height: 8),
+        TextField(
+          controller: f.sectionCtrl,
+          style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary),
+          decoration: InputDecoration(
+            hintText: 'Section (optional) — e.g. Exterior, Interior, Photos',
+            isDense: true,
+            filled: true,
+            fillColor: AppTheme.cardBg,
+            contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+            border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(6), borderSide: const BorderSide(color: AppTheme.borderColor)),
+            enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(6), borderSide: const BorderSide(color: AppTheme.borderColor)),
+            focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(6), borderSide: BorderSide(color: AppTheme.brand, width: 1.5)),
+          ),
+          // Section headers in the list above need to react live as this
+          // is typed, same as every other field-list rebuild trigger in
+          // this dialog.
+          onChanged: (_) => setState(() {}),
+        ),
         const SizedBox(height: 6),
         Row(children: [
           SizedBox(
@@ -1876,6 +1925,13 @@ class _FieldSettingsDialogState extends State<_FieldSettingsDialog> {
   int _originalFieldCount = 0;
   bool _mergeMode = false;
   final Set<String> _mergeSelection = {};
+  // Only fields added via _addField in THIS dialog session get the
+  // draggable/resizable treatment — existing fields (including every
+  // AI-recreated one, tuned over weeks) stay exactly as static as they
+  // were before. This set is never persisted and resets every time the
+  // dialog is reopened, so a newly-added field is only draggable during
+  // the same session it was created in.
+  final Set<String> _newlyAddedFieldIds = {};
   final TransformationController _transformController = TransformationController();
   List<Map<String, dynamic>> _photoMarkers = [];
   String? _selectedMarkerId;
@@ -2032,6 +2088,10 @@ class _FieldSettingsDialogState extends State<_FieldSettingsDialog> {
     setState(() => marker['box'] = newBox);
   }
 
+  void _setFieldBox(Map<String, dynamic> field, Map<String, dynamic> newBox) {
+    setState(() => field['box'] = newBox);
+  }
+
   void _deletePhotoMarker(Map<String, dynamic> marker) {
     setState(() {
       _photoMarkers.remove(marker);
@@ -2142,7 +2202,7 @@ class _FieldSettingsDialogState extends State<_FieldSettingsDialog> {
   Future<void> _addField() async {
     final labelCtrl = TextEditingController();
     String selectedType = 'text';
-    const types = ['text', 'checkbox', 'select', 'photo', 'signature'];
+    const types = ['text', 'long_text', 'checkbox', 'select', 'photo', 'signature'];
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => StatefulBuilder(
@@ -2199,13 +2259,20 @@ class _FieldSettingsDialogState extends State<_FieldSettingsDialog> {
     );
     if (confirmed != true || labelCtrl.text.trim().isEmpty) return;
     setState(() {
-      _fields.add({
-        'id': 'f_manual_${DateTime.now().millisecondsSinceEpoch}',
+      final newFieldId = 'f_manual_${DateTime.now().millisecondsSinceEpoch}';
+      final newField = {
+        'id': newFieldId,
         'type': selectedType,
         'label': labelCtrl.text.trim(),
         'required': false,
         'editable_by_field_agent': true,
-      });
+        'page': _currentPage,
+        'box': {'x': 10.0, 'y': 10.0, 'w': 30.0, 'h': 4.0},
+      };
+      _fields.add(newField);
+      _newlyAddedFieldIds.add(newFieldId);
+      _selectedMarkerId = null;
+      _selectedFieldId = newFieldId;
     });
   }
 
@@ -2598,10 +2665,6 @@ class _FieldSettingsDialogState extends State<_FieldSettingsDialog> {
                       ...pageFields.map((f) {
                         final box = f['box'] as Map?;
                         if (box == null) return const SizedBox.shrink();
-                        final x = (box['x'] as num).toDouble();
-                        final y = (box['y'] as num).toDouble();
-                        final bw = (box['w'] as num).toDouble();
-                        final bh = (box['h'] as num).toDouble();
                         final fieldId = f['id'] as String?;
                         final isMergeSelected = _mergeMode && _mergeSelection.contains(fieldId);
                         final isSelected = !_mergeMode && fieldId == _selectedFieldId;
@@ -2609,6 +2672,30 @@ class _FieldSettingsDialogState extends State<_FieldSettingsDialog> {
                         final editable = f['editable_by_field_agent'] as bool? ?? true;
                         final baseColor = !editable ? Colors.grey : (required ? AppTheme.brand : Colors.green);
                         final color = isMergeSelected ? Colors.green : baseColor;
+
+                        // Only fields added via _addField THIS dialog session get
+                        // the draggable/resizable treatment — every existing field
+                        // (including every AI-recreated one, tuned over weeks)
+                        // stays exactly as static as it always was.
+                        final isDraggable = !_mergeMode && _newlyAddedFieldIds.contains(fieldId);
+                        if (isDraggable) {
+                          return _DraggableFieldBox(
+                            key: ValueKey(fieldId),
+                            field: f,
+                            containerW: finalW,
+                            containerH: h,
+                            zoomScale: _currentZoom,
+                            color: color,
+                            isSelected: isSelected,
+                            onSelect: () => _handleFieldTap(f),
+                            onCommit: (newBox) => _setFieldBox(f, newBox),
+                          );
+                        }
+
+                        final x = (box['x'] as num).toDouble();
+                        final y = (box['y'] as num).toDouble();
+                        final bw = (box['w'] as num).toDouble();
+                        final bh = (box['h'] as num).toDouble();
                         return Positioned(
                           left: finalW * (x / 100),
                           top: h * (y / 100),
@@ -2992,6 +3079,175 @@ class _DraggablePhotoMarkerBoxState extends State<_DraggablePhotoMarkerBox> {
               ),
             ),
           ),
+        ],
+      ]),
+    );
+  }
+}
+
+// Draggable/resizable field box for Field Settings' visual canvas — same
+// drag/resize math as _DraggablePhotoMarkerBox (reuses the shared
+// _applyMarkerBoxDelta helper), parameterized by the field's own
+// required/editable color coding instead of a fixed teal, no delete
+// affordance since fields are never deleted from this dialog. Only ever
+// used for a field created in THIS dialog session — see the
+// _newlyAddedFieldIds check at the call site.
+class _DraggableFieldBox extends StatefulWidget {
+  final Map<String, dynamic> field;
+  final double containerW;
+  final double containerH;
+  final double zoomScale;
+  final Color color;
+  final bool isSelected;
+  final VoidCallback onSelect;
+  final void Function(Map<String, dynamic> newBox) onCommit;
+
+  const _DraggableFieldBox({
+    super.key,
+    required this.field,
+    required this.containerW,
+    required this.containerH,
+    this.zoomScale = 1.0,
+    required this.color,
+    required this.isSelected,
+    required this.onSelect,
+    required this.onCommit,
+  });
+
+  @override
+  State<_DraggableFieldBox> createState() => _DraggableFieldBoxState();
+}
+
+class _DraggableFieldBoxState extends State<_DraggableFieldBox> {
+  Offset _livePxDelta = Offset.zero;
+  bool _dragActive = false;
+  String? _activeHandle;
+
+  Map<String, double> get _baseBox {
+    final box = widget.field['box'] as Map?;
+    return {
+      'x': (box?['x'] as num?)?.toDouble() ?? 0,
+      'y': (box?['y'] as num?)?.toDouble() ?? 0,
+      'w': (box?['w'] as num?)?.toDouble() ?? 20,
+      'h': (box?['h'] as num?)?.toDouble() ?? 4,
+    };
+  }
+
+  Map<String, double> _normalize(double x, double y, double w, double h) {
+    final nw = w.clamp(2.0, 100.0);
+    final nh = h.clamp(1.0, 100.0);
+    final nx = x.clamp(0.0, 100.0 - nw);
+    final ny = y.clamp(0.0, 100.0 - nh);
+    return {'x': nx, 'y': ny, 'w': nw, 'h': nh};
+  }
+
+  void _startDrag(String? handle) {
+    setState(() {
+      _dragActive = true;
+      _activeHandle = handle;
+      _livePxDelta = Offset.zero;
+    });
+  }
+
+  void _updateDrag(Offset delta) {
+    setState(() => _livePxDelta += delta / widget.zoomScale);
+  }
+
+  void _endDrag() {
+    final base = _baseBox;
+    final dxPct = (_livePxDelta.dx / widget.containerW) * 100;
+    final dyPct = (_livePxDelta.dy / widget.containerH) * 100;
+    final applied = _applyMarkerBoxDelta(base, _activeHandle, dxPct, dyPct);
+    final normalized = _normalize(applied['x']!, applied['y']!, applied['w']!, applied['h']!);
+    widget.onCommit(normalized);
+    setState(() {
+      _dragActive = false;
+      _activeHandle = null;
+      _livePxDelta = Offset.zero;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final base = _baseBox;
+    var live = base;
+    if (_dragActive) {
+      final dxPct = (_livePxDelta.dx / widget.containerW) * 100;
+      final dyPct = (_livePxDelta.dy / widget.containerH) * 100;
+      live = _applyMarkerBoxDelta(base, _activeHandle, dxPct, dyPct);
+    }
+    final x = live['x']!, y = live['y']!, w = live['w']!, h = live['h']!;
+    final left = widget.containerW * (x / 100);
+    final top = widget.containerH * (y / 100);
+    final boxW = widget.containerW * (w / 100);
+    final boxH = widget.containerH * (h / 100);
+
+    Widget handle({required String id, required double hx, required double hy, required MouseCursor cursor}) {
+      const hitSize = 20.0;
+      return Positioned(
+        left: hx - (hitSize / 2),
+        top: hy - (hitSize / 2),
+        child: MouseRegion(
+          cursor: cursor,
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onPanStart: (_) => _startDrag(id),
+            onPanUpdate: (details) => _updateDrag(details.delta),
+            onPanEnd: (_) => _endDrag(),
+            child: SizedBox(
+              width: hitSize,
+              height: hitSize,
+              child: Center(
+                child: Container(
+                  width: 11,
+                  height: 11,
+                  decoration: BoxDecoration(
+                    color: widget.color,
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.white, width: 1.5),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Positioned(
+      left: left,
+      top: top,
+      width: boxW,
+      height: boxH,
+      child: Stack(clipBehavior: Clip.none, children: [
+        MouseRegion(
+          cursor: SystemMouseCursors.click,
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: widget.onSelect,
+            onPanStart: (_) {
+              widget.onSelect();
+              _startDrag(null);
+            },
+            onPanUpdate: (details) => _updateDrag(details.delta),
+            onPanEnd: (_) => _endDrag(),
+            child: Container(
+              decoration: BoxDecoration(
+                border: Border.all(color: widget.color, width: widget.isSelected ? 2.5 : 1.5),
+                color: widget.color.withValues(alpha: widget.isSelected ? 0.25 : 0.12),
+              ),
+            ),
+          ),
+        ),
+        if (widget.isSelected) ...[
+          handle(id: 'tl', hx: 0, hy: 0, cursor: SystemMouseCursors.resizeUpLeft),
+          handle(id: 'tr', hx: boxW, hy: 0, cursor: SystemMouseCursors.resizeUpRight),
+          handle(id: 'bl', hx: 0, hy: boxH, cursor: SystemMouseCursors.resizeDownLeft),
+          handle(id: 'br', hx: boxW, hy: boxH, cursor: SystemMouseCursors.resizeDownRight),
+          handle(id: 't', hx: boxW / 2, hy: 0, cursor: SystemMouseCursors.resizeUpDown),
+          handle(id: 'b', hx: boxW / 2, hy: boxH, cursor: SystemMouseCursors.resizeUpDown),
+          handle(id: 'l', hx: 0, hy: boxH / 2, cursor: SystemMouseCursors.resizeLeftRight),
+          handle(id: 'r', hx: boxW, hy: boxH / 2, cursor: SystemMouseCursors.resizeLeftRight),
         ],
       ]),
     );

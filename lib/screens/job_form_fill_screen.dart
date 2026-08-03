@@ -120,6 +120,7 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
   int _currentPageIndex = 0;
   final PageController _pageController = PageController();
   final TransformationController _transformController = TransformationController();
+  bool _isZoomed = false;
   // One capture key per background page — lets the PDF generator use a
   // real screenshot of the exact rendered canvas (background + every
   // positioned field/marker/signature) instead of separately re-deriving
@@ -168,6 +169,7 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
   void initState() {
     super.initState();
     _load();
+    _transformController.addListener(_onTransformChanged);
   }
 
   @override
@@ -183,8 +185,26 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
     _signedByNameCtrl.dispose();
     _labelCtrl.dispose();
     _pageController.dispose();
+    _transformController.removeListener(_onTransformChanged);
     _transformController.dispose();
     super.dispose();
+  }
+
+  // PageView's horizontal-swipe gesture and InteractiveViewer's
+  // pinch/pan gesture compete in the same gesture arena on a real touch
+  // device — pinch-zooming or panning while zoomed in was intermittently
+  // hijacked by the page-swipe recognizer. Desktop testing never showed
+  // this because mouse/trackpad input doesn't hit the same multi-touch
+  // gesture-arena conflict. Fix: disable PageView's own swipe physics
+  // whenever the canvas is zoomed in past 1.0x, so every touch goes to
+  // InteractiveViewer instead; swiping between pages still works
+  // normally once zoomed back out.
+  void _onTransformChanged() {
+    final scale = _transformController.value.getMaxScaleOnAxis();
+    final zoomed = scale > 1.01;
+    if (zoomed != _isZoomed) {
+      setState(() => _isZoomed = zoomed);
+    }
   }
 
   Future<void> _load() async {
@@ -261,7 +281,7 @@ class _JobFormFillScreenState extends State<JobFormFillScreen> {
     for (final field in _fields) {
       final id = field['id'] as String;
       final type = field['type'] as String? ?? 'text';
-      if (type == 'text' || type == 'number') {
+      if (type == 'text' || type == 'long_text' || type == 'number') {
         final existing = _answers[id];
         final controller =
             TextEditingController(text: existing == null ? '' : existing.toString());
@@ -1646,6 +1666,34 @@ Widget _buildExtraPageInitialsCell(int pageNumber, Map<String, dynamic> section)
     return missing;
   }
 
+  // Walks _fields in saved order and inserts a section header whenever a
+  // field's 'section' value differs from the field immediately before it
+  // — same grouping logic as the Builder's live preview, just rendered
+  // for the field tech instead of the person building the form. Fields
+  // with no section (or an AI-recreated form, which never sets this key)
+  // render exactly as before, with no header at all.
+  List<Widget> _buildFieldsWithSections() {
+    final widgets = <Widget>[];
+    String? previousSection;
+    for (final field in _fields) {
+      final currentSection = (field['section'] as String? ?? '').trim();
+      if (currentSection.isNotEmpty && currentSection != previousSection) {
+        widgets.add(Padding(
+          padding: const EdgeInsets.only(top: 16, bottom: 8),
+          child: Text(currentSection.toUpperCase(),
+              style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: AppTheme.brand,
+                  letterSpacing: 0.5)),
+        ));
+      }
+      widgets.add(_buildField(field));
+      previousSection = currentSection.isNotEmpty ? currentSection : previousSection;
+    }
+    return widgets;
+  }
+
   Widget _buildField(Map<String, dynamic> field) {
     final id = field['id'] as String;
     final type = field['type'] as String? ?? 'text';
@@ -1813,6 +1861,26 @@ Widget _buildExtraPageInitialsCell(int pageNumber, Map<String, dynamic> section)
               ),
             ),
           ],
+        );
+        break;
+
+      case 'long_text':
+        input = TextFormField(
+          controller: _controllers[id],
+          focusNode: _focusNodes[id],
+          maxLines: null,
+          minLines: 4,
+          keyboardType: TextInputType.multiline,
+          textInputAction: TextInputAction.newline,
+          decoration: InputDecoration(
+            filled: true,
+            fillColor: AppTheme.pageBg,
+            contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+                borderSide: const BorderSide(color: AppTheme.borderColor)),
+          ),
+          onChanged: (v) => setState(() => _dirty = true),
         );
         break;
 
@@ -2196,7 +2264,7 @@ Widget _buildExtraPageInitialsCell(int pageNumber, Map<String, dynamic> section)
                   const SizedBox(height: 16),
                   _buildLabelField(),
                   const SizedBox(height: 4),
-                  ..._fields.map(_buildField),
+                  ..._buildFieldsWithSections(),
                   if (_requiresSignature) _buildSignatureSection(),
                   const SizedBox(height: 8),
                   if (_status != 'completed' && _missingRequiredLabels.isEmpty)
@@ -2358,6 +2426,7 @@ Widget _buildExtraPageInitialsCell(int pageNumber, Map<String, dynamic> section)
                 children: [
                   PageView.builder(
                 controller: _pageController,
+                physics: _isZoomed ? const NeverScrollableScrollPhysics() : const PageScrollPhysics(),
                 itemCount: _totalPageCount,
                 onPageChanged: (i) => setState(() {
                   _currentPageIndex = i;
@@ -3100,6 +3169,47 @@ Widget _buildExtraPageInitialsCell(int pageNumber, Map<String, dynamic> section)
                   ),
           ),
         );
+
+      case 'long_text':
+        final longTextController = _controllers[id];
+        final longTextFocusNode = _focusNodes[id];
+        final longTextFilled = (longTextController?.text.trim() ?? '').isNotEmpty;
+        final longTextBorderColor = required && !longTextFilled
+            ? AppTheme.error
+            : (longTextFilled ? AppTheme.success : AppTheme.brand);
+        return LayoutBuilder(builder: (ctx, constraints) {
+          final fontSize = (constraints.maxHeight * 0.16).clamp(7.0, 11.0);
+          return Container(
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.85),
+              border: Border.all(color: longTextBorderColor),
+              borderRadius: BorderRadius.circular(3),
+            ),
+            alignment: Alignment.topLeft,
+            clipBehavior: Clip.hardEdge,
+            // Box stays at its saved fixed size (same rule as every other
+            // positioned field on a visual-recreation form) — text that
+            // outgrows it scrolls internally rather than the box growing
+            // or overlapping whatever's positioned below it.
+            child: TextField(
+              controller: longTextController,
+              focusNode: longTextFocusNode,
+              maxLines: null,
+              expands: true,
+              keyboardType: TextInputType.multiline,
+              textInputAction: TextInputAction.newline,
+              style: TextStyle(fontSize: fontSize, color: AppTheme.textPrimary, height: 1.15),
+              textAlignVertical: TextAlignVertical.top,
+              decoration: const InputDecoration(
+                isDense: true,
+                isCollapsed: true,
+                contentPadding: EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                border: InputBorder.none,
+              ),
+              onChanged: (v) => setState(() => _dirty = true),
+            ),
+          );
+        });
 
       case 'number':
       case 'text':
