@@ -271,6 +271,36 @@ class _AttachJobFormDialogState extends State<AttachJobFormDialog> {
         },
       ));
 
+      // Auto-attach any other job forms flagged for it on this business —
+      // mirrors Jobber's "auto-attach to new jobs" toggle from Manage Job
+      // Forms. Excludes widget.jobFormId since that one is already attached
+      // above (manually, possibly multiple copies) — never double-attach
+      // the same form. Non-blocking: a failure here should never prevent
+      // the appointment or the manually-attached form from being saved.
+      if (apptId != null) {
+        try {
+          final autoAttachForms = await _db
+              .from('job_forms')
+              .select('id')
+              .eq('business_id', businessId)
+              .eq('auto_attach_to_new_appointments', true)
+              .eq('is_active', true)
+              .neq('id', widget.jobFormId)
+              .filter('deleted_at', 'is', null);
+          final autoAttachList = List<Map<String, dynamic>>.from(autoAttachForms);
+          if (autoAttachList.isNotEmpty) {
+            await _db.from('job_form_submissions').insert(autoAttachList.map((f) => {
+              'business_id': businessId,
+              'job_form_id': f['id'],
+              'appointment_id': apptId,
+              'status': 'not_started',
+            }).toList());
+          }
+        } catch (e) {
+          debugPrint('Auto-attach job forms error: $e');
+        }
+      }
+
       // Same appointment_booked automation trigger every other
       // appointment-creation path fires, and the same location geocode —
       // both non-blocking, matching appointments_screen.dart exactly, so

@@ -47,6 +47,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
   final _calendarsSearchCtrl = TextEditingController();
   final _groupsSearchCtrl    = TextEditingController();
   Set<String> _selectedCalendarIds = {};
+  Set<String> _selectedUserIds = {};
 
   Map<String, Map<String, dynamic>> _availability = {
     'monday':    {'enabled': true,  'start': '09:00', 'end': '17:00', 'blocks': []},
@@ -113,6 +114,9 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
       _appointments  = List<Map<String, dynamic>>.from(results[0] as List);
       _business      = results[1] as Map<String, dynamic>?;
       _teamMembers   = List<Map<String, dynamic>>.from(results[2] as List);
+      if (_selectedUserIds.isEmpty) {
+        _selectedUserIds = _teamMembers.map((m) => m['id'].toString()).toSet();
+      }
       _leads         = List<Map<String, dynamic>>.from(results[3] as List);
       _calendars     = List<Map<String, dynamic>>.from(results[4] as List);
       if (_selectedCalendarIds.isEmpty) {
@@ -147,12 +151,20 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
   }
 
   List<Map<String, dynamic>> get _visibleAppointments {
-    if (_selectedCalendarIds.isEmpty) return _appointments;
-    final allSelected = _selectedCalendarIds.length == _calendars.length;
+    final allCalsSelected = _selectedCalendarIds.length == _calendars.length;
+    final allUsersSelected = _selectedUserIds.length == _teamMembers.length;
     return _appointments.where((a) {
       final calId = a['calendar_id'];
-      if (calId == null) return allSelected; // unassigned appts show only when viewing all calendars
-      return _selectedCalendarIds.contains(calId.toString());
+      final matchesCalendar = _selectedCalendarIds.isEmpty
+          ? true
+          : (calId == null ? allCalsSelected : _selectedCalendarIds.contains(calId.toString()));
+
+      final assignedProfileId = a['assigned_to_profile_id'];
+      final matchesUser = _selectedUserIds.isEmpty
+          ? true
+          : (assignedProfileId == null ? allUsersSelected : _selectedUserIds.contains(assignedProfileId.toString()));
+
+      return matchesCalendar && matchesUser;
     }).toList();
   }
 
@@ -652,7 +664,8 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
     const fullMonths  = ['January','February','March','April','May','June','July','August','September','October','November','December'];
     final activeCtrl  = _panelTab == 0 ? _usersSearchCtrl : _panelTab == 1 ? _calendarsSearchCtrl : _groupsSearchCtrl;
     final activeHint  = _panelTab == 0 ? 'Search for User' : _panelTab == 1 ? 'Search Calendars' : 'Search Groups';
-    final filteredUsers     = <String>['Owner'].where((u) => u.toLowerCase().contains(_usersSearchCtrl.text.toLowerCase())).toList();
+    final filteredUsers     = _teamMembers.where((m) =>
+        (m['full_name'] as String? ?? '').toLowerCase().contains(_usersSearchCtrl.text.toLowerCase())).toList();
     final filteredCalendars = _calendars.where((c) => (c['name'] ?? '').toString().toLowerCase().contains(_calendarsSearchCtrl.text.toLowerCase())).toList();
 
     return Container(
@@ -751,7 +764,22 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
         Expanded(child: ListView(
           padding: const EdgeInsets.symmetric(horizontal: 12),
           children: _panelTab == 0
-              ? filteredUsers.map((u) => _panelUserRow(u, AppTheme.brand)).toList()
+              ? filteredUsers.map((m) {
+                  final id = m['id'].toString();
+                  final checked = _selectedUserIds.contains(id);
+                  return _panelUserRow(
+                    m['full_name'] as String? ?? 'Unknown',
+                    AppTheme.brand,
+                    checked: checked,
+                    onToggle: () => setState(() {
+                      if (checked) {
+                        if (_selectedUserIds.length > 1) _selectedUserIds.remove(id);
+                      } else {
+                        _selectedUserIds.add(id);
+                      }
+                    }),
+                  );
+                }).toList()
               : _panelTab == 1
                   ? filteredCalendars.map((c) {
                       final id = c['id'].toString();
@@ -785,15 +813,15 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
     ));
   }
 
-  Widget _panelUserRow(String name, Color color) {
+  Widget _panelUserRow(String name, Color color, {bool checked = true, VoidCallback? onToggle}) {
     final initials = name.trim().split(' ').map((p) => p.isNotEmpty ? p[0] : '').take(2).join().toUpperCase();
-    return Padding(padding: const EdgeInsets.only(bottom: 8), child: Row(children: [
+    return Clickable(onTap: onToggle, child: Padding(padding: const EdgeInsets.only(bottom: 8), child: Row(children: [
       Container(width: 28, height: 28, decoration: BoxDecoration(color: color, shape: BoxShape.circle), alignment: Alignment.center,
           child: Text(initials, style: const TextStyle(fontSize: 10, color: Colors.white, fontWeight: FontWeight.w600))),
       const SizedBox(width: 8),
       Expanded(child: Text(name, style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary))),
-      Checkbox(value: true, onChanged: (_) {}, activeColor: AppTheme.brand, materialTapTargetSize: MaterialTapTargetSize.shrinkWrap),
-    ]));
+      Checkbox(value: checked, onChanged: (_) => onToggle?.call(), activeColor: AppTheme.brand, materialTapTargetSize: MaterialTapTargetSize.shrinkWrap),
+    ])));
   }
 
   Widget _panelCheckRow(String label, Color color, {bool checked = true, VoidCallback? onToggle}) {
@@ -3799,6 +3827,35 @@ class _AppointmentFormTabState extends State<_AppointmentFormTab> {
         if (_selectedJobTypeId != null) 'job_type': widget.jobTypes.firstWhere((j) => j['id'] == _selectedJobTypeId)['name'],
       };
       final newAppt = await _db.from('appointments').insert(payload).select().maybeSingle();
+
+      // Auto-attach any job forms flagged for it on this business — mirrors
+      // Jobber's "auto-attach to new jobs" toggle from Manage Job Forms.
+      // Non-blocking: a failure here should never prevent the appointment
+      // itself from being saved.
+      final apptIdForAutoAttach = newAppt?['id'] as int?;
+      if (apptIdForAutoAttach != null && widget.businessId != null) {
+        try {
+          final autoAttachForms = await _db
+              .from('job_forms')
+              .select('id')
+              .eq('business_id', widget.businessId!)
+              .eq('auto_attach_to_new_appointments', true)
+              .eq('is_active', true)
+              .filter('deleted_at', 'is', null);
+          final autoAttachList = List<Map<String, dynamic>>.from(autoAttachForms);
+          if (autoAttachList.isNotEmpty) {
+            await _db.from('job_form_submissions').insert(autoAttachList.map((f) => {
+              'business_id': widget.businessId,
+              'job_form_id': f['id'],
+              'appointment_id': apptIdForAutoAttach,
+              'status': 'not_started',
+            }).toList());
+          }
+        } catch (e) {
+          debugPrint('Auto-attach job forms error: $e');
+        }
+      }
+
       try {
         await http.post(
           Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/run-automation'),

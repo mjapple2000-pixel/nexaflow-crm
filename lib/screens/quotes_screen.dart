@@ -376,7 +376,9 @@ class _QuotesScreenState extends State<QuotesScreen> {
             ? '$jobTitle · $quoteNumber'
             : quoteNumber;
 
-        return Container(
+        return Clickable(
+          onTap: () => context.go('/jobs/quotes/${q['id']}'),
+          child: Container(
           margin: const EdgeInsets.only(bottom: 8),
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
@@ -392,9 +394,7 @@ class _QuotesScreenState extends State<QuotesScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Expanded(
-                    child: Clickable(
-                      onTap: () => context.go('/jobs/quotes/${q['id']}'),
-                      child: Column(
+                    child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(clientName,
@@ -406,17 +406,13 @@ class _QuotesScreenState extends State<QuotesScreen> {
                               style: const TextStyle(
                                   fontSize: 12, color: AppTheme.textSecondary)),
                         ],
-                      ),
                     ),
                   ),
-                  Clickable(
-                    onTap: () => context.go('/jobs/quotes/${q['id']}'),
-                    child: Text(
-                      '\$${total.toStringAsFixed(2)}',
-                      style: const TextStyle(
-                          fontSize: 15, fontWeight: FontWeight.w700,
-                          color: AppTheme.textPrimary),
-                    ),
+                  Text(
+                    '\$${total.toStringAsFixed(2)}',
+                    style: const TextStyle(
+                        fontSize: 15, fontWeight: FontWeight.w700,
+                        color: AppTheme.textPrimary),
                   ),
                 ],
               ),
@@ -442,6 +438,7 @@ class _QuotesScreenState extends State<QuotesScreen> {
                 ],
               ),
             ],
+          ),
           ),
         );
       },

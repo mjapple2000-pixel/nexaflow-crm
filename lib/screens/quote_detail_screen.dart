@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme/app_theme.dart';
 import '../widgets/clickable.dart';
+import '../widgets/office_fill_job_form_dialog.dart';
 
 class QuoteDetailScreen extends StatefulWidget {
   final String quoteId;
@@ -24,6 +25,11 @@ class _QuoteDetailScreenState extends State<QuoteDetailScreen> {
   Map<String, dynamic>? _lead;
   List<Map<String, dynamic>> _lineItems = [];
   bool _sendingToClient = false;
+
+  // Job forms attached directly to this quote (pre-job, no appointment
+  // required yet — job_form_submissions.quote_id links them here).
+  List<Map<String, dynamic>> _attachedJobForms = [];
+  bool _loadingJobForms = false;
 
   @override
   void initState() {
@@ -56,6 +62,7 @@ class _QuoteDetailScreenState extends State<QuoteDetailScreen> {
         _lineItems = List<Map<String, dynamic>>.from(itemsRes);
         _loading = false;
       });
+      await _loadAttachedJobForms();
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -63,6 +70,57 @@ class _QuoteDetailScreenState extends State<QuoteDetailScreen> {
         _loading = false;
       });
     }
+  }
+
+  Future<void> _loadAttachedJobForms() async {
+    setState(() => _loadingJobForms = true);
+    try {
+      final data = await _db
+          .from('job_form_submissions')
+          .select('id, status, job_form_id, job_forms(name)')
+          .eq('quote_id', widget.quoteId)
+          .filter('deleted_at', 'is', null)
+          .order('created_at', ascending: true);
+      if (!mounted) return;
+      setState(() {
+        _attachedJobForms = List<Map<String, dynamic>>.from(data);
+        _loadingJobForms = false;
+      });
+    } catch (e) {
+      debugPrint('Load quote job forms error: $e');
+      if (mounted) setState(() => _loadingJobForms = false);
+    }
+  }
+
+  Future<void> _detachJobForm(dynamic submissionId) async {
+    try {
+      await _db
+          .from('job_form_submissions')
+          .update({'deleted_at': DateTime.now().toUtc().toIso8601String()})
+          .eq('id', submissionId);
+      await _loadAttachedJobForms();
+    } catch (e) {
+      debugPrint('Detach quote job form error: $e');
+    }
+  }
+
+  void _showAttachJobFormDialog() {
+    final businessId = _quote?['business_id'];
+    if (businessId == null) return;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => _QuoteAttachJobFormDialog(
+        businessId: businessId,
+        quoteId: widget.quoteId,
+        alreadyAttachedFormIds:
+            _attachedJobForms.map((s) => s['job_form_id'] as int).toSet(),
+        onSaved: () {
+          Navigator.of(ctx, rootNavigator: true).pop();
+          _loadAttachedJobForms();
+        },
+      ),
+    );
   }
 
   @override
@@ -128,6 +186,8 @@ class _QuoteDetailScreenState extends State<QuoteDetailScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 _clientCard(),
+                const SizedBox(height: 20),
+                _quoteJobFormsCard(),
                 const SizedBox(height: 20),
                 _lineItemsTable(),
                 const SizedBox(height: 20),
@@ -206,6 +266,132 @@ class _QuoteDetailScreenState extends State<QuoteDetailScreen> {
             const SizedBox(height: 2),
             Text(address, style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary)),
           ],
+        ],
+      ),
+    );
+  }
+
+  // ── Job forms card ───────────────────────────────────────────────────────
+  // Job forms attached directly to this quote — pre-job, no appointment
+  // needed yet. Distinct from the appointment-level "Job Forms" section on
+  // AppointmentsScreen; a form attached here has quote_id set and
+  // appointment_id null until/unless the quote becomes a job.
+
+  Widget _quoteJobFormsCard() {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppTheme.cardBg,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppTheme.borderColor),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Text('JOB FORMS', style: TextStyle(
+                  fontSize: 10, fontWeight: FontWeight.w700,
+                  color: AppTheme.textSecondary, letterSpacing: 0.8)),
+              const Spacer(),
+              Clickable(
+                onTap: _showAttachJobFormDialog,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: AppTheme.brand,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                    Icon(Icons.add, size: 12, color: Colors.white),
+                    SizedBox(width: 4),
+                    Text('Attach Job Form',
+                        style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.white)),
+                  ]),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          if (_loadingJobForms)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 12),
+              child: Center(child: SizedBox(width: 18, height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2))),
+            )
+          else if (_attachedJobForms.isEmpty)
+            const Text('No job forms attached to this quote yet.',
+                style: TextStyle(fontSize: 12, color: AppTheme.textSecondary))
+          else
+            Column(
+              children: _attachedJobForms.map((sub) {
+                final formName = (sub['job_forms'] as Map?)?['name'] as String? ?? 'Unknown Form';
+                final status = sub['status'] as String? ?? 'not_started';
+                final color = switch (status) {
+                  'not_started' => AppTheme.textSecondary,
+                  'in_progress' => const Color(0xFFF59E0B),
+                  'completed' => AppTheme.success,
+                  _ => AppTheme.textSecondary,
+                };
+                final label = switch (status) {
+                  'not_started' => 'Not Started',
+                  'in_progress' => 'In Progress',
+                  'completed' => 'Completed',
+                  _ => status,
+                };
+                return Container(
+                  margin: const EdgeInsets.only(bottom: 6),
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: AppTheme.pageBg,
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: AppTheme.borderColor),
+                  ),
+                  child: Row(children: [
+                    const Icon(Icons.assignment_outlined, size: 14, color: AppTheme.textSecondary),
+                    const SizedBox(width: 8),
+                    Expanded(child: Text(formName,
+                        style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary),
+                        overflow: TextOverflow.ellipsis)),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: color.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(label,
+                          style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: color)),
+                    ),
+                    const SizedBox(width: 4),
+                    if (status != 'completed')
+                      Clickable(
+                        onTap: () => showDialog(
+                          context: context,
+                          barrierDismissible: false,
+                          builder: (ctx) => OfficeFillJobFormDialog(
+                            submissionId: sub['id'] as int,
+                            businessId: _quote?['business_id'] as int?,
+                            onSaved: _loadAttachedJobForms,
+                          ),
+                        ),
+                        child: const Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 4),
+                          child: Text('Fill Out',
+                              style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppTheme.brand, decoration: TextDecoration.underline)),
+                        ),
+                      ),
+                    const SizedBox(width: 4),
+                    Clickable(
+                      onTap: () => _detachJobForm(sub['id'] as int),
+                      child: const Padding(
+                        padding: EdgeInsets.all(4),
+                        child: Icon(Icons.close, size: 13, color: AppTheme.error),
+                      ),
+                    ),
+                  ]),
+                );
+              }).toList(),
+            ),
         ],
       ),
     );
@@ -858,5 +1044,213 @@ class _QuoteDetailScreenState extends State<QuoteDetailScreen> {
     } catch (_) {
       return '—';
     }
+  }
+}
+
+// ─────────────────────────────────────────────
+//  QUOTE ATTACH JOB FORM DIALOG
+//  Pre-job attachment — links a job_form_submissions row directly to a
+//  quote via quote_id, no appointment created. appointment_id stays null
+//  until/unless this becomes a scheduled job.
+// ─────────────────────────────────────────────
+class _QuoteAttachJobFormDialog extends StatefulWidget {
+  final int businessId;
+  final String quoteId;
+  final Set<int> alreadyAttachedFormIds;
+  final VoidCallback onSaved;
+
+  const _QuoteAttachJobFormDialog({
+    required this.businessId,
+    required this.quoteId,
+    required this.alreadyAttachedFormIds,
+    required this.onSaved,
+  });
+
+  @override
+  State<_QuoteAttachJobFormDialog> createState() => _QuoteAttachJobFormDialogState();
+}
+
+class _QuoteAttachJobFormDialogState extends State<_QuoteAttachJobFormDialog> {
+  final _db = Supabase.instance.client;
+  bool _loading = true;
+  bool _saving = false;
+  String? _error;
+  List<Map<String, dynamic>> _forms = [];
+  int? _selectedFormId;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final data = await _db
+          .from('job_forms')
+          .select('id, name')
+          .eq('business_id', widget.businessId)
+          .filter('deleted_at', 'is', null)
+          .order('name');
+      if (!mounted) return;
+      setState(() {
+        _forms = List<Map<String, dynamic>>.from(data);
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() { _error = 'Error loading forms: $e'; _loading = false; });
+    }
+  }
+
+  Future<void> _save() async {
+    if (_selectedFormId == null) {
+      setState(() => _error = 'Select a job form to attach');
+      return;
+    }
+    setState(() { _saving = true; _error = null; });
+    try {
+      await _db.from('job_form_submissions').insert({
+        'business_id': widget.businessId,
+        'job_form_id': _selectedFormId,
+        'quote_id': widget.quoteId,
+        'status': 'not_started',
+      });
+      widget.onSaved();
+    } catch (e) {
+      setState(() { _error = 'Failed to attach: $e'; _saving = false; });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: AppTheme.cardBg,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      insetPadding: const EdgeInsets.symmetric(horizontal: 40, vertical: 40),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 420, maxHeight: 560),
+        child: _loading
+            ? const Center(
+                child: Padding(
+                  padding: EdgeInsets.all(40),
+                  child: CircularProgressIndicator(color: AppTheme.brand),
+                ),
+              )
+            : Column(children: [
+                Container(
+                  padding: const EdgeInsets.fromLTRB(24, 20, 16, 16),
+                  decoration: const BoxDecoration(
+                      border: Border(bottom: BorderSide(color: AppTheme.borderColor))),
+                  child: Row(children: [
+                    const Icon(Icons.assignment_outlined, size: 20, color: AppTheme.brand),
+                    const SizedBox(width: 10),
+                    const Expanded(
+                      child: Text('Attach Job Form to Quote',
+                          style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: AppTheme.textPrimary)),
+                    ),
+                    IconButton(
+                      onPressed: () => Navigator.of(context, rootNavigator: true).pop(),
+                      icon: const Icon(Icons.close, size: 20, color: AppTheme.textSecondary),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                    ),
+                  ]),
+                ),
+                Flexible(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      if (_error != null) ...[
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(10),
+                          margin: const EdgeInsets.only(bottom: 14),
+                          decoration: BoxDecoration(
+                            color: AppTheme.error.withValues(alpha: 0.08),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: AppTheme.error.withValues(alpha: 0.3)),
+                          ),
+                          child: Text(_error!, style: const TextStyle(color: AppTheme.error, fontSize: 12)),
+                        ),
+                      ],
+                      const Text(
+                        'This form will be linked directly to the quote — no appointment is created. It becomes available on any appointment created from this quote later.',
+                        style: TextStyle(fontSize: 12, color: AppTheme.textSecondary, height: 1.4),
+                      ),
+                      const SizedBox(height: 16),
+                      if (_forms.isEmpty)
+                        const Text('No job forms exist yet for this business.',
+                            style: TextStyle(fontSize: 13, color: AppTheme.textSecondary))
+                      else
+                        ..._forms.map((f) {
+                          final id = f['id'] as int;
+                          final alreadyAttached = widget.alreadyAttachedFormIds.contains(id);
+                          final selected = _selectedFormId == id;
+                          return Clickable(
+                            onTap: alreadyAttached ? null : () => setState(() => _selectedFormId = id),
+                            child: Container(
+                              margin: const EdgeInsets.only(bottom: 8),
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                              decoration: BoxDecoration(
+                                color: selected ? AppTheme.brand.withValues(alpha: 0.06) : AppTheme.pageBg,
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(
+                                  color: selected ? AppTheme.brand : AppTheme.borderColor,
+                                  width: selected ? 1.5 : 1,
+                                ),
+                              ),
+                              child: Row(children: [
+                                Icon(Icons.assignment_outlined, size: 16,
+                                    color: alreadyAttached ? AppTheme.textMuted : AppTheme.textSecondary),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Text(f['name'] as String? ?? '',
+                                      style: TextStyle(
+                                          fontSize: 13,
+                                          color: alreadyAttached ? AppTheme.textMuted : AppTheme.textPrimary)),
+                                ),
+                                if (alreadyAttached)
+                                  const Text('Already attached',
+                                      style: TextStyle(fontSize: 11, color: AppTheme.textMuted, fontStyle: FontStyle.italic))
+                                else if (selected)
+                                  const Icon(Icons.check_circle, size: 16, color: AppTheme.brand),
+                              ]),
+                            ),
+                          );
+                        }),
+                    ]),
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: const BoxDecoration(
+                      border: Border(top: BorderSide(color: AppTheme.borderColor))),
+                  child: Row(children: [
+                    const Spacer(),
+                    TextButton(
+                      onPressed: () => Navigator.of(context, rootNavigator: true).pop(),
+                      child: const Text('Cancel', style: TextStyle(color: AppTheme.textSecondary)),
+                    ),
+                    const SizedBox(width: 8),
+                    ElevatedButton(
+                      onPressed: _saving ? null : _save,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppTheme.brand,
+                        foregroundColor: Colors.white,
+                        elevation: 0,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                      ),
+                      child: _saving
+                          ? const SizedBox(width: 16, height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                          : const Text('Attach'),
+                    ),
+                  ]),
+                ),
+              ]),
+      ),
+    );
   }
 }
