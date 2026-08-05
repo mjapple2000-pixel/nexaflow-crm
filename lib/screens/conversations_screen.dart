@@ -16,6 +16,7 @@ import '../navigation/app_router.dart';
 class Conversation {
   final int id;
   final int? contactId;
+  final int? leadId;
   final String contactName;
   final String contactPhone;
   final String? contactEmail;
@@ -33,6 +34,7 @@ class Conversation {
   const Conversation({
     required this.id,
     this.contactId,
+    this.leadId,
     required this.contactName,
     required this.contactPhone,
     this.contactEmail,
@@ -52,6 +54,7 @@ class Conversation {
     return Conversation(
       id: j['id'] as int,
       contactId: j['contact_id'] as int?,
+      leadId: j['lead_id'] as int?,
       contactName: j['contact_name'] as String? ?? 'Unknown',
       contactPhone: j['contact_phone'] as String? ?? '',
       contactEmail: j['contact_email'] as String?,
@@ -618,9 +621,21 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
   Future<void> _loadContactDetails(Conversation convo) async {
     setState(() => _loadingContact = true);
     try {
-      // Look up lead by phone (primary) or name
+      // Prefer the real lead_id link when it exists — exact, no guessing.
+      // Only fall back to phone/name matching for the small number of
+      // conversations that predate the link being set (JG-17).
       Map<String, dynamic>? lead;
-      if (convo.contactPhone.isNotEmpty) {
+      if (convo.leadId != null) {
+        final res = await _supabase
+            .from('leads')
+            .select()
+            .eq('id', convo.leadId!)
+            .filter('deleted_at', 'is', null)
+            .limit(1);
+        if (!mounted) return;
+        if ((res as List).isNotEmpty) lead = res.first;
+      }
+      if (lead == null && convo.contactPhone.isNotEmpty) {
         final res = await _supabase
             .from('leads')
             .select()

@@ -113,6 +113,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
       ]);
       _appointments  = List<Map<String, dynamic>>.from(results[0] as List);
       _business      = results[1] as Map<String, dynamic>?;
+      await _mergeResolvedContactInfo();
       _teamMembers   = List<Map<String, dynamic>>.from(results[2] as List);
       if (_selectedUserIds.isEmpty) {
         _selectedUserIds = _teamMembers.map((m) => m['id'].toString()).toSet();
@@ -150,6 +151,41 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
     }
   }
 
+  // JG-17 hybrid contact resolution: pulls resolved_name/phone/email from
+  // appointment_contact_info (live lead data when available, otherwise the
+  // frozen snapshot already on the appointment) and attaches them as
+  // resolved_lead_name/resolved_lead_phone/resolved_lead_email. Does NOT
+  // touch the existing lead_name/lead_phone/lead_email keys — those stay
+  // exactly as the raw frozen snapshot for the Edit Appointment sheet.
+  // Additive only, non-blocking: a failure here never breaks appointment loading.
+  Future<void> _mergeResolvedContactInfo() async {
+    if (_appointments.isEmpty || _businessId == null) return;
+    try {
+      final ids = _appointments.map((a) => a['id']).whereType<int>().toList();
+      if (ids.isEmpty) return;
+      final resolved = await _db
+          .from('appointment_contact_info')
+          .select('appointment_id, resolved_name, resolved_phone, resolved_email')
+          .inFilter('appointment_id', ids);
+      final byId = {
+        for (final r in List<Map<String, dynamic>>.from(resolved)) r['appointment_id']: r,
+      };
+      for (final a in _appointments) {
+        final r = byId[a['id']];
+        a['resolved_lead_name']  = r?['resolved_name']  ?? a['lead_name'];
+        a['resolved_lead_phone'] = r?['resolved_phone'] ?? a['lead_phone'];
+        a['resolved_lead_email'] = r?['resolved_email'] ?? a['lead_email'];
+      }
+    } catch (e) {
+      debugPrint('Merge resolved contact info error: $e');
+      for (final a in _appointments) {
+        a['resolved_lead_name']  ??= a['lead_name'];
+        a['resolved_lead_phone'] ??= a['lead_phone'];
+        a['resolved_lead_email'] ??= a['lead_email'];
+      }
+    }
+  }
+
   List<Map<String, dynamic>> get _visibleAppointments {
     final allCalsSelected = _selectedCalendarIds.length == _calendars.length;
     final allUsersSelected = _selectedUserIds.length == _teamMembers.length;
@@ -177,8 +213,8 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
     if (query.isNotEmpty) {
       list = list.where((a) {
         final name     = (a['appointment_name'] ?? '').toString().toLowerCase();
-        final leadName = (a['lead_name']  ?? '').toString().toLowerCase();
-        final phone    = (a['lead_phone'] ?? '').toString().toLowerCase();
+        final leadName = (a['resolved_lead_name']  ?? '').toString().toLowerCase();
+        final phone    = (a['resolved_lead_phone'] ?? '').toString().toLowerCase();
         final assigned = (a['assigned_to'] ?? '').toString().toLowerCase();
         return name.contains(query) || leadName.contains(query) ||
                phone.contains(query) || assigned.contains(query);
@@ -458,8 +494,8 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
               : Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   Text(a['appointment_name'] ?? '',
                       style: TextStyle(fontSize: 12, color: blocked ? AppTheme.textSecondary : Colors.white, fontWeight: FontWeight.w600)),
-                  if (!blocked && (a['lead_name'] ?? '').isNotEmpty)
-                    Text(a['lead_name'], style: const TextStyle(fontSize: 10, color: Colors.white70)),
+                  if (!blocked && (a['resolved_lead_name'] ?? '').isNotEmpty)
+                    Text(a['resolved_lead_name'], style: const TextStyle(fontSize: 10, color: Colors.white70)),
                 ]),
         ),
       ),
@@ -735,7 +771,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
                     const SizedBox(width: 7),
                     Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                       Text(a['appointment_name'] ?? '', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppTheme.textPrimary), overflow: TextOverflow.ellipsis),
-                      Text('${_fmtTime(dt)} · ${a['lead_name'] ?? ''}', style: const TextStyle(fontSize: 10, color: AppTheme.textSecondary), overflow: TextOverflow.ellipsis),
+                      Text('${_fmtTime(dt)} · ${a['resolved_lead_name'] ?? ''}', style: const TextStyle(fontSize: 10, color: AppTheme.textSecondary), overflow: TextOverflow.ellipsis),
                     ])),
                   ]),
                 ),
@@ -937,8 +973,11 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
                             ])),
                             Expanded(flex: 2, child: Text(dateLabel, style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary))),
                             Expanded(flex: 2, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                              Text(appt['lead_name'] ?? '—', style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary)),
-                              if ((appt['lead_phone'] ?? '').isNotEmpty) Text(appt['lead_phone'], style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                              Text(appt['resolved_lead_name'] ?? '—', style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary)),
+                              if ((appt['resolved_lead_phone'] ?? '').isNotEmpty)
+                                Text(appt['resolved_lead_phone'], style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary))
+                              else if ((appt['resolved_lead_name'] ?? '').isNotEmpty && appt['resolved_lead_name'] != '—')
+                                const Text('No phone on file', style: TextStyle(fontSize: 11, color: AppTheme.textMuted, fontStyle: FontStyle.italic)),
                             ])),
                             Expanded(flex: 2, child: Text('${_fmtTime(startDt)} - ${_fmtTime(endDt)}', style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary))),
                             Expanded(flex: 2, child: Text(appt['appointment_type'] ?? '—', style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary))),
@@ -1977,7 +2016,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
               const SizedBox(width: 10),
               Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Text(a['appointment_name'] ?? '', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
-                Text('${_fmtTime(DateTime.tryParse(a['start_date_time'] ?? '') ?? DateTime.now())} · ${a['lead_name'] ?? ''}', style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                Text('${_fmtTime(DateTime.tryParse(a['start_date_time'] ?? '') ?? DateTime.now())} · ${a['resolved_lead_name'] ?? ''}', style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
               ])),
               const Icon(Icons.chevron_right, size: 16, color: AppTheme.textMuted),
             ]),
