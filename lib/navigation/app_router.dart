@@ -6,6 +6,9 @@ import '../screens/login_screen.dart';
 import '../screens/signup_screen.dart';
 import '../screens/dashboard_screen.dart';
 import '../screens/contacts_screen.dart';
+import '../screens/contacts_hub_screen.dart';
+import '../screens/business_contact_detail_screen.dart';
+import '../screens/employee_detail_screen.dart';
 import '../screens/contact_detail_screen.dart';
 import '../screens/pipelines_screen.dart';
 import '../screens/campaigns_screen.dart';
@@ -455,13 +458,27 @@ class AppRouter {
           GoRoute(
             path: '/contacts',
             name: 'contacts',
-            builder: (context, state) => const ContactsScreen(),
+            builder: (context, state) => const ContactsHubScreen(),
           ),
           GoRoute(
             path: '/contacts/:id',
             name: 'contact-detail',
             builder: (context, state) => ContactDetailScreen(
               leadId: state.pathParameters['id']!,
+            ),
+          ),
+          GoRoute(
+            path: '/contacts/business/:id',
+            name: 'business-contact-detail',
+            builder: (context, state) => BusinessContactDetailScreen(
+              contactId: state.pathParameters['id']!,
+            ),
+          ),
+          GoRoute(
+            path: '/contacts/employees/:id',
+            name: 'employee-detail',
+            builder: (context, state) => EmployeeDetailScreen(
+              employeeId: state.pathParameters['id']!,
             ),
           ),
           GoRoute(

@@ -3864,6 +3864,7 @@ class _AppointmentFormTabState extends State<_AppointmentFormTab> {
         if (_teamMember != null) 'assigned_to':  _teamMember,
         if (_teamMember != null) 'assigned_to_profile_id': _teamMemberProfileId(),
         if (_selectedJobTypeId != null) 'job_type': widget.jobTypes.firstWhere((j) => j['id'] == _selectedJobTypeId)['name'],
+        if (_status.toLowerCase() == 'cancelled') 'canceled_at': DateTime.now().toUtc().toIso8601String(),
       };
       final newAppt = await _db.from('appointments').insert(payload).select().maybeSingle();
 
@@ -5456,6 +5457,12 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
     if (!shouldProceed) return;
     setState(() => _saving = true);
     try {
+      // canceled_at is the real system-of-record for cancellation (not the
+      // status string alone) — Late Appointments logic on the Jobs Overview
+      // page relies on this being set/cleared in sync with Cancelled status.
+      final wasCancelled = (widget.appointment['status'] ?? '').toString().toLowerCase() == 'cancelled';
+      final isCancelled  = _status.toLowerCase() == 'cancelled';
+
       await _db.from('appointments').update({
         'appointment_name': _nameCtrl.text.trim(),
         'appointment_type': _type,
@@ -5473,6 +5480,8 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
         'assigned_to': _assignedTo,
         'assigned_to_profile_id': _assignedToProfileId(),
         'job_type': _selectedJobType,
+        if (isCancelled && !wasCancelled) 'canceled_at': DateTime.now().toUtc().toIso8601String(),
+        if (!isCancelled && wasCancelled) 'canceled_at': null,
       }).eq('id', widget.appointment['id']);
 
       // Fire appointment_completed automation trigger

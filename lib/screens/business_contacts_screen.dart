@@ -14,7 +14,7 @@ import '../utils/business_utils.dart';
 //  MODEL
 // ─────────────────────────────────────────────
 
-class _Lead {
+class _Contact {
   final int id;
   String name;
   String? email;
@@ -22,14 +22,18 @@ class _Lead {
   String status;
   String? source;
   String? notes;
-  double? estimatedValue;
   List<String> tags;
   DateTime? createdAt;
-  DateTime? lastActivity;
-  String? businessName;
+  DateTime? lastContacted;
   String? address;
+  String? city;
+  String? state;
+  String? zip;
+  bool doNotContact;
+  String? assignedTo;
+  int? assignedToProfileId;
 
-  _Lead({
+  _Contact({
     required this.id,
     required this.name,
     this.email,
@@ -37,45 +41,51 @@ class _Lead {
     required this.status,
     this.source,
     this.notes,
-    this.estimatedValue,
     required this.tags,
     this.createdAt,
-    this.lastActivity,
-    this.businessName,
+    this.lastContacted,
     this.address,
+    this.city,
+    this.state,
+    this.zip,
+    this.doNotContact = false,
+    this.assignedTo,
+    this.assignedToProfileId,
   });
 
-  factory _Lead.fromJson(Map<String, dynamic> j) {
+  static String _normalizeStatus(String? raw) {
+    if (raw == null || raw.trim().isEmpty) return 'Active';
+    switch (raw.trim().toLowerCase()) {
+      case 'active':   return 'Active';
+      case 'inactive': return 'Inactive';
+      case 'archived': return 'Archived';
+      default:         return raw; // unrecognized value — handled by the dropdown guard below
+    }
+  }
+
+  factory _Contact.fromJson(Map<String, dynamic> j) {
     List<String> parsedTags = [];
     final rawTags = j['tags'];
-    if (rawTags is List) {
-      parsedTags = rawTags.map((t) => t.toString()).toList();
-    } else if (rawTags is String && rawTags.isNotEmpty) {
-      parsedTags = rawTags
-          .replaceAll('[', '').replaceAll(']', '')
-          .split(',')
-          .map((t) => t.trim().replaceAll('"', ''))
-          .where((t) => t.isNotEmpty)
-          .toList();
-    }
-    return _Lead(
+    if (rawTags is List) parsedTags = rawTags.map((t) => t.toString()).toList();
+
+    return _Contact(
       id: (j['id'] as num).toInt(),
-      name: j['lead_name'] as String? ?? 'Unknown',
-      email: j['lead_email'] as String?,
-      phone: j['lead_phone'] as String?,
-      status: j['lead_status'] as String? ?? 'New',
+      name: j['full_name'] as String? ?? 'Unknown',
+      email: j['email'] as String?,
+      phone: j['phone'] as String?,
+      status: _normalizeStatus(j['status'] as String?),
       source: j['source'] as String?,
       notes: j['notes'] as String?,
-      estimatedValue: (j['estimated_value'] as num?)?.toDouble(),
       tags: parsedTags,
-      createdAt: j['date_added'] != null
-          ? DateTime.tryParse(j['date_added'] as String)
-          : null,
-      lastActivity: j['last_message_at'] != null
-          ? DateTime.tryParse(j['last_message_at'] as String)
-          : null,
-      businessName: j['business_name'] as String?,
-      address: j['lead_address'] as String?,
+      createdAt: j['created_at'] != null ? DateTime.tryParse(j['created_at'] as String) : null,
+      lastContacted: j['last_contacted'] != null ? DateTime.tryParse(j['last_contacted'] as String) : null,
+      address: j['address'] as String?,
+      city: j['city'] as String?,
+      state: j['state'] as String?,
+      zip: j['zip'] as String?,
+      doNotContact: j['do_not_contact'] as bool? ?? false,
+      assignedTo: j['assigned_to'] as String?,
+      assignedToProfileId: (j['assigned_to_profile_id'] as num?)?.toInt(),
     );
   }
 
@@ -96,28 +106,42 @@ class _Lead {
 
   Color get statusColor {
     switch (status.toLowerCase()) {
-      case 'new':            return const Color(0xFF3B82F6);
-      case 'in conversation': return const Color(0xFF8B5CF6);
-      case 'qualified':      return const Color(0xFF10B981);
-      case 'won':            return const Color(0xFF059669);
-      case 'lost':           return const Color(0xFFEF4444);
-      case 'unqualified':    return const Color(0xFF6B7280);
-      default:               return AppTheme.brand;
+      case 'active':   return const Color(0xFF10B981);
+      case 'inactive': return const Color(0xFF6B7280);
+      case 'archived': return const Color(0xFFEF4444);
+      default:         return AppTheme.brand;
     }
   }
+
+  Map<String, dynamic> toMap() => {
+    'id': id,
+    'full_name': name,
+    'email': email,
+    'phone': phone,
+    'status': status,
+    'source': source,
+    'notes': notes,
+    'tags': tags,
+    'address': address,
+    'city': city,
+    'state': state,
+    'zip': zip,
+    'do_not_contact': doNotContact,
+    'assigned_to': assignedTo,
+  };
 }
 
 // ─────────────────────────────────────────────
-//  CONTACTS SCREEN
+//  BUSINESS CONTACTS SCREEN
 // ─────────────────────────────────────────────
 
-class ContactsScreen extends StatefulWidget {
-  const ContactsScreen({super.key});
+class BusinessContactsScreen extends StatefulWidget {
+  const BusinessContactsScreen({super.key});
   @override
-  State<ContactsScreen> createState() => _ContactsScreenState();
+  State<BusinessContactsScreen> createState() => _BusinessContactsScreenState();
 }
 
-class _ContactsScreenState extends State<ContactsScreen> {
+class _BusinessContactsScreenState extends State<BusinessContactsScreen> {
   final _db = Supabase.instance.client;
   final _searchCtrl = TextEditingController();
   final _scrollCtrl = ScrollController();
@@ -126,49 +150,45 @@ class _ContactsScreenState extends State<ContactsScreen> {
   String? _error;
   int? _businessId;
 
-  List<_Lead> _all = [];
-  List<_Lead> _filtered = [];
-  List<_Lead> _page = [];
+  List<_Contact> _all = [];
+  List<_Contact> _filtered = [];
+  List<_Contact> _page = [];
 
-  // Pagination
   int _currentPage = 1;
   int _pageSize = 20;
   int get _totalPages => (_filtered.isEmpty ? 1 : (_filtered.length / _pageSize).ceil());
 
-  // Selection
   Set<int> _selected = {};
   bool get _hasSelection => _selected.isNotEmpty;
 
-  // Filters
   String _statusFilter = 'All';
   String _sourceFilter = 'All';
   String _tagFilter    = 'All';
   bool _showFilters    = false;
 
-  // Columns
-  bool _colPhone    = true;
-  bool _colEmail    = true;
-  bool _colCreated  = true;
-  bool _colActivity = true;
-  bool _colTags     = true;
-  bool _colSource   = false;
-  bool _colValue    = false;
+  bool _colPhone       = true;
+  bool _colEmail       = true;
+  bool _colCreated     = true;
+  bool _colLastContact = true;
+  bool _colTags        = true;
+  bool _colSource      = false;
+  bool _colAssigned    = false;
 
-  // Smart lists
   int _activeList = 0;
-  List<String> _listNames = ['All', 'New Leads', 'Won', 'Lost'];
+  List<String> _listNames = ['All', 'Active', 'Inactive', 'Archived'];
   List<Map<String, dynamic>> _smartLists = [];
 
-  final _statuses = ['All','New','In Conversation','Qualified','Won','Lost','Unqualified'];
-  final _sources  = ['All','SMS','Email','Web Form','Manual','Import'];
+  final _statuses = ['All', 'Active', 'Inactive', 'Archived'];
+  final _sources  = ['All', 'Vendor', 'Referral', 'Manual', 'Import', 'Other'];
 
   static const _supabaseUrl = 'https://rllriopqojaraceytdno.supabase.co';
+  static const _anonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJsbHJpb3Bxb2phcmFjZXl0ZG5vIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzczOTQzMzgsImV4cCI6MjA5Mjk3MDMzOH0.BxTbaRRD_xc88gyWBm5k7ZVVGP8c3CqW5U8aXBmXPMw';
 
   @override
   void initState() {
     super.initState();
     _searchCtrl.addListener(_applyFilter);
-    _loadLeads();
+    _loadContacts();
     _loadSmartLists();
   }
 
@@ -181,20 +201,19 @@ class _ContactsScreenState extends State<ContactsScreen> {
 
   // ── DATA ──────────────────────────────────
 
-  Future<void> _loadLeads() async {
+  Future<void> _loadContacts() async {
     setState(() { _loading = true; _error = null; });
     try {
       _businessId = await getActiveBusinessId();
-      debugPrint('Contacts using business ID: $_businessId');
       if (_businessId == null) return;
 
-      final data = await _db.from('leads').select(
-        'id, lead_name, lead_email, lead_phone, lead_status, source, '
-        'notes, estimated_value, tags, date_added, last_message_at, '
-        'business_name, lead_address'
-      ).eq('business_id', _businessId!).order('date_added', ascending: false);
+      final data = await _db.from('contacts').select(
+        'id, first_name, last_name, full_name, email, phone, address, city, state, zip, '
+        'source, status, tags, notes, assigned_to, assigned_to_profile_id, '
+        'last_contacted, do_not_contact, created_at'
+      ).eq('business_id', _businessId!).filter('deleted_at', 'is', null).order('created_at', ascending: false);
 
-      _all = (data as List).map((j) => _Lead.fromJson(j)).toList();
+      _all = (data as List).map((j) => _Contact.fromJson(j)).toList();
       _applyFilter();
     } catch (e) {
       setState(() => _error = e.toString());
@@ -210,10 +229,12 @@ class _ContactsScreenState extends State<ContactsScreen> {
           .from('smart_lists')
           .select('id, name, filters')
           .eq('business_id', _businessId!)
+          .eq('scope', 'business_contacts')
+          .filter('deleted_at', 'is', null)
           .order('created_at');
       setState(() {
         _smartLists = List<Map<String, dynamic>>.from(data);
-        _listNames = ['All', 'New Leads', 'Won', 'Lost',
+        _listNames = ['All', 'Active', 'Inactive', 'Archived',
           ..._smartLists.map((s) => s['name'] as String)];
       });
     } catch (e) {
@@ -222,29 +243,28 @@ class _ContactsScreenState extends State<ContactsScreen> {
   }
 
   void _applyFilter() {
-    var result = List<_Lead>.from(_all);
-    if (_activeList == 1) result = result.where((l) => l.status == 'New').toList();
-    else if (_activeList == 2) result = result.where((l) => l.status == 'Won').toList();
-    else if (_activeList == 3) result = result.where((l) => l.status == 'Lost').toList();
+    var result = List<_Contact>.from(_all);
+    if (_activeList == 1) result = result.where((c) => c.status == 'Active').toList();
+    else if (_activeList == 2) result = result.where((c) => c.status == 'Inactive').toList();
+    else if (_activeList == 3) result = result.where((c) => c.status == 'Archived').toList();
     else if (_activeList >= 4 && _activeList - 4 < _smartLists.length) {
       final saved = _smartLists[_activeList - 4]['filters'] as Map<String, dynamic>;
       final savedStatus = saved['status'] as String? ?? 'All';
       final savedSource = saved['source'] as String? ?? 'All';
       final savedTag    = saved['tag'] as String? ?? 'All';
-      if (savedStatus != 'All') result = result.where((l) => l.status == savedStatus).toList();
-      if (savedSource != 'All') result = result.where((l) => (l.source ?? '').toLowerCase() == savedSource.toLowerCase()).toList();
-      if (savedTag != 'All') result = result.where((l) => l.tags.contains(savedTag)).toList();
+      if (savedStatus != 'All') result = result.where((c) => c.status == savedStatus).toList();
+      if (savedSource != 'All') result = result.where((c) => (c.source ?? '').toLowerCase() == savedSource.toLowerCase()).toList();
+      if (savedTag != 'All') result = result.where((c) => c.tags.contains(savedTag)).toList();
     }
-    if (_statusFilter != 'All') result = result.where((l) => l.status == _statusFilter).toList();
-    if (_sourceFilter != 'All') result = result.where((l) => (l.source ?? '').toLowerCase() == _sourceFilter.toLowerCase()).toList();
-    if (_tagFilter != 'All') result = result.where((l) => l.tags.contains(_tagFilter)).toList();
+    if (_statusFilter != 'All') result = result.where((c) => c.status == _statusFilter).toList();
+    if (_sourceFilter != 'All') result = result.where((c) => (c.source ?? '').toLowerCase() == _sourceFilter.toLowerCase()).toList();
+    if (_tagFilter != 'All') result = result.where((c) => c.tags.contains(_tagFilter)).toList();
     final q = _searchCtrl.text.toLowerCase();
     if (q.isNotEmpty) {
-      result = result.where((l) =>
-        l.name.toLowerCase().contains(q) ||
-        (l.email ?? '').toLowerCase().contains(q) ||
-        (l.phone ?? '').toLowerCase().contains(q) ||
-        (l.businessName ?? '').toLowerCase().contains(q)
+      result = result.where((c) =>
+        c.name.toLowerCase().contains(q) ||
+        (c.email ?? '').toLowerCase().contains(q) ||
+        (c.phone ?? '').toLowerCase().contains(q)
       ).toList();
     }
     setState(() { _filtered = result; _currentPage = 1; _rebuildPage(); });
@@ -269,107 +289,102 @@ class _ContactsScreenState extends State<ContactsScreen> {
   });
 
   void _toggleAll() => setState(() {
-    _selected.length == _page.length ? _selected.clear() : _selected = _page.map((l) => l.id).toSet();
+    _selected.length == _page.length ? _selected.clear() : _selected = _page.map((c) => c.id).toSet();
   });
 
   void _clearSelection() => setState(() => _selected.clear());
 
-  // ── TAGS list ─────────────────────────────
-
   List<String> get _allTags {
     final t = <String>{};
-    for (final l in _all) t.addAll(l.tags);
+    for (final c in _all) t.addAll(c.tags);
     return ['All', ...t.toList()..sort()];
   }
 
   List<String> get _allTagsNoAll {
     final t = <String>{};
-    for (final l in _all) t.addAll(l.tags);
+    for (final c in _all) t.addAll(c.tags);
     return t.toList()..sort();
   }
 
-  // ── ADD CONTACT ──────────────────────────
+  // ── ADD / EDIT ────────────────────────────
 
   void _showAdd() => showModalBottomSheet(
     context: context, isScrollControlled: true, backgroundColor: Colors.transparent,
-    builder: (_) => _AddSheet(businessId: _businessId ?? 0, onSaved: () { context.pop(); _loadLeads(); }),
+    builder: (_) => AddEditBusinessContactSheet(businessId: _businessId ?? 0, onSaved: () { context.pop(); _loadContacts(); }),
   );
 
-  // ── BULK STATUS / DELETE ──────────────────
+  void _showEdit(_Contact c) => showModalBottomSheet(
+    context: context, isScrollControlled: true, backgroundColor: Colors.transparent,
+    builder: (_) => AddEditBusinessContactSheet(
+      businessId: _businessId ?? 0, existing: c.toMap(),
+      onSaved: () { context.pop(); _loadContacts(); },
+    ),
+  );
+
+  // ── BULK STATUS / DELETE (soft) ───────────
 
   Future<void> _bulkStatus(String s) async {
     if (_selected.isEmpty) return;
-    await _db.from('leads').update({'lead_status': s}).inFilter('id', _selected.toList());
-    _clearSelection(); _loadLeads();
+    await _db.from('contacts').update({'status': s}).inFilter('id', _selected.toList());
+    _clearSelection(); _loadContacts();
   }
 
   Future<void> _bulkDelete() async {
     if (_selected.isEmpty) return;
     final count = _selected.length;
-    final step1 = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppTheme.cardBg,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        title: Row(children: [
-          const Icon(Icons.warning_amber_rounded, color: Color(0xFFF59E0B), size: 22),
-          const SizedBox(width: 8),
-          Text('Delete $count contacts?',
-            style: const TextStyle(color: AppTheme.textPrimary, fontWeight: FontWeight.w700)),
-        ]),
-        content: const Text(
-          'This will permanently remove all their data including messages, appointments, and history.',
-          style: TextStyle(color: AppTheme.textSecondary, fontSize: 14, height: 1.5)),
-        actions: [
-          TextButton(onPressed: () => ctx.pop(false),
-            child: const Text('Cancel', style: TextStyle(color: AppTheme.textSecondary))),
-          ElevatedButton(
-            onPressed: () => ctx.pop(true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFFF59E0B), foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
-            child: const Text('Continue')),
-        ],
-      ),
-    );
-    if (step1 != true) return;
-
-    final step2 = await showDialog<bool>(
-      context: context,
-      builder: (ctx2) => AlertDialog(
-        backgroundColor: AppTheme.cardBg,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        title: const Row(children: [
-          Icon(Icons.delete_forever, color: AppTheme.error, size: 22),
-          SizedBox(width: 8),
-          Text('Are you absolutely sure?',
-            style: TextStyle(color: AppTheme.error, fontWeight: FontWeight.w700)),
-        ]),
-        content: const Text(
-          'This action CANNOT be undone. The contacts will be permanently deleted.',
-          style: TextStyle(color: AppTheme.textSecondary, fontSize: 14, height: 1.5)),
-        actions: [
-          TextButton(onPressed: () => ctx2.pop(false),
-            child: const Text('No, Keep Contacts', style: TextStyle(color: AppTheme.textSecondary))),
-          ElevatedButton(
-            onPressed: () => ctx2.pop(true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppTheme.error, foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
-            child: const Text('Permanently Delete')),
-        ],
-      ),
-    );
-    if (step2 != true) return;
+    final confirmed = await _confirmDelete('Delete $count contacts?',
+      'This will remove them from your active list. This can be restored by support if needed.');
+    if (confirmed != true) return;
 
     try {
-      await _db.from('leads').delete().inFilter('id', _selected.toList());
-      _clearSelection(); _loadLeads();
-      if (mounted) _snack('$count contacts permanently deleted.');
+      await _db.from('contacts')
+          .update({'deleted_at': DateTime.now().toUtc().toIso8601String()})
+          .inFilter('id', _selected.toList());
+      _clearSelection(); _loadContacts();
+      if (mounted) _snack('$count contacts deleted.');
     } catch (e) {
       if (mounted) _snack('Error: $e');
     }
   }
+
+  Future<void> _deleteContact(_Contact c) async {
+    final confirmed = await _confirmDelete('Delete ${c.name}?',
+      'This will remove them from your active list. This can be restored by support if needed.');
+    if (confirmed != true) return;
+    try {
+      await _db.from('contacts')
+          .update({'deleted_at': DateTime.now().toUtc().toIso8601String()})
+          .eq('id', c.id);
+      _loadContacts();
+      if (mounted) _snack('${c.name} deleted.');
+    } catch (e) {
+      if (mounted) _snack('Error: $e');
+    }
+  }
+
+  Future<bool?> _confirmDelete(String title, String body) => showDialog<bool>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      backgroundColor: AppTheme.cardBg,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      title: Row(children: [
+        const Icon(Icons.warning_amber_rounded, color: Color(0xFFF59E0B), size: 22),
+        const SizedBox(width: 8),
+        Expanded(child: Text(title, style: const TextStyle(color: AppTheme.textPrimary, fontWeight: FontWeight.w700))),
+      ]),
+      content: Text(body, style: const TextStyle(color: AppTheme.textSecondary, fontSize: 14, height: 1.5)),
+      actions: [
+        TextButton(onPressed: () => ctx.pop(false),
+          child: const Text('Cancel', style: TextStyle(color: AppTheme.textSecondary))),
+        ElevatedButton(
+          onPressed: () => ctx.pop(true),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: AppTheme.error, foregroundColor: Colors.white,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+          child: const Text('Delete')),
+      ],
+    ),
+  );
 
   // ── BULK TAG ─────────────────────────────
 
@@ -378,13 +393,9 @@ class _ContactsScreenState extends State<ContactsScreen> {
       context: context,
       builder: (ctx) => _BulkTagDialog(
         existingTags: _allTagsNoAll,
-        selectedLeads: _selected.toList(),
+        selectedContacts: _selected.toList(),
         db: _db,
-        onDone: (msg) {
-          _clearSelection();
-          _loadLeads();
-          _snack(msg);
-        },
+        onDone: (msg) { _clearSelection(); _loadContacts(); _snack(msg); },
       ),
     );
   }
@@ -392,39 +403,33 @@ class _ContactsScreenState extends State<ContactsScreen> {
   // ── BULK SMS ─────────────────────────────
 
   void _showBulkSms() {
-    final selectedLeads = _all.where((l) => _selected.contains(l.id)).toList();
-    final withPhone = selectedLeads.where((l) => l.phone != null && l.phone!.isNotEmpty).length;
-    final noPhone   = selectedLeads.length - withPhone;
+    final sel = _all.where((c) => _selected.contains(c.id)).toList();
+    final withPhone = sel.where((c) => c.phone != null && c.phone!.isNotEmpty).length;
+    final noPhone   = sel.length - withPhone;
 
     showDialog(
       context: context,
       builder: (ctx) => _BulkSmsDialog(
-        selectedCount: selectedLeads.length,
-        withPhone: withPhone,
-        noPhone: noPhone,
+        selectedCount: sel.length, withPhone: withPhone, noPhone: noPhone,
         onSend: (message) async {
-        ctx.pop();
+          ctx.pop();
           _snack('Sending SMS to $withPhone contacts…');
           try {
-            const anonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJsbHJpb3Bxb2phcmFjZXl0ZG5vIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzczOTQzMzgsImV4cCI6MjA5Mjk3MDMzOH0.BxTbaRRD_xc88gyWBm5k7ZVVGP8c3CqW5U8aXBmXPMw';
             final res = await http.post(
               Uri.parse('$_supabaseUrl/functions/v1/bulk-sms'),
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': 'Bearer $anonKey',
-              },
+              headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer $_anonKey'},
               body: jsonEncode({
                 'lead_ids': _selected.toList(),
                 'message': message,
                 'business_id': _businessId,
+                'source': 'contacts',
               }),
             );
             if (!mounted) return;
             final data = jsonDecode(res.body);
-            final sent    = data['sent'] ?? 0;
+            final sent = data['sent'] ?? 0;
             final skipped = data['skipped'] ?? 0;
-            _clearSelection();
-            _loadLeads();
+            _clearSelection(); _loadContacts();
             _snack('SMS sent to $sent contacts${skipped > 0 ? ', $skipped skipped (no phone)' : ''}.');
           } catch (e) {
             if (mounted) _snack('Error: $e');
@@ -437,40 +442,34 @@ class _ContactsScreenState extends State<ContactsScreen> {
   // ── BULK EMAIL ───────────────────────────
 
   void _showBulkEmail() {
-    final selectedLeads = _all.where((l) => _selected.contains(l.id)).toList();
-    final withEmail = selectedLeads.where((l) => l.email != null && l.email!.isNotEmpty).length;
-    final noEmail   = selectedLeads.length - withEmail;
+    final sel = _all.where((c) => _selected.contains(c.id)).toList();
+    final withEmail = sel.where((c) => c.email != null && c.email!.isNotEmpty).length;
+    final noEmail   = sel.length - withEmail;
 
     showDialog(
       context: context,
       builder: (ctx) => _BulkEmailDialog(
-        selectedCount: selectedLeads.length,
-        withEmail: withEmail,
-        noEmail: noEmail,
+        selectedCount: sel.length, withEmail: withEmail, noEmail: noEmail,
         onSend: (subject, body) async {
-        ctx.pop();
+          ctx.pop();
           _snack('Sending email to $withEmail contacts…');
           try {
-            const anonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJsbHJpb3Bxb2phcmFjZXl0ZG5vIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzczOTQzMzgsImV4cCI6MjA5Mjk3MDMzOH0.BxTbaRRD_xc88gyWBm5k7ZVVGP8c3CqW5U8aXBmXPMw';
             final res = await http.post(
               Uri.parse('$_supabaseUrl/functions/v1/bulk-email'),
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': 'Bearer $anonKey',
-              },
+              headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer $_anonKey'},
               body: jsonEncode({
                 'lead_ids': _selected.toList(),
                 'subject': subject,
                 'body': body,
                 'business_id': _businessId,
+                'source': 'contacts',
               }),
             );
             if (!mounted) return;
             final data = jsonDecode(res.body);
-            final sent    = data['sent'] ?? 0;
+            final sent = data['sent'] ?? 0;
             final skipped = data['skipped'] ?? 0;
-            _clearSelection();
-            _loadLeads();
+            _clearSelection(); _loadContacts();
             _snack('Email sent to $sent contacts${skipped > 0 ? ', $skipped skipped (no email)' : ''}.');
           } catch (e) {
             if (mounted) _snack('Error: $e');
@@ -480,37 +479,31 @@ class _ContactsScreenState extends State<ContactsScreen> {
     );
   }
 
-  // ── EXPORT CSV ────────────────────────────
+  // ── EXPORT / IMPORT CSV ──────────────────
 
   void _exportCsv() {
     if (_filtered.isEmpty) { _snack('No contacts to export.'); return; }
     try {
       final rows = <List<dynamic>>[
-        ['Name', 'Email', 'Phone', 'Status', 'Source', 'Business', 'Address', 'Created', 'Tags'],
+        ['Name', 'Email', 'Phone', 'Status', 'Source', 'Address', 'Created', 'Tags'],
       ];
-      for (final l in _filtered) {
-        rows.add([l.name, l.email ?? '', l.phone ?? '', l.status,
-          l.source ?? '', l.businessName ?? '', l.address ?? '',
-          l.createdAt?.toIso8601String() ?? '', l.tags.join('; ')]);
+      for (final c in _filtered) {
+        rows.add([c.name, c.email ?? '', c.phone ?? '', c.status,
+          c.source ?? '', c.address ?? '', c.createdAt?.toIso8601String() ?? '', c.tags.join('; ')]);
       }
-      final csv   = const ListToCsvConverter().convert(rows);
+      final csv = const ListToCsvConverter().convert(rows);
       final bytes = utf8.encode(csv);
-      final blob = web.Blob(
-        [bytes.toJS].toJS,
-        web.BlobPropertyBag(type: 'text/csv'),
-      );
+      final blob = web.Blob([bytes.toJS].toJS, web.BlobPropertyBag(type: 'text/csv'));
       final url = web.URL.createObjectURL(blob);
       web.HTMLAnchorElement()
         ..href = url
         ..style.display = 'none'
-        ..download = 'contacts_${DateTime.now().millisecondsSinceEpoch}.csv'
+        ..download = 'business_contacts_${DateTime.now().millisecondsSinceEpoch}.csv'
         ..click();
       web.URL.revokeObjectURL(url);
       _snack('Exported ${_filtered.length} contacts.');
     } catch (e) { _snack('Export failed: $e'); }
   }
-
-  // ── IMPORT CSV ───────────────────────────
 
   Future<void> _importCsv() async {
     final result = await FilePicker.platform.pickFiles(
@@ -523,12 +516,12 @@ class _ContactsScreenState extends State<ContactsScreen> {
       context: context, barrierDismissible: false,
       builder: (_) => _ImportCsvDialog(
         csvString: csvString, businessId: _businessId ?? 0,
-        onImported: (count) { context.pop(); _loadLeads(); _snack('Imported $count contacts successfully!'); },
+        onImported: (count) { context.pop(); _loadContacts(); _snack('Imported $count contacts successfully!'); },
       ),
     );
   }
 
-  // ── MANAGE SMART LISTS ───────────────────
+  // ── SMART LISTS ───────────────────────────
 
   void _showManageSmartLists() {
     showDialog(
@@ -542,11 +535,10 @@ class _ContactsScreenState extends State<ContactsScreen> {
   }
 
   void _snack(String msg) {
-  if (!mounted) return;
-  ScaffoldMessenger.of(context).showSnackBar(
-    SnackBar(content: Text(msg), backgroundColor: AppTheme.brand,
-      duration: const Duration(seconds: 3)));
-}
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), backgroundColor: AppTheme.brand, duration: const Duration(seconds: 3)));
+  }
 
   // ─────────────────────────────────────────
   //  BUILD
@@ -576,14 +568,12 @@ class _ContactsScreenState extends State<ContactsScreen> {
     );
   }
 
-  // ── TOP BAR ──────────────────────────────
-
   Widget _buildTopBar() {
     return Container(
       color: AppTheme.cardBg,
       padding: const EdgeInsets.fromLTRB(24, 16, 24, 12),
       child: Row(children: [
-        Text('Leads', style: const TextStyle(
+        const Text('Business Contacts', style: TextStyle(
           fontSize: 20, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
         const SizedBox(width: 8),
         Container(
@@ -613,7 +603,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
           ),
         ),
         const SizedBox(width: 10),
-        _btn(Icons.add, 'Add Lead', primary: true, onTap: _showAdd),
+        _btn(Icons.add, 'Add Contact', primary: true, onTap: _showAdd),
         const SizedBox(width: 8),
         _iconBtn(Icons.filter_list_rounded, 'Filters',
           active: _showFilters || _statusFilter != 'All' || _sourceFilter != 'All' || _tagFilter != 'All',
@@ -621,7 +611,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
         const SizedBox(width: 6),
         _iconBtn(Icons.view_column_outlined, 'Columns', onTap: _showColumnPicker),
         const SizedBox(width: 6),
-        _iconBtn(Icons.refresh_rounded, 'Refresh', onTap: _loadLeads),
+        _iconBtn(Icons.refresh_rounded, 'Refresh', onTap: _loadContacts),
         const SizedBox(width: 6),
         _iconBtn(Icons.upload_file_outlined, 'Import CSV', onTap: _importCsv),
         const SizedBox(width: 6),
@@ -669,8 +659,6 @@ class _ContactsScreenState extends State<ContactsScreen> {
     );
   }
 
-  // ── TABS ─────────────────────────────────
-
   Widget _buildTabs() {
     return Container(
       height: 44,
@@ -717,8 +705,6 @@ class _ContactsScreenState extends State<ContactsScreen> {
       ),
     );
   }
-
-  // ── FILTER BAR ───────────────────────────
 
   Widget _buildFilterBar() {
     return Container(
@@ -768,8 +754,6 @@ class _ContactsScreenState extends State<ContactsScreen> {
     );
   }
 
-  // ── BULK BAR ─────────────────────────────
-
   Widget _buildBulkBar() {
     return Container(
       height: 46,
@@ -793,7 +777,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
           color: AppTheme.cardBg,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
           tooltip: 'Change status', onSelected: _bulkStatus,
-          itemBuilder: (_) => ['New','Qualified','Won','Lost','Unqualified']
+          itemBuilder: (_) => ['Active', 'Inactive', 'Archived']
               .map((s) => PopupMenuItem(value: s,
                 child: Text(s, style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13)))).toList(),
           child: _bulkBtn(Icons.swap_horiz, 'Change Status', () {}),
@@ -834,8 +818,6 @@ class _ContactsScreenState extends State<ContactsScreen> {
     );
   }
 
-  // ── TABLE ────────────────────────────────
-
   Widget _buildTable() {
     return Container(
       margin: const EdgeInsets.all(20),
@@ -863,15 +845,15 @@ class _ContactsScreenState extends State<ContactsScreen> {
     return Container(
       height: 40, color: AppTheme.pageBg,
       child: Row(children: [
-        _checkboxCell(_selected.length == _page.length && _page.isNotEmpty, _toggleAll, header: true),
+        _checkboxCell(_selected.length == _page.length && _page.isNotEmpty, _toggleAll),
         _hCell('Name', flex: 3),
-        if (_colPhone)    _hCell('Phone', flex: 2),
-        if (_colEmail)    _hCell('Email', flex: 3),
-        if (_colCreated)  _hCell('Created', flex: 2),
-        if (_colActivity) _hCell('Last Activity', flex: 2),
-        if (_colTags)     _hCell('Tags', flex: 2),
-        if (_colSource)   _hCell('Source', flex: 1),
-        if (_colValue)    _hCell('Value', flex: 1),
+        if (_colPhone)       _hCell('Phone', flex: 2),
+        if (_colEmail)       _hCell('Email', flex: 3),
+        if (_colCreated)     _hCell('Created', flex: 2),
+        if (_colLastContact) _hCell('Last Contacted', flex: 2),
+        if (_colTags)        _hCell('Tags', flex: 2),
+        if (_colSource)      _hCell('Source', flex: 1),
+        if (_colAssigned)    _hCell('Assigned To', flex: 2),
         const SizedBox(width: 48),
       ]),
     );
@@ -887,7 +869,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
     ),
   );
 
-  Widget _checkboxCell(bool checked, VoidCallback onTap, {bool header = false}) {
+  Widget _checkboxCell(bool checked, VoidCallback onTap) {
     return SizedBox(width: 48, child: Center(
       child: GestureDetector(onTap: onTap,
         child: MouseRegion(cursor: SystemMouseCursors.click,
@@ -905,10 +887,10 @@ class _ContactsScreenState extends State<ContactsScreen> {
     ));
   }
 
-  Widget _buildRow(_Lead lead) {
-    final selected = _selected.contains(lead.id);
+  Widget _buildRow(_Contact c) {
+    final selected = _selected.contains(c.id);
     return GestureDetector(
-      onTap: () => context.push('/contacts/${lead.id}'),
+      onTap: () => context.push('/contacts/business/${c.id}'),
       child: MouseRegion(
         cursor: SystemMouseCursors.click,
         child: Container(
@@ -916,17 +898,17 @@ class _ContactsScreenState extends State<ContactsScreen> {
           color: selected ? AppTheme.brand.withValues(alpha: 0.04) : AppTheme.cardBg,
           child: Row(children: [
             GestureDetector(
-              onTap: () => _toggleSelect(lead.id),
+              onTap: () => _toggleSelect(c.id),
               behavior: HitTestBehavior.opaque,
-              child: _checkboxCell(selected, () => _toggleSelect(lead.id)),
+              child: _checkboxCell(selected, () => _toggleSelect(c.id)),
             ),
             Expanded(flex: 3, child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12),
               child: Row(children: [
                 Container(
                   width: 34, height: 34,
-                  decoration: BoxDecoration(color: lead.avatarColor, shape: BoxShape.circle),
-                  child: Center(child: Text(lead.initials,
+                  decoration: BoxDecoration(color: c.avatarColor, shape: BoxShape.circle),
+                  child: Center(child: Text(c.initials,
                     style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w700))),
                 ),
                 const SizedBox(width: 10),
@@ -934,97 +916,64 @@ class _ContactsScreenState extends State<ContactsScreen> {
                   mainAxisAlignment: MainAxisAlignment.center,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(lead.name, style: const TextStyle(
+                    Text(c.name, style: const TextStyle(
                       color: AppTheme.textPrimary, fontSize: 13, fontWeight: FontWeight.w500),
                       overflow: TextOverflow.ellipsis),
                     const SizedBox(height: 2),
-                    Row(children: [
-                      _statusBadge(lead.status, lead.statusColor),
-                      if (lead.businessName != null && lead.businessName!.isNotEmpty) ...[
-                        const SizedBox(width: 6),
-                        Flexible(child: Text(lead.businessName!,
-                          style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11),
-                          overflow: TextOverflow.ellipsis)),
-                      ],
-                    ]),
+                    _statusBadge(c.status, c.statusColor),
                   ],
                 )),
               ]),
             )),
             if (_colPhone) Expanded(flex: 2, child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12),
-              child: lead.phone != null && lead.phone!.isNotEmpty
-                  ? Row(children: [
-                      const Icon(Icons.phone_outlined, size: 12, color: AppTheme.textSecondary),
-                      const SizedBox(width: 5),
-                      Expanded(child: Text(lead.phone!,
-                        style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12),
-                        overflow: TextOverflow.ellipsis)),
-                    ])
+              child: c.phone != null && c.phone!.isNotEmpty
+                  ? Text(c.phone!, style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12), overflow: TextOverflow.ellipsis)
                   : const Text('—', style: TextStyle(color: AppTheme.textSecondary, fontSize: 12)),
             )),
             if (_colEmail) Expanded(flex: 3, child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12),
-              child: lead.email != null && lead.email!.isNotEmpty
-                  ? Row(children: [
-                      const Icon(Icons.email_outlined, size: 12, color: AppTheme.textSecondary),
-                      const SizedBox(width: 5),
-                      Expanded(child: Text(lead.email!,
-                        style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12),
-                        overflow: TextOverflow.ellipsis)),
-                    ])
+              child: c.email != null && c.email!.isNotEmpty
+                  ? Text(c.email!, style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12), overflow: TextOverflow.ellipsis)
                   : const Text('—', style: TextStyle(color: AppTheme.textSecondary, fontSize: 12)),
             )),
             if (_colCreated) Expanded(flex: 2, child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12),
-              child: lead.createdAt != null
-                  ? Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: [
-                      Text(_fmtDate(lead.createdAt!), style: const TextStyle(color: AppTheme.textPrimary, fontSize: 12)),
-                      Text(_fmtTime(lead.createdAt!), style: const TextStyle(color: AppTheme.textSecondary, fontSize: 10)),
-                    ])
+              child: c.createdAt != null
+                  ? Text(_fmtDate(c.createdAt!), style: const TextStyle(color: AppTheme.textPrimary, fontSize: 12))
                   : const Text('—', style: TextStyle(color: AppTheme.textSecondary, fontSize: 12)),
             )),
-            if (_colActivity) Expanded(flex: 2, child: Padding(
+            if (_colLastContact) Expanded(flex: 2, child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12),
-              child: lead.lastActivity != null
-                  ? Row(children: [
-                      const Icon(Icons.chat_bubble_outline, size: 11, color: AppTheme.textSecondary),
-                      const SizedBox(width: 4),
-                      Text(_timeAgo(lead.lastActivity!),
-                        style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11)),
-                    ])
+              child: c.lastContacted != null
+                  ? Text(_timeAgo(c.lastContacted!), style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11))
                   : const Text('—', style: TextStyle(color: AppTheme.textSecondary, fontSize: 11)),
             )),
             if (_colTags) Expanded(flex: 2, child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12),
-              child: lead.tags.isEmpty
+              child: c.tags.isEmpty
                   ? const Text('—', style: TextStyle(color: AppTheme.textSecondary, fontSize: 11))
                   : SingleChildScrollView(scrollDirection: Axis.horizontal,
-                      child: Row(children: lead.tags.take(3).map(_tagChip).toList())),
+                      child: Row(children: c.tags.take(3).map(_tagChip).toList())),
             )),
             if (_colSource) Expanded(flex: 1, child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12),
-              child: Text(lead.source ?? '—',
-                style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11),
-                overflow: TextOverflow.ellipsis),
+              child: Text(c.source ?? '—', style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11), overflow: TextOverflow.ellipsis),
             )),
-            if (_colValue) Expanded(flex: 1, child: Padding(
+            if (_colAssigned) Expanded(flex: 2, child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12),
-              child: Text(
-                lead.estimatedValue != null && lead.estimatedValue! > 0
-                    ? '\$${lead.estimatedValue!.toStringAsFixed(0)}' : '—',
-                style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12)),
+              child: Text(c.assignedTo ?? 'Unassigned', style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11), overflow: TextOverflow.ellipsis),
             )),
             SizedBox(width: 48, child: PopupMenuButton<String>(
               icon: const Icon(Icons.more_horiz, color: AppTheme.textSecondary, size: 18),
               color: AppTheme.cardBg,
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
               onSelected: (a) async {
-                if (a == 'view') context.push('/contacts/${lead.id}');
-                else if (a == 'delete') _deleteLead(lead);
+                if (a == 'edit') _showEdit(c);
+                else if (a == 'delete') _deleteContact(c);
               },
               itemBuilder: (_) => [
-                _menuItem('view', Icons.open_in_new, 'View Details'),
+                _menuItem('edit', Icons.edit_outlined, 'Edit'),
                 const PopupMenuDivider(),
                 _menuItem('delete', Icons.delete_outline, 'Delete', color: AppTheme.error),
               ],
@@ -1054,8 +1003,6 @@ class _ContactsScreenState extends State<ContactsScreen> {
       const SizedBox(width: 8),
       Text(label, style: TextStyle(color: color ?? AppTheme.textPrimary, fontSize: 13)),
     ]));
-
-  // ── PAGINATION ───────────────────────────
 
   Widget _buildPagination() {
     return Container(
@@ -1105,20 +1052,18 @@ class _ContactsScreenState extends State<ContactsScreen> {
       ),
     );
 
-  // ── EMPTY / ERROR ────────────────────────
-
   Widget _buildEmpty() {
     return Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
-      Icon(Icons.people_outline, size: 56, color: AppTheme.borderColor),
+      Icon(Icons.business_outlined, size: 56, color: AppTheme.borderColor),
       const SizedBox(height: 16),
-      Text(_searchCtrl.text.isNotEmpty ? 'No contacts match your search' : 'No contacts yet',
+      Text(_searchCtrl.text.isNotEmpty ? 'No contacts match your search' : 'No business contacts yet',
         style: const TextStyle(color: AppTheme.textSecondary, fontSize: 14)),
       const SizedBox(height: 12),
       MouseRegion(cursor: SystemMouseCursors.click, child: GestureDetector(onTap: _showAdd,
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
           decoration: BoxDecoration(color: AppTheme.brand, borderRadius: BorderRadius.circular(8)),
-          child: const Text('Add First Lead', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+          child: const Text('Add First Contact', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
         ),
       )),
     ]));
@@ -1129,144 +1074,53 @@ class _ContactsScreenState extends State<ContactsScreen> {
     const SizedBox(height: 12),
     Text(_error ?? 'Unknown error', style: const TextStyle(color: AppTheme.textSecondary, fontSize: 13), textAlign: TextAlign.center),
     const SizedBox(height: 12),
-    TextButton.icon(onPressed: _loadLeads,
+    TextButton.icon(onPressed: _loadContacts,
       icon: const Icon(Icons.refresh, color: AppTheme.brand),
       label: const Text('Retry', style: TextStyle(color: AppTheme.brand))),
   ]));
 
-  // ── COLUMN PICKER ────────────────────────
-
   void _showColumnPicker() {
-  // Capture current values
-  var phone    = _colPhone;
-  var email    = _colEmail;
-  var created  = _colCreated;
-  var activity = _colActivity;
-  var tags     = _colTags;
-  var source   = _colSource;
-  var value    = _colValue;
+    var phone = _colPhone, email = _colEmail, created = _colCreated,
+        lastContact = _colLastContact, tags = _colTags, source = _colSource, assigned = _colAssigned;
 
-  showDialog(
-    context: context,
-    builder: (_) => AlertDialog(
-      backgroundColor: AppTheme.cardBg,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      title: const Text('Customize Columns',
-        style: TextStyle(color: AppTheme.textPrimary, fontWeight: FontWeight.w600, fontSize: 16)),
-      content: StatefulBuilder(builder: (ctx, setS) => Column(mainAxisSize: MainAxisSize.min, children: [
-        _colTgl('Phone',         phone,    setS, (v) { phone    = v; }),
-        _colTgl('Email',         email,    setS, (v) { email    = v; }),
-        _colTgl('Created Date',  created,  setS, (v) { created  = v; }),
-        _colTgl('Last Activity', activity, setS, (v) { activity = v; }),
-        _colTgl('Tags',          tags,     setS, (v) { tags     = v; }),
-        _colTgl('Source',        source,   setS, (v) { source   = v; }),
-        _colTgl('Est. Value',    value,    setS, (v) { value    = v; }),
-      ])),
-      actions: [TextButton(
-        onPressed: () => context.pop(),
-        child: const Text('Done', style: TextStyle(color: AppTheme.brand)))],
-    ),
-  ).then((_) {
-    // Apply all changes AFTER dialog is fully closed
-    if (mounted) setState(() {
-      _colPhone    = phone;
-      _colEmail    = email;
-      _colCreated  = created;
-      _colActivity = activity;
-      _colTags     = tags;
-      _colSource   = source;
-      _colValue    = value;
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: AppTheme.cardBg,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        title: const Text('Customize Columns',
+          style: TextStyle(color: AppTheme.textPrimary, fontWeight: FontWeight.w600, fontSize: 16)),
+        content: StatefulBuilder(builder: (ctx, setS) => Column(mainAxisSize: MainAxisSize.min, children: [
+          _colTgl('Phone', phone, setS, (v) { phone = v; }),
+          _colTgl('Email', email, setS, (v) { email = v; }),
+          _colTgl('Created Date', created, setS, (v) { created = v; }),
+          _colTgl('Last Contacted', lastContact, setS, (v) { lastContact = v; }),
+          _colTgl('Tags', tags, setS, (v) { tags = v; }),
+          _colTgl('Source', source, setS, (v) { source = v; }),
+          _colTgl('Assigned To', assigned, setS, (v) { assigned = v; }),
+        ])),
+        actions: [TextButton(
+          onPressed: () => context.pop(),
+          child: const Text('Done', style: TextStyle(color: AppTheme.brand)))],
+      ),
+    ).then((_) {
+      if (mounted) setState(() {
+        _colPhone = phone; _colEmail = email; _colCreated = created;
+        _colLastContact = lastContact; _colTags = tags; _colSource = source; _colAssigned = assigned;
+      });
     });
-  });
-}
-
-  Widget _colTgl(String label, bool value, StateSetter setS, Function(bool) onChanged) =>
-  SwitchListTile(
-    title: Text(label, style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13)),
-    value: value, activeColor: AppTheme.brand, dense: true,
-    onChanged: (v) => setS(() => onChanged(v)),
-  );
-
-  // ── DELETE ───────────────────────────────
-
-  Future<void> _deleteLead(_Lead lead) async {
-    final step1 = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppTheme.cardBg,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        title: Row(children: [
-          const Icon(Icons.warning_amber_rounded, color: Color(0xFFF59E0B), size: 22),
-          const SizedBox(width: 8),
-          Text('Delete ${lead.name}?',
-            style: const TextStyle(color: AppTheme.textPrimary, fontWeight: FontWeight.w700)),
-        ]),
-        content: const Text(
-          'This will permanently remove all their data including messages, appointments, and history.',
-          style: TextStyle(color: AppTheme.textSecondary, fontSize: 14, height: 1.5)),
-        actions: [
-          TextButton(onPressed: () => ctx.pop(false),
-            child: const Text('Cancel', style: TextStyle(color: AppTheme.textSecondary))),
-          ElevatedButton(
-            onPressed: () => ctx.pop(true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFFF59E0B), foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
-            child: const Text('Continue')),
-        ],
-      ),
-    );
-    if (step1 != true) return;
-
-    final step2 = await showDialog<bool>(
-      context: context,
-      builder: (ctx2) => AlertDialog(
-        backgroundColor: AppTheme.cardBg,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        title: const Row(children: [
-          Icon(Icons.delete_forever, color: AppTheme.error, size: 22),
-          SizedBox(width: 8),
-          Text('Are you absolutely sure?',
-            style: TextStyle(color: AppTheme.error, fontWeight: FontWeight.w700)),
-        ]),
-        content: const Text(
-          'This action CANNOT be undone. The contact will be permanently deleted.',
-          style: TextStyle(color: AppTheme.textSecondary, fontSize: 14, height: 1.5)),
-        actions: [
-          TextButton(onPressed: () => ctx2.pop(false),
-            child: const Text('No, Keep Contact', style: TextStyle(color: AppTheme.textSecondary))),
-          ElevatedButton(
-            onPressed: () => ctx2.pop(true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppTheme.error, foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
-            child: const Text('Permanently Delete')),
-        ],
-      ),
-    );
-    if (step2 != true) return;
-
-    try {
-      await _db.from('leads').delete().eq('id', lead.id);
-      _loadLeads();
-      if (mounted) _snack('${lead.name} permanently deleted.');
-    } catch (e) {
-      if (mounted) _snack('Error: $e');
-    }
   }
 
-  // ── HELPERS ──────────────────────────────
+  Widget _colTgl(String label, bool value, StateSetter setS, Function(bool) onChanged) =>
+    SwitchListTile(
+      title: Text(label, style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13)),
+      value: value, activeColor: AppTheme.brand, dense: true,
+      onChanged: (v) => setS(() => onChanged(v)),
+    );
 
   String _fmtDate(DateTime dt) {
     const months = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
     return '${months[dt.month]} ${dt.day}, ${dt.year}';
-  }
-
-  String _fmtTime(DateTime dt) {
-    final h = dt.hour % 12 == 0 ? 12 : dt.hour % 12;
-    final min = dt.minute.toString().padLeft(2, '0');
-    final ampm = dt.hour < 12 ? 'AM' : 'PM';
-    return '$h:$min $ampm';
   }
 
   String _timeAgo(DateTime dt) {
@@ -1286,15 +1140,13 @@ class _ContactsScreenState extends State<ContactsScreen> {
 
 class _BulkTagDialog extends StatefulWidget {
   final List<String> existingTags;
-  final List<int> selectedLeads;
+  final List<int> selectedContacts;
   final SupabaseClient db;
   final void Function(String msg) onDone;
 
   const _BulkTagDialog({
-    required this.existingTags,
-    required this.selectedLeads,
-    required this.db,
-    required this.onDone,
+    required this.existingTags, required this.selectedContacts,
+    required this.db, required this.onDone,
   });
 
   @override
@@ -1304,12 +1156,11 @@ class _BulkTagDialog extends StatefulWidget {
 class _BulkTagDialogState extends State<_BulkTagDialog> {
   final _newTagCtrl = TextEditingController();
   Set<String> _selectedTags = {};
-  String _mode = 'add'; // 'add' or 'remove'
+  String _mode = 'add';
   bool _saving = false;
 
   static const _suggestedTags = [
-    'Hot Lead', 'Follow Up', 'VIP', 'Cold', 'Booked',
-    'No Answer', 'Left Voicemail', 'Interested', 'Not Interested',
+    'Vendor', 'Referral Partner', 'Supplier', 'VIP', 'Preferred', 'Do Not Use',
   ];
 
   @override
@@ -1324,16 +1175,11 @@ class _BulkTagDialogState extends State<_BulkTagDialog> {
     if (_selectedTags.isEmpty) return;
     setState(() => _saving = true);
     try {
-      // Fetch current tags for each lead
-      final data = await widget.db
-          .from('leads')
-          .select('id, tags')
-          .inFilter('id', widget.selectedLeads);
-
-      for (final lead in data as List) {
-        final id = (lead['id'] as num).toInt();
+      final data = await widget.db.from('contacts').select('id, tags').inFilter('id', widget.selectedContacts);
+      for (final row in data as List) {
+        final id = (row['id'] as num).toInt();
         List<String> current = [];
-        final raw = lead['tags'];
+        final raw = row['tags'];
         if (raw is List) current = raw.map((t) => t.toString()).toList();
 
         List<String> updated;
@@ -1342,16 +1188,11 @@ class _BulkTagDialogState extends State<_BulkTagDialog> {
         } else {
           updated = current.where((t) => !_selectedTags.contains(t)).toList();
         }
-
-        await widget.db.from('leads').update({'tags': updated}).eq('id', id);
+        await widget.db.from('contacts').update({'tags': updated}).eq('id', id);
       }
-
       final verb = _mode == 'add' ? 'added to' : 'removed from';
-      final msg = 'Tags $verb ${widget.selectedLeads.length} contacts.';
-        if (mounted) {
-   context.pop();
-    widget.onDone(msg);
-}
+      final msg = 'Tags $verb ${widget.selectedContacts.length} contacts.';
+      if (mounted) { context.pop(); widget.onDone(msg); }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1369,24 +1210,20 @@ class _BulkTagDialogState extends State<_BulkTagDialog> {
       child: SizedBox(
         width: 440,
         child: Column(mainAxisSize: MainAxisSize.min, children: [
-          // Header
           Container(
             padding: const EdgeInsets.fromLTRB(24, 20, 20, 16),
             decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: AppTheme.borderColor))),
             child: Row(children: [
               const Icon(Icons.local_offer_outlined, color: AppTheme.brand, size: 20),
               const SizedBox(width: 10),
-              Expanded(child: Text('Tag ${widget.selectedLeads.length} contacts',
+              Expanded(child: Text('Tag ${widget.selectedContacts.length} contacts',
                 style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
               GestureDetector(onTap: () => context.pop(),
                 child: const Icon(Icons.close, color: AppTheme.textSecondary, size: 20)),
             ]),
           ),
-
           Padding(padding: const EdgeInsets.all(20), child: Column(
             crossAxisAlignment: CrossAxisAlignment.start, children: [
-
-            // Mode toggle
             Container(
               decoration: BoxDecoration(color: AppTheme.pageBg, borderRadius: BorderRadius.circular(8), border: Border.all(color: AppTheme.borderColor)),
               child: Row(children: [
@@ -1394,35 +1231,23 @@ class _BulkTagDialogState extends State<_BulkTagDialog> {
                   onTap: () => setState(() => _mode = 'add'),
                   child: Container(
                     height: 36,
-                    decoration: BoxDecoration(
-                      color: _mode == 'add' ? AppTheme.brand : Colors.transparent,
-                      borderRadius: BorderRadius.circular(7)),
-                    child: Center(child: Text('Add Tags',
-                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
-                        color: _mode == 'add' ? Colors.white : AppTheme.textSecondary))),
+                    decoration: BoxDecoration(color: _mode == 'add' ? AppTheme.brand : Colors.transparent, borderRadius: BorderRadius.circular(7)),
+                    child: Center(child: Text('Add Tags', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: _mode == 'add' ? Colors.white : AppTheme.textSecondary))),
                   ),
                 )),
                 Expanded(child: GestureDetector(
                   onTap: () => setState(() => _mode = 'remove'),
                   child: Container(
                     height: 36,
-                    decoration: BoxDecoration(
-                      color: _mode == 'remove' ? AppTheme.error : Colors.transparent,
-                      borderRadius: BorderRadius.circular(7)),
-                    child: Center(child: Text('Remove Tags',
-                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
-                        color: _mode == 'remove' ? Colors.white : AppTheme.textSecondary))),
+                    decoration: BoxDecoration(color: _mode == 'remove' ? AppTheme.error : Colors.transparent, borderRadius: BorderRadius.circular(7)),
+                    child: Center(child: Text('Remove Tags', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: _mode == 'remove' ? Colors.white : AppTheme.textSecondary))),
                   ),
                 )),
               ]),
             ),
-
             const SizedBox(height: 16),
-            const Text('SELECT TAGS', style: TextStyle(
-              color: AppTheme.textSecondary, fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 0.8)),
+            const Text('SELECT TAGS', style: TextStyle(color: AppTheme.textSecondary, fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 0.8)),
             const SizedBox(height: 10),
-
-            // Tag grid
             Wrap(spacing: 6, runSpacing: 6,
               children: _allTags.map((tag) {
                 final selected = _selectedTags.contains(tag);
@@ -1433,39 +1258,24 @@ class _BulkTagDialogState extends State<_BulkTagDialog> {
                       duration: const Duration(milliseconds: 150),
                       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                       decoration: BoxDecoration(
-                        color: selected
-                          ? (_mode == 'add' ? AppTheme.brand : AppTheme.error).withValues(alpha: 0.12)
-                          : AppTheme.pageBg,
+                        color: selected ? (_mode == 'add' ? AppTheme.brand : AppTheme.error).withValues(alpha: 0.12) : AppTheme.pageBg,
                         borderRadius: BorderRadius.circular(20),
-                        border: Border.all(
-                          color: selected
-                            ? (_mode == 'add' ? AppTheme.brand : AppTheme.error).withValues(alpha: 0.5)
-                            : AppTheme.borderColor,
-                          width: selected ? 1.5 : 1),
+                        border: Border.all(color: selected ? (_mode == 'add' ? AppTheme.brand : AppTheme.error).withValues(alpha: 0.5) : AppTheme.borderColor, width: selected ? 1.5 : 1),
                       ),
                       child: Row(mainAxisSize: MainAxisSize.min, children: [
                         if (selected) ...[
-                          Icon(
-                            _mode == 'add' ? Icons.add : Icons.remove,
-                            size: 12,
-                            color: _mode == 'add' ? AppTheme.brand : AppTheme.error),
+                          Icon(_mode == 'add' ? Icons.add : Icons.remove, size: 12, color: _mode == 'add' ? AppTheme.brand : AppTheme.error),
                           const SizedBox(width: 4),
                         ],
-                        Text(tag, style: TextStyle(
-                          fontSize: 12, fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
-                          color: selected
-                            ? (_mode == 'add' ? AppTheme.brand : AppTheme.error)
-                            : AppTheme.textSecondary)),
+                        Text(tag, style: TextStyle(fontSize: 12, fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                          color: selected ? (_mode == 'add' ? AppTheme.brand : AppTheme.error) : AppTheme.textSecondary)),
                       ]),
                     ),
                   ),
                 );
               }).toList(),
             ),
-
             const SizedBox(height: 14),
-
-            // Custom tag input
             Row(children: [
               Expanded(child: SizedBox(height: 36,
                 child: TextField(
@@ -1480,65 +1290,40 @@ class _BulkTagDialogState extends State<_BulkTagDialog> {
                     enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
                     focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.brand, width: 2)),
                   ),
-                  onSubmitted: (v) {
-                    final t = v.trim();
-                    if (t.isNotEmpty) setState(() { _selectedTags.add(t); _newTagCtrl.clear(); });
-                  },
+                  onSubmitted: (v) { final t = v.trim(); if (t.isNotEmpty) setState(() { _selectedTags.add(t); _newTagCtrl.clear(); }); },
                 ),
               )),
               const SizedBox(width: 8),
               GestureDetector(
-                onTap: () {
-                  final t = _newTagCtrl.text.trim();
-                  if (t.isNotEmpty) setState(() { _selectedTags.add(t); _newTagCtrl.clear(); });
-                },
+                onTap: () { final t = _newTagCtrl.text.trim(); if (t.isNotEmpty) setState(() { _selectedTags.add(t); _newTagCtrl.clear(); }); },
                 child: Container(
                   width: 36, height: 36,
-                  decoration: BoxDecoration(color: AppTheme.brand.withValues(alpha: 0.1),
-                    borderRadius: BorderRadius.circular(8), border: Border.all(color: AppTheme.brand.withValues(alpha: 0.3))),
+                  decoration: BoxDecoration(color: AppTheme.brand.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8), border: Border.all(color: AppTheme.brand.withValues(alpha: 0.3))),
                   child: const Icon(Icons.add, color: AppTheme.brand, size: 18),
                 ),
               ),
             ]),
-
             if (_selectedTags.isNotEmpty) ...[
               const SizedBox(height: 12),
-              Text(
-                '${_selectedTags.length} tag${_selectedTags.length == 1 ? '' : 's'} selected — will be ${_mode == 'add' ? 'added to' : 'removed from'} ${widget.selectedLeads.length} contacts',
-                style: TextStyle(
-                  color: _mode == 'add' ? AppTheme.brand : AppTheme.error,
-                  fontSize: 12, fontWeight: FontWeight.w500)),
+              Text('${_selectedTags.length} tag${_selectedTags.length == 1 ? '' : 's'} selected — will be ${_mode == 'add' ? 'added to' : 'removed from'} ${widget.selectedContacts.length} contacts',
+                style: TextStyle(color: _mode == 'add' ? AppTheme.brand : AppTheme.error, fontSize: 12, fontWeight: FontWeight.w500)),
             ],
           ])),
-
-          // Footer
           Container(
             padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
             child: Row(children: [
               Expanded(child: OutlinedButton(
                 onPressed: () => context.pop(),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: AppTheme.textSecondary,
-                  side: const BorderSide(color: AppTheme.borderColor),
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+                style: OutlinedButton.styleFrom(foregroundColor: AppTheme.textSecondary, side: const BorderSide(color: AppTheme.borderColor), padding: const EdgeInsets.symmetric(vertical: 12), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
                 child: const Text('Cancel'),
               )),
               const SizedBox(width: 12),
               Expanded(flex: 2, child: ElevatedButton(
                 onPressed: (_saving || _selectedTags.isEmpty) ? null : _apply,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: _mode == 'add' ? AppTheme.brand : AppTheme.error,
-                  disabledBackgroundColor: AppTheme.borderColor,
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+                style: ElevatedButton.styleFrom(backgroundColor: _mode == 'add' ? AppTheme.brand : AppTheme.error, disabledBackgroundColor: AppTheme.borderColor, padding: const EdgeInsets.symmetric(vertical: 12), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
                 child: _saving
                     ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-                    : Text(
-                        _selectedTags.isEmpty
-                          ? 'Select tags first'
-                          : '${_mode == 'add' ? 'Add' : 'Remove'} ${_selectedTags.length} tag${_selectedTags.length == 1 ? '' : 's'}',
-                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+                    : Text(_selectedTags.isEmpty ? 'Select tags first' : '${_mode == 'add' ? 'Add' : 'Remove'} ${_selectedTags.length} tag${_selectedTags.length == 1 ? '' : 's'}', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
               )),
             ]),
           ),
@@ -1558,12 +1343,7 @@ class _BulkSmsDialog extends StatefulWidget {
   final int noPhone;
   final void Function(String message) onSend;
 
-  const _BulkSmsDialog({
-    required this.selectedCount,
-    required this.withPhone,
-    required this.noPhone,
-    required this.onSend,
-  });
+  const _BulkSmsDialog({required this.selectedCount, required this.withPhone, required this.noPhone, required this.onSend});
 
   @override
   State<_BulkSmsDialog> createState() => _BulkSmsDialogState();
@@ -1584,82 +1364,54 @@ class _BulkSmsDialogState extends State<_BulkSmsDialog> {
       child: SizedBox(
         width: 480,
         child: Column(mainAxisSize: MainAxisSize.min, children: [
-          // Header
           Container(
             padding: const EdgeInsets.fromLTRB(24, 20, 20, 16),
             decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: AppTheme.borderColor))),
             child: Row(children: [
               const Icon(Icons.sms_outlined, color: AppTheme.brand, size: 20),
               const SizedBox(width: 10),
-              Expanded(child: Text('Send SMS to ${widget.selectedCount} contacts',
-                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
-              GestureDetector(onTap: () => context.pop(),
-                child: const Icon(Icons.close, color: AppTheme.textSecondary, size: 20)),
+              Expanded(child: Text('Send SMS to ${widget.selectedCount} contacts', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
+              GestureDetector(onTap: () => context.pop(), child: const Icon(Icons.close, color: AppTheme.textSecondary, size: 20)),
             ]),
           ),
-
           Padding(padding: const EdgeInsets.all(20), child: Column(
             crossAxisAlignment: CrossAxisAlignment.start, children: [
-
-            // Reach summary
             Container(
               padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: AppTheme.pageBg, borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: AppTheme.borderColor)),
+              decoration: BoxDecoration(color: AppTheme.pageBg, borderRadius: BorderRadius.circular(8), border: Border.all(color: AppTheme.borderColor)),
               child: Row(children: [
-                Icon(Icons.info_outline, size: 16,
-                  color: widget.withPhone > 0 ? AppTheme.brand : AppTheme.error),
+                Icon(Icons.info_outline, size: 16, color: widget.withPhone > 0 ? AppTheme.brand : AppTheme.error),
                 const SizedBox(width: 8),
-                Expanded(child: RichText(text: TextSpan(
-                  style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
-                  children: [
-                    TextSpan(text: '${widget.withPhone} contacts',
-                      style: const TextStyle(fontWeight: FontWeight.w700, color: AppTheme.brand)),
-                    const TextSpan(text: ' will receive this SMS'),
-                    if (widget.noPhone > 0) ...[
-                      TextSpan(text: '  ·  ${widget.noPhone} skipped',
-                        style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12)),
-                      const TextSpan(text: ' (no phone)',
-                        style: TextStyle(color: AppTheme.textSecondary, fontSize: 12)),
-                    ],
+                Expanded(child: RichText(text: TextSpan(style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary), children: [
+                  TextSpan(text: '${widget.withPhone} contacts', style: const TextStyle(fontWeight: FontWeight.w700, color: AppTheme.brand)),
+                  const TextSpan(text: ' will receive this SMS'),
+                  if (widget.noPhone > 0) ...[
+                    TextSpan(text: '  ·  ${widget.noPhone} skipped', style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12)),
+                    const TextSpan(text: ' (no phone)', style: TextStyle(color: AppTheme.textSecondary, fontSize: 12)),
                   ],
-                ))),
+                ]))),
               ]),
             ),
-
             const SizedBox(height: 16),
-
-            // Tip
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-              decoration: BoxDecoration(
-                color: AppTheme.brand.withValues(alpha: 0.06),
-                borderRadius: BorderRadius.circular(6)),
+              decoration: BoxDecoration(color: AppTheme.brand.withValues(alpha: 0.06), borderRadius: BorderRadius.circular(6)),
               child: Row(children: const [
                 Icon(Icons.lightbulb_outline, size: 13, color: AppTheme.brand),
                 SizedBox(width: 6),
-                Expanded(child: Text('Use {{name}} to personalize — e.g. "Hi {{name}}, just checking in!"',
-                  style: TextStyle(color: AppTheme.brand, fontSize: 11))),
+                Expanded(child: Text('Use {{name}} to personalize — e.g. "Hi {{name}}, just checking in!"', style: TextStyle(color: AppTheme.brand, fontSize: 11))),
               ]),
             ),
-
             const SizedBox(height: 14),
-
-            // Message box
             StatefulBuilder(builder: (ctx, setS) {
               return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 TextField(
-                  controller: _msgCtrl,
-                  maxLines: 5,
-                  maxLength: _maxChars,
-                  onChanged: (_) => setS(() {}),
+                  controller: _msgCtrl, maxLines: 5, maxLength: _maxChars, onChanged: (_) => setS(() {}),
                   style: const TextStyle(color: AppTheme.textPrimary, fontSize: 14, height: 1.5),
                   decoration: InputDecoration(
                     hintText: 'Type your message here...',
                     hintStyle: const TextStyle(color: AppTheme.textSecondary, fontSize: 13),
-                    filled: true, fillColor: AppTheme.pageBg,
-                    counterText: '',
+                    filled: true, fillColor: AppTheme.pageBg, counterText: '',
                     contentPadding: const EdgeInsets.all(14),
                     border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
                     enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
@@ -1668,43 +1420,26 @@ class _BulkSmsDialogState extends State<_BulkSmsDialog> {
                 ),
                 const SizedBox(height: 4),
                 Align(alignment: Alignment.centerRight,
-                  child: Text('${_msgCtrl.text.length}/$_maxChars',
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: _msgCtrl.text.length > _maxChars * 0.9
-                        ? AppTheme.error : AppTheme.textSecondary))),
+                  child: Text('${_msgCtrl.text.length}/$_maxChars', style: TextStyle(fontSize: 11, color: _msgCtrl.text.length > _maxChars * 0.9 ? AppTheme.error : AppTheme.textSecondary))),
               ]);
             }),
           ])),
-
-          // Footer
           Container(
             padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
             child: Row(children: [
               Expanded(child: OutlinedButton(
                 onPressed: () => context.pop(),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: AppTheme.textSecondary,
-                  side: const BorderSide(color: AppTheme.borderColor),
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+                style: OutlinedButton.styleFrom(foregroundColor: AppTheme.textSecondary, side: const BorderSide(color: AppTheme.borderColor), padding: const EdgeInsets.symmetric(vertical: 12), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
                 child: const Text('Cancel'),
               )),
               const SizedBox(width: 12),
               Expanded(flex: 2, child: ValueListenableBuilder(
                 valueListenable: _msgCtrl,
                 builder: (_, val, __) => ElevatedButton.icon(
-                  onPressed: val.text.trim().isEmpty || widget.withPhone == 0
-                      ? null
-                      : () => widget.onSend(_msgCtrl.text.trim()),
+                  onPressed: val.text.trim().isEmpty || widget.withPhone == 0 ? null : () => widget.onSend(_msgCtrl.text.trim()),
                   icon: const Icon(Icons.send_rounded, size: 16, color: Colors.white),
-                  label: Text('Send to ${widget.withPhone} contacts',
-                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppTheme.brand,
-                    disabledBackgroundColor: AppTheme.borderColor,
-                    padding: const EdgeInsets.symmetric(vertical: 12),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+                  label: Text('Send to ${widget.withPhone} contacts', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+                  style: ElevatedButton.styleFrom(backgroundColor: AppTheme.brand, disabledBackgroundColor: AppTheme.borderColor, padding: const EdgeInsets.symmetric(vertical: 12), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
                 ),
               )),
             ]),
@@ -1725,12 +1460,7 @@ class _BulkEmailDialog extends StatefulWidget {
   final int noEmail;
   final void Function(String subject, String body) onSend;
 
-  const _BulkEmailDialog({
-    required this.selectedCount,
-    required this.withEmail,
-    required this.noEmail,
-    required this.onSend,
-  });
+  const _BulkEmailDialog({required this.selectedCount, required this.withEmail, required this.noEmail, required this.onSend});
 
   @override
   State<_BulkEmailDialog> createState() => _BulkEmailDialogState();
@@ -1738,7 +1468,7 @@ class _BulkEmailDialog extends StatefulWidget {
 
 class _BulkEmailDialogState extends State<_BulkEmailDialog> {
   final _subjectCtrl = TextEditingController();
-  final _bodyCtrl    = TextEditingController();
+  final _bodyCtrl = TextEditingController();
 
   @override
   void dispose() { _subjectCtrl.dispose(); _bodyCtrl.dispose(); super.dispose(); }
@@ -1751,77 +1481,51 @@ class _BulkEmailDialogState extends State<_BulkEmailDialog> {
       child: SizedBox(
         width: 540,
         child: Column(mainAxisSize: MainAxisSize.min, children: [
-          // Header
           Container(
             padding: const EdgeInsets.fromLTRB(24, 20, 20, 16),
             decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: AppTheme.borderColor))),
             child: Row(children: [
               const Icon(Icons.email_outlined, color: AppTheme.brand, size: 20),
               const SizedBox(width: 10),
-              Expanded(child: Text('Send Email to ${widget.selectedCount} contacts',
-                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
-              GestureDetector(onTap: () => context.pop(),
-                child: const Icon(Icons.close, color: AppTheme.textSecondary, size: 20)),
+              Expanded(child: Text('Send Email to ${widget.selectedCount} contacts', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
+              GestureDetector(onTap: () => context.pop(), child: const Icon(Icons.close, color: AppTheme.textSecondary, size: 20)),
             ]),
           ),
-
           Padding(padding: const EdgeInsets.all(20), child: Column(
             crossAxisAlignment: CrossAxisAlignment.start, children: [
-
-            // From + reach summary
             Container(
               padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: AppTheme.pageBg, borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: AppTheme.borderColor)),
+              decoration: BoxDecoration(color: AppTheme.pageBg, borderRadius: BorderRadius.circular(8), border: Border.all(color: AppTheme.borderColor)),
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Row(children: [
                   const Text('From:', style: TextStyle(color: AppTheme.textSecondary, fontSize: 12, fontWeight: FontWeight.w600)),
                   const SizedBox(width: 8),
-                  const Text('Vantagecaretech <vantagecaretech@gmail.com>',
-                    style: TextStyle(color: AppTheme.textPrimary, fontSize: 12)),
+                  const Text('Vantagecaretech <vantagecaretech@gmail.com>', style: TextStyle(color: AppTheme.textPrimary, fontSize: 12)),
                 ]),
                 const SizedBox(height: 6),
                 Row(children: [
-                  Icon(Icons.info_outline, size: 14,
-                    color: widget.withEmail > 0 ? AppTheme.brand : AppTheme.error),
+                  Icon(Icons.info_outline, size: 14, color: widget.withEmail > 0 ? AppTheme.brand : AppTheme.error),
                   const SizedBox(width: 6),
-                  RichText(text: TextSpan(
-                    style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary),
-                    children: [
-                      TextSpan(text: '${widget.withEmail} contacts',
-                        style: const TextStyle(fontWeight: FontWeight.w700, color: AppTheme.brand)),
-                      const TextSpan(text: ' will receive this email'),
-                      if (widget.noEmail > 0)
-                        TextSpan(text: '  ·  ${widget.noEmail} skipped (no email)',
-                          style: const TextStyle(color: AppTheme.textSecondary)),
-                    ],
-                  )),
+                  RichText(text: TextSpan(style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary), children: [
+                    TextSpan(text: '${widget.withEmail} contacts', style: const TextStyle(fontWeight: FontWeight.w700, color: AppTheme.brand)),
+                    const TextSpan(text: ' will receive this email'),
+                    if (widget.noEmail > 0) TextSpan(text: '  ·  ${widget.noEmail} skipped (no email)', style: const TextStyle(color: AppTheme.textSecondary)),
+                  ])),
                 ]),
               ]),
             ),
-
             const SizedBox(height: 12),
-
-            // Personalization tip
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-              decoration: BoxDecoration(
-                color: AppTheme.brand.withValues(alpha: 0.06),
-                borderRadius: BorderRadius.circular(6)),
+              decoration: BoxDecoration(color: AppTheme.brand.withValues(alpha: 0.06), borderRadius: BorderRadius.circular(6)),
               child: Row(children: const [
                 Icon(Icons.lightbulb_outline, size: 13, color: AppTheme.brand),
                 SizedBox(width: 6),
-                Expanded(child: Text('Use {{name}} anywhere to personalize — replaced with each contact\'s first name',
-                  style: TextStyle(color: AppTheme.brand, fontSize: 11))),
+                Expanded(child: Text('Use {{name}} anywhere to personalize — replaced with each contact\'s name', style: TextStyle(color: AppTheme.brand, fontSize: 11))),
               ]),
             ),
-
             const SizedBox(height: 14),
-
-            // Subject
-            const Text('SUBJECT', style: TextStyle(
-              color: AppTheme.textSecondary, fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 0.8)),
+            const Text('SUBJECT', style: TextStyle(color: AppTheme.textSecondary, fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 0.8)),
             const SizedBox(height: 6),
             TextField(
               controller: _subjectCtrl,
@@ -1836,16 +1540,11 @@ class _BulkEmailDialogState extends State<_BulkEmailDialog> {
                 focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.brand, width: 2)),
               ),
             ),
-
             const SizedBox(height: 14),
-
-            // Body
-            const Text('MESSAGE', style: TextStyle(
-              color: AppTheme.textSecondary, fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 0.8)),
+            const Text('MESSAGE', style: TextStyle(color: AppTheme.textSecondary, fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 0.8)),
             const SizedBox(height: 6),
             TextField(
-              controller: _bodyCtrl,
-              maxLines: 8,
+              controller: _bodyCtrl, maxLines: 8,
               style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13, height: 1.6),
               decoration: InputDecoration(
                 hintText: 'Hi {{name}},\n\nJust wanted to reach out...',
@@ -1858,18 +1557,12 @@ class _BulkEmailDialogState extends State<_BulkEmailDialog> {
               ),
             ),
           ])),
-
-          // Footer
           Container(
             padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
             child: Row(children: [
               Expanded(child: OutlinedButton(
                 onPressed: () => context.pop(),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: AppTheme.textSecondary,
-                  side: const BorderSide(color: AppTheme.borderColor),
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+                style: OutlinedButton.styleFrom(foregroundColor: AppTheme.textSecondary, side: const BorderSide(color: AppTheme.borderColor), padding: const EdgeInsets.symmetric(vertical: 12), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
                 child: const Text('Cancel'),
               )),
               const SizedBox(width: 12),
@@ -1878,21 +1571,12 @@ class _BulkEmailDialogState extends State<_BulkEmailDialog> {
                 builder: (_, __, ___) => ValueListenableBuilder(
                   valueListenable: _bodyCtrl,
                   builder: (_, __, ___) {
-                    final canSend = _subjectCtrl.text.trim().isNotEmpty &&
-                        _bodyCtrl.text.trim().isNotEmpty &&
-                        widget.withEmail > 0;
+                    final canSend = _subjectCtrl.text.trim().isNotEmpty && _bodyCtrl.text.trim().isNotEmpty && widget.withEmail > 0;
                     return ElevatedButton.icon(
-                      onPressed: canSend
-                          ? () => widget.onSend(_subjectCtrl.text.trim(), _bodyCtrl.text.trim())
-                          : null,
+                      onPressed: canSend ? () => widget.onSend(_subjectCtrl.text.trim(), _bodyCtrl.text.trim()) : null,
                       icon: const Icon(Icons.send_rounded, size: 16, color: Colors.white),
-                      label: Text('Send to ${widget.withEmail} contacts',
-                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: AppTheme.brand,
-                        disabledBackgroundColor: AppTheme.borderColor,
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+                      label: Text('Send to ${widget.withEmail} contacts', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+                      style: ElevatedButton.styleFrom(backgroundColor: AppTheme.brand, disabledBackgroundColor: AppTheme.borderColor, padding: const EdgeInsets.symmetric(vertical: 12), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
                     );
                   },
                 ),
@@ -1906,77 +1590,49 @@ class _BulkEmailDialogState extends State<_BulkEmailDialog> {
 }
 
 // ─────────────────────────────────────────────
-//  CONFIRM DIALOG
+//  ADD / EDIT CONTACT SHEET
 // ─────────────────────────────────────────────
 
-AlertDialog _confirmDialog(BuildContext ctx, String title, String body) => AlertDialog(
-  backgroundColor: AppTheme.cardBg,
-  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-  title: Text(title, style: const TextStyle(color: AppTheme.textPrimary, fontWeight: FontWeight.w600)),
-  content: Text(body, style: const TextStyle(color: AppTheme.textSecondary)),
-  actions: [
-    TextButton(onPressed: () => ctx.pop(false),
-      child: const Text('Cancel', style: TextStyle(color: AppTheme.textSecondary))),
-    ElevatedButton(onPressed: () => ctx.pop(true),
-      style: ElevatedButton.styleFrom(backgroundColor: AppTheme.error),
-      child: const Text('Delete')),
-  ],
-);
-
-// ─────────────────────────────────────────────
-//  ADD CONTACT SHEET
-// ─────────────────────────────────────────────
-
-class _AddSheet extends StatefulWidget {
+class AddEditBusinessContactSheet extends StatefulWidget {
   final int businessId;
+  final Map<String, dynamic>? existing;
   final VoidCallback onSaved;
-  const _AddSheet({required this.businessId, required this.onSaved});
+  const AddEditBusinessContactSheet({super.key, required this.businessId, this.existing, required this.onSaved});
   @override
-  State<_AddSheet> createState() => _AddSheetState();
+  State<AddEditBusinessContactSheet> createState() => _AddEditContactSheetState();
 }
 
-class _AddSheetState extends State<_AddSheet> {
+class _AddEditContactSheetState extends State<AddEditBusinessContactSheet> {
   final _db = Supabase.instance.client;
   final _fk = GlobalKey<FormState>();
-  final _nameCtrl   = TextEditingController();
-  final _emailCtrl  = TextEditingController();
-  final _phoneCtrl  = TextEditingController();
-  final _bizCtrl    = TextEditingController();
-  final _addrCtrl   = TextEditingController();
-  final _cityCtrl   = TextEditingController();
-  final _stateCtrl  = TextEditingController();
-  final _postalCtrl = TextEditingController();
-  final _notesCtrl  = TextEditingController();
-  final _tagCtrl    = TextEditingController();
-  final _valueCtrl  = TextEditingController();
-  String _status = 'New';
-  String _source = 'Manual';
-  List<String> _tags = [];
+  late final _nameCtrl   = TextEditingController(text: widget.existing?['full_name'] as String?);
+  late final _emailCtrl  = TextEditingController(text: widget.existing?['email'] as String?);
+  late final _phoneCtrl  = TextEditingController(text: widget.existing?['phone'] as String?);
+  late final _addrCtrl   = TextEditingController(text: widget.existing?['address'] as String?);
+  late final _cityCtrl   = TextEditingController(text: widget.existing?['city'] as String?);
+  late final _stateCtrl  = TextEditingController(text: widget.existing?['state'] as String?);
+  late final _postalCtrl = TextEditingController(text: widget.existing?['zip'] as String?);
+  late final _notesCtrl  = TextEditingController(text: widget.existing?['notes'] as String?);
+  final _tagCtrl = TextEditingController();
+  late String _status = widget.existing?['status'] as String? ?? 'Active';
+  late String _source = widget.existing?['source'] as String? ?? 'Manual';
+  late List<String> _tags = List<String>.from((widget.existing?['tags'] as List?) ?? []);
+  late bool _doNotContact = widget.existing?['do_not_contact'] as bool? ?? false;
   bool _saving = false;
   List<Map<String, dynamic>> _teamMembers = [];
   String? _assignedToName;
 
+  bool get _isEdit => widget.existing != null;
+
   static const _suggestedTags = [
-    'Hot Lead', 'Follow Up', 'VIP', 'Cold', 'Booked',
-    'No Answer', 'Left Voicemail', 'Interested', 'Not Interested',
+    'Vendor', 'Referral Partner', 'Supplier', 'VIP', 'Preferred', 'Do Not Use',
   ];
 
   @override
   void initState() {
     super.initState();
-    _loadBusinessName();
+    _assignedToName = widget.existing?['assigned_to'] as String?;
     _loadTeamMembers();
-  }
-
-  Future<void> _loadBusinessName() async {
-    try {
-      final biz = await _db.from('businesses').select('business_name')
-          .eq('id', widget.businessId).maybeSingle();
-      if (biz != null && mounted) {
-        final name = biz['business_name'] as String?;
-        if (_bizCtrl.text.isEmpty && name != null) setState(() => _bizCtrl.text = name);
-      }
-    } catch (e) { debugPrint('Load biz name: $e'); }
   }
 
   Future<void> _loadTeamMembers() async {
@@ -1992,8 +1648,7 @@ class _AddSheetState extends State<_AddSheet> {
 
   @override
   void dispose() {
-    for (final c in [_nameCtrl,_emailCtrl,_phoneCtrl,_bizCtrl,_addrCtrl,
-        _cityCtrl,_stateCtrl,_postalCtrl,_notesCtrl,_tagCtrl,_valueCtrl]) c.dispose();
+    for (final c in [_nameCtrl, _emailCtrl, _phoneCtrl, _addrCtrl, _cityCtrl, _stateCtrl, _postalCtrl, _notesCtrl, _tagCtrl]) c.dispose();
     super.dispose();
   }
 
@@ -2006,28 +1661,34 @@ class _AddSheetState extends State<_AddSheet> {
     if (!_fk.currentState!.validate()) return;
     setState(() => _saving = true);
     try {
-      final addrParts = [_addrCtrl.text.trim(), _cityCtrl.text.trim(),
-          _stateCtrl.text.trim(), _postalCtrl.text.trim()].where((s) => s.isNotEmpty);
-      await _db.from('leads').insert({
-        'lead_name': _nameCtrl.text.trim(),
-        'lead_email': _emailCtrl.text.trim().isEmpty ? null : _emailCtrl.text.trim(),
-        'lead_phone': _phoneCtrl.text.trim().isEmpty ? null : _phoneCtrl.text.trim(),
-        'lead_status': _status,
+      final payload = {
+        'full_name': _nameCtrl.text.trim(),
+        'email': _emailCtrl.text.trim().isEmpty ? null : _emailCtrl.text.trim(),
+        'phone': _phoneCtrl.text.trim().isEmpty ? null : _phoneCtrl.text.trim(),
+        'status': _status,
         'source': _source,
         'notes': _notesCtrl.text.trim().isEmpty ? null : _notesCtrl.text.trim(),
         'tags': _tags,
-        'business_id': widget.businessId,
-        'business_name': _bizCtrl.text.trim().isEmpty ? null : _bizCtrl.text.trim(),
-        'lead_address': addrParts.isEmpty ? null : addrParts.join(', '),
-        'estimated_value': _valueCtrl.text.trim().isEmpty ? null
-            : double.tryParse(_valueCtrl.text.trim().replaceAll(r'$', '').replaceAll(',', '')),
+        'address': _addrCtrl.text.trim().isEmpty ? null : _addrCtrl.text.trim(),
+        'city': _cityCtrl.text.trim().isEmpty ? null : _cityCtrl.text.trim(),
+        'state': _stateCtrl.text.trim().isEmpty ? null : _stateCtrl.text.trim(),
+        'zip': _postalCtrl.text.trim().isEmpty ? null : _postalCtrl.text.trim(),
+        'do_not_contact': _doNotContact,
         'assigned_to': _assignedToName,
         'assigned_to_profile_id': _assignedToName != null
-            ? _teamMembers.firstWhere((m) => m['full_name'] == _assignedToName,
-                orElse: () => {})['id'] as int?
+            ? _teamMembers.firstWhere((m) => m['full_name'] == _assignedToName, orElse: () => {})['id'] as int?
             : null,
-        'date_added': DateTime.now().toIso8601String(),
-      });
+      };
+
+      if (_isEdit) {
+        await _db.from('contacts').update(payload).eq('id', (widget.existing!['id'] as num).toInt());
+      } else {
+        await _db.from('contacts').insert({
+          ...payload,
+          'business_id': widget.businessId,
+          'created_at': DateTime.now().toUtc().toIso8601String(),
+        });
+      }
       widget.onSaved();
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(
@@ -2041,16 +1702,14 @@ class _AddSheetState extends State<_AddSheet> {
     return DraggableScrollableSheet(
       initialChildSize: 0.9, maxChildSize: 0.95, minChildSize: 0.5,
       builder: (_, sc) => Container(
-        decoration: const BoxDecoration(
-          color: AppTheme.cardBg,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+        decoration: const BoxDecoration(color: AppTheme.cardBg, borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
         child: Column(children: [
           Container(margin: const EdgeInsets.only(top: 12), width: 40, height: 4,
             decoration: BoxDecoration(color: AppTheme.borderColor, borderRadius: BorderRadius.circular(2))),
           Padding(padding: const EdgeInsets.fromLTRB(24, 16, 24, 16),
             child: Row(children: [
-              const Text('Add Lead',
-                style: TextStyle(color: AppTheme.textPrimary, fontSize: 18, fontWeight: FontWeight.w700)),
+              Text(_isEdit ? 'Edit Contact' : 'Add Business Contact',
+                style: const TextStyle(color: AppTheme.textPrimary, fontSize: 18, fontWeight: FontWeight.w700)),
               const Spacer(),
               GestureDetector(onTap: () => context.pop(),
                 child: Container(width: 32, height: 32,
@@ -2061,12 +1720,7 @@ class _AddSheetState extends State<_AddSheet> {
           Expanded(child: Form(key: _fk, child: ListView(controller: sc, padding: const EdgeInsets.all(24), children: [
             _secLabel('Basic Info'),
             const SizedBox(height: 12),
-            Row(children: [
-              Expanded(child: _field(_nameCtrl, 'Full Name *',
-                validator: (v) => v == null || v.trim().isEmpty ? 'Required' : null)),
-              const SizedBox(width: 12),
-              Expanded(child: _field(_bizCtrl, 'Business Name')),
-            ]),
+            _field(_nameCtrl, 'Name *', validator: (v) => v == null || v.trim().isEmpty ? 'Required' : null),
             const SizedBox(height: 12),
             Row(children: [
               Expanded(child: _field(_emailCtrl, 'Email', type: TextInputType.emailAddress)),
@@ -2075,21 +1729,22 @@ class _AddSheetState extends State<_AddSheet> {
             ]),
             const SizedBox(height: 16),
             Row(children: [
-              Expanded(child: _drop('Status', _status,
-                ['New','In Conversation','Qualified','Won','Lost','Unqualified'],
-                (v) => setState(() => _status = v!))),
+              Expanded(child: _drop('Status', _status, ['Active', 'Inactive', 'Archived'], (v) => setState(() => _status = v!))),
               const SizedBox(width: 12),
-              Expanded(child: _drop('Source', _source,
-                ['Manual','SMS','Email','Web Form','Import','Other'],
-                (v) => setState(() => _source = v!))),
+              Expanded(child: _drop('Source', _source, ['Vendor', 'Referral', 'Manual', 'Import', 'Other'], (v) => setState(() => _source = v!))),
             ]),
             const SizedBox(height: 12),
-            Row(children: [
-              Expanded(child: _field(_valueCtrl, 'Estimated Value (\$)', type: TextInputType.number)),
-              const SizedBox(width: 12),
-              Expanded(child: _assignDropdown()),
-            ]),
-            const SizedBox(height: 20),
+            _assignDropdown(),
+            const SizedBox(height: 8),
+            CheckboxListTile(
+              value: _doNotContact,
+              onChanged: (v) => setState(() => _doNotContact = v ?? false),
+              activeColor: AppTheme.brand,
+              contentPadding: EdgeInsets.zero,
+              controlAffinity: ListTileControlAffinity.leading,
+              title: const Text('Do Not Contact', style: TextStyle(color: AppTheme.textPrimary, fontSize: 13)),
+            ),
+            const SizedBox(height: 12),
             _secLabel('Address'),
             const SizedBox(height: 12),
             _field(_addrCtrl, 'Street Address'),
@@ -2120,9 +1775,7 @@ class _AddSheetState extends State<_AddSheet> {
                         color: selected ? AppTheme.brand.withValues(alpha: 0.12) : AppTheme.pageBg,
                         borderRadius: BorderRadius.circular(20),
                         border: Border.all(color: selected ? AppTheme.brand.withValues(alpha: 0.4) : AppTheme.borderColor)),
-                      child: Text(t, style: TextStyle(
-                        color: selected ? AppTheme.brand : AppTheme.textSecondary,
-                        fontSize: 12, fontWeight: selected ? FontWeight.w600 : FontWeight.w400)),
+                      child: Text(t, style: TextStyle(color: selected ? AppTheme.brand : AppTheme.textSecondary, fontSize: 12, fontWeight: selected ? FontWeight.w600 : FontWeight.w400)),
                     ),
                   ),
                 );
@@ -2133,10 +1786,7 @@ class _AddSheetState extends State<_AddSheet> {
               const SizedBox(width: 8),
               GestureDetector(onTap: _addTag, child: Container(
                 width: 44, height: 44,
-                decoration: BoxDecoration(
-                  color: AppTheme.brand.withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: AppTheme.brand.withValues(alpha: 0.3))),
+                decoration: BoxDecoration(color: AppTheme.brand.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8), border: Border.all(color: AppTheme.brand.withValues(alpha: 0.3))),
                 child: const Icon(Icons.add, color: AppTheme.brand, size: 20))),
             ]),
             if (_tags.isNotEmpty) ...[
@@ -2145,10 +1795,7 @@ class _AddSheetState extends State<_AddSheet> {
                 GestureDetector(onTap: () => setState(() => _tags.remove(t)),
                   child: Container(
                     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                    decoration: BoxDecoration(
-                      color: AppTheme.brand.withValues(alpha: 0.1),
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(color: AppTheme.brand.withValues(alpha: 0.3))),
+                    decoration: BoxDecoration(color: AppTheme.brand.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(20), border: Border.all(color: AppTheme.brand.withValues(alpha: 0.3))),
                     child: Row(mainAxisSize: MainAxisSize.min, children: [
                       Text(t, style: const TextStyle(color: AppTheme.brand, fontSize: 12)),
                       const SizedBox(width: 4),
@@ -2174,30 +1821,24 @@ class _AddSheetState extends State<_AddSheet> {
                   decoration: BoxDecoration(color: AppTheme.brand, borderRadius: BorderRadius.circular(8)),
                   child: Center(child: _saving
                     ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-                    : const Text('Save Contact', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 14)))))),
+                    : Text(_isEdit ? 'Save Changes' : 'Save Contact', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 14)))))),
             ])),
         ]),
       ),
     );
   }
 
-  Widget _secLabel(String s) => Text(s, style: const TextStyle(
-    color: AppTheme.textSecondary, fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 0.8));
+  Widget _secLabel(String s) => Text(s, style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 0.8));
 
-  Widget _field(TextEditingController ctrl, String label, {
-    TextInputType? type, int maxLines = 1,
-    String? Function(String?)? validator, ValueChanged<String>? onSubmit,
-  }) => TextFormField(
-    controller: ctrl, keyboardType: type, maxLines: maxLines,
-    onFieldSubmitted: onSubmit, validator: validator,
+  Widget _field(TextEditingController ctrl, String label, {TextInputType? type, int maxLines = 1, String? Function(String?)? validator, ValueChanged<String>? onSubmit}) => TextFormField(
+    controller: ctrl, keyboardType: type, maxLines: maxLines, onFieldSubmitted: onSubmit, validator: validator,
     style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13),
-    decoration: InputDecoration(labelText: label,
-      labelStyle: const TextStyle(color: AppTheme.textSecondary, fontSize: 13)),
+    decoration: InputDecoration(labelText: label, labelStyle: const TextStyle(color: AppTheme.textSecondary, fontSize: 13)),
   );
 
   Widget _assignDropdown() =>
     Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Text('Assigned To', style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12)),
+      const Text('Assigned To', style: TextStyle(color: AppTheme.textSecondary, fontSize: 12)),
       const SizedBox(height: 6),
       Container(height: 44, padding: const EdgeInsets.symmetric(horizontal: 12),
         decoration: BoxDecoration(color: AppTheme.cardBg, borderRadius: BorderRadius.circular(8), border: Border.all(color: AppTheme.borderColor)),
@@ -2207,16 +1848,18 @@ class _AddSheetState extends State<_AddSheet> {
           hint: const Text('Unassigned', style: TextStyle(color: AppTheme.textSecondary)),
           items: [
             const DropdownMenuItem<String?>(value: null, child: Text('Unassigned')),
-            ..._teamMembers.map((m) => DropdownMenuItem<String?>(
-                value: m['full_name'] as String?,
-                child: Text(m['full_name'] as String? ?? 'Unknown'))),
+            ..._teamMembers.map((m) => DropdownMenuItem<String?>(value: m['full_name'] as String?, child: Text(m['full_name'] as String? ?? 'Unknown'))),
           ],
           onChanged: (v) => setState(() => _assignedToName = v),
         ))),
     ]);
 
-  Widget _drop(String label, String value, List<String> items, ValueChanged<String?> onChange) =>
-    Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+  Widget _drop(String label, String value, List<String> items, ValueChanged<String?> onChange) {
+    // Guard against a stored value that doesn't match any known option
+    // (e.g. legacy casing, or a value set outside this dropdown) — include
+    // it as an extra item instead of crashing the DropdownButton assertion.
+    final safeItems = items.contains(value) ? items : [...items, value];
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Text(label, style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12)),
       const SizedBox(height: 6),
       Container(height: 44, padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -2224,15 +1867,16 @@ class _AddSheetState extends State<_AddSheet> {
         child: DropdownButtonHideUnderline(child: DropdownButton<String>(
           value: value, isExpanded: true, dropdownColor: AppTheme.cardBg,
           style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13),
-          items: items.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
+          items: safeItems.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
           onChanged: onChange,
         ))),
     ]);
+  }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  IMPORT CSV DIALOG  (unchanged from original)
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────
+//  IMPORT CSV DIALOG
+// ─────────────────────────────────────────────
 
 class _ImportCsvDialog extends StatefulWidget {
   final String csvString;
@@ -2250,8 +1894,7 @@ class _ImportCsvDialogState extends State<_ImportCsvDialog> {
   bool _hasHeader = true;
   bool _importing = false;
   String? _error;
-  String? _mapName, _mapEmail, _mapPhone, _mapStatus, _mapSource,
-          _mapBusiness, _mapAddress, _mapNotes, _mapValue, _mapTags;
+  String? _mapName, _mapEmail, _mapPhone, _mapStatus, _mapSource, _mapAddress, _mapNotes, _mapTags;
 
   @override
   void initState() {
@@ -2267,11 +1910,9 @@ class _ImportCsvDialogState extends State<_ImportCsvDialog> {
         else if (lower.contains('phone') && _mapPhone == null) _mapPhone = h;
         else if (lower.contains('status') && _mapStatus == null) _mapStatus = h;
         else if (lower.contains('source') && _mapSource == null) _mapSource = h;
-        else if (lower.contains('business') && _mapBusiness == null) _mapBusiness = h;
         else if (lower.contains('tag') && _mapTags == null) _mapTags = h;
         else if ((lower.contains('address') || lower.contains('street')) && _mapAddress == null) _mapAddress = h;
         else if (lower.contains('note') && _mapNotes == null) _mapNotes = h;
-        else if ((lower.contains('value') || lower.contains('revenue') || lower.contains('amount')) && _mapValue == null) _mapValue = h;
       }
     } catch (e) { _error = 'Could not parse CSV: $e'; _headers = []; _rows = []; }
   }
@@ -2298,25 +1939,18 @@ class _ImportCsvDialogState extends State<_ImportCsvDialog> {
         final tags = tagsRaw != null
             ? tagsRaw.split(';').map((t) => t.trim()).where((t) => t.isNotEmpty).toList()
             : <String>[];
-        double? estValue;
-        final rawVal = _val(row, _mapValue);
-        if (rawVal != null) {
-          estValue = double.tryParse(rawVal.replaceAll(r'$', '').replaceAll(',', '').trim());
-        }
         batch.add({
-          'lead_name': name, 'lead_email': _val(row, _mapEmail),
-          'lead_phone': _val(row, _mapPhone), 'lead_status': _val(row, _mapStatus) ?? 'New',
-          'source': _val(row, _mapSource) ?? 'Import', 'business_name': _val(row, _mapBusiness),
-          'lead_address': _val(row, _mapAddress), 'notes': _val(row, _mapNotes),
-          'estimated_value': estValue, 'tags': tags,
-          'business_id': widget.businessId, 'date_added': DateTime.now().toIso8601String(),
+          'full_name': name, 'email': _val(row, _mapEmail), 'phone': _val(row, _mapPhone),
+          'status': _val(row, _mapStatus) ?? 'Active', 'source': _val(row, _mapSource) ?? 'Import',
+          'address': _val(row, _mapAddress), 'notes': _val(row, _mapNotes), 'tags': tags,
+          'business_id': widget.businessId, 'created_at': DateTime.now().toUtc().toIso8601String(),
         });
       }
       if (batch.isEmpty) { setState(() { _error = 'No valid rows found.'; _importing = false; }); return; }
       var imported = 0;
       for (var i = 0; i < batch.length; i += 100) {
         final chunk = batch.sublist(i, (i + 100).clamp(0, batch.length));
-        await _db.from('leads').insert(chunk);
+        await _db.from('contacts').insert(chunk);
         imported += chunk.length;
       }
       widget.onImported(imported);
@@ -2361,11 +1995,9 @@ class _ImportCsvDialogState extends State<_ImportCsvDialog> {
             ('Phone', _mapPhone, (v) => setState(() => _mapPhone = v)),
             ('Status', _mapStatus, (v) => setState(() => _mapStatus = v)),
             ('Source', _mapSource, (v) => setState(() => _mapSource = v)),
-            ('Business Name', _mapBusiness, (v) => setState(() => _mapBusiness = v)),
             ('Tags (semicolon separated)', _mapTags, (v) => setState(() => _mapTags = v)),
             ('Address', _mapAddress, (v) => setState(() => _mapAddress = v)),
             ('Notes', _mapNotes, (v) => setState(() => _mapNotes = v)),
-            ('Estimated Value', _mapValue, (v) => setState(() => _mapValue = v)),
           ].map((entry) => Padding(
             padding: const EdgeInsets.only(bottom: 8),
             child: Row(children: [
@@ -2405,9 +2037,9 @@ class _ImportCsvDialogState extends State<_ImportCsvDialog> {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  MANAGE SMART LISTS DIALOG  (unchanged from original)
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────
+//  MANAGE SMART LISTS DIALOG
+// ─────────────────────────────────────────────
 
 class _SmartListsDialog extends StatefulWidget {
   final int businessId;
@@ -2434,7 +2066,8 @@ class _SmartListsDialogState extends State<_SmartListsDialog> {
     setState(() => _loading = true);
     try {
       final data = await _db.from('smart_lists').select('id, name, filters, created_at')
-          .eq('business_id', widget.businessId).order('created_at');
+          .eq('business_id', widget.businessId).eq('scope', 'business_contacts')
+          .filter('deleted_at', 'is', null).order('created_at');
       setState(() => _lists = List<Map<String, dynamic>>.from(data));
     } catch (e) { debugPrint('Load smart lists: $e'); }
     finally { setState(() => _loading = false); }
@@ -2445,7 +2078,10 @@ class _SmartListsDialogState extends State<_SmartListsDialog> {
     if (name.isEmpty) return;
     setState(() => _saving = true);
     try {
-      await _db.from('smart_lists').insert({'business_id': widget.businessId, 'name': name, 'filters': widget.currentFilters});
+      await _db.from('smart_lists').insert({
+        'business_id': widget.businessId, 'name': name,
+        'filters': widget.currentFilters, 'scope': 'business_contacts',
+      });
       _nameCtrl.clear();
       await _load();
     } catch (e) { debugPrint('Save smart list: $e'); }
@@ -2453,7 +2089,7 @@ class _SmartListsDialogState extends State<_SmartListsDialog> {
   }
 
   Future<void> _delete(int id) async {
-    await _db.from('smart_lists').delete().eq('id', id);
+    await _db.from('smart_lists').update({'deleted_at': DateTime.now().toUtc().toIso8601String()}).eq('id', id);
     await _load();
   }
 
@@ -2482,7 +2118,8 @@ class _SmartListsDialogState extends State<_SmartListsDialog> {
             const Icon(Icons.bookmarks_outlined, color: AppTheme.brand, size: 20),
             const SizedBox(width: 10),
             const Expanded(child: Text('Manage Smart Lists', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
-      GestureDetector(onTap: () => context.pop(), child: const Icon(Icons.close, color: AppTheme.textSecondary, size: 20)),          ])),
+            GestureDetector(onTap: () => context.pop(), child: const Icon(Icons.close, color: AppTheme.textSecondary, size: 20)),
+          ])),
         Padding(padding: const EdgeInsets.all(20), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Container(
             padding: const EdgeInsets.all(14),
@@ -2490,7 +2127,7 @@ class _SmartListsDialogState extends State<_SmartListsDialog> {
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               const Text('Save current filters as a Smart List', style: TextStyle(color: AppTheme.textPrimary, fontSize: 13, fontWeight: FontWeight.w600)),
               const SizedBox(height: 4),
-              Text(hasActiveFilters ? _describeFilters(widget.currentFilters) : 'Set filters on the Contacts page first, then save them here.',
+              Text(hasActiveFilters ? _describeFilters(widget.currentFilters) : 'Set filters on the Business Contacts page first, then save them here.',
                 style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12)),
               if (hasActiveFilters) ...[
                 const SizedBox(height: 12),
@@ -2526,7 +2163,7 @@ class _SmartListsDialogState extends State<_SmartListsDialog> {
             Container(
               padding: const EdgeInsets.all(20),
               decoration: BoxDecoration(color: AppTheme.pageBg, borderRadius: BorderRadius.circular(8), border: Border.all(color: AppTheme.borderColor)),
-              child: const Center(child: Text('No smart lists yet. Set filters on the Contacts page and save them here.',
+              child: const Center(child: Text('No smart lists yet. Set filters and save them here.',
                 style: TextStyle(color: AppTheme.textSecondary, fontSize: 13), textAlign: TextAlign.center)))
           else
             ...(_lists.map((list) => Container(
@@ -2538,14 +2175,12 @@ class _SmartListsDialogState extends State<_SmartListsDialog> {
                 const SizedBox(width: 10),
                 Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   Text(list['name'] as String, style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13, fontWeight: FontWeight.w600)),
-                  Text(_describeFilters(Map<String, dynamic>.from(list['filters'] as Map)),
-                    style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11)),
+                  Text(_describeFilters(Map<String, dynamic>.from(list['filters'] as Map)), style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11)),
                 ])),
                 GestureDetector(
                   onTap: () => _delete((list['id'] as num).toInt()),
                   child: MouseRegion(cursor: SystemMouseCursors.click,
-                    child: Padding(padding: const EdgeInsets.all(4),
-                      child: Icon(Icons.delete_outline, size: 16, color: AppTheme.error)))),
+                    child: Padding(padding: const EdgeInsets.all(4), child: Icon(Icons.delete_outline, size: 16, color: AppTheme.error)))),
               ]),
             ))),
         ])),

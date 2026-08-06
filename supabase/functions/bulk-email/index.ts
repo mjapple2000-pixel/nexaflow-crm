@@ -1,4 +1,3 @@
-import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
 const corsHeaders = {
@@ -6,11 +5,12 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-serve(async (req) => {
+Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
 
   try {
-    const { lead_ids, subject, body, business_id } = await req.json()
+    const { lead_ids, subject, body, business_id, source } = await req.json()
+    const targetSource = source === 'contacts' ? 'contacts' : 'leads'
 
     if (!lead_ids?.length || !subject?.trim() || !body?.trim() || !business_id) {
       return new Response(JSON.stringify({ error: 'Missing required fields' }),
@@ -26,31 +26,45 @@ serve(async (req) => {
     const mailgunDomain = Deno.env.get('MAILGUN_DOMAIN')!
     const fromAddress   = `Vantagecaretech <vantagecaretech@gmail.com>`
 
-    // Fetch leads
-    const { data: leads, error: leadsError } = await supabase
-      .from('leads')
-      .select('id, lead_name, lead_email')
-      .in('id', lead_ids)
-      .eq('business_id', business_id)
+    // Fetch targets — leads or business contacts, normalized to a common shape
+    let targets: { id: number; name: string; email: string | null }[] = []
 
-    if (leadsError) throw leadsError
+    if (targetSource === 'contacts') {
+      const { data, error } = await supabase
+        .from('contacts')
+        .select('id, full_name, email')
+        .in('id', lead_ids)
+        .eq('business_id', business_id)
+        .is('deleted_at', null)
+      if (error) throw error
+      targets = (data ?? []).map((c: any) => ({ id: c.id, name: c.full_name ?? 'Unknown', email: c.email }))
+    } else {
+      const { data, error } = await supabase
+        .from('leads')
+        .select('id, lead_name, lead_email')
+        .in('id', lead_ids)
+        .eq('business_id', business_id)
+      if (error) throw error
+      targets = (data ?? []).map((l: any) => ({ id: l.id, name: l.lead_name ?? 'Unknown', email: l.lead_email }))
+    }
 
     let sent = 0
     let skipped = 0
     const errors: string[] = []
+    const linkColumn = targetSource === 'contacts' ? 'contact_id' : 'lead_id'
 
-    for (const lead of leads ?? []) {
-      if (!lead.lead_email) { skipped++; continue }
+    for (const target of targets) {
+      if (!target.email) { skipped++; continue }
 
       try {
         // Personalize body — swap {{name}} if used
-        const personalizedBody = body.replace(/\{\{name\}\}/gi, lead.lead_name)
-        const personalizedSubject = subject.replace(/\{\{name\}\}/gi, lead.lead_name)
+        const personalizedBody = body.replace(/\{\{name\}\}/gi, target.name)
+        const personalizedSubject = subject.replace(/\{\{name\}\}/gi, target.name)
 
         // Send via Mailgun
         const formData = new FormData()
         formData.append('from', fromAddress)
-        formData.append('to', `${lead.lead_name} <${lead.lead_email}>`)
+        formData.append('to', `${target.name} <${target.email}>`)
         formData.append('subject', personalizedSubject)
         formData.append('text', personalizedBody)
         // Also send HTML version with line breaks preserved
@@ -69,7 +83,7 @@ serve(async (req) => {
 
         if (!mgRes.ok) {
           const err = await mgRes.text()
-          errors.push(`${lead.lead_name}: ${err}`)
+          errors.push(`${target.name}: ${err}`)
           skipped++
           continue
         }
@@ -78,7 +92,7 @@ serve(async (req) => {
         let { data: conv } = await supabase
           .from('conversations')
           .select('id')
-          .eq('lead_id', lead.id)
+          .eq(linkColumn, target.id)
           .eq('business_id', business_id)
           .eq('channel', 'email')
           .maybeSingle()
@@ -87,8 +101,10 @@ serve(async (req) => {
           const { data: newConv } = await supabase
             .from('conversations')
             .insert({
-              lead_id: lead.id,
+              [linkColumn]: target.id,
               business_id,
+              contact_name: target.name,
+              contact_email: target.email,
               channel: 'email',
               status: 'open',
               last_message_at: new Date().toISOString(),
@@ -115,15 +131,22 @@ serve(async (req) => {
             .eq('id', conv.id)
         }
 
-        // Update lead last_message_at
-        await supabase
-          .from('leads')
-          .update({ last_message_at: new Date().toISOString() })
-          .eq('id', lead.id)
+        // Update source record's last-contacted timestamp
+        if (targetSource === 'contacts') {
+          await supabase
+            .from('contacts')
+            .update({ last_contacted: new Date().toISOString() })
+            .eq('id', target.id)
+        } else {
+          await supabase
+            .from('leads')
+            .update({ last_message_at: new Date().toISOString() })
+            .eq('id', target.id)
+        }
 
         sent++
       } catch (e) {
-        errors.push(`${lead.lead_name}: ${e}`)
+        errors.push(`${target.name}: ${e}`)
         skipped++
       }
     }

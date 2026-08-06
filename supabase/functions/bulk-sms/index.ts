@@ -9,7 +9,8 @@ Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
 
   try {
-    const { lead_ids, message, business_id } = await req.json()
+    const { lead_ids, message, business_id, source } = await req.json()
+    const targetSource = source === 'contacts' ? 'contacts' : 'leads'
 
     if (!lead_ids?.length || !message?.trim() || !business_id) {
       return new Response(JSON.stringify({ error: 'Missing required fields' }),
@@ -25,21 +26,35 @@ Deno.serve(async (req) => {
     const authToken  = Deno.env.get('TWILIO_AUTH_TOKEN')!
     const fromPhone  = '+18135500158'
 
-    // Fetch leads
-    const { data: leads, error: leadsError } = await supabase
-      .from('leads')
-      .select('id, lead_name, lead_phone')
-      .in('id', lead_ids)
-      .eq('business_id', business_id)
+    // Fetch targets — leads or business contacts, normalized to a common shape
+    let targets: { id: number; name: string; phone: string | null }[] = []
 
-    if (leadsError) throw leadsError
+    if (targetSource === 'contacts') {
+      const { data, error } = await supabase
+        .from('contacts')
+        .select('id, full_name, phone')
+        .in('id', lead_ids)
+        .eq('business_id', business_id)
+        .is('deleted_at', null)
+      if (error) throw error
+      targets = (data ?? []).map((c: any) => ({ id: c.id, name: c.full_name ?? 'Unknown', phone: c.phone }))
+    } else {
+      const { data, error } = await supabase
+        .from('leads')
+        .select('id, lead_name, lead_phone')
+        .in('id', lead_ids)
+        .eq('business_id', business_id)
+      if (error) throw error
+      targets = (data ?? []).map((l: any) => ({ id: l.id, name: l.lead_name ?? 'Unknown', phone: l.lead_phone }))
+    }
 
     let sent = 0
     let skipped = 0
     const errors: string[] = []
+    const linkColumn = targetSource === 'contacts' ? 'contact_id' : 'lead_id'
 
-    for (const lead of leads ?? []) {
-      if (!lead.lead_phone) { skipped++; continue }
+    for (const target of targets) {
+      if (!target.phone) { skipped++; continue }
 
       try {
         // Send via Twilio
@@ -53,7 +68,7 @@ Deno.serve(async (req) => {
             },
             body: new URLSearchParams({
               From: fromPhone,
-              To: lead.lead_phone,
+              To: target.phone,
               Body: message,
             }),
           }
@@ -61,13 +76,14 @@ Deno.serve(async (req) => {
 
         if (!twilioRes.ok) {
           const err = await twilioRes.text()
-          errors.push(`${lead.lead_name}: ${err}`)
+          errors.push(`${target.name}: ${err}`)
           skipped++
           continue
         }
 
-        // Find or create conversation — match by lead_id, the lead's permanent
-        // identity. Phone numbers can change or be shared and are not reliable.
+        // Find or create conversation — match by lead_id or contact_id, the
+        // target's permanent identity. Phone numbers can change or be shared
+        // and are not reliable.
         // Ordered + limited to 1 so this never breaks if duplicate rows exist —
         // it picks the most recently active one as canonical instead of
         // silently returning null (which would create yet another duplicate).
@@ -75,7 +91,7 @@ Deno.serve(async (req) => {
           .from('conversations')
           .select('id')
           .eq('business_id', business_id)
-          .eq('lead_id', lead.id)
+          .eq(linkColumn, target.id)
           .order('last_message_at', { ascending: false })
           .limit(1)
         let conv = convMatches?.[0] ?? null
@@ -84,10 +100,10 @@ Deno.serve(async (req) => {
           const { data: newConv } = await supabase
             .from('conversations')
             .insert({
-              lead_id: lead.id,
+              [linkColumn]: target.id,
               business_id,
-              contact_name: lead.lead_name,
-              contact_phone: lead.lead_phone,
+              contact_name: target.name,
+              contact_phone: target.phone,
               channel: 'sms',
               status: 'open',
               last_message: message,
@@ -121,21 +137,28 @@ Deno.serve(async (req) => {
             .update({
               last_message: message,
               last_message_at: new Date().toISOString(),
-              contact_name: lead.lead_name,
-              contact_phone: lead.lead_phone,
+              contact_name: target.name,
+              contact_phone: target.phone,
             })
             .eq('id', conv.id)
         }
 
-        // Update lead last_message_at
-        await supabase
-          .from('leads')
-          .update({ last_message_at: new Date().toISOString() })
-          .eq('id', lead.id)
+        // Update source record's last-contacted timestamp
+        if (targetSource === 'contacts') {
+          await supabase
+            .from('contacts')
+            .update({ last_contacted: new Date().toISOString() })
+            .eq('id', target.id)
+        } else {
+          await supabase
+            .from('leads')
+            .update({ last_message_at: new Date().toISOString() })
+            .eq('id', target.id)
+        }
 
         sent++
       } catch (e) {
-        errors.push(`${lead.lead_name}: ${e}`)
+        errors.push(`${target.name}: ${e}`)
         skipped++
       }
     }

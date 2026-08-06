@@ -85,7 +85,7 @@ class _TopBar extends StatelessWidget {
           child: Row(
             children: [
               const Text(
-                'Jobs',
+                'Job Board',
                 style: TextStyle(
                   fontSize: 16,
                   fontWeight: FontWeight.w600,

@@ -11,7 +11,7 @@ Deno.serve(async (req) => {
 
   try {
     const stripe = new Stripe(Deno.env.get('STRIPE_SECRET_KEY') ?? '', {
-      apiVersion: '2024-06-20',
+      apiVersion: '2023-08-16',
       httpClient: Stripe.createFetchHttpClient(),
     });
 
@@ -115,7 +115,7 @@ Deno.serve(async (req) => {
 
   } catch (err) {
     console.error('stripe-connect-onboard error:', err);
-    return new Response(JSON.stringify({ error: err.message ?? 'Internal error' }), {
+    return new Response(JSON.stringify({ error: (err as Error).message ?? 'Internal error' }), {
       status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   }

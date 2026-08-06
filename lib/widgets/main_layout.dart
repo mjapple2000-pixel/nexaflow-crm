@@ -301,8 +301,14 @@ class _AppNavBarState extends State<AppNavBar> {
         ),
         _SectionLabel('Jobs'),
         _NavItem(
+          icon: Icons.space_dashboard_outlined,
+          label: 'Overview',
+          route: '/jobs',
+          active: location == '/jobs',
+        ),
+        _NavItem(
           icon: Icons.work_outline_rounded,
-          label: 'Jobs',
+          label: 'Job Board',
           route: '/jobs/board',
           active: location.startsWith('/jobs/board'),
         ),
@@ -620,13 +626,7 @@ class _AppNavBarState extends State<AppNavBar> {
                       route: '/contacts',
                       active: location.startsWith('/contacts'),
                     ),
-                  if (_can('contacts'))
-                    _NavItem(
-                      icon: Icons.person_search_outlined,
-                      label: 'Leads',
-                      route: '/leads',
-                      active: location.startsWith('/leads'),
-                    ),
+                  
                   if (_can('pipelines'))
                     _NavItem(
                       icon: Icons.bar_chart_rounded,
