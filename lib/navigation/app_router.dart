@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:web/web.dart' as web;
 import '../screens/login_screen.dart';
 import '../screens/signup_screen.dart';
 import '../screens/dashboard_screen.dart';
@@ -58,6 +59,36 @@ class AppRouter {
   static bool pendingInvite = false;
   static bool pendingError = false;
   static bool isPasswordRecovery = false;
+
+  // cachedIsSuperuser is a plain in-memory static — a browser reload wipes
+  // it back to null. Since the superuser account has no profiles row,
+  // _can() in main_layout.dart then denies every permission key, collapsing
+  // the sidebar to just Launchpad/Dashboard even though the session and
+  // business impersonation are otherwise fine. Mirrors SuperuserState's
+  // persist/restore/clear pattern in business_picker_screen.dart.
+  static const _superuserFlagKey = 'nexaflow_cached_is_superuser';
+
+  static void persistSuperuserFlag() {
+    try {
+      if (cachedIsSuperuser != null) {
+        web.window.localStorage.setItem(_superuserFlagKey, cachedIsSuperuser.toString());
+      }
+    } catch (_) {}
+  }
+
+  static void restoreSuperuserFlag() {
+    try {
+      final stored = web.window.localStorage.getItem(_superuserFlagKey);
+      if (stored != null) cachedIsSuperuser = stored == 'true';
+    } catch (_) {}
+  }
+
+  static void clearSuperuserFlag() {
+    cachedIsSuperuser = null;
+    try {
+      web.window.localStorage.removeItem(_superuserFlagKey);
+    } catch (_) {}
+  }
 
   static String _initialLocation = '/login';
   static void setInitialLocation(String path) => _initialLocation = path;

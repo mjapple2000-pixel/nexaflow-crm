@@ -1661,8 +1661,17 @@ class _AddEditContactSheetState extends State<AddEditBusinessContactSheet> {
     if (!_fk.currentState!.validate()) return;
     setState(() => _saving = true);
     try {
+      // contacts.full_name is a generated column (first_name + last_name),
+      // not directly writable — split the single Name field on the first
+      // space so Postgres can compute full_name itself.
+      final trimmedName = _nameCtrl.text.trim();
+      final spaceIdx = trimmedName.indexOf(' ');
+      final firstName = spaceIdx == -1 ? trimmedName : trimmedName.substring(0, spaceIdx);
+      final lastNameRaw = spaceIdx == -1 ? '' : trimmedName.substring(spaceIdx + 1).trim();
+
       final payload = {
-        'full_name': _nameCtrl.text.trim(),
+        'first_name': firstName,
+        'last_name': lastNameRaw.isEmpty ? null : lastNameRaw,
         'email': _emailCtrl.text.trim().isEmpty ? null : _emailCtrl.text.trim(),
         'phone': _phoneCtrl.text.trim().isEmpty ? null : _phoneCtrl.text.trim(),
         'status': _status,
@@ -1939,8 +1948,14 @@ class _ImportCsvDialogState extends State<_ImportCsvDialog> {
         final tags = tagsRaw != null
             ? tagsRaw.split(';').map((t) => t.trim()).where((t) => t.isNotEmpty).toList()
             : <String>[];
+        // contacts.full_name is a generated column — split on the first
+        // space, same as the Add/Edit sheet, so Postgres can compute it.
+        final spaceIdx = name.indexOf(' ');
+        final firstName = spaceIdx == -1 ? name : name.substring(0, spaceIdx);
+        final lastNameRaw = spaceIdx == -1 ? '' : name.substring(spaceIdx + 1).trim();
         batch.add({
-          'full_name': name, 'email': _val(row, _mapEmail), 'phone': _val(row, _mapPhone),
+          'first_name': firstName, 'last_name': lastNameRaw.isEmpty ? null : lastNameRaw,
+          'email': _val(row, _mapEmail), 'phone': _val(row, _mapPhone),
           'status': _val(row, _mapStatus) ?? 'Active', 'source': _val(row, _mapSource) ?? 'Import',
           'address': _val(row, _mapAddress), 'notes': _val(row, _mapNotes), 'tags': tags,
           'business_id': widget.businessId, 'created_at': DateTime.now().toUtc().toIso8601String(),

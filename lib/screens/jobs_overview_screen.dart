@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
@@ -48,10 +49,25 @@ class _JobsOverviewScreenState extends State<JobsOverviewScreen> {
   int? _stripeAvailableCents;
   int? _stripePendingCents;
 
+  StreamSubscription<AuthState>? _authSub;
+
   @override
   void initState() {
     super.initState();
     _load();
+    // Same root cause as the sidebar bug: on a hard reload, getActiveBusinessId()
+    // can resolve null before Supabase's session restore finishes, leaving this
+    // whole dashboard silently stuck at zero. Re-run _load() once a real session
+    // is confirmed.
+    _authSub = _db.auth.onAuthStateChange.listen((state) {
+      if (state.session != null) _load();
+    });
+  }
+
+  @override
+  void dispose() {
+    _authSub?.cancel();
+    super.dispose();
   }
 
   Future<void> _load() async {
@@ -182,7 +198,11 @@ class _JobsOverviewScreenState extends State<JobsOverviewScreen> {
       // Build recommended actions
       final actions = <_ActionItem>[];
 
-      for (final a in lateAppts) {
+      // Cap each category's contribution to this shared list — otherwise a
+      // long backlog in one category (e.g. 27 late appointments in test
+      // data) fills the final .take(8) below on its own and every other
+      // category, including incomplete job forms, never gets a slot.
+      for (final a in lateAppts.take(3)) {
         final startAt = DateTime.tryParse(a['start_date_time'] as String? ?? '');
         final daysLate = startAt != null ? nowUtc.difference(startAt.toUtc()).inDays : 0;
         actions.add(_ActionItem(
@@ -237,7 +257,9 @@ class _JobsOverviewScreenState extends State<JobsOverviewScreen> {
         ));
       }
 
+      var incompleteFormsAdded = 0;
       for (final s in formSubs) {
+        if (incompleteFormsAdded >= 3) break;
         final appt = s['appointments'] as Map<String, dynamic>?;
         if (appt == null) continue;
         final startAt = DateTime.tryParse(appt['start_date_time'] as String? ?? '');
@@ -251,6 +273,7 @@ class _JobsOverviewScreenState extends State<JobsOverviewScreen> {
           subtitle: startAt.isBefore(todayStart) ? '$apptName · overdue' : '$apptName · today',
           route: '/jobs/board?tab=3',
         ));
+        incompleteFormsAdded++;
       }
 
       if (!mounted) return;
@@ -595,28 +618,31 @@ class _SchedulePanel extends StatelessWidget {
                   style: TextStyle(fontSize: 12.5, color: AppTheme.textSecondary)),
             )
           else
-            ...items.take(8).map((a) => Padding(
-                  padding: const EdgeInsets.only(bottom: 10),
-                  child: Row(
-                    children: [
-                      SizedBox(
-                        width: 68,
-                        child: Text(timeFormatter(a['start_date_time'] as String?),
-                            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
-                      ),
-                      Expanded(
-                        child: Text(
-                          (a['appointment_name'] as String?)?.isNotEmpty == true
-                              ? a['appointment_name'] as String
-                              : (a['lead_name'] as String? ?? 'Appointment'),
-                          style: const TextStyle(fontSize: 12.5, color: AppTheme.textPrimary),
-                          overflow: TextOverflow.ellipsis,
+            ...items.take(8).map((a) => Clickable(
+                  onTap: () => context.go('/appointments'),
+                  child: Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: Row(
+                      children: [
+                        SizedBox(
+                          width: 68,
+                          child: Text(timeFormatter(a['start_date_time'] as String?),
+                              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
                         ),
-                      ),
-                      if ((a['assigned_to'] as String?)?.isNotEmpty == true)
-                        Text(a['assigned_to'] as String,
-                            style: const TextStyle(fontSize: 11.5, color: AppTheme.textMuted)),
-                    ],
+                        Expanded(
+                          child: Text(
+                            (a['appointment_name'] as String?)?.isNotEmpty == true
+                                ? a['appointment_name'] as String
+                                : (a['lead_name'] as String? ?? 'Appointment'),
+                            style: const TextStyle(fontSize: 12.5, color: AppTheme.textPrimary),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        if ((a['assigned_to'] as String?)?.isNotEmpty == true)
+                          Text(a['assigned_to'] as String,
+                              style: const TextStyle(fontSize: 11.5, color: AppTheme.textMuted)),
+                      ],
+                    ),
                   ),
                 )),
         ],

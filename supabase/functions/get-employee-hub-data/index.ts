@@ -93,6 +93,9 @@ Deno.serve(async (req) => {
     todayStart.setHours(0, 0, 0, 0);
     const todayEnd = new Date();
     todayEnd.setHours(23, 59, 59, 999);
+    // Completed forms drop off the tech's Past Forms list one week after
+    // completion — keeps that list from growing forever for a busy tech.
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
     const { data: appointments, error: apptError } = await supabase
       .from("appointments")
@@ -291,6 +294,7 @@ Deno.serve(async (req) => {
         .in("appointment_id", assignedApptIds)
         .eq("status", "completed")
         .is("deleted_at", null)
+        .gte("updated_at", sevenDaysAgo.toISOString())
         .order("updated_at", { ascending: false })
         .limit(30);
 

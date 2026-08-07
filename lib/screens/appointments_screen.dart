@@ -48,6 +48,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
   final _groupsSearchCtrl    = TextEditingController();
   Set<String> _selectedCalendarIds = {};
   Set<String> _selectedUserIds = {};
+  Set<String> _selectedGroupIds = {};
 
   Map<String, Map<String, dynamic>> _availability = {
     'monday':    {'enabled': true,  'start': '09:00', 'end': '17:00', 'blocks': []},
@@ -124,6 +125,9 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
         _selectedCalendarIds = _calendars.map((c) => c['id'].toString()).toSet();
       }
       _calendarGroups = List<Map<String, dynamic>>.from(results[5] as List);
+      if (_selectedGroupIds.isEmpty) {
+        _selectedGroupIds = _calendarGroups.map((g) => g['id'].toString()).toSet();
+      }
       _serviceMenuItems = List<Map<String, dynamic>>.from(results[6] as List);
       _calendarRooms = List<Map<String, dynamic>>.from(results[7] as List);
       _calendarEquipment = List<Map<String, dynamic>>.from(results[8] as List);
@@ -189,18 +193,34 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
   List<Map<String, dynamic>> get _visibleAppointments {
     final allCalsSelected = _selectedCalendarIds.length == _calendars.length;
     final allUsersSelected = _selectedUserIds.length == _teamMembers.length;
+    final allGroupsSelected = _selectedGroupIds.length == _calendarGroups.length;
+
+    // A group is a named collection of calendar_ids. "Matches" means the
+    // appointment's calendar belongs to at least one currently-selected
+    // group. If no groups exist at all, this filter is a no-op.
+    final selectedGroupCalendarIds = <String>{};
+    for (final g in _calendarGroups) {
+      if (!_selectedGroupIds.contains(g['id'].toString())) continue;
+      final ids = (g['calendar_ids'] as List?)?.map((e) => e.toString()) ?? const [];
+      selectedGroupCalendarIds.addAll(ids);
+    }
+
     return _appointments.where((a) {
       final calId = a['calendar_id'];
-      final matchesCalendar = _selectedCalendarIds.isEmpty
-          ? true
-          : (calId == null ? allCalsSelected : _selectedCalendarIds.contains(calId.toString()));
+      final matchesCalendar = calId == null
+          ? allCalsSelected
+          : _selectedCalendarIds.contains(calId.toString());
 
       final assignedProfileId = a['assigned_to_profile_id'];
-      final matchesUser = _selectedUserIds.isEmpty
-          ? true
-          : (assignedProfileId == null ? allUsersSelected : _selectedUserIds.contains(assignedProfileId.toString()));
+      final matchesUser = assignedProfileId == null
+          ? allUsersSelected
+          : _selectedUserIds.contains(assignedProfileId.toString());
 
-      return matchesCalendar && matchesUser;
+      final matchesGroup = _calendarGroups.isEmpty
+          ? true
+          : (calId == null ? allGroupsSelected : selectedGroupCalendarIds.contains(calId.toString()));
+
+      return matchesCalendar && matchesUser && matchesGroup;
     }).toList();
   }
 
@@ -703,6 +723,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
     final filteredUsers     = _teamMembers.where((m) =>
         (m['full_name'] as String? ?? '').toLowerCase().contains(_usersSearchCtrl.text.toLowerCase())).toList();
     final filteredCalendars = _calendars.where((c) => (c['name'] ?? '').toString().toLowerCase().contains(_calendarsSearchCtrl.text.toLowerCase())).toList();
+    final filteredGroups    = _calendarGroups.where((g) => (g['name'] ?? '').toString().toLowerCase().contains(_groupsSearchCtrl.text.toLowerCase())).toList();
 
     return Container(
       width: 240,
@@ -800,37 +821,85 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
         Expanded(child: ListView(
           padding: const EdgeInsets.symmetric(horizontal: 12),
           children: _panelTab == 0
-              ? filteredUsers.map((m) {
-                  final id = m['id'].toString();
-                  final checked = _selectedUserIds.contains(id);
-                  return _panelUserRow(
-                    m['full_name'] as String? ?? 'Unknown',
-                    AppTheme.brand,
-                    checked: checked,
+              ? [
+                  _panelAllRow(
+                    checked: _selectedUserIds.length == _teamMembers.length && _teamMembers.isNotEmpty,
                     onToggle: () => setState(() {
-                      if (checked) {
-                        if (_selectedUserIds.length > 1) _selectedUserIds.remove(id);
+                      if (_selectedUserIds.length == _teamMembers.length) {
+                        _selectedUserIds.clear();
                       } else {
-                        _selectedUserIds.add(id);
+                        _selectedUserIds = _teamMembers.map((m) => m['id'].toString()).toSet();
                       }
                     }),
-                  );
-                }).toList()
+                  ),
+                  ...filteredUsers.map((m) {
+                    final id = m['id'].toString();
+                    final checked = _selectedUserIds.contains(id);
+                    return _panelUserRow(
+                      m['full_name'] as String? ?? 'Unknown',
+                      AppTheme.brand,
+                      checked: checked,
+                      onToggle: () => setState(() {
+                        if (checked) {
+                          _selectedUserIds.remove(id);
+                        } else {
+                          _selectedUserIds.add(id);
+                        }
+                      }),
+                    );
+                  }),
+                ]
               : _panelTab == 1
-                  ? filteredCalendars.map((c) {
-                      final id = c['id'].toString();
-                      final checked = _selectedCalendarIds.contains(id);
-                      return _panelCheckRow(c['name'] ?? 'Unnamed', const Color(0xFF6366F1),
-                          checked: checked,
-                          onToggle: () => setState(() {
-                            if (checked) {
-                              if (_selectedCalendarIds.length > 1) _selectedCalendarIds.remove(id);
-                            } else {
-                              _selectedCalendarIds.add(id);
-                            }
-                          }));
-                    }).toList()
-                  : [],
+                  ? [
+                      _panelAllRow(
+                        checked: _selectedCalendarIds.length == _calendars.length && _calendars.isNotEmpty,
+                        onToggle: () => setState(() {
+                          if (_selectedCalendarIds.length == _calendars.length) {
+                            _selectedCalendarIds.clear();
+                          } else {
+                            _selectedCalendarIds = _calendars.map((c) => c['id'].toString()).toSet();
+                          }
+                        }),
+                      ),
+                      ...filteredCalendars.map((c) {
+                        final id = c['id'].toString();
+                        final checked = _selectedCalendarIds.contains(id);
+                        return _panelCheckRow(c['name'] ?? 'Unnamed', const Color(0xFF6366F1),
+                            checked: checked,
+                            onToggle: () => setState(() {
+                              if (checked) {
+                                _selectedCalendarIds.remove(id);
+                              } else {
+                                _selectedCalendarIds.add(id);
+                              }
+                            }));
+                      }),
+                    ]
+                  : [
+                      _panelAllRow(
+                        checked: _selectedGroupIds.length == _calendarGroups.length && _calendarGroups.isNotEmpty,
+                        onToggle: () => setState(() {
+                          if (_selectedGroupIds.length == _calendarGroups.length) {
+                            _selectedGroupIds.clear();
+                          } else {
+                            _selectedGroupIds = _calendarGroups.map((g) => g['id'].toString()).toSet();
+                          }
+                        }),
+                      ),
+                      ...filteredGroups.map((g) {
+                        final id = g['id'].toString();
+                        final checked = _selectedGroupIds.contains(id);
+                        return _panelCheckRow(g['name'] ?? 'Unnamed', const Color(0xFF6366F1),
+                            checked: checked,
+                            onToggle: () => setState(() {
+                              if (checked) {
+                                _selectedGroupIds.remove(id);
+                              } else {
+                                _selectedGroupIds.add(id);
+                              }
+                            }));
+                      }),
+                    ],
         )),
       ]),
     );
@@ -847,6 +916,16 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
         child: Text(label, style: TextStyle(fontSize: 11, fontWeight: sel ? FontWeight.w600 : FontWeight.w400, color: sel ? AppTheme.brand : AppTheme.textSecondary)),
       ),
     ));
+  }
+
+  Widget _panelAllRow({bool checked = true, VoidCallback? onToggle}) {
+    return Clickable(onTap: onToggle, child: Padding(padding: const EdgeInsets.only(bottom: 8), child: Row(children: [
+      Container(width: 28, height: 28, decoration: BoxDecoration(color: AppTheme.textSecondary.withValues(alpha: 0.15), shape: BoxShape.circle), alignment: Alignment.center,
+          child: const Icon(Icons.done_all, size: 14, color: AppTheme.textSecondary)),
+      const SizedBox(width: 8),
+      const Expanded(child: Text('All', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textPrimary))),
+      Checkbox(value: checked, onChanged: (_) => onToggle?.call(), activeColor: AppTheme.brand, materialTapTargetSize: MaterialTapTargetSize.shrinkWrap),
+    ])));
   }
 
   Widget _panelUserRow(String name, Color color, {bool checked = true, VoidCallback? onToggle}) {
@@ -1981,7 +2060,15 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
       appointmentTypes: _appointmentTypes, appointmentStatuses: _appointmentStatuses,
       teamMembers: _teamMembers, leads: _leads, calendars: _calendars, businessId: _businessId,
       jobTypes: _jobTypes,
-      onSaved: () { Navigator.of(ctx, rootNavigator: true).pop(); _load(); },
+      businessDefaultHours: _business?['availability_hours'],
+      onSaved: (newApptId) async {
+        Navigator.of(ctx, rootNavigator: true).pop();
+        await _load();
+        if (newApptId != null && mounted) {
+          final match = _appointments.where((a) => a['id'] == newApptId).toList();
+          if (match.isNotEmpty) _showAppointmentDetail(match.first);
+        }
+      },
     ));
   }
 
@@ -1994,6 +2081,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
         calendars: _calendars,
         teamMembers: _teamMembers,
         jobTypes: _jobTypes,
+        businessDefaultHours: _business?['availability_hours'],
         onUpdated: () { Navigator.pop(context); _load(); },
       ));
   }
@@ -3072,6 +3160,378 @@ class _AppLifecycleObserver extends WidgetsBindingObserver {
   }
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+//  SCHEDULING CONFLICT HELPERS (employee double-booking)
+// ══════════════════════════════════════════════════════════════════════════════
+
+Future<List<Map<String, dynamic>>> _findEmployeeConflicts({
+  required SupabaseClient db,
+  required int businessId,
+  required int profileId,
+  required DateTime startDt,
+  required DateTime endDt,
+  int? excludeApptId,
+}) async {
+  final data = await db
+      .from('appointments')
+      .select()
+      .eq('business_id', businessId)
+      .eq('assigned_to_profile_id', profileId)
+      .neq('status', 'Cancelled')
+      .lt('start_date_time', endDt.toUtc().toIso8601String())
+      .gt('end_date_time', startDt.toUtc().toIso8601String());
+  var list = List<Map<String, dynamic>>.from(data);
+  if (excludeApptId != null) {
+    list = list.where((a) => a['id'] != excludeApptId).toList();
+  }
+  return list;
+}
+
+Future<List<Map<String, dynamic>>> _findLeadConflicts({
+  required SupabaseClient db,
+  required int businessId,
+  required int leadId,
+  required DateTime startDt,
+  required DateTime endDt,
+  int? excludeApptId,
+}) async {
+  final data = await db
+      .from('appointments')
+      .select()
+      .eq('business_id', businessId)
+      .eq('lead_id', leadId)
+      .neq('status', 'Cancelled')
+      .lt('start_date_time', endDt.toUtc().toIso8601String())
+      .gt('end_date_time', startDt.toUtc().toIso8601String());
+  var list = List<Map<String, dynamic>>.from(data);
+  if (excludeApptId != null) {
+    list = list.where((a) => a['id'] != excludeApptId).toList();
+  }
+  return list;
+}
+
+// Returns the profile IDs of team members who have ANY overlapping,
+// non-cancelled appointment (including Blocked Off Time) during the given
+// window. Used to build the "pick someone else who's free" list.
+Future<Set<int>> _findBusyProfileIds({
+  required SupabaseClient db,
+  required int businessId,
+  required DateTime startDt,
+  required DateTime endDt,
+  int? excludeApptId,
+}) async {
+  final data = await db
+      .from('appointments')
+      .select('id, assigned_to_profile_id')
+      .eq('business_id', businessId)
+      .neq('status', 'Cancelled')
+      .lt('start_date_time', endDt.toUtc().toIso8601String())
+      .gt('end_date_time', startDt.toUtc().toIso8601String());
+  final list = List<Map<String, dynamic>>.from(data);
+  final busy = <int>{};
+  for (final a in list) {
+    if (excludeApptId != null && a['id'] == excludeApptId) continue;
+    final pid = a['assigned_to_profile_id'];
+    if (pid is int) busy.add(pid);
+  }
+  return busy;
+}
+
+// Computes real open slots (of at least `duration`) for one employee on the
+// calendar day of `onDate`, using the given calendar's availability_hours
+// (falling back to business-wide hours if the appointment has no calendar)
+// minus that employee's existing busy blocks that day. Returns the start
+// time of each open gap rather than every sub-slot within it.
+Future<List<DateTime>> _findEmployeeOpenSlotStarts({
+  required SupabaseClient db,
+  required int businessId,
+  required int profileId,
+  required DateTime onDate,
+  required Duration duration,
+  Map<String, dynamic>? calendar,
+  dynamic businessDefaultHours,
+  int? excludeApptId,
+}) async {
+  const dayKeys = ['monday','tuesday','wednesday','thursday','friday','saturday','sunday'];
+  final dayKey = dayKeys[onDate.weekday - 1];
+
+  final hoursSource = calendar?['availability_hours'] ?? businessDefaultHours;
+  Map<String, dynamic>? dayHours;
+  if (hoursSource != null) {
+    final map = hoursSource is String ? jsonDecode(hoursSource) : hoursSource;
+    if (map is Map && map[dayKey] is Map) dayHours = Map<String, dynamic>.from(map[dayKey]);
+  }
+  if (dayHours == null || dayHours['enabled'] != true) return [];
+
+  int parseHour(String t) => int.tryParse(t.split(':')[0]) ?? 9;
+  int parseMin(String t)  => int.tryParse(t.split(':')[1]) ?? 0;
+  final windowStart = DateTime(onDate.year, onDate.month, onDate.day,
+      parseHour(dayHours['start'] ?? '09:00'), parseMin(dayHours['start'] ?? '09:00'));
+  final windowEnd = DateTime(onDate.year, onDate.month, onDate.day,
+      parseHour(dayHours['end'] ?? '17:00'), parseMin(dayHours['end'] ?? '17:00'));
+  if (!windowEnd.isAfter(windowStart)) return [];
+
+  final dayStartUtc = DateTime(onDate.year, onDate.month, onDate.day).toUtc().toIso8601String();
+  final dayEndUtc   = DateTime(onDate.year, onDate.month, onDate.day, 23, 59, 59).toUtc().toIso8601String();
+  final data = await db
+      .from('appointments')
+      .select('id, start_date_time, end_date_time')
+      .eq('business_id', businessId)
+      .eq('assigned_to_profile_id', profileId)
+      .neq('status', 'Cancelled')
+      .gte('start_date_time', dayStartUtc)
+      .lte('start_date_time', dayEndUtc);
+
+  final busyList = List<Map<String, dynamic>>.from(data)
+      .where((a) => excludeApptId == null || a['id'] != excludeApptId)
+      .map((a) => MapEntry<DateTime, DateTime>(
+            (DateTime.tryParse(a['start_date_time'] ?? '') ?? onDate).toLocal(),
+            (DateTime.tryParse(a['end_date_time']   ?? '') ?? onDate).toLocal(),
+          ))
+      .toList()
+    ..sort((a, b) => a.key.compareTo(b.key));
+
+  final slots = <DateTime>[];
+  var cursor = windowStart;
+  for (final busy in busyList) {
+    if (busy.key.isAfter(cursor) && busy.key.difference(cursor) >= duration) {
+      slots.add(cursor);
+    }
+    if (busy.value.isAfter(cursor)) cursor = busy.value;
+  }
+  if (windowEnd.difference(cursor) >= duration) {
+    slots.add(cursor);
+  }
+  return slots;
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  EMPLOYEE CONFLICT DIALOG
+// ══════════════════════════════════════════════════════════════════════════════
+
+class _EmployeeConflictDialog extends StatefulWidget {
+  final String employeeName;
+  final List<Map<String, dynamic>> conflicts;
+  final List<Map<String, dynamic>> teamMembers;
+  final int businessId;
+  final DateTime startDt;
+  final DateTime endDt;
+  final Map<String, dynamic>? calendar;
+  final dynamic businessDefaultHours;
+  final int? excludeApptId;
+  final void Function(int profileId, String name) onPickEmployee;
+  final void Function(DateTime start, DateTime end) onPickSlot;
+
+  const _EmployeeConflictDialog({
+    required this.employeeName,
+    required this.conflicts,
+    required this.teamMembers,
+    required this.businessId,
+    required this.startDt,
+    required this.endDt,
+    required this.onPickEmployee,
+    required this.onPickSlot,
+    this.calendar,
+    this.businessDefaultHours,
+    this.excludeApptId,
+  });
+
+  @override
+  State<_EmployeeConflictDialog> createState() => _EmployeeConflictDialogState();
+}
+
+class _EmployeeConflictDialogState extends State<_EmployeeConflictDialog> {
+  final _db = Supabase.instance.client;
+  int _mode = 0; // 0 = choice, 1 = pick employee, 2 = pick time
+  bool _loading = false;
+  List<Map<String, dynamic>> _freeEmployees = [];
+  List<DateTime> _openSlots = [];
+
+  Future<void> _loadFreeEmployees() async {
+    setState(() { _loading = true; _mode = 1; });
+    try {
+      final busy = await _findBusyProfileIds(
+        db: _db, businessId: widget.businessId,
+        startDt: widget.startDt, endDt: widget.endDt,
+        excludeApptId: widget.excludeApptId,
+      );
+      _freeEmployees = widget.teamMembers.where((m) => !busy.contains(m['id'] as int)).toList();
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _loadOpenSlots() async {
+    setState(() { _loading = true; _mode = 2; });
+    try {
+      final profileId = widget.teamMembers.firstWhere(
+        (m) => m['full_name'] == widget.employeeName, orElse: () => {})['id'] as int?;
+      if (profileId == null) { _openSlots = []; return; }
+      _openSlots = await _findEmployeeOpenSlotStarts(
+        db: _db, businessId: widget.businessId, profileId: profileId,
+        onDate: widget.startDt, duration: widget.endDt.difference(widget.startDt),
+        calendar: widget.calendar, businessDefaultHours: widget.businessDefaultHours,
+        excludeApptId: widget.excludeApptId,
+      );
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  String _fmtTime(DateTime dt) {
+    final h = dt.hour == 0 ? 12 : dt.hour > 12 ? dt.hour - 12 : dt.hour;
+    final m = dt.minute.toString().padLeft(2, '0');
+    return '$h:$m ${dt.hour < 12 ? 'AM' : 'PM'}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final conflict = widget.conflicts.first;
+    final conflictStart = (DateTime.tryParse(conflict['start_date_time'] ?? '') ?? widget.startDt).toLocal();
+
+    return Dialog(
+      backgroundColor: AppTheme.cardBg,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      insetPadding: const EdgeInsets.symmetric(horizontal: 60, vertical: 100),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 480, maxHeight: 560),
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(children: [
+              const Icon(Icons.event_busy, size: 20, color: AppTheme.error),
+              const SizedBox(width: 10),
+              const Expanded(child: Text('Scheduling Conflict',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: AppTheme.textPrimary))),
+              IconButton(
+                onPressed: () => Navigator.of(context, rootNavigator: true).pop(),
+                icon: const Icon(Icons.close, size: 18, color: AppTheme.textSecondary),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+              ),
+            ]),
+            const SizedBox(height: 12),
+            Text(
+              '${widget.employeeName} is already booked for "${conflict['appointment_name'] ?? 'an appointment'}" at ${_fmtTime(conflictStart)}.',
+              style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary),
+            ),
+            const SizedBox(height: 16),
+            if (_mode == 0) ...[
+              SizedBox(width: double.infinity, child: OutlinedButton(
+                onPressed: _loadFreeEmployees,
+                style: OutlinedButton.styleFrom(
+                  side: const BorderSide(color: AppTheme.borderColor),
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+                child: const Text('Choose a Different Available Employee', style: TextStyle(color: AppTheme.textPrimary)),
+              )),
+              const SizedBox(height: 10),
+              SizedBox(width: double.infinity, child: OutlinedButton(
+                onPressed: _loadOpenSlots,
+                style: OutlinedButton.styleFrom(
+                  side: const BorderSide(color: AppTheme.borderColor),
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+                child: Text('Choose an Available Time for ${widget.employeeName}', style: const TextStyle(color: AppTheme.textPrimary)),
+              )),
+            ],
+            if (_mode != 0) ...[
+              if (_loading)
+                const Padding(padding: EdgeInsets.symmetric(vertical: 24), child: Center(child: CircularProgressIndicator()))
+              else if (_mode == 1) ...[
+                if (_freeEmployees.isEmpty)
+                  const Padding(padding: EdgeInsets.symmetric(vertical: 12),
+                      child: Text('No other employees are free at this exact time.', style: TextStyle(fontSize: 13, color: AppTheme.textSecondary)))
+                else
+                  Flexible(child: ListView(shrinkWrap: true, children: _freeEmployees.map((m) => Clickable(
+                    onTap: () {
+                      widget.onPickEmployee(m['id'] as int, m['full_name'] ?? 'Unknown');
+                      Navigator.of(context, rootNavigator: true).pop();
+                    },
+                    child: Container(
+                      margin: const EdgeInsets.only(bottom: 6),
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      decoration: BoxDecoration(color: AppTheme.pageBg, borderRadius: BorderRadius.circular(8), border: Border.all(color: AppTheme.borderColor)),
+                      child: Text(m['full_name'] ?? 'Unknown', style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary)),
+                    ),
+                  )).toList())),
+              ] else ...[
+                if (_openSlots.isEmpty)
+                  const Padding(padding: EdgeInsets.symmetric(vertical: 12),
+                      child: Text('No open slots for this employee on this day.', style: TextStyle(fontSize: 13, color: AppTheme.textSecondary)))
+                else
+                  Flexible(child: ListView(shrinkWrap: true, children: _openSlots.map((s) {
+                    final duration = widget.endDt.difference(widget.startDt);
+                    final end = s.add(duration);
+                    return Clickable(
+                      onTap: () {
+                        widget.onPickSlot(s, end);
+                        Navigator.of(context, rootNavigator: true).pop();
+                      },
+                      child: Container(
+                        margin: const EdgeInsets.only(bottom: 6),
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                        decoration: BoxDecoration(color: AppTheme.pageBg, borderRadius: BorderRadius.circular(8), border: Border.all(color: AppTheme.borderColor)),
+                        child: Text('${_fmtTime(s)} - ${_fmtTime(end)}', style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary)),
+                      ),
+                    );
+                  }).toList())),
+              ],
+              const SizedBox(height: 8),
+              TextButton(onPressed: () => setState(() => _mode = 0), child: const Text('Back')),
+            ],
+          ]),
+        ),
+      ),
+    );
+  }
+}
+
+class _LeadConflictDialog extends StatelessWidget {
+  final String leadName;
+  final List<Map<String, dynamic>> conflicts;
+
+  const _LeadConflictDialog({required this.leadName, required this.conflicts});
+
+  String _fmtTime(DateTime dt) {
+    final h = dt.hour == 0 ? 12 : dt.hour > 12 ? dt.hour - 12 : dt.hour;
+    final m = dt.minute.toString().padLeft(2, '0');
+    return '$h:$m ${dt.hour < 12 ? 'AM' : 'PM'}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final conflict = conflicts.first;
+    final conflictStart = (DateTime.tryParse(conflict['start_date_time'] ?? '') ?? DateTime.now()).toLocal();
+    return AlertDialog(
+      backgroundColor: AppTheme.cardBg,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      title: const Text('Lead Already Scheduled',
+          style: TextStyle(color: AppTheme.textPrimary, fontSize: 15, fontWeight: FontWeight.w700)),
+      content: Text(
+        '$leadName already has an appointment "${conflict['appointment_name'] ?? 'an appointment'}" at ${_fmtTime(conflictStart)} that overlaps this time. Book this appointment anyway?',
+        style: const TextStyle(color: AppTheme.textSecondary, fontSize: 13),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context, rootNavigator: true).pop(false),
+          child: const Text('Cancel', style: TextStyle(color: AppTheme.textSecondary)),
+        ),
+        ElevatedButton(
+          onPressed: () => Navigator.of(context, rootNavigator: true).pop(true),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: AppTheme.brand, foregroundColor: Colors.white, elevation: 0,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          ),
+          child: const Text('Book Anyway'),
+        ),
+      ],
+    );
+  }
+}
+
 // ═══════════════ END OF PART 1 — continue with appt_part2.dart ═══════════════
 // ═══════════════ END OF PART 1 — continue with appt_part2.dart ═══════════════
 // ═══════════════ PART 2 OF 4 — paste directly after Part 1 ═══════════════
@@ -3593,7 +4053,8 @@ class _NewAppointmentDialog extends StatefulWidget {
   final List<Map<String, dynamic>> calendars;
   final List<Map<String, dynamic>> jobTypes;
   final int? businessId;
-  final VoidCallback onSaved;
+  final dynamic businessDefaultHours;
+  final void Function(int? newApptId) onSaved;
 
   const _NewAppointmentDialog({
     required this.appointmentTypes,
@@ -3604,6 +4065,7 @@ class _NewAppointmentDialog extends StatefulWidget {
     required this.jobTypes,
     required this.businessId,
     required this.onSaved,
+    this.businessDefaultHours,
   });
 
   @override
@@ -3686,6 +4148,7 @@ class _NewAppointmentDialogState extends State<_NewAppointmentDialog>
                 calendars:           widget.calendars,
                 jobTypes:            widget.jobTypes,
                 businessId:          widget.businessId,
+                businessDefaultHours: widget.businessDefaultHours,
                 onSaved:             widget.onSaved,
               ),
               _BlockedOffTimeTab(
@@ -3713,7 +4176,8 @@ class _AppointmentFormTab extends StatefulWidget {
   final List<Map<String, dynamic>> calendars;
   final List<Map<String, dynamic>> jobTypes;
   final int? businessId;
-  final VoidCallback onSaved;
+  final dynamic businessDefaultHours;
+  final void Function(int? newApptId) onSaved;
 
   const _AppointmentFormTab({
     required this.appointmentTypes,
@@ -3724,6 +4188,7 @@ class _AppointmentFormTab extends StatefulWidget {
     required this.jobTypes,
     required this.businessId,
     required this.onSaved,
+    this.businessDefaultHours,
   });
 
   @override
@@ -3738,6 +4203,8 @@ class _AppointmentFormTabState extends State<_AppointmentFormTab> {
   final _phoneCtrl    = TextEditingController();
   final _emailCtrl    = TextEditingController();
   final _contactCtrl  = TextEditingController();
+  final _sourceCtrl     = TextEditingController();
+  final _adminEmailCtrl = TextEditingController();
 
   String?  _calendarId;
   String   _type       = 'Consultation';
@@ -3771,6 +4238,8 @@ class _AppointmentFormTabState extends State<_AppointmentFormTab> {
     _phoneCtrl.dispose();
     _emailCtrl.dispose();
     _contactCtrl.dispose();
+    _sourceCtrl.dispose();
+    _adminEmailCtrl.dispose();
     super.dispose();
   }
 
@@ -3841,6 +4310,59 @@ class _AppointmentFormTabState extends State<_AppointmentFormTab> {
       setState(() => _error = 'End time must be after start time');
       return;
     }
+    if (widget.businessId != null && _teamMember != null) {
+      final profileId = _teamMemberProfileId();
+      if (profileId != null) {
+        final conflicts = await _findEmployeeConflicts(
+          db: _db, businessId: widget.businessId!, profileId: profileId,
+          startDt: _startDt, endDt: _endDt,
+        );
+        if (conflicts.isNotEmpty && mounted) {
+          Map<String, dynamic>? cal;
+          if (_calendarId != null) {
+            final match = widget.calendars.firstWhere((c) => c['id'].toString() == _calendarId, orElse: () => {});
+            if (match.isNotEmpty) cal = match;
+          }
+          await showDialog<void>(
+            context: context,
+            barrierColor: Colors.black54,
+            builder: (ctx) => _EmployeeConflictDialog(
+              employeeName: _teamMember!,
+              conflicts: conflicts,
+              teamMembers: widget.teamMembers,
+              businessId: widget.businessId!,
+              startDt: _startDt,
+              endDt: _endDt,
+              calendar: cal,
+              businessDefaultHours: widget.businessDefaultHours,
+              onPickEmployee: (id, name) => setState(() => _teamMember = name),
+              onPickSlot: (s, e) => setState(() { _startDt = s; _endDt = e; }),
+            ),
+          );
+          return;
+        }
+      }
+    }
+    if (widget.businessId != null && _selectedLeadId != null) {
+      final leadId = int.tryParse(_selectedLeadId!);
+      if (leadId != null) {
+        final leadConflicts = await _findLeadConflicts(
+          db: _db, businessId: widget.businessId!, leadId: leadId,
+          startDt: _startDt, endDt: _endDt,
+        );
+        if (leadConflicts.isNotEmpty && mounted) {
+          final proceed = await showDialog<bool>(
+            context: context,
+            barrierColor: Colors.black54,
+            builder: (ctx) => _LeadConflictDialog(
+              leadName: _contactCtrl.text.trim().isEmpty ? 'This lead' : _contactCtrl.text.trim(),
+              conflicts: leadConflicts,
+            ),
+          );
+          if (proceed != true) return;
+        }
+      }
+    }
     setState(() { _saving = true; _error = null; });
     try {
       final userId = _db.auth.currentUser?.id;
@@ -3856,6 +4378,8 @@ class _AppointmentFormTabState extends State<_AppointmentFormTab> {
         'lead_phone':       _phoneCtrl.text.trim(),
         'lead_email':       _emailCtrl.text.trim(),
         'notes':            _notesCtrl.text.trim(),
+        'booking_source':   _sourceCtrl.text.trim(),
+        'admin_email':      _adminEmailCtrl.text.trim(),
         'business_id':      widget.businessId,
         'user_id':          userId,
         'confirmation_sent': false,
@@ -3937,7 +4461,7 @@ class _AppointmentFormTabState extends State<_AppointmentFormTab> {
           debugPrint('Geocode error: $e');
         }
       }
-      widget.onSaved();
+      widget.onSaved(newAppt?['id'] as int?);
     } catch (e) {
       setState(() => _error = 'Failed to save: $e');
     } finally {
@@ -4183,6 +4707,16 @@ if (_showDropdown) ...[
         ]),
         const SizedBox(height: 8),
 
+        _label('Booking Source'),
+        const SizedBox(height: 4),
+        _textField(_sourceCtrl, hint: 'e.g. Website, Referral, Facebook...'),
+        const SizedBox(height: 8),
+
+        _label('Admin Email'),
+        const SizedBox(height: 4),
+        _textField(_adminEmailCtrl, hint: 'admin@yourbusiness.com', keyboard: TextInputType.emailAddress),
+        const SizedBox(height: 8),
+
         // Notes
         _label('Notes'),
         const SizedBox(height: 4),
@@ -4257,7 +4791,7 @@ if (_showDropdown) ...[
 class _BlockedOffTimeTab extends StatefulWidget {
   final int? businessId;
   final List<Map<String, dynamic>> calendars;
-  final VoidCallback onSaved;
+  final void Function(int? newApptId) onSaved;
 
   const _BlockedOffTimeTab({
     required this.businessId,
@@ -4439,7 +4973,7 @@ class _BlockedOffTimeTabState extends State<_BlockedOffTimeTab> {
           if (_calendarId != null) 'calendar_id': int.tryParse(_calendarId!),
         });
       }
-      widget.onSaved();
+      widget.onSaved(null);
     } catch (e) {
       setState(() => _error = 'Failed to save: $e');
     } finally {
@@ -4806,6 +5340,7 @@ class _AppointmentDetailSheet extends StatefulWidget {
   final List<Map<String, dynamic>> calendars;
   final List<Map<String, dynamic>> teamMembers;
   final List<Map<String, dynamic>> jobTypes;
+  final dynamic businessDefaultHours;
 
   const _AppointmentDetailSheet({
     required this.appointment,
@@ -4815,6 +5350,7 @@ class _AppointmentDetailSheet extends StatefulWidget {
     this.calendars = const [],
     this.teamMembers = const [],
     this.jobTypes = const [],
+    this.businessDefaultHours,
   });
 
   @override
@@ -5455,6 +5991,64 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
   Future<void> _save() async {
     final shouldProceed = await _confirmCompleteWithIncompleteFormsIfNeeded();
     if (!shouldProceed) return;
+
+    final apptId = widget.appointment['id'] as int?;
+    final businessIdForConflict = widget.appointment['business_id'] as int?;
+
+    if (businessIdForConflict != null && _assignedTo != null) {
+      final profileId = _assignedToProfileId();
+      if (profileId != null) {
+        final conflicts = await _findEmployeeConflicts(
+          db: _db, businessId: businessIdForConflict, profileId: profileId,
+          startDt: _startDt, endDt: _endDt, excludeApptId: apptId,
+        );
+        if (conflicts.isNotEmpty && mounted) {
+          Map<String, dynamic>? cal;
+          if (_calendarId != null) {
+            final match = widget.calendars.firstWhere((c) => c['id'].toString() == _calendarId, orElse: () => {});
+            if (match.isNotEmpty) cal = match;
+          }
+          await showDialog<void>(
+            context: context,
+            barrierColor: Colors.black54,
+            builder: (ctx) => _EmployeeConflictDialog(
+              employeeName: _assignedTo!,
+              conflicts: conflicts,
+              teamMembers: widget.teamMembers,
+              businessId: businessIdForConflict,
+              startDt: _startDt,
+              endDt: _endDt,
+              calendar: cal,
+              businessDefaultHours: widget.businessDefaultHours,
+              excludeApptId: apptId,
+              onPickEmployee: (id, name) => setState(() => _assignedTo = name),
+              onPickSlot: (s, e) => setState(() { _startDt = s; _endDt = e; }),
+            ),
+          );
+          return;
+        }
+      }
+    }
+
+    final leadId = widget.appointment['lead_id'] as int?;
+    if (businessIdForConflict != null && leadId != null) {
+      final leadConflicts = await _findLeadConflicts(
+        db: _db, businessId: businessIdForConflict, leadId: leadId,
+        startDt: _startDt, endDt: _endDt, excludeApptId: apptId,
+      );
+      if (leadConflicts.isNotEmpty && mounted) {
+        final proceed = await showDialog<bool>(
+          context: context,
+          barrierColor: Colors.black54,
+          builder: (ctx) => _LeadConflictDialog(
+            leadName: _leadNameCtrl.text.trim().isEmpty ? 'This lead' : _leadNameCtrl.text.trim(),
+            conflicts: leadConflicts,
+          ),
+        );
+        if (proceed != true) return;
+      }
+    }
+
     setState(() => _saving = true);
     try {
       // canceled_at is the real system-of-record for cancellation (not the

@@ -128,6 +128,7 @@ class _AppNavBarState extends State<AppNavBar> {
   String _role        = 'member';
   Map<String, dynamic> _permissions = {};
   bool _profileLoaded = false;
+  StreamSubscription<AuthState>? _authSub;
 
   // Settings nav sections (mirrors settings_screen.dart _sections)
   static const _settingsSections = [
@@ -173,12 +174,22 @@ class _AppNavBarState extends State<AppNavBar> {
     _subscribeToUnread();
     _checkActiveTimeEntry();
     _clockCheckTimer = Timer.periodic(const Duration(seconds: 60), (_) => _checkActiveTimeEntry());
+    // On a hard browser reload, Supabase's session restore from local storage
+    // is async — if _loadProfile() races ahead of it, the profile query comes
+    // back null/empty and role+permissions silently stick at their 'member'/{}
+    // defaults, collapsing the sidebar to just Launchpad+Dashboard. Re-run
+    // _loadProfile() once a real session is confirmed so a reload never
+    // leaves the sidebar stuck in that state.
+    _authSub = _supabase.auth.onAuthStateChange.listen((state) {
+      if (state.session != null) _loadProfile();
+    });
   }
 
   @override
   void dispose() {
     _unreadChannel?.unsubscribe();
     _clockCheckTimer?.cancel();
+    _authSub?.cancel();
     super.dispose();
   }
 
@@ -1424,9 +1435,8 @@ class _UserRowState extends State<_UserRow> {
       ),
     );
     if (doLogout && context.mounted) {
-      AppRouter.cachedIsSuperuser = null;
-      SuperuserState.impersonatedBusinessId = null;
-      SuperuserState.impersonatedBusinessName = null;
+      AppRouter.clearSuperuserFlag();
+      SuperuserState.clear();
       await Supabase.instance.client.auth.signOut();
       if (context.mounted) context.go('/login');
     }

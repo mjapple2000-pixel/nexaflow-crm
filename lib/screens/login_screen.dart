@@ -103,6 +103,7 @@ class _LoginScreenState extends State<LoginScreen> {
       if (superRes.statusCode == 200) {
         final body = jsonDecode(superRes.body);
         AppRouter.cachedIsSuperuser = body['is_superuser'] == true;
+        AppRouter.persistSuperuserFlag();
         if (!mounted) return;
         if (AppRouter.cachedIsSuperuser == true) {
           context.go('/business-picker');

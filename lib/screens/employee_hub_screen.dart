@@ -43,6 +43,7 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
 
   final _jobSearchCtrl = TextEditingController();
   bool _showJobResults = false;
+  final _pastFormsSearchCtrl = TextEditingController();
 
   @override
   void initState() {
@@ -55,6 +56,7 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
     _tickTimer?.cancel();
     _locationLoopTimer?.cancel();
     _jobSearchCtrl.dispose();
+    _pastFormsSearchCtrl.dispose();
     super.dispose();
   }
 
@@ -304,6 +306,17 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
       final lead = (a['lead_name'] as String? ?? '').toLowerCase();
       final addr = (a['lead_address'] as String? ?? '').toLowerCase();
       return type.contains(q) || lead.contains(q) || addr.contains(q);
+    }).toList();
+  }
+
+  List<Map<String, dynamic>> get _filteredPastJobForms {
+    final q = _pastFormsSearchCtrl.text.trim().toLowerCase();
+    if (q.isEmpty) return _pastJobForms;
+    return _pastJobForms.where((f) {
+      final formName = (f['form_name'] as String? ?? '').toLowerCase();
+      final apptType = (f['appointment_type'] as String? ?? '').toLowerCase();
+      final lead = (f['lead_name'] as String? ?? '').toLowerCase();
+      return formName.contains(q) || apptType.contains(q) || lead.contains(q);
     }).toList();
   }
 
@@ -606,7 +619,40 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
                             fontWeight: FontWeight.w700,
                             color: AppTheme.textPrimary)),
                     const SizedBox(height: 10),
-                    ..._pastJobForms.map((f) => _PastJobFormCard(token: widget.token, form: f)),
+                    TextField(
+                      controller: _pastFormsSearchCtrl,
+                      onChanged: (_) => setState(() {}),
+                      style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                      decoration: InputDecoration(
+                        hintText: 'Search past forms by name, job, or customer...',
+                        hintStyle: const TextStyle(fontSize: 13, color: AppTheme.textSecondary),
+                        prefixIcon: const Icon(Icons.search, size: 18, color: AppTheme.textSecondary),
+                        suffixIcon: _pastFormsSearchCtrl.text.isNotEmpty
+                            ? IconButton(
+                                icon: const Icon(Icons.close, size: 16, color: AppTheme.textSecondary),
+                                onPressed: () => setState(() => _pastFormsSearchCtrl.clear()),
+                              )
+                            : null,
+                        filled: true,
+                        fillColor: AppTheme.pageBg,
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                            borderSide: const BorderSide(color: AppTheme.borderColor)),
+                        enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                            borderSide: const BorderSide(color: AppTheme.borderColor)),
+                        focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                            borderSide: BorderSide(color: AppTheme.brand, width: 1.5)),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    if (_filteredPastJobForms.isEmpty)
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 12),
+                        child: Text('No matching past forms',
+                            style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+                      )
+                    else
+                      ..._filteredPastJobForms.map((f) => _PastJobFormCard(token: widget.token, form: f)),
                   ],
                   const SizedBox(height: 40),
                 ],

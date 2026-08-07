@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import '../theme/app_theme.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'package:web/web.dart' as web;
 
 class BusinessPickerScreen extends StatefulWidget {
   const BusinessPickerScreen({super.key});
@@ -92,12 +93,14 @@ class _BusinessPickerScreenState extends State<BusinessPickerScreen> {
   void _selectBusiness(Map<String, dynamic> business) {
     SuperuserState.impersonatedBusinessId   = business['id'] as int;
     SuperuserState.impersonatedBusinessName = business['business_name'] as String;
+    SuperuserState.persist();
     debugPrint('Selected business ID: ${SuperuserState.impersonatedBusinessId}');
     debugPrint('Selected business name: ${SuperuserState.impersonatedBusinessName}');
     context.go('/dashboard');
   }
 
   Future<void> _signOut() async {
+    SuperuserState.clear();
     await Supabase.instance.client.auth.signOut();
     if (mounted) context.go('/login');
   }
@@ -403,7 +406,48 @@ class _BusinessPickerScreenState extends State<BusinessPickerScreen> {
 }
 
 // ── Global superuser state ────────────────────────────────────────────────────
+// impersonatedBusinessId/Name are plain in-memory Dart statics — a browser
+// reload fully reinitializes the app and wipes them, which previously
+// dropped superuser sessions straight back to "no business" (every screen
+// showing zero data) on every refresh. persist()/restore() mirror the
+// choice into localStorage so a reload can bring it back; clear() removes
+// it on sign-out so it never survives into a different superuser session.
 class SuperuserState {
   static int? impersonatedBusinessId;
   static String? impersonatedBusinessName;
+
+  static const _idKey   = 'nexaflow_impersonated_business_id';
+  static const _nameKey = 'nexaflow_impersonated_business_name';
+
+  static void persist() {
+    try {
+      if (impersonatedBusinessId != null) {
+        web.window.localStorage.setItem(_idKey, impersonatedBusinessId.toString());
+      }
+      if (impersonatedBusinessName != null) {
+        web.window.localStorage.setItem(_nameKey, impersonatedBusinessName!);
+      }
+    } catch (_) {
+      // Non-web platform or storage unavailable — impersonation just won't
+      // survive a reload there, same as before this fix.
+    }
+  }
+
+  static void restore() {
+    try {
+      final id = web.window.localStorage.getItem(_idKey);
+      final name = web.window.localStorage.getItem(_nameKey);
+      if (id != null) impersonatedBusinessId = int.tryParse(id);
+      if (name != null) impersonatedBusinessName = name;
+    } catch (_) {}
+  }
+
+  static void clear() {
+    impersonatedBusinessId = null;
+    impersonatedBusinessName = null;
+    try {
+      web.window.localStorage.removeItem(_idKey);
+      web.window.localStorage.removeItem(_nameKey);
+    } catch (_) {}
+  }
 }
