@@ -191,7 +191,7 @@ String _generateToken() {
         'status': 'invited',
       }).eq('id', tester['id'] as int);
 
-      const webhookUrl = 'https://hook.us2.make.com/gzauxp215th4nj93r2xhqkchidc9g77g';
+      const webhookUrl = 'https://rllriopqojaraceytdno.supabase.co/functions/v1/beta-tester-invite';
       final signupUrl = 'https://nexaflow-crm.web.app/#/beta-signup?token=$token';
 
       try {
@@ -543,9 +543,7 @@ class _InviteDialogState extends State<_InviteDialog> {
         'invited_at': DateTime.now().toUtc().toIso8601String(),
       });
 
-      // Fire Make webhook to send invite email
-      // Replace with your actual Make webhook URL for beta invites
-      const webhookUrl = 'https://hook.us2.make.com/gzauxp215th4nj93r2xhqkchidc9g77g';
+      final webhookUrl = 'https://rllriopqojaraceytdno.supabase.co/functions/v1/beta-tester-invite';
       final signupUrl = 'https://nexaflow-crm.web.app/#/beta-signup?token=$token';
 
       try {

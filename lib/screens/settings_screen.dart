@@ -179,7 +179,7 @@ const _kIndustries = [
 // ─────────────────────────────────────────────
 
 const String _makeEmailWebhook =
-    'https://hook.us2.make.com/ap29d91tjwbus1x41a9o7c3ky86ihg6q';
+    'https://rllriopqojaraceytdno.supabase.co/functions/v1/outbound-email-send';
 
 const String _provisionPhoneFnUrl =
     'https://rllriopqojaraceytdno.supabase.co/functions/v1/provision-phone-number';

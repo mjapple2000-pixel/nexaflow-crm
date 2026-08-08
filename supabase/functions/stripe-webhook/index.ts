@@ -93,8 +93,8 @@ serve(async (req) => {
         })
         .eq('id', business.id)
 
-      // Welcome email via Make
-      await fetch('https://hook.us2.make.com/217vu6f50oluiu9e01thnx4dutehbdne', {
+      // Welcome email via Edge Function (Mailgun)
+      await fetch('https://rllriopqojaraceytdno.supabase.co/functions/v1/welcome-email', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

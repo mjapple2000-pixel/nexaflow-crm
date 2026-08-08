@@ -237,7 +237,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
   bool _loadingTriggerLinks = false;
 
   static const String _emailWebhookUrl =
-      'https://hook.us2.make.com/ap29d91tjwbus1x41a9o7c3ky86ihg6q';
+      'https://rllriopqojaraceytdno.supabase.co/functions/v1/outbound-email-send';
 
   RealtimeChannel? _messageChannel;
   RealtimeChannel? _conversationChannel;
