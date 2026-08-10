@@ -122,15 +122,9 @@ serve(async (req) => {
         if (!invoice) return new Response(JSON.stringify({ error: 'Invoice not found' }), { status: 404, headers: corsHeaders })
         if (!['approved', 'sent'].includes(invoice.status)) return new Response(JSON.stringify({ error: 'Invoice is not payable' }), { status: 400, headers: corsHeaders })
 
-        const amountDue = Number(invoice.amount_due ?? 0)
-        const amountCents = Math.round(amountDue * 100)
-        const lead = invoice.leads as any
-        const customerEmail = lead?.lead_email ?? ''
-
-        if (amountCents <= 0) return new Response(JSON.stringify({ error: 'Invoice amount must be greater than zero' }), { status: 400, headers: corsHeaders })
-        if (!customerEmail) return new Response(JSON.stringify({ error: 'No email on file for this customer' }), { status: 400, headers: corsHeaders })
-
-        // Call create-invoice-payment
+        // create-invoice-payment now resolves business/amount/customer email
+        // itself from invoice_id server-side — never pass amount/business/email
+        // from here, since those are exactly what made the old endpoint unsafe.
         const supabaseUrl = Deno.env.get('SUPABASE_URL')!
         const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
 
@@ -141,10 +135,7 @@ serve(async (req) => {
             'Authorization': `Bearer ${serviceKey}`,
           },
           body: JSON.stringify({
-            business_id: businessId,
-            amount_cents: amountCents,
-            description: invoice.invoice_number,
-            customer_email: customerEmail,
+            invoice_id: target_id,
           }),
         })
 

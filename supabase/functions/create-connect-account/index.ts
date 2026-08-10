@@ -8,13 +8,18 @@ const supabase = createClient(
 const STRIPE_SECRET_KEY = Deno.env.get('STRIPE_SECRET_KEY') ?? ''
 const STRIPE_API_BASE = 'https://api.stripe.com'
 
+// Stripe deprecated the old beta-flag syntax (e.g. "2023-10-16;
+// embedded_connect_beta=v2;") — the V2 namespace now just takes a plain
+// dated version string. Current version per Stripe's versioning policy.
+const STRIPE_API_VERSION = '2026-07-29.dahlia'
+
 async function stripeV2Post(path: string, body: Record<string, unknown>) {
   const res = await fetch(`${STRIPE_API_BASE}${path}`, {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${STRIPE_SECRET_KEY}`,
       'Content-Type': 'application/json',
-      'Stripe-Version': '2023-10-16; embedded_connect_beta=v2;',
+      'Stripe-Version': STRIPE_API_VERSION,
     },
     body: JSON.stringify(body),
   })
@@ -32,23 +37,74 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const { business_id, owner_name, owner_email } = await req.json()
-
-    if (!business_id || !owner_name || !owner_email) {
-      return new Response(
-        JSON.stringify({ error: 'business_id, owner_name, and owner_email are required' }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
-      )
+    // ── Resolve business_id server-side from the caller's own session ─────
+    // Previously this endpoint had NO auth check at all, and trusted
+    // business_id, owner_name, and owner_email straight from the client —
+    // anyone could create a real Stripe Connect account and attach it to
+    // any business_id. Superuser bypass: platform admins (rows in
+    // public.superusers) may pass business_id in the body to set up
+    // Connect on another business's behalf. Everyone else gets their own
+    // business_id from their profile. owner_name/owner_email are now
+    // always read from the business record itself, never from the client.
+    const authHeader = req.headers.get('Authorization') ?? ''
+    const token = authHeader.replace('Bearer ', '')
+    const { data: { user }, error: authError } = await supabase.auth.getUser(token)
+    if (authError || !user) {
+      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+        status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      })
     }
 
-    // Check if already connected
+    const { data: suRow } = await supabase
+      .from('superusers')
+      .select('user_id')
+      .eq('user_id', user.id)
+      .maybeSingle()
+    const isSuperuser = !!suRow
+
+    const body = await req.json().catch(() => ({}))
+
+    let business_id: number | null = null
+    if (isSuperuser) {
+      business_id = body?.business_id ?? null
+      if (!business_id) {
+        return new Response(JSON.stringify({ error: 'business_id is required' }), {
+          status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        })
+      }
+    } else {
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('business_id')
+        .eq('user_id', user.id)
+        .maybeSingle()
+      if (!profile?.business_id) {
+        return new Response(JSON.stringify({ error: 'No business found' }), {
+          status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        })
+      }
+      business_id = profile.business_id
+    }
+
+    // Check if already connected — also pull owner_name/owner_email from
+    // the business record itself, never trust these from the client.
     const { data: business, error: bizError } = await supabase
       .from('businesses')
-      .select('stripe_connect_id')
+      .select('stripe_connect_id, owner_name, owner_email')
       .eq('id', business_id)
       .single()
 
     if (bizError) throw bizError
+
+    const owner_name = business.owner_name ?? ''
+    const owner_email = business.owner_email ?? ''
+
+    if (!owner_name || !owner_email) {
+      return new Response(
+        JSON.stringify({ error: 'Owner name and email must be set in Business Profile before connecting Stripe.' }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      )
+    }
 
     let accountId = business.stripe_connect_id
 

@@ -821,10 +821,7 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
           'Authorization': 'Bearer $anonKey',
         },
         body: jsonEncode({
-          'business_id': businessId,
-          'amount_cents': amountCents,
-          'description': invoiceNum,
-          'customer_email': customerEmail,
+          'invoice_id': widget.invoiceId,
         }),
       );
 

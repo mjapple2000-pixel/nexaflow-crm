@@ -22,13 +22,49 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const { business_id } = await req.json()
+    // ── Resolve business_id server-side from the caller's own session ─────
+    // Superuser bypass: platform admins (rows in public.superusers) may
+    // pass business_id in the body to troubleshoot another business's
+    // Stripe balance. Everyone else gets their own business_id from their
+    // profile — client-supplied business_id is ignored for them.
+    const authHeader = req.headers.get('Authorization') ?? ''
+    const token = authHeader.replace('Bearer ', '')
+    const { data: { user }, error: authError } = await supabase.auth.getUser(token)
+    if (authError || !user) {
+      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+        status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      })
+    }
 
-    if (!business_id) {
-      return new Response(
-        JSON.stringify({ error: 'business_id is required' }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
-      )
+    const { data: suRow } = await supabase
+      .from('superusers')
+      .select('user_id')
+      .eq('user_id', user.id)
+      .maybeSingle()
+    const isSuperuser = !!suRow
+
+    const body = await req.json().catch(() => ({}))
+
+    let business_id: number | null = null
+    if (isSuperuser) {
+      business_id = body?.business_id ?? null
+      if (!business_id) {
+        return new Response(JSON.stringify({ error: 'business_id is required' }), {
+          status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        })
+      }
+    } else {
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('business_id')
+        .eq('user_id', user.id)
+        .maybeSingle()
+      if (!profile?.business_id) {
+        return new Response(JSON.stringify({ error: 'No business found' }), {
+          status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        })
+      }
+      business_id = profile.business_id
     }
 
     // Same lookup as get-connect-status — stripe_connect_id is the real

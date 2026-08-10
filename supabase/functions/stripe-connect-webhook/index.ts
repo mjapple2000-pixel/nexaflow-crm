@@ -12,13 +12,22 @@ const supabase = createClient(
   Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
 )
 
+// Uses constructEventAsync(): Deno's Edge Function runtime only exposes an
+// async SubtleCrypto provider, so the synchronous constructEvent() always
+// threw — every signature check was failing before the secret was ever
+// compared. Same class of bug found and fixed in stripe-webhook today.
+// This function's secret (STRIPE_CONNECT_WEBHOOK_SECRET) belongs to the
+// "nexaflow-connect-webhook" destination — leads paying businesses via
+// their own connected Stripe accounts. Do NOT confuse with
+// STRIPE_CONNECT_V2_WEBHOOK_SECRET, which belongs to stripe-webhook's
+// separate "nexaflow-connect-v2" destination.
 serve(async (req) => {
   const signature = req.headers.get('stripe-signature')
   const body = await req.text()
 
   let event: Stripe.Event
   try {
-    event = stripe.webhooks.constructEvent(
+    event = await stripe.webhooks.constructEventAsync(
       body,
       signature ?? '',
       Deno.env.get('STRIPE_CONNECT_WEBHOOK_SECRET') ?? '',
@@ -28,7 +37,7 @@ serve(async (req) => {
     return new Response(`Webhook signature failed: ${err}`, { status: 400 })
   }
 
-  // ── account.updated ────────────────────────────────────────────────
+  // ── account.updated ─────────────────────────────────
   if (event.type === 'account.updated') {
     const account = event.data.object as Stripe.Account
 
@@ -54,7 +63,7 @@ serve(async (req) => {
     console.log(`account.updated: ${account.id} charges=${chargesEnabled} payouts=${payoutsEnabled}`)
   }
 
-  // ── checkout.session.completed ─────────────────────────────────────
+  // ── checkout.session.completed ───────────────────────────
   // Fires on the connected account when a customer completes payment.
   // We match the invoice by amount and customer email within the business.
   if (event.type === 'checkout.session.completed') {
@@ -121,7 +130,7 @@ serve(async (req) => {
     }
   }
 
-  // ── payment_intent.succeeded ───────────────────────────────────────
+  // ── payment_intent.succeeded ───────────────────────────
   if (event.type === 'payment_intent.succeeded') {
     const intent = event.data.object as Stripe.PaymentIntent
 
@@ -139,8 +148,6 @@ serve(async (req) => {
     }
 
     if (paymentLink) {
-      const paidAt = new Date().toUTCString()
-
       // Mark payment link as paid
       await supabase
         .from('payment_links')
