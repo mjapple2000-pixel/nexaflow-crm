@@ -9,6 +9,7 @@ import '../theme/app_theme.dart';
 import '../widgets/clickable.dart';
 import '../widgets/invite_member_dialog.dart';
 import '../utils/business_utils.dart';
+import '../navigation/app_router.dart';
 import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 
 // ─────────────────────────────────────────────
@@ -4412,6 +4413,7 @@ class _PaymentOptionsSectionState
   String? _stripeAccountId;
   bool _stripeConnecting = false;
   bool _stripeManaging = false;
+  bool _testMode = false;
 
   @override
   void initState() {
@@ -4461,7 +4463,7 @@ class _PaymentOptionsSectionState
               'Content-Type': 'application/json',
               'Authorization': 'Bearer ${session?.accessToken ?? ''}',
             },
-            body: jsonEncode({'business_id': businessId}),
+            body: jsonEncode({'business_id': businessId, 'test_mode': _testMode}),
           );
           if (mounted && res.statusCode == 200) {
             final body = jsonDecode(res.body) as Map<String, dynamic>;
@@ -4489,7 +4491,7 @@ class _PaymentOptionsSectionState
           'Content-Type': 'application/json',
           'Authorization': 'Bearer ${session?.accessToken ?? ''}',
         },
-        body: jsonEncode({'business_id': businessId}),
+        body: jsonEncode({'business_id': businessId, 'test_mode': _testMode}),
       );
       if (!mounted) return;
       final body = jsonDecode(res.body) as Map<String, dynamic>;
@@ -4534,6 +4536,7 @@ class _PaymentOptionsSectionState
           'business_id': businessId,
           'owner_name': ownerName,
           'owner_email': ownerEmail,
+          'test_mode': _testMode,
         }),
       );
       if (!mounted) return;
@@ -4620,6 +4623,37 @@ class _PaymentOptionsSectionState
             ]),
           ),
           const SizedBox(height: 24),
+
+          // ── Superuser-only test mode toggle ───────────────────────
+          if (AppRouter.cachedIsSuperuser == true)
+            Container(
+              margin: const EdgeInsets.only(bottom: 12),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: Colors.orange.withValues(alpha: 0.06),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.orange.withValues(alpha: 0.3)),
+              ),
+              child: Row(children: [
+                const Icon(Icons.science_outlined, size: 15, color: Colors.orange),
+                const SizedBox(width: 8),
+                const Expanded(
+                  child: Text(
+                    'Test Mode (superuser only) — uses the sandbox Stripe key instead of live.',
+                    style: TextStyle(fontSize: 12, color: Colors.orange, fontWeight: FontWeight.w600),
+                  ),
+                ),
+                Switch(
+                  value: _testMode,
+                  onChanged: (v) {
+                    setState(() => _testMode = v);
+                    _loadStripeConnect();
+                  },
+                  activeColor: Colors.orange,
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+              ]),
+            ),
 
           // ── Stripe Connect card ──────────────────────────────────
           _StripeConnectCard(

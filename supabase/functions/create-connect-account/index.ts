@@ -5,7 +5,6 @@ const supabase = createClient(
   Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
 )
 
-const STRIPE_SECRET_KEY = Deno.env.get('STRIPE_SECRET_KEY') ?? ''
 const STRIPE_API_BASE = 'https://api.stripe.com'
 
 // Stripe deprecated the old beta-flag syntax (e.g. "2023-10-16;
@@ -13,11 +12,11 @@ const STRIPE_API_BASE = 'https://api.stripe.com'
 // dated version string. Current version per Stripe's versioning policy.
 const STRIPE_API_VERSION = '2026-07-29.dahlia'
 
-async function stripeV2Post(path: string, body: Record<string, unknown>) {
+async function stripeV2Post(path: string, body: Record<string, unknown>, apiKey: string) {
   const res = await fetch(`${STRIPE_API_BASE}${path}`, {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${STRIPE_SECRET_KEY}`,
+      'Authorization': `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
       'Stripe-Version': STRIPE_API_VERSION,
     },
@@ -37,15 +36,6 @@ Deno.serve(async (req) => {
   }
 
   try {
-    // ── Resolve business_id server-side from the caller's own session ─────
-    // Previously this endpoint had NO auth check at all, and trusted
-    // business_id, owner_name, and owner_email straight from the client —
-    // anyone could create a real Stripe Connect account and attach it to
-    // any business_id. Superuser bypass: platform admins (rows in
-    // public.superusers) may pass business_id in the body to set up
-    // Connect on another business's behalf. Everyone else gets their own
-    // business_id from their profile. owner_name/owner_email are now
-    // always read from the business record itself, never from the client.
     const authHeader = req.headers.get('Authorization') ?? ''
     const token = authHeader.replace('Bearer ', '')
     const { data: { user }, error: authError } = await supabase.auth.getUser(token)
@@ -63,6 +53,19 @@ Deno.serve(async (req) => {
     const isSuperuser = !!suRow
 
     const body = await req.json().catch(() => ({}))
+
+    // ── Test/live key split ──────────────────────────────────────────────
+    // STRIPE_SECRET_KEY (live) is the single source of truth for all real
+    // businesses' Stripe operations and must never be overwritten again.
+    // Sandbox/Connect testing now goes through a dedicated STRIPE_SECRET_KEY_TEST
+    // secret instead, opted into explicitly per-request via test_mode, and only
+    // for superusers — the same trust boundary already used for business_id
+    // overrides. This replaces the old single-slot key that caused the 8/11
+    // live-billing near-miss.
+    const useTestKey = isSuperuser && body?.test_mode === true
+    const stripeApiKey = useTestKey
+      ? (Deno.env.get('STRIPE_SECRET_KEY_TEST') ?? '')
+      : (Deno.env.get('STRIPE_SECRET_KEY') ?? '')
 
     let business_id: number | null = null
     if (isSuperuser) {
@@ -86,8 +89,6 @@ Deno.serve(async (req) => {
       business_id = profile.business_id
     }
 
-    // Check if already connected — also pull owner_name/owner_email from
-    // the business record itself, never trust these from the client.
     const { data: business, error: bizError } = await supabase
       .from('businesses')
       .select('stripe_connect_id, owner_name, owner_email')
@@ -106,9 +107,19 @@ Deno.serve(async (req) => {
       )
     }
 
+    // ── Environment-aware redirect base ──────────────────────────────────
+    // Previously hardcoded to the production domain, so local dev testing
+    // of the Connect onboarding redirect always landed on the live site
+    // instead of localhost. Now derived from the calling browser's Origin
+    // header, restricted to the production domain or a localhost dev port.
+    const origin = req.headers.get('origin') ?? ''
+    const isLocalDev = /^http:\/\/localhost:\d+$/.test(origin)
+    const platformUrl = (origin === 'https://nexaflow-crm.web.app' || isLocalDev)
+      ? origin
+      : 'https://nexaflow-crm.web.app'
+
     let accountId = business.stripe_connect_id
 
-    // Create V2 account if not already created
     if (!accountId) {
       const accountRes = await stripeV2Post('/v2/core/accounts', {
         display_name: owner_name,
@@ -131,7 +142,7 @@ Deno.serve(async (req) => {
             },
           },
         },
-      })
+      }, stripeApiKey)
 
       if (!accountRes.ok) {
         const err = await accountRes.json()
@@ -141,7 +152,6 @@ Deno.serve(async (req) => {
       const account = await accountRes.json()
       accountId = account.id
 
-      // Store on businesses table
       const { error: updateError } = await supabase
         .from('businesses')
         .update({ stripe_connect_id: accountId })
@@ -150,18 +160,17 @@ Deno.serve(async (req) => {
       if (updateError) throw updateError
     }
 
-    // Create V2 Account Link for onboarding
     const linkRes = await stripeV2Post('/v2/core/account_links', {
       account: accountId,
       use_case: {
         type: 'account_onboarding',
         account_onboarding: {
           configurations: ['merchant'],
-          refresh_url: 'https://nexaflow-crm.web.app/settings?stripe=refresh',
-          return_url: `https://nexaflow-crm.web.app/settings?stripe=success`,
+          refresh_url: `${platformUrl}/settings?stripe=refresh`,
+          return_url: `${platformUrl}/settings?stripe=success`,
         },
       },
-    })
+    }, stripeApiKey)
 
     if (!linkRes.ok) {
       const err = await linkRes.json()

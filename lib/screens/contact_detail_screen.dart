@@ -307,7 +307,7 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
     SnackBar(content: Text(msg), backgroundColor: AppTheme.brand,
         duration: const Duration(seconds: 2)));
 
-  Future<void> _sendPortalLink() async {
+  Future<void> _sendPortalLink(String channel) async {
     setState(() => _sendingPortalLink = true);
     try {
       final session = _db.auth.currentSession;
@@ -320,7 +320,7 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
           'Content-Type': 'application/json',
           'Authorization': 'Bearer ${session.accessToken}',
         },
-        body: jsonEncode({'lead_id': id}),
+        body: jsonEncode({'lead_id': id, 'channel': channel}),
       );
       if (!mounted) return;
       if (res.statusCode == 200) {
@@ -328,7 +328,9 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
         final url = body['portal_url'] as String;
         await Clipboard.setData(ClipboardData(text: url));
         setState(() => _portalLastSent = DateTime.now().toIso8601String());
-        _snack('Portal link sent via SMS and copied to clipboard.');
+        _snack(channel == 'email'
+            ? 'Portal link sent via email and copied to clipboard.'
+            : 'Portal link sent via SMS and copied to clipboard.');
       } else {
         final body = jsonDecode(res.body) as Map<String, dynamic>;
         _snack('Error: ${body['error'] ?? 'Failed to send portal link'}');
@@ -339,6 +341,47 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
     } finally {
       if (mounted) setState(() => _sendingPortalLink = false);
     }
+  }
+
+  Future<void> _showSendPortalLinkDialog() async {
+    final hasPhone = (_lead?['lead_phone'] as String?)?.isNotEmpty == true;
+    final hasEmail = (_lead?['lead_email'] as String?)?.isNotEmpty == true;
+    final channel = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.cardBg,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        title: const Text('Send Portal Link',
+            style: TextStyle(color: AppTheme.textPrimary, fontWeight: FontWeight.w700)),
+        content: const Text('How would you like to send this?',
+            style: TextStyle(color: AppTheme.textSecondary, fontSize: 13)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(),
+            child: const Text('Cancel', style: TextStyle(color: AppTheme.textSecondary)),
+          ),
+          TextButton(
+            onPressed: hasPhone
+                ? () => Navigator.of(ctx, rootNavigator: true).pop('sms')
+                : null,
+            child: const Text('Text (SMS)'),
+          ),
+          ElevatedButton(
+            onPressed: hasEmail
+                ? () => Navigator.of(ctx, rootNavigator: true).pop('email')
+                : null,
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.brand,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            child: const Text('Email'),
+          ),
+        ],
+      ),
+    );
+    if (channel == null || !mounted) return;
+    await _sendPortalLink(channel);
   }
 
   // ── HELPERS ───────────────────────────────────────────────────────────────
@@ -755,7 +798,7 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
             SizedBox(
               width: double.infinity,
               child: ElevatedButton.icon(
-                onPressed: _sendingPortalLink ? null : _sendPortalLink,
+                onPressed: _sendingPortalLink ? null : _showSendPortalLinkDialog,
                 icon: _sendingPortalLink
                     ? const SizedBox(
                         width: 13,

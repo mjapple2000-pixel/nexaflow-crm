@@ -1,11 +1,6 @@
 import { createClient } from 'npm:@supabase/supabase-js@2'
 import Stripe from 'npm:stripe@13'
 
-const stripe = new Stripe(Deno.env.get('STRIPE_SECRET_KEY') ?? '', {
-  apiVersion: '2023-08-16',
-  httpClient: Stripe.createFetchHttpClient(),
-})
-
 const supabase = createClient(
   Deno.env.get('SUPABASE_URL') ?? '',
   Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
@@ -27,11 +22,6 @@ Deno.serve(async (req) => {
   }
 
   try {
-    // ── Resolve business_id server-side from the caller's own session ─────
-    // Superuser bypass: platform admins (rows in public.superusers) may
-    // pass business_id in the body to troubleshoot another business's
-    // Stripe status. Everyone else gets their own business_id from their
-    // profile — client-supplied business_id is ignored for them.
     const authHeader = req.headers.get('Authorization') ?? ''
     const token = authHeader.replace('Bearer ', '')
     const { data: { user }, error: authError } = await supabase.auth.getUser(token)
@@ -49,6 +39,14 @@ Deno.serve(async (req) => {
     const isSuperuser = !!suRow
 
     const body = await req.json().catch(() => ({}))
+
+    // ── Test/live key split ── see create-connect-account for full rationale.
+    // Sandbox Connect testing now uses a dedicated STRIPE_SECRET_KEY_TEST
+    // secret, opted into per-request via test_mode, superuser-only.
+    const useTestKey = isSuperuser && body?.test_mode === true
+    const stripeApiKey = useTestKey
+      ? (Deno.env.get('STRIPE_SECRET_KEY_TEST') ?? '')
+      : (Deno.env.get('STRIPE_SECRET_KEY') ?? '')
 
     let business_id: number | null = null
     if (isSuperuser) {
@@ -72,7 +70,6 @@ Deno.serve(async (req) => {
       business_id = profile.business_id
     }
 
-    // Look up stripe_connect_id
     const { data: business, error: bizError } = await supabase
       .from('businesses')
       .select('stripe_connect_id, stripe_connect_onboarded, stripe_connect_ready')
@@ -88,12 +85,11 @@ Deno.serve(async (req) => {
       )
     }
 
-    // Retrieve live V2 account with capability details
     const accountRes = await fetch(
-      `https://api.stripe.com/v2/core/accounts/${business.stripe_connect_id}?include[]=requirements&include[]=configuration.merchant`,
+      `https://api.stripe.com/v2/core/accounts/${business.stripe_connect_id}?include[0]=requirements&include[1]=configuration.merchant`,
       {
         headers: {
-          'Authorization': `Bearer ${Deno.env.get('STRIPE_SECRET_KEY') ?? ''}`,
+          'Authorization': `Bearer ${stripeApiKey}`,
           'Stripe-Version': STRIPE_V2_API_VERSION,
         },
       }
@@ -107,7 +103,6 @@ Deno.serve(async (req) => {
     const onboarding_complete = summaryStatus == null || summaryStatus === 'eventually_due'
     const ready_to_charge = cardPaymentsStatus === 'active'
 
-    // Sync booleans back to businesses table if changed
     if (
       onboarding_complete !== business.stripe_connect_onboarded ||
       ready_to_charge !== business.stripe_connect_ready

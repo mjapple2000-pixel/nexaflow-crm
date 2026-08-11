@@ -1,4 +1,3 @@
-import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
 const corsHeaders = {
@@ -7,9 +6,22 @@ const corsHeaders = {
 };
 
 const BATCH_SIZE = 10;
+const CRON_SECRET = Deno.env.get('CRON_SECRET') ?? '';
 
-serve(async (req) => {
+Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
+
+  // Shared-secret check — see process-scheduled-automations for full
+  // rationale. Previously verify_jwt was false and this function never
+  // checked the Authorization header at all, despite the cron job
+  // embedding the live service-role key in plaintext for no functional
+  // reason — that key was never actually read.
+  const providedSecret = req.headers.get('x-cron-secret') ?? '';
+  if (!CRON_SECRET || providedSecret !== CRON_SECRET) {
+    return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+      status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    });
+  }
 
   try {
     const supabase = createClient(

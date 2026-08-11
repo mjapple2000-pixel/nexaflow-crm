@@ -1,4 +1,3 @@
-import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import Stripe from 'https://esm.sh/stripe@13.3.0?target=deno'
 
@@ -21,7 +20,7 @@ const supabase = createClient(
 // their own connected Stripe accounts. Do NOT confuse with
 // STRIPE_CONNECT_V2_WEBHOOK_SECRET, which belongs to stripe-webhook's
 // separate "nexaflow-connect-v2" destination.
-serve(async (req) => {
+Deno.serve(async (req) => {
   const signature = req.headers.get('stripe-signature')
   const body = await req.text()
 
@@ -37,7 +36,7 @@ serve(async (req) => {
     return new Response(`Webhook signature failed: ${err}`, { status: 400 })
   }
 
-  // ── account.updated ─────────────────────────────────
+  // ── account.updated ──
   if (event.type === 'account.updated') {
     const account = event.data.object as Stripe.Account
 
@@ -63,7 +62,7 @@ serve(async (req) => {
     console.log(`account.updated: ${account.id} charges=${chargesEnabled} payouts=${payoutsEnabled}`)
   }
 
-  // ── checkout.session.completed ───────────────────────────
+  // ── checkout.session.completed ──
   // Fires on the connected account when a customer completes payment.
   // We match the invoice by amount and customer email within the business.
   if (event.type === 'checkout.session.completed') {
@@ -112,6 +111,7 @@ serve(async (req) => {
                 status: 'paid',
                 paid_at: now,
                 updated_at: now,
+                amount_paid: amountTotal / 100,
               })
               .eq('id', invoice.id)
 
@@ -130,7 +130,7 @@ serve(async (req) => {
     }
   }
 
-  // ── payment_intent.succeeded ───────────────────────────
+  // ── payment_intent.succeeded ──
   if (event.type === 'payment_intent.succeeded') {
     const intent = event.data.object as Stripe.PaymentIntent
 
@@ -148,6 +148,8 @@ serve(async (req) => {
     }
 
     if (paymentLink) {
+      const amountReceived = intent.amount_received ?? intent.amount ?? 0
+
       // Mark payment link as paid
       await supabase
         .from('payment_links')
@@ -160,6 +162,7 @@ serve(async (req) => {
         .update({
           status: 'paid',
           paid_at: new Date().toISOString(),
+          amount_paid: amountReceived / 100,
         })
         .eq('id', paymentLink.invoice_id)
 

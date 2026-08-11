@@ -22,11 +22,41 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const { business_id, amount_cents, description, customer_email } = await req.json()
+    // ── Accept only invoice_id ── never business_id/amount_cents/description ──
+    // Previously this endpoint trusted business_id, amount_cents, and
+    // description directly from the client with no auth check and no tie
+    // to a real invoice at all — anyone could POST any business_id plus a
+    // made-up amount and create a real Stripe Checkout Session against
+    // that business's connected account, with the platform fee attached.
+    // Callers here are external leads paying a bill, so there's no Supabase
+    // session to check — the invoice_id itself, resolved server-side
+    // against a real unpaid invoice, is what makes this safe.
+    const { invoice_id } = await req.json()
 
-    if (!business_id || !amount_cents || !description || !customer_email) {
+    if (!invoice_id) {
       return new Response(
-        JSON.stringify({ error: 'business_id, amount_cents, description, and customer_email are required' }),
+        JSON.stringify({ error: 'invoice_id is required' }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      )
+    }
+
+    const { data: invoice, error: invError } = await supabase
+      .from('invoices')
+      .select('id, business_id, contact_id, amount_due, job_title, status')
+      .eq('id', invoice_id)
+      .is('deleted_at', null)
+      .single()
+
+    if (invError || !invoice) {
+      return new Response(
+        JSON.stringify({ error: 'Invoice not found.' }),
+        { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      )
+    }
+
+    if (!['approved', 'sent'].includes(invoice.status)) {
+      return new Response(
+        JSON.stringify({ error: 'This invoice is not payable in its current status.' }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       )
     }
@@ -35,7 +65,7 @@ Deno.serve(async (req) => {
     const { data: business, error: bizError } = await supabase
       .from('businesses')
       .select('stripe_connect_id, stripe_connect_ready, business_name')
-      .eq('id', business_id)
+      .eq('id', invoice.business_id)
       .single()
 
     if (bizError) throw bizError
@@ -54,6 +84,21 @@ Deno.serve(async (req) => {
       )
     }
 
+    // Customer email comes from the invoice's own linked lead — never from the client
+    let customer_email: string | undefined
+    if (invoice.contact_id) {
+      const { data: lead } = await supabase
+        .from('leads')
+        .select('lead_email')
+        .eq('id', invoice.contact_id)
+        .maybeSingle()
+      customer_email = lead?.lead_email ?? undefined
+    }
+
+    // amount_due is stored in dollars (numeric) — Stripe wants integer cents
+    const amount_cents = Math.round(Number(invoice.amount_due) * 100)
+    const description = invoice.job_title?.trim() ? invoice.job_title : 'Invoice payment'
+
     // Calculate platform fee
     const feePct = parseFloat(Deno.env.get('PLATFORM_FEE_PERCENT') ?? '1.0')
     const applicationFeeAmount = Math.round(amount_cents * (feePct / 100))
@@ -63,7 +108,7 @@ Deno.serve(async (req) => {
       {
         payment_method_types: ['card'],
         mode: 'payment',
-        customer_email: customer_email,
+        customer_email,
         line_items: [
           {
             quantity: 1,
@@ -87,6 +132,12 @@ Deno.serve(async (req) => {
         stripeAccount: business.stripe_connect_id,
       },
     )
+
+    // Track the session on the invoice for later reconciliation
+    await supabase
+      .from('invoices')
+      .update({ stripe_checkout_session_id: session.id })
+      .eq('id', invoice.id)
 
     return new Response(
       JSON.stringify({ url: session.url, session_id: session.id }),

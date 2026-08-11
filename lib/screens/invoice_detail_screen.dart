@@ -910,10 +910,12 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
     if (confirm != true) return;
     try {
       final now = DateTime.now().toUtc().toIso8601String();
+      final amountDue = ((_invoice?['amount_due'] as num?) ?? 0).toDouble();
       await _db.from('invoices').update({
-        'status':     'paid',
-        'paid_at':    now,
-        'updated_at': now,
+        'status':      'paid',
+        'paid_at':     now,
+        'updated_at':  now,
+        'amount_paid': amountDue,
       }).eq('id', widget.invoiceId);
       if (!mounted) return;
       await _load();

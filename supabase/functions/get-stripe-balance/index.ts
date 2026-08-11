@@ -1,7 +1,11 @@
 import { createClient } from 'npm:@supabase/supabase-js@2'
 import Stripe from 'npm:stripe@13'
 
-const stripe = new Stripe(Deno.env.get('STRIPE_SECRET_KEY') ?? '', {
+const stripeLive = new Stripe(Deno.env.get('STRIPE_SECRET_KEY') ?? '', {
+  apiVersion: '2023-08-16',
+  httpClient: Stripe.createFetchHttpClient(),
+})
+const stripeTest = new Stripe(Deno.env.get('STRIPE_SECRET_KEY_TEST') ?? '', {
   apiVersion: '2023-08-16',
   httpClient: Stripe.createFetchHttpClient(),
 })
@@ -44,6 +48,10 @@ Deno.serve(async (req) => {
     const isSuperuser = !!suRow
 
     const body = await req.json().catch(() => ({}))
+
+    // ── Test/live key split ── see create-connect-account for full rationale.
+    const useTestKey = isSuperuser && body?.test_mode === true
+    const stripe = useTestKey ? stripeTest : stripeLive
 
     let business_id: number | null = null
     if (isSuperuser) {

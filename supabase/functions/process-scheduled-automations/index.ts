@@ -2,6 +2,7 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const TWILIO_ACCOUNT_SID = Deno.env.get("TWILIO_ACCOUNT_SID")!;
 const TWILIO_AUTH_TOKEN = Deno.env.get("TWILIO_AUTH_TOKEN")!;
+const CRON_SECRET = Deno.env.get("CRON_SECRET") ?? "";
 
 async function dbFetch(path: string, options: RequestInit = {}) {
   const url = `${SUPABASE_URL}/rest/v1/${path}`;
@@ -218,7 +219,21 @@ async function processEnrollment(enrollment: any): Promise<void> {
   }).catch((e: any) => console.error("Log write failed:", e.message));
 }
 
-Deno.serve(async (_req) => {
+Deno.serve(async (req) => {
+  // Shared-secret check — this function is triggered by a scheduled
+  // pg_cron job, not a logged-in user. Previously (and still, on the other
+  // two cron-triggered functions until this same pass) verify_jwt was false
+  // AND the function itself never checked the Authorization header at all —
+  // meaning anyone who found the URL could trigger it, repeatedly, with zero
+  // authentication. This closes that gap.
+  const providedSecret = req.headers.get("x-cron-secret") ?? "";
+  if (!CRON_SECRET || providedSecret !== CRON_SECRET) {
+    return new Response(JSON.stringify({ error: "Unauthorized" }), {
+      status: 401,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
   try {
     const now = new Date().toISOString();
 
