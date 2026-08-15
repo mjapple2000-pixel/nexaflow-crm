@@ -1,14 +1,20 @@
 import { createClient } from 'npm:@supabase/supabase-js@2'
 import Stripe from 'npm:stripe@13'
 
-const stripe = new Stripe(Deno.env.get('STRIPE_SECRET_KEY') ?? '', {
+const stripeLive = new Stripe(Deno.env.get('STRIPE_SECRET_KEY') ?? '', {
+  apiVersion: '2023-08-16',
+  httpClient: Stripe.createFetchHttpClient(),
+})
+const stripeTest = new Stripe(Deno.env.get('STRIPE_SECRET_KEY_TEST') ?? '', {
   apiVersion: '2023-08-16',
   httpClient: Stripe.createFetchHttpClient(),
 })
 
+const secretKeys = JSON.parse(Deno.env.get('SUPABASE_SECRET_KEYS') ?? '{}')
+
 const supabase = createClient(
   Deno.env.get('SUPABASE_URL') ?? '',
-  Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
+  secretKeys.nexaflow_service_role_2026_08 ?? '',
 )
 
 Deno.serve(async (req) => {
@@ -103,35 +109,53 @@ Deno.serve(async (req) => {
     const feePct = parseFloat(Deno.env.get('PLATFORM_FEE_PERCENT') ?? '1.0')
     const applicationFeeAmount = Math.round(amount_cents * (feePct / 100))
 
-    // Create Checkout Session using Direct Charge on connected account
-    const session = await stripe.checkout.sessions.create(
-      {
-        payment_method_types: ['card'],
-        mode: 'payment',
-        customer_email,
-        line_items: [
-          {
-            quantity: 1,
-            price_data: {
-              currency: 'usd',
-              unit_amount: amount_cents,
-              product_data: {
-                name: description,
-                description: `Payment to ${business.business_name ?? 'your service provider'}`,
-              },
+    const sessionParams = {
+      payment_method_types: ['card'],
+      mode: 'payment' as const,
+      customer_email,
+      line_items: [
+        {
+          quantity: 1,
+          price_data: {
+            currency: 'usd',
+            unit_amount: amount_cents,
+            product_data: {
+              name: description,
+              description: `Payment to ${business.business_name ?? 'your service provider'}`,
             },
           },
-        ],
-        payment_intent_data: {
-          application_fee_amount: applicationFeeAmount,
         },
-        success_url: `https://nexaflow-crm.web.app/payment-success?session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `https://nexaflow-crm.web.app/payment-cancelled`,
+      ],
+      payment_intent_data: {
+        application_fee_amount: applicationFeeAmount,
       },
-      {
+      success_url: `https://nexaflow-crm.web.app/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `https://nexaflow-crm.web.app/payment-cancelled`,
+    }
+
+    // Try the live key first (the normal case for every real business).
+    // Some connected accounts in our system were created under a Stripe
+    // TEST-mode key during earlier development/testing — Stripe rejects
+    // those with a specific "created with a testmode key" error when called
+    // with the live key. Rather than fail outright, detect exactly that
+    // error and transparently retry once with the test key, so test-mode
+    // connected accounts keep working without needing a special flag from
+    // an unauthenticated caller (there's no Supabase session on this
+    // endpoint — callers are external leads paying a bill).
+    let session
+    try {
+      session = await stripeLive.checkout.sessions.create(sessionParams, {
         stripeAccount: business.stripe_connect_id,
-      },
-    )
+      })
+    } catch (err) {
+      const message = (err as Error).message ?? ''
+      const isTestModeAccountError = message.includes('was a test account created with a testmode key')
+      if (!isTestModeAccountError) throw err
+      console.log('Connected account is test-mode — retrying with test key:', business.stripe_connect_id)
+      session = await stripeTest.checkout.sessions.create(sessionParams, {
+        stripeAccount: business.stripe_connect_id,
+      })
+    }
 
     // Track the session on the invoice for later reconciliation
     await supabase

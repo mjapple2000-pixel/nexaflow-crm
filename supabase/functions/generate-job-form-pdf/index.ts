@@ -8,7 +8,7 @@ const corsHeaders = {
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
-  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
+  JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") ?? "{}").nexaflow_service_role_2026_08
 );
 
 const BUCKET = "job-form-media";
@@ -889,7 +889,7 @@ Deno.serve(async (req) => {
       }
     }
 
-    // ── Header ──────────────────────────────────────────────────────────────
+    // ── Header ──────────────────────────────────────────────────────
     const headerLine = [appointmentInfo?.appointment_type, appointmentInfo?.lead_name].filter(Boolean).join("  —  ");
     const contactParts: string[] = [];
     if (showCompanyPhone && businessRow?.business_phone) contactParts.push(businessRow.business_phone);
@@ -959,7 +959,7 @@ Deno.serve(async (req) => {
 
     y = PAGE_H - bandHeight - 28;
 
-    // ── Fields ──────────────────────────────────────────────────────────────
+    // ── Fields ───────────────────────────────────────────────────────
     // Same "differs from the field before it" grouping logic already used
     // in the Builder and Fill Screen — a visual separator only, not a
     // forced page break, so a short section doesn't waste a page. Fields
@@ -1059,7 +1059,7 @@ Deno.serve(async (req) => {
       y -= 14;
     }
 
-    // ── Signature ───────────────────────────────────────────────────────────
+    // ── Signature ────────────────────────────────────────────────
     if (submission.signature_url) {
       newPageIfNeeded(160);
       y -= 10;

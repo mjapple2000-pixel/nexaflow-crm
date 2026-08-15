@@ -7,7 +7,7 @@ const corsHeaders = {
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
-  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
+  JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") ?? "{}").nexaflow_service_role_2026_08
 );
 
 Deno.serve(async (req) => {
@@ -40,14 +40,14 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ── 2. Touch last_used_at ────────────────────────────────────────────────
+    // ── 2. Touch last_used_at ───────────────────────────────────────────
     supabase
       .from("employee_hub_tokens")
       .update({ last_used_at: new Date().toISOString() })
       .eq("id", hubToken.id)
       .then(() => {});
 
-    // ── 3. Load profile ──────────────────────────────────────────────────────
+    // ── 3. Load profile ──────────────────────────────────────────────────
     const { data: profile, error: profileError } = await supabase
       .from("profiles")
       .select("id, user_id, full_name, role, location_sharing_enabled")
@@ -68,7 +68,7 @@ Deno.serve(async (req) => {
       );
     }
 
-    // ── 4. Load business ─────────────────────────────────────────────────────
+    // ── 4. Load business ────────────────────────────────────────────────
     const { data: business, error: businessError } = await supabase
       .from("businesses")
       .select("business_name, require_location_on_clock, gps_tracking_enabled")
@@ -79,7 +79,7 @@ Deno.serve(async (req) => {
       console.error("get-employee-hub-data business lookup error:", businessError);
     }
 
-    // ── 5. Active time entry ─────────────────────────────────────────────────
+    // ── 5. Active time entry ─────────────────────────────────────────────
     const { data: activeEntry } = await supabase
       .from("time_entries")
       .select("*")
@@ -88,7 +88,7 @@ Deno.serve(async (req) => {
       .is("deleted_at", null)
       .maybeSingle();
 
-    // ── 6. Today's assigned appointments ────────────────────────────────────
+    // ── 6. Today's assigned appointments ──────────────────────────
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
     const todayEnd = new Date();
@@ -99,7 +99,7 @@ Deno.serve(async (req) => {
 
     const { data: appointments, error: apptError } = await supabase
       .from("appointments")
-      .select("id, appointment_type, start_date_time, status, lead_name, location")
+      .select("id, appointment_type, start_date_time, status, lead_name, location, notes")
       .eq("business_id", hubToken.business_id)
       .eq("assigned_to", profile.full_name)
       .gte("start_date_time", todayStart.toISOString())
@@ -111,17 +111,9 @@ Deno.serve(async (req) => {
     }
 
     // ── 6a2. Appointments with outstanding (non-completed) job forms, any date ──
-    // A form reopened via "Send Back to Field for Correction" resets its
-    // submission status away from 'completed', but by then the
-    // appointment's original date has often already passed — without
-    // this, the reopened form would fall out of the today-only
-    // appointments query AND out of the completed-only past-forms query,
-    // vanishing from the tech's hub entirely. The same fix also covers a
-    // form that was simply never touched before its scheduled date
-    // passed — it now stays visible until it's actually completed.
     const { data: outstandingAppts, error: outstandingApptsError } = await supabase
       .from("appointments")
-      .select("id, appointment_type, start_date_time, status, lead_name, location")
+      .select("id, appointment_type, start_date_time, status, lead_name, location, notes")
       .eq("business_id", hubToken.business_id)
       .eq("assigned_to_profile_id", profile.id);
 
@@ -152,16 +144,13 @@ Deno.serve(async (req) => {
       .map((id) => outstandingApptsById.get(id))
       .filter((a): a is NonNullable<typeof a> => a != null);
 
-    // Today's appointments first, then anything older still carrying an
-    // open form, oldest of those last — keeps the list roughly
-    // chronological without disturbing today's existing ordering.
     const allAppointments = [
       ...(appointments ?? []),
       ...extraAppts.sort((a: any, b: any) =>
         new Date(b.start_date_time ?? 0).getTime() - new Date(a.start_date_time ?? 0).getTime()),
     ];
 
-    // ── 6b. Job forms attached to today's + outstanding appointments ────────
+    // ── 6b. Job forms attached to today's + outstanding appointments ────
     const apptIds = allAppointments.map((a: any) => a.id);
     let jobFormsByAppt = new Map<number, any[]>();
     if (apptIds.length > 0) {
@@ -188,11 +177,6 @@ Deno.serve(async (req) => {
         formsById = new Map((forms ?? []).map((f: any) => [f.id, f]));
       }
 
-      // One grouped query for every required marker's actual photo count
-      // across all these submissions, instead of a query per marker per
-      // submission — keyed by "submissionId:markerId" so countRequired
-      // can look up a specific marker's photo count for a specific
-      // submission in O(1).
       const submissionIds = (submissions ?? []).map((s: any) => s.id);
       const markerPhotoCounts = new Map<string, number>();
       if (submissionIds.length > 0) {
@@ -210,11 +194,6 @@ Deno.serve(async (req) => {
         }
       }
 
-      // Mirrors job_form_fill_screen.dart's _missingRequiredLabels exactly
-      // — required text/number/checkbox/select/photo fields, required
-      // photo markers, and the signature if requires_signature — so the
-      // Employee Hub badge never disagrees with what actually blocks the
-      // tech from tapping "Complete Job Form".
       function countRequired(form: any, sub: any): { total: number; missing: number } {
         const fields: any[] = form?.fields ?? [];
         const answers = sub.answers ?? {};
@@ -269,9 +248,7 @@ Deno.serve(async (req) => {
       }
     }
 
-    // ── 6c. Past completed job forms for this tech (any date) ───────────────
-    // Based on the appointment's *current* assignment, not who originally completed it,
-    // so reassigning a form moves it between techs' hubs correctly.
+    // ── 6c. Past completed job forms for this tech (any date) ─────────
     const { data: assignedAppts, error: assignedApptsError } = await supabase
       .from("appointments")
       .select("id, appointment_type, lead_name")
@@ -323,7 +300,7 @@ Deno.serve(async (req) => {
       }
     }
 
-    // ── 7. Today's assigned route (if a dispatcher has built one) ───────────
+    // ── 7. Today's assigned route (if a dispatcher has built one) ─────
     const routeDateStr = todayStart.toISOString().slice(0, 10);
     const { data: route, error: routeError } = await supabase
       .from("routes")
@@ -385,6 +362,7 @@ Deno.serve(async (req) => {
           status: a.status,
           lead_name: a.lead_name,
           lead_address: a.location,
+          notes: a.notes,
           job_forms: jobFormsByAppt.get(a.id) ?? [],
         })),
         past_job_forms: pastJobForms,

@@ -1,5 +1,6 @@
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SUPABASE_SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const secretKeys = JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") ?? "{}");
+const SUPABASE_SERVICE_KEY = secretKeys.nexaflow_service_role_2026_08 ?? "";
 const TWILIO_ACCOUNT_SID = Deno.env.get("TWILIO_ACCOUNT_SID")!;
 const TWILIO_AUTH_TOKEN = Deno.env.get("TWILIO_AUTH_TOKEN")!;
 const CRON_SECRET = Deno.env.get("CRON_SECRET") ?? "";
@@ -10,7 +11,6 @@ async function dbFetch(path: string, options: RequestInit = {}) {
     ...options,
     headers: {
       "apikey": SUPABASE_SERVICE_KEY,
-      "Authorization": `Bearer ${SUPABASE_SERVICE_KEY}`,
       "Content-Type": "application/json",
       "Prefer": "return=representation",
       ...(options.headers || {}),

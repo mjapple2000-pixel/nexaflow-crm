@@ -20,7 +20,7 @@ Deno.serve(async (req) => {
     }
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-    const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+    const serviceRoleKey = JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") ?? "{}").nexaflow_service_role_2026_08;
 
     const supabaseAuth = createClient(supabaseUrl, Deno.env.get("SUPABASE_ANON_KEY")!, {
       global: { headers: { Authorization: authHeader } },
@@ -35,18 +35,35 @@ Deno.serve(async (req) => {
 
     const supabase = createClient(supabaseUrl, serviceRoleKey);
 
-    // ── Caller must be owner/admin of the target's business ───────────────────
-    const { data: callerProfile } = await supabase
-      .from("profiles")
-      .select("business_id, role")
+    // ── Superuser bypass — same pattern as get-connect-status /
+    // force-clock-out. The superuser account intentionally has no
+    // profiles row, so it can't pass the normal owner/admin-of-business
+    // check below; a confirmed superusers-table row skips that check
+    // entirely and trusts business_id as it comes from the target
+    // profile itself instead.
+    const { data: suRow } = await supabase
+      .from("superusers")
+      .select("user_id")
       .eq("user_id", userData.user.id)
-      .single();
+      .maybeSingle();
+    const isSuperuser = !!suRow;
 
-    if (!callerProfile || (callerProfile.role !== "owner" && callerProfile.role !== "admin")) {
-      return new Response(JSON.stringify({ error: "Not authorized" }), {
-        status: 403,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+    let callerBusinessId: number | null = null;
+
+    if (!isSuperuser) {
+      const { data: callerProfile } = await supabase
+        .from("profiles")
+        .select("business_id, role")
+        .eq("user_id", userData.user.id)
+        .single();
+
+      if (!callerProfile || (callerProfile.role !== "owner" && callerProfile.role !== "admin")) {
+        return new Response(JSON.stringify({ error: "Not authorized" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      callerBusinessId = callerProfile.business_id;
     }
 
     const { profile_id } = await req.json();
@@ -63,7 +80,11 @@ Deno.serve(async (req) => {
       .eq("id", profile_id)
       .single();
 
-    if (targetError || !targetProfile || targetProfile.business_id !== callerProfile.business_id) {
+    if (
+      targetError ||
+      !targetProfile ||
+      (!isSuperuser && targetProfile.business_id !== callerBusinessId)
+    ) {
       return new Response(JSON.stringify({ error: "Team member not found" }), {
         status: 404,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -77,7 +98,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ── Revoke existing tokens, issue a new one ────────────────────────────────
+    // ── Revoke existing tokens, issue a new one ────────────────────────
     await supabase
       .from("employee_hub_tokens")
       .update({ revoked_at: new Date().toISOString() })

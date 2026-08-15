@@ -10,7 +10,8 @@ Deno.serve(async (req) => {
 
   try {
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!
-    const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+    const secretKeys = JSON.parse(Deno.env.get('SUPABASE_SECRET_KEYS') ?? '{}')
+    const serviceRoleKey = secretKeys.nexaflow_service_role_2026_08 ?? ''
 
     // Fetch all beta businesses with their contact info
     const res = await fetch(
@@ -18,7 +19,6 @@ Deno.serve(async (req) => {
       {
         headers: {
           'apikey': serviceRoleKey,
-          'Authorization': `Bearer ${serviceRoleKey}`,
         },
       }
     )

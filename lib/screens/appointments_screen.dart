@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:go_router/go_router.dart';
 import '../theme/app_theme.dart';
 import '../widgets/clickable.dart';
 import 'package:http/http.dart' as http;
@@ -71,12 +72,31 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
     'New','Confirmed','Showed','No-Show','Cancelled','Completed','Invalid','Rescheduled',
   ];
 
+  bool _autoOpenedFromLink = false;
+
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 3, vsync: this);
-    _load();
+    _load().then((_) => _checkDeepLink());
     WidgetsBinding.instance.addObserver(_observer);
+  }
+
+  // Opens a specific appointment automatically when arriving via a
+  // Recommended Action link (?appointmentId=...) instead of just landing
+  // on the general calendar view.
+  void _checkDeepLink() {
+    if (_autoOpenedFromLink || !mounted) return;
+    final idParam = GoRouterState.of(context).uri.queryParameters['appointmentId'];
+    final id = int.tryParse(idParam ?? '');
+    if (id == null) return;
+    _autoOpenedFromLink = true;
+    final match = _appointments.where((a) => a['id'] == id).toList();
+    if (match.isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _showAppointmentDetail(match.first);
+      });
+    }
   }
   @override
   void didChangeDependencies() {
@@ -4366,6 +4386,27 @@ class _AppointmentFormTabState extends State<_AppointmentFormTab> {
     setState(() { _saving = true; _error = null; });
     try {
       final userId = _db.auth.currentUser?.id;
+
+      // JG-17 write-through: if an existing lead was selected, any edits
+      // made to name/phone/email on this form update that lead's real
+      // record too, not just this new appointment's own copy — same
+      // reasoning as the Edit Appointment sheet, so the two never diverge
+      // from the moment this appointment is created.
+      if (_selectedLeadId != null) {
+        final leadId = int.tryParse(_selectedLeadId!);
+        if (leadId != null) {
+          try {
+            await _db.from('leads').update({
+              'lead_name':  _contactCtrl.text.trim(),
+              'lead_phone': _phoneCtrl.text.trim(),
+              'lead_email': _emailCtrl.text.trim(),
+            }).eq('id', leadId);
+          } catch (e) {
+            debugPrint('Write-through to lead error: $e');
+          }
+        }
+      }
+
       final payload = {
         'appointment_name': _titleCtrl.text.trim(),
         'appointment_type': _type,
@@ -6056,6 +6097,28 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
       // page relies on this being set/cleared in sync with Cancelled status.
       final wasCancelled = (widget.appointment['status'] ?? '').toString().toLowerCase() == 'cancelled';
       final isCancelled  = _status.toLowerCase() == 'cancelled';
+
+      // JG-17 write-through: when this appointment has a linked lead, the
+      // phone/name/email fields edited here are the actual contact record,
+      // not just this appointment's own copy — write them to leads first so
+      // there is never a case where editing here silently diverges from the
+      // live contact (the bug that caused a stale phone number on the "On My
+      // Way" text tonight). appointments.lead_name/phone/email still get
+      // updated too, right alongside, so the frozen fallback captured by
+      // appointment_contact_info stays reasonably fresh if this lead is ever
+      // deleted later — it's just no longer the only writable copy.
+      final leadId = widget.appointment['lead_id'] as int?;
+      if (leadId != null) {
+        try {
+          await _db.from('leads').update({
+            'lead_name':  _leadNameCtrl.text.trim(),
+            'lead_phone': _leadPhoneCtrl.text.trim(),
+            'lead_email': _leadEmailCtrl.text.trim(),
+          }).eq('id', leadId);
+        } catch (e) {
+          debugPrint('Write-through to lead error: $e');
+        }
+      }
 
       await _db.from('appointments').update({
         'appointment_name': _nameCtrl.text.trim(),

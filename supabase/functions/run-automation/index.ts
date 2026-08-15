@@ -1,5 +1,6 @@
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SUPABASE_SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const SUPABASE_SECRET_KEYS = JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") ?? "{}");
+const SUPABASE_SERVICE_KEY = SUPABASE_SECRET_KEYS.nexaflow_service_role_2026_08 ?? "";
 const TWILIO_ACCOUNT_SID = Deno.env.get("TWILIO_ACCOUNT_SID")!;
 const TWILIO_AUTH_TOKEN = Deno.env.get("TWILIO_AUTH_TOKEN")!;
 const NOTIFY_OWNER_WEBHOOK = Deno.env.get("NOTIFY_OWNER_WEBHOOK") ?? "";
@@ -16,7 +17,6 @@ async function dbFetch(path: string, options: RequestInit = {}) {
     ...options,
     headers: {
       "apikey": SUPABASE_SERVICE_KEY,
-      "Authorization": `Bearer ${SUPABASE_SERVICE_KEY}`,
       "Content-Type": "application/json",
       "Prefer": "return=representation",
       ...(options.headers || {}),
@@ -78,7 +78,7 @@ async function runAction(
   const type = action.type;
 
   try {
-    // ── send_sms — sends to the lead ──────────────────────────
+    // ── send_sms — sends to the lead ─────────────────────
     if (type === "send_sms") {
       const to = payload.phone || payload.lead_phone;
       const body = (action.message || "Hi {{name}}, thanks for reaching out to {{business}}! We'll be in touch shortly.")
@@ -109,7 +109,7 @@ async function runAction(
       return { action: type, status: "success" };
     }
 
-    // ── notify_owner — emails the business owner ────────────────────────────
+    // ── notify_owner — emails the business owner ─────────────────────
     if (type === "notify_owner") {
       if (!NOTIFY_OWNER_WEBHOOK) {
         return { action: type, status: "skipped", error: "No notify owner webhook configured" };
@@ -144,13 +144,13 @@ async function runAction(
       return { action: type, status: "success" };
     }
 
-    // ── send_email — placeholder, wire up later ───────────────────
+    // ── send_email — placeholder, wire up later ─────────────
     if (type === "send_email") {
       console.log("send_email action (not yet implemented):", action, payload);
       return { action: type, status: "skipped", error: "send_email not yet implemented" };
     }
 
-    // ── add_tag ───────────────────────────────────────
+    // ── add_tag ───────────────────────
     if (type === "add_tag") {
       const leadId = payload.lead_id;
       if (!leadId) return { action: type, status: "skipped", error: "No lead_id" };
@@ -166,7 +166,7 @@ async function runAction(
       return { action: type, status: "success" };
     }
 
-    // ── move_pipeline_stage ─────────────────────────────
+    // ── move_pipeline_stage ──────────────────
     if (type === "move_pipeline_stage") {
       const leadId = payload.lead_id;
       const stageId = action.stage_id;
@@ -180,7 +180,7 @@ async function runAction(
       return { action: type, status: "success" };
     }
 
-    // ── send_review_request ────────────────────────────
+    // ── send_review_request ──────────────────
     if (type === "send_review_request") {
       const to = payload.phone || payload.lead_phone;
       if (!to) return { action: type, status: "skipped", error: "No phone number in payload" };
@@ -236,7 +236,7 @@ async function runAction(
       return { action: type, status: "success" };
     }
 
-    // ── wait_until — fixed delay in minutes ──────────────────────
+    // ── wait_until — fixed delay in minutes ────────────────
     if (type === "wait_until") {
       // Handled by enrollment creation in main loop — skip here
       return { action: type, status: "scheduled" };
@@ -292,7 +292,7 @@ Deno.serve(async (req) => {
       for (let i = 0; i < actions.length; i++) {
         const action = actions[i];
 
-        // ── Hit a wait action — create enrollment and stop executing ───────
+        // ── Hit a wait action — create enrollment and stop executing ───
         if (action.type === "wait_until" || action.type === "delay_relative_to_appointment") {
           let nextRunAt: string | null = null;
 
@@ -342,7 +342,7 @@ Deno.serve(async (req) => {
           continue;
         }
 
-        // ── Normal action — execute immediately ────────────────────
+        // ── Normal action — execute immediately ────────────
         const result = await runAction(action, payload, business, trigger_type);
         actionsRun.push(result);
       }

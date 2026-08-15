@@ -9,6 +9,7 @@ import 'dart:js_interop';
 import 'package:web/web.dart' as web;
 import '../theme/app_theme.dart';
 import '../utils/business_utils.dart';
+import 'package:nexaflow/config/supabase_config.dart';
 
 // ─────────────────────────────────────────────
 //  MODEL
@@ -182,7 +183,7 @@ class _BusinessContactsScreenState extends State<BusinessContactsScreen> {
   final _sources  = ['All', 'Vendor', 'Referral', 'Manual', 'Import', 'Other'];
 
   static const _supabaseUrl = 'https://rllriopqojaraceytdno.supabase.co';
-  static const _anonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJsbHJpb3Bxb2phcmFjZXl0ZG5vIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzczOTQzMzgsImV4cCI6MjA5Mjk3MDMzOH0.BxTbaRRD_xc88gyWBm5k7ZVVGP8c3CqW5U8aXBmXPMw';
+  static const _anonKey = SupabaseConfig.anonKey;
 
   @override
   void initState() {

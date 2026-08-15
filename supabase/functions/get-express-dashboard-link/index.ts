@@ -10,9 +10,11 @@ const stripeTest = new Stripe(Deno.env.get('STRIPE_SECRET_KEY_TEST') ?? '', {
   httpClient: Stripe.createFetchHttpClient(),
 })
 
+const secretKeys = JSON.parse(Deno.env.get('SUPABASE_SECRET_KEYS') ?? '{}')
+
 const supabase = createClient(
   Deno.env.get('SUPABASE_URL') ?? '',
-  Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
+  secretKeys.nexaflow_service_role_2026_08 ?? '',
 )
 
 Deno.serve(async (req) => {

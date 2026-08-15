@@ -1,4 +1,4 @@
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { createClient } from 'npm:@supabase/supabase-js@2'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -12,25 +12,32 @@ Deno.serve(async (req) => {
 
   try {
     const url = new URL(req.url)
-    // URL pattern: /handle-trigger-link/TOKEN/LEAD_ID
+    // URL pattern: https://.../functions/v1/handle-trigger-link/TOKEN/LEAD_ID
     const parts = url.pathname.split('/').filter(Boolean)
-    // parts: ['handle-trigger-link', 'TOKEN', 'LEAD_ID']
-    const token = parts[1]
-    const leadId = parts[2] ? parseInt(parts[2]) : null
+    const fnIndex = parts.indexOf('handle-trigger-link')
+    const token = fnIndex >= 0 ? parts[fnIndex + 1] : undefined
+    const leadId = (fnIndex >= 0 && parts[fnIndex + 2]) ? parseInt(parts[fnIndex + 2]) : null
 
     if (!token) {
       return new Response('Invalid link', { status: 400 })
     }
 
+    const secretKeys = JSON.parse(Deno.env.get('SUPABASE_SECRET_KEYS') ?? '{}')
+
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
+      secretKeys.nexaflow_service_role_2026_08 ?? '',
     )
 
     // 1. Look up the trigger link by token
+    // NOTE: click_count is explicitly included here — it was previously
+    // missing from this select, so triggerLink.click_count was always
+    // undefined below, (undefined + 1) computed NaN, and NaN silently
+    // serialized to null on save — meaning every real click was zeroing
+    // this counter out instead of incrementing it.
     const { data: triggerLink, error: linkError } = await supabase
       .from('trigger_links')
-      .select('id, business_id, name, token, redirect_url, automation_id, automations(id, name, actions)')
+      .select('id, business_id, name, token, redirect_url, automation_id, click_count, automations(id, name, actions)')
       .eq('token', token)
       .single()
 
@@ -52,7 +59,7 @@ Deno.serve(async (req) => {
     // 3. Increment click count
     await supabase
       .from('trigger_links')
-      .update({ click_count: (triggerLink as any).click_count + 1 })
+      .update({ click_count: ((triggerLink as any).click_count ?? 0) + 1 })
       .eq('id', triggerLink.id)
 
     // 4. Fire automation actions if linked
@@ -80,8 +87,7 @@ Deno.serve(async (req) => {
   }
 })
 
-// ── Action executor ───────────────────────────────────────────────────────────
-// Mirrors the automations engine — extend action types here as you add more
+// ── Action executor ───────────────────────────────────────────────────────────────
 async function _executeAction(
   supabase: any,
   action: any,
@@ -92,7 +98,6 @@ async function _executeAction(
 
   switch (type) {
 
-    // Add a tag to the lead
     case 'add_tag': {
       const tag: string = action.tag ?? ''
       if (!tag) break
@@ -111,7 +116,6 @@ async function _executeAction(
       break
     }
 
-    // Remove a tag from the lead
     case 'remove_tag': {
       const tag: string = action.tag ?? ''
       if (!tag) break
@@ -128,7 +132,6 @@ async function _executeAction(
       break
     }
 
-    // Update lead status
     case 'update_status': {
       const status: string = action.status ?? ''
       if (!status) break
@@ -139,7 +142,6 @@ async function _executeAction(
       break
     }
 
-    // Update lead field (generic)
     case 'update_field': {
       const field: string = action.field ?? ''
       const value = action.value
@@ -151,12 +153,10 @@ async function _executeAction(
       break
     }
 
-    // Send SMS via Twilio (fires outbound_messages webhook or direct insert)
     case 'send_sms': {
       const messageBody: string = action.message ?? ''
       if (!messageBody) break
 
-      // Look up lead name/phone
       const { data: lead } = await supabase
         .from('leads')
         .select('lead_name, lead_phone')
@@ -164,8 +164,6 @@ async function _executeAction(
         .single()
       if (!lead?.lead_phone) break
 
-      // Find conversation — key by lead_id, the lead's permanent identity.
-      // Ordered + limited to 1 so it's resilient even if duplicate rows exist.
       const { data: convMatches } = await supabase
         .from('conversations')
         .select('id')
@@ -177,8 +175,6 @@ async function _executeAction(
       let convId = convMatches?.[0]?.id ?? null
 
       if (!convId) {
-        // No conversation exists yet for this lead — create one so the
-        // automation SMS isn't silently dropped.
         const { data: newConv } = await supabase
           .from('conversations')
           .insert({
@@ -196,7 +192,6 @@ async function _executeAction(
       }
 
       if (convId) {
-        // Insert outbound message — Twilio realtime function will pick this up
         await supabase.from('messages').insert({
           conversation_id: convId,
           business_id: businessId,
@@ -205,13 +200,12 @@ async function _executeAction(
           channel: 'sms',
           status: 'sending',
           sender_name: 'Automation',
-          sent_via_twiml: false, // let outbound webhook send it
+          sent_via_twiml: false,
         })
       }
       break
     }
 
-    // Enroll in another automation
     case 'enroll_automation': {
       const targetAutomationId: number = action.automation_id
       if (!targetAutomationId) break
@@ -225,7 +219,6 @@ async function _executeAction(
       break
     }
 
-    // Log to automation_logs for audit trail
     case 'log': {
       await supabase.from('automation_logs').insert({
         business_id: businessId,

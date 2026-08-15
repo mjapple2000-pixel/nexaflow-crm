@@ -1,4 +1,4 @@
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { createClient } from 'npm:@supabase/supabase-js@2'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -22,7 +22,8 @@ Deno.serve(async (req) => {
 
     const supabaseUrl  = Deno.env.get('SUPABASE_URL')  ?? ''
     const anonKey      = Deno.env.get('SUPABASE_ANON_KEY') ?? ''
-    const serviceKey   = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+    const secretKeys   = JSON.parse(Deno.env.get('SUPABASE_SECRET_KEYS') ?? '{}')
+    const serviceKey   = secretKeys.nexaflow_service_role_2026_08 ?? ''
 
     // User-scoped client — validates the JWT and respects RLS
     const userClient = createClient(supabaseUrl, anonKey, {

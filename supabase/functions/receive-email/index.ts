@@ -1,9 +1,11 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
+const secretKeys = JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") ?? "{}");
+
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
-  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
+  secretKeys.nexaflow_service_role_2026_08 ?? ""
 );
 
 const OPENAI_API_KEY       = Deno.env.get("OPENAI_API_KEY")!;
@@ -11,7 +13,7 @@ const MAILGUN_API_KEY      = Deno.env.get("MAILGUN_API_KEY")!;
 const MAILGUN_DOMAIN       = Deno.env.get("MAILGUN_DOMAIN")!;
 const NOTIFY_OWNER_WEBHOOK = Deno.env.get("NOTIFY_OWNER_WEBHOOK") ?? "";
 
-// ── Send email via Mailgun ────────────────────────────────────────────────────
+// ── Send email via Mailgun ───────────────────────────────────────────────────
 async function sendEmail(opts: { to: string; from: string; replyTo: string; subject: string; text: string }) {
   const creds = btoa(`api:${MAILGUN_API_KEY}`);
   const body  = new URLSearchParams({
@@ -27,7 +29,7 @@ async function sendEmail(opts: { to: string; from: string; replyTo: string; subj
   return json;
 }
 
-// ── Parse multipart/form-data from Mailgun inbound ───────────────────────────
+// ── Parse multipart/form-data from Mailgun inbound ─────────────────
 async function parseMailgunPayload(req: Request): Promise<Record<string, string>> {
   const contentType = req.headers.get("content-type") ?? "";
   const fields: Record<string, string> = {};
@@ -43,7 +45,7 @@ async function parseMailgunPayload(req: Request): Promise<Record<string, string>
   return fields;
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────
 function parseSender(from: string): { name: string | null; email: string } {
   const match = from.match(/^(.+?)\s*<([^>]+)>$/);
   if (match) return { name: match[1].trim().replace(/^"|"$/g, "") || null, email: match[2].trim().toLowerCase() };
@@ -71,7 +73,7 @@ function replySubject(subject: string): string {
   return `Re: ${subject.replace(/^(re:\s*)+/i, "").trim()}`;
 }
 
-// ── Strip quoted email reply chains ──────────────────────────────────────────
+// ── Strip quoted email reply chains ─────────────────────────────
 function stripQuotedText(body: string): string {
   const lines = body.split("\n");
   const out: string[] = [];
@@ -86,7 +88,7 @@ function stripQuotedText(body: string): string {
   return out.join("\n").trim();
 }
 
-// ── Use AI to extract a name from any natural reply ──────────────────────────
+// ── Use AI to extract a name from any natural reply ───────────────
 // Returns the name string or null if no name found
 async function extractNameFromMessage(message: string, suggestedName: string | null): Promise<string | null> {
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -117,7 +119,7 @@ ${suggestedName ? `Suggested name to confirm: "${suggestedName}"` : ""}`,
   return result === "null" || !result ? null : result;
 }
 
-// ── Ensure lead exists — never duplicates ────────────────────────────────────
+// ── Ensure lead exists — never duplicates ────────────────────
 async function ensureLeadExists(businessId: number, email: string, name: string, existingId: number | null): Promise<number> {
   if (existingId) {
     await supabase.from("leads").update({ lead_name: name }).eq("id", existingId);
@@ -140,67 +142,91 @@ async function ensureLeadExists(businessId: number, email: string, name: string,
   return created!.id;
 }
 
-// ── Find available booking slots ──────────────────────────────────────────────
+// ── Find available booking slots ──────────────────────────────────
+// DST-safe timezone math ported from receive-sms's version — the old
+// version set cursor hours in the Deno server's own local time (UTC on
+// Supabase), so a 9:00 AM Eastern business day was computed as 9:00 AM
+// UTC (= 5:00 AM Eastern), offering slots 4-5 hours too early.
 async function findAvailableSlots(
   availability: Record<string, any>,
   slotDurationMinutes: number,
-  existingAppointments: Array<{ start_date_time: string; end_date_time: string }>
+  existingAppointments: Array<{ start_date_time: string; end_date_time: string }>,
+  timezone: string
 ): Promise<Array<{ label: string; start: string; end: string }>> {
   const slots: Array<{ label: string; start: string; end: string }> = [];
-  const now       = new Date();
-  const dayNames   = ["sunday","monday","tuesday","wednesday","thursday","friday","saturday"];
-  const dayShort   = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
-  const monthShort = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const now      = new Date();
+  const dayNames = ["sunday","monday","tuesday","wednesday","thursday","friday","saturday"];
 
   for (let d = 0; d < 14 && slots.length < 3; d++) {
-    const date    = new Date(now);
-    date.setDate(now.getDate() + d);
-    const dayConf = availability[dayNames[date.getDay()]];
-    if (!dayConf?.enabled) continue;
+    const checkDate = new Date(now.getTime() + d * 24 * 60 * 60 * 1000);
+    const dateStr   = checkDate.toISOString().slice(0, 10);
+
+    const dayName = new Date(`${dateStr}T12:00:00.000Z`)
+      .toLocaleDateString("en-US", { weekday: "long", timeZone: timezone })
+      .toLowerCase();
+
+    const dayConf = availability[dayName];
+    if (!dayConf || !dayConf.enabled) continue;
 
     const [startH, startM] = (dayConf.start as string).split(":").map(Number);
-    const [endH,   endM  ] = (dayConf.end   as string).split(":").map(Number);
+    const [endH, endM]     = (dayConf.end as string).split(":").map(Number);
     const blocks: Array<{ start: string; end: string }> = dayConf.blocks ?? [];
 
-    let cursor = new Date(date); cursor.setHours(startH, startM, 0, 0);
-    const dayEnd = new Date(date);
-          dayEnd.setHours(endH, endM, 0, 0);
+    const testUtc = new Date(`${dateStr}T12:00:00.000Z`);
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: timezone, hour: "2-digit", minute: "2-digit", hour12: false,
+    }).formatToParts(testUtc);
+    const localH = parseInt(parts.find(p => p.type === "hour")!.value);
+    const localM = parseInt(parts.find(p => p.type === "minute")!.value);
+    const offsetMinutes = 12 * 60 - (localH * 60 + localM);
 
-    while (cursor < dayEnd && slots.length < 3) {
+    const dayStartUtc = new Date(`${dateStr}T00:00:00.000Z`);
+    dayStartUtc.setTime(dayStartUtc.getTime() + (startH * 60 + startM + offsetMinutes) * 60 * 1000);
+    const dayEndUtc = new Date(`${dateStr}T00:00:00.000Z`);
+    dayEndUtc.setTime(dayEndUtc.getTime() + (endH * 60 + endM + offsetMinutes) * 60 * 1000);
+
+    const cursor = new Date(dayStartUtc);
+
+    while (cursor.getTime() + slotDurationMinutes * 60 * 1000 <= dayEndUtc.getTime() && slots.length < 3) {
       const slotStart = new Date(cursor);
-      const slotEnd   = new Date(cursor);
-      slotEnd.setMinutes(slotEnd.getMinutes() + slotDurationMinutes);
-      if (slotEnd > dayEnd) break;
-      if (slotStart <= new Date(now.getTime() + 2 * 60 * 60 * 1000)) {
-        cursor.setMinutes(cursor.getMinutes() + slotDurationMinutes); continue;
+      const slotEnd   = new Date(cursor.getTime() + slotDurationMinutes * 60 * 1000);
+
+      if (slotStart.getTime() <= now.getTime() + 2 * 60 * 60 * 1000) {
+        cursor.setTime(cursor.getTime() + slotDurationMinutes * 60 * 1000);
+        continue;
       }
-      const blockedByConfig = blocks.some((b) => {
+
+      const blockedByDayConfig = blocks.some((b) => {
         const [bSH, bSM] = (b.start as string).split(":").map(Number);
         const [bEH, bEM] = (b.end   as string).split(":").map(Number);
-        const bStart = new Date(date); bStart.setHours(bSH + TZ_OFFSET_HOURS, bSM, 0, 0);
-        const bEnd   = new Date(date); bEnd.setHours(bEH + TZ_OFFSET_HOURS, bEM, 0, 0);
-        return slotStart < bE && slotEnd > bS;
+        const bStart = new Date(`${dateStr}T00:00:00.000Z`);
+        bStart.setTime(bStart.getTime() + (bSH * 60 + bSM + offsetMinutes) * 60 * 1000);
+        const bEnd = new Date(`${dateStr}T00:00:00.000Z`);
+        bEnd.setTime(bEnd.getTime() + (bEH * 60 + bEM + offsetMinutes) * 60 * 1000);
+        return slotStart < bEnd && slotEnd > bStart;
       });
-      const blockedByAppt = existingAppointments.some((a) =>
-        slotStart < new Date(a.end_date_time) && slotEnd > new Date(a.start_date_time)
-      );
-      if (!blockedByConfig && !blockedByAppt) {
-        const TZ_OFFSET_MS = -4 * 60 * 60 * 1000; // EDT = UTC-4
-        const localStart   = new Date(slotStart.getTime() + TZ_OFFSET_MS);
-        const h  = localStart.getUTCHours();
-        const hr = h === 0 ? 12 : h > 12 ? h - 12 : h;
-        slots.push({
-          label: `${dayShort[localStart.getUTCDay()]} ${monthShort[localStart.getUTCMonth()]} ${localStart.getUTCDate()} at ${hr}:${localStart.getUTCMinutes().toString().padStart(2,"0")} ${h < 12 ? "AM" : "PM"}`,
-          start: slotStart.toISOString(), end: slotEnd.toISOString(),
-        });
+
+      const blockedByAppt = existingAppointments.some((a) => {
+        const aStart = new Date(a.start_date_time);
+        const aEnd   = new Date(a.end_date_time);
+        return slotStart < aEnd && slotEnd > aStart;
+      });
+
+      if (!blockedByDayConfig && !blockedByAppt) {
+        const label = new Intl.DateTimeFormat("en-US", {
+          timeZone: timezone, weekday: "short", month: "short", day: "numeric",
+          hour: "numeric", minute: "2-digit", hour12: true,
+        }).format(slotStart).replace(",", " at");
+
+        slots.push({ label, start: slotStart.toISOString(), end: slotEnd.toISOString() });
       }
-      cursor.setMinutes(cursor.getMinutes() + slotDurationMinutes);
+      cursor.setTime(cursor.getTime() + slotDurationMinutes * 60 * 1000);
     }
   }
   return slots;
 }
 
-// ── Build AI system prompt ────────────────────────────────────────────────────
+// ── Build AI system prompt ──────────────────────────────────────
 async function buildSystemPrompt(biz: Record<string, any>, lead: Record<string, any> | null, contactName: string | null): Promise<string> {
   const { data: kbEntries } = await supabase.from("knowledge_base").select("title, short_answer, content, category")
     .eq("business_id", biz.id).eq("is_active", true).order("sort_order", { ascending: true });
@@ -234,7 +260,7 @@ async function buildSystemPrompt(biz: Record<string, any>, lead: Record<string, 
   return parts.join("\n\n");
 }
 
-// ── Generate AI reply ─────────────────────────────────────────────────────────
+// ── Generate AI reply ────────────────────────────────────────────────
 async function generateAiReply(systemPrompt: string, history: Array<{ role: string; content: string }>, message: string): Promise<string> {
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -250,7 +276,7 @@ async function generateAiReply(systemPrompt: string, history: Array<{ role: stri
   return json.choices?.[0]?.message?.content?.trim() ?? "";
 }
 
-// ── Detect booking intent ─────────────────────────────────────────────────────
+// ── Detect booking intent ───────────────────────────────────────
 async function detectIntent(message: string, history: Array<{ role: string; content: string }>): Promise<{ wantsBooking: boolean; isPickingSlot: boolean; slotChoice: number | null }> {
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -270,7 +296,7 @@ async function detectIntent(message: string, history: Array<{ role: string; cont
   catch { return { wantsBooking: false, isPickingSlot: false, slotChoice: null }; }
 }
 
-// ── Main handler ──────────────────────────────────────────────────────────────
+// ── Main handler ───────────────────────────────────────────────────
 Deno.serve(async (req) => {
   try {
     const fields = await parseMailgunPayload(req);
@@ -299,30 +325,66 @@ Deno.serve(async (req) => {
       return new Response("ok", { status: 200 });
     }
 
-    // ── 1. Match business ────────────────────────────────────────────────────
-    let biz: Record<string, any> | null = null;
-    const { data: bizByEmail } = await supabase.from("businesses").select("*").eq("dedicated_email", rawTo.trim().toLowerCase()).maybeSingle();
-    if (bizByEmail) {
-      biz = bizByEmail;
-    } else {
-      const { data: anyBiz } = await supabase.from("businesses").select("*").limit(1).maybeSingle();
-      if (!anyBiz) { console.error("No business found"); return new Response("ok", { status: 200 }); }
-      biz = anyBiz;
-    }
-    const businessId = biz!.id as number;
+    // ── 1. Match business ───────────────────────────────────────────
+    // CRITICAL: never fall back to "any business" on a miss — that was
+    // routing every unmatched inbound email to an arbitrary, unrelated
+    // business's AI persona and knowledge base. If the To address doesn't
+    // match a real dedicated_email, this email is misrouted and must be
+    // dropped, not silently answered by the wrong company.
+    // Mailgun's To header often arrives as `"addr" <addr>` (quoted display
+    // name duplicating the address) — reuse parseSender's extraction so
+    // the comparison is against the bare address, not the raw header.
+    const normalizedTo = parseSender(rawTo).email;
+    const { data: biz, error: bizLookupErr } = await supabase
+      .from("businesses")
+      .select("*")
+      .eq("dedicated_email", normalizedTo)
+      .maybeSingle();
 
-    // ── 2. Deduplicate by Message-Id ─────────────────────────────────────────
+    if (bizLookupErr || !biz) {
+      console.error(`No business matches dedicated_email "${normalizedTo}" — dropping to avoid cross-tenant misroute`);
+      return new Response("ok", { status: 200 });
+    }
+    const businessId = biz.id as number;
+
+    // ── Resolve the calendar this business books AI/email appointments into ──
+    // receive-sms already does this; receive-email never did, so every
+    // email-booked appointment saved with calendar_id: null and silently
+    // failed to render on the Calendar grid (which filters by calendar_id)
+    // even though it existed correctly in the Upcoming sidebar and Conversations.
+    let bookingCalendar: Record<string, any> | null = null;
+    if (biz!.default_calendar_id) {
+      const { data: cal } = await supabase
+        .from("calendars")
+        .select("id, availability_hours")
+        .eq("id", biz!.default_calendar_id)
+        .maybeSingle();
+      bookingCalendar = cal ?? null;
+    }
+    if (!bookingCalendar) {
+      const { data: fallbackCal } = await supabase
+        .from("calendars")
+        .select("id, availability_hours")
+        .eq("business_id", businessId)
+        .order("created_at", { ascending: true })
+        .limit(1)
+        .maybeSingle();
+      bookingCalendar = fallbackCal ?? null;
+    }
+    const bookingCalendarId = bookingCalendar?.id as number | undefined;
+
+    // ── 2. Deduplicate by Message-Id ─────────────────────────
     if (messageId) {
       const { data: dup } = await supabase.from("messages").select("id").eq("twilio_sid", messageId).maybeSingle();
       if (dup) { console.log("Duplicate — skipping"); return new Response("ok", { status: 200 }); }
     }
 
-    // ── 3. Look up lead ──────────────────────────────────────────────────────
+    // ── 3. Look up lead ────────────────────────────────────
     const { data: lead } = await supabase.from("leads")
       .select("id, lead_name, lead_phone, lead_email, lead_address, lead_status")
       .eq("business_id", businessId).eq("lead_email", senderEmail).maybeSingle();
 
-    // ── 4. Find or create conversation ───────────────────────────────────────
+    // ── 4. Find or create conversation ───────────────────────
     // Same-day rule: if a conversation exists for this email today, reuse it
     // regardless of Message-Id threading (handles email clients that break threads)
     const todayStart = new Date();
@@ -368,7 +430,7 @@ Deno.serve(async (req) => {
 
     const conversationId = conv!.id as number;
 
-    // ── 5. Save inbound message ───────────────────────────────────────────────
+    // ── 5. Save inbound message ────────────────────────────
     await supabase.from("messages").insert({
       conversation_id: conversationId, business_id: businessId,
       body: bodyForStorage, direction: "inbound", channel: "email",
@@ -379,7 +441,7 @@ Deno.serve(async (req) => {
       console.log("AI paused"); return new Response("ok", { status: 200 });
     }
 
-    // ── 6. Load conversation history ──────────────────────────────────────────
+    // ── 6. Load conversation history ───────────────────────────
     const { data: recentMsgs } = await supabase.from("messages").select("body, direction")
       .eq("conversation_id", conversationId).order("created_at", { ascending: false }).limit(10);
     const history = (recentMsgs ?? []).reverse().map((m: any) => ({
@@ -392,11 +454,11 @@ Deno.serve(async (req) => {
 
     console.log(`ci.waiting_for="${ci.waiting_for}" | ci.name_collected=${ci.name_collected} | verifiedName="${verifiedName}" | name_verified=${conv!.name_verified}`);
 
-    // ═══════════════════════════════════════════════════════════════════════
+    // ═══════════════════════════════════════════════════════════════════════════════
     // STATE MACHINE
-    // ═══════════════════════════════════════════════════════════════════════
+    // ═══════════════════════════════════════════════════════════════════════════════
 
-    // ── WAITING FOR NAME ────────────────────────────────────────────────────
+    // ── WAITING FOR NAME ──────────────────────────────────────
     if (ci.waiting_for === "name") {
       // If we suggested a name, check for ANY affirmative first — don't use AI for this
       // because AI struggles to connect "Yes!" or "Yep!" back to the suggested name
@@ -435,7 +497,7 @@ Deno.serve(async (req) => {
         aiReply = `I just need your name to get started${hint} — could you reply with your first and last name?`;
       }
 
-    // ── WAITING FOR LAST NAME ────────────────────────────────────────────────
+    // ── WAITING FOR LAST NAME ────────────────────────────────
     } else if (ci.waiting_for === "last_name") {
       const existingFirst = firstName(verifiedName ?? "");
       const firstLine     = userMessage.split(/\n/)[0].trim();
@@ -479,7 +541,7 @@ Deno.serve(async (req) => {
         aiReply = `Could you share your last name as well, ${existingFirst}?`;
       }
 
-    // ── WAITING FOR PHONE ────────────────────────────────────────────────────
+    // ── WAITING FOR PHONE ───────────────────────────────────
     } else if (ci.waiting_for === "phone") {
       if (looksLikePhone(userMessage)) {
         const phone = "+" + userMessage.split(/\n/)[0].replace(/\D/g, "");
@@ -493,7 +555,7 @@ Deno.serve(async (req) => {
       }
       // Fall through to normal flow
 
-    // ── WAITING FOR ADDRESS ──────────────────────────────────────────────────
+    // ── WAITING FOR ADDRESS ────────────────────────────────────
     } else if (ci.waiting_for === "address") {
       if (looksLikeAddress(userMessage)) {
         const addr = userMessage.split(/\n/).slice(0, 3).join(", ");
@@ -508,7 +570,7 @@ Deno.serve(async (req) => {
       // Fall through to normal flow
     }
 
-    // ── NORMAL FLOW ──────────────────────────────────────────────────────────
+    // ── NORMAL FLOW ──────────────────────────────────────────────
     if (!aiReply) {
       const nameVerified = conv!.name_verified || !!verifiedName;
 
@@ -531,7 +593,7 @@ Deno.serve(async (req) => {
         const pendingSlots = conv!.pending_booking_slots as Array<{ label: string; start: string; end: string }> | null;
         const intent       = await detectIntent(userMessage, history);
 
-        // ── Picking a slot ───────────────────────────────────────────────
+        // ── Picking a slot ────────────────────────────
         if (pendingSlots?.length && intent.isPickingSlot && intent.slotChoice) {
           const chosen = pendingSlots[intent.slotChoice - 1];
           if (!chosen) {
@@ -557,7 +619,8 @@ Deno.serve(async (req) => {
                 await supabase.from("conversations").update({ collecting_info: ci }).eq("id", conversationId);
               } else {
                 const { data: newAppt } = await supabase.from("appointments").insert({
-                  business_id: businessId, appointment_name: `Appointment – ${currentName}`,
+                  business_id: businessId, calendar_id: bookingCalendarId ?? null,
+                  appointment_name: `Appointment – ${currentName}`,
                   appointment_type: "Consultation", status: "New",
                   start_date_time: chosen.start, end_date_time: chosen.end,
                   lead_name: currentName, lead_phone: fl?.lead_phone ?? "",
@@ -578,7 +641,7 @@ Deno.serve(async (req) => {
             }
           }
 
-        // ── Wants to book ────────────────────────────────────────────────
+        // ── Wants to book ──────────────────────────────
         } else if (intent.wantsBooking) {
           // Check last name first
           if (!hasLastName(currentName) && !ci.last_name_collected) {
@@ -601,7 +664,7 @@ Deno.serve(async (req) => {
             } else {
               const { data: existingAppts } = await supabase.from("appointments").select("start_date_time, end_date_time")
                 .eq("business_id", businessId).gte("start_date_time", new Date().toISOString());
-              const slots = await findAvailableSlots(biz!.availability_hours ?? {}, biz!.slot_duration_minutes ?? 60, existingAppts ?? []);
+              const slots = await findAvailableSlots(biz!.availability_hours ?? {}, biz!.slot_duration_minutes ?? 60, existingAppts ?? [], biz!.timezone || "America/New_York");
               if (!slots.length) {
                 aiReply = `I'm sorry ${first}, no open slots in the next two weeks. Someone from our team will reach out to find a time.`;
               } else {
@@ -611,7 +674,7 @@ Deno.serve(async (req) => {
             }
           }
 
-        // ── Normal conversation ──────────────────────────────────────────
+        // ── Normal conversation ──────────────────────
         } else {
           const sp = await buildSystemPrompt(biz!, lead, currentName);
           aiReply  = await generateAiReply(sp, history, userMessage);

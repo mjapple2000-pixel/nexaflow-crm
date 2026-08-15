@@ -1,5 +1,7 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme/app_theme.dart';
 import '../utils/business_utils.dart';
@@ -218,7 +220,6 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
     setState(() { _saving = true; _error = null; });
     try {
       final now = DateTime.now().toUtc().toIso8601String();
-      final status = asDraft ? 'draft' : 'sent';
       late String quoteId;
 
       if (_isEditing) {
@@ -241,12 +242,16 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
             .update({'deleted_at': now})
             .eq('parent_id', quoteId);
       } else {
-        // Insert new quote
+        // Insert new quote — always as 'draft' here. Status only ever
+        // becomes 'sent' once send-quote actually delivers it below.
+        // Previously this inserted status:'sent' directly on click,
+        // which flipped the badge and portal visibility without ever
+        // sending a real SMS or email — that was the bug.
         final quoteRes = await _supabase.from('quotes').insert({
           'business_id': _businessId,
           'contact_id': _selectedLead!['id'],
           'quote_number': await _nextQuoteNumber(),
-          'status': status,
+          'status': 'draft',
           'job_title': _jobTitleCtrl.text.trim(),
           'expires_at': _expiresAt?.toUtc().toIso8601String(),
           'notes': _notesCtrl.text.trim(),
@@ -254,7 +259,7 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
           'subtotal': _subtotal,
           'tax_amount': _taxAmount,
           'total': _total,
-          'sent_at': asDraft ? null : now,
+          'sent_at': null,
           'updated_at': now,
         }).select().single();
         quoteId = quoteRes['id'] as String;
@@ -282,6 +287,50 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
       }
       if (lineItemPayloads.isNotEmpty) {
         await _supabase.from('line_items').insert(lineItemPayloads);
+      }
+
+      // Actually send it — this was missing entirely before. Picks SMS if
+      // the client has a phone on file, otherwise email.
+      if (!asDraft) {
+        final phone = _selectedLead!['lead_phone'] as String? ?? '';
+        final email = _selectedLead!['lead_email'] as String? ?? '';
+        final channel = phone.isNotEmpty ? 'sms' : (email.isNotEmpty ? 'email' : null);
+
+        if (channel == null) {
+          if (!mounted) return;
+          setState(() {
+            _error = 'This client has no phone or email on file — quote saved as draft instead.';
+            _saving = false;
+          });
+          context.go(_isEditing ? '/jobs/quotes/${widget.quoteId}' : '/jobs/quotes/$quoteId');
+          return;
+        }
+
+        final token = _supabase.auth.currentSession?.accessToken ?? '';
+        final res = await http.post(
+          Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/send-quote'),
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer $token',
+          },
+          body: jsonEncode({
+            'quote_id': quoteId,
+            'business_id': _businessId,
+            'channel': channel,
+          }),
+        );
+
+        if (!mounted) return;
+
+        if (res.statusCode != 200) {
+          final data = jsonDecode(res.body) as Map<String, dynamic>;
+          setState(() {
+            _error = 'Saved as draft, but sending failed: ${data['error'] ?? 'Unknown error'}';
+            _saving = false;
+          });
+          context.go(_isEditing ? '/jobs/quotes/${widget.quoteId}' : '/jobs/quotes/$quoteId');
+          return;
+        }
       }
 
       if (!mounted) return;

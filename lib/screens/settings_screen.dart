@@ -87,11 +87,16 @@ const _kPlans = [
 // ─────────────────────────────────────────────
 
 const _kPermissions = [
-  ('launchpad',     'Launchpad',      Icons.rocket_launch_outlined),
-  ('contacts',      'Contacts',       Icons.people_alt_outlined),
-  ('pipelines',     'Pipelines',      Icons.bar_chart_rounded),
-  ('appointments',  'Appointments',   Icons.calendar_today_outlined),
-  ('tasks',         'Tasks',          Icons.task_alt_outlined),
+  ('launchpad',        'Launchpad',        Icons.rocket_launch_outlined),
+  ('contacts',         'Contacts',         Icons.people_alt_outlined),
+  ('pipelines',        'Pipelines',        Icons.bar_chart_rounded),
+  ('appointments',     'Appointments',     Icons.calendar_today_outlined),
+  ('jobs_overview',    'Jobs Overview',    Icons.space_dashboard_outlined),
+  ('job_board',        'Job Board',        Icons.work_outline_rounded),
+  ('timesheets',       'Timesheets',       Icons.access_time_outlined),
+  ('routes',           'Routes',           Icons.route_outlined),
+  ('manage_job_forms', 'Manage Job Forms', Icons.checklist_rtl_rounded),
+  ('tasks',            'Tasks',            Icons.task_alt_outlined),
   ('campaigns',     'Campaigns',      Icons.campaign_outlined),
   ('conversations', 'Conversations',  Icons.chat_bubble_outline_rounded),
   ('reporting',     'Reporting',      Icons.show_chart_rounded),
@@ -102,11 +107,16 @@ const _kPermissions = [
 ];
 
 Map<String, bool> _defaultPermissions() => {
-  'launchpad':     false,
-  'contacts':      true,
-  'pipelines':     true,
-  'appointments':  true,
-  'tasks':         true,
+  'launchpad':        false,
+  'contacts':         true,
+  'pipelines':        true,
+  'appointments':     true,
+  'jobs_overview':    true,
+  'job_board':        true,
+  'timesheets':       false,
+  'routes':           false,
+  'manage_job_forms': false,
+  'tasks':            true,
   'campaigns':     false,
   'conversations': true,
   'reporting':     false,
@@ -2406,7 +2416,11 @@ class _PermissionsDialogState extends State<_PermissionsDialog> {
       backgroundColor: AppTheme.cardBg,
       shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(16)),
-      child: SizedBox(
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.of(context).size.height * 0.85,
+        ),
+        child: SizedBox(
         width: 480,
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           Container(
@@ -2461,11 +2475,8 @@ class _PermissionsDialogState extends State<_PermissionsDialog> {
             ]),
           ),
           Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(children: [
+            padding: const EdgeInsets.fromLTRB(24, 24, 24, 0),
+            child: Row(children: [
                     Clickable(
                       onTap: () => setState(
                           () => _permissions.updateAll((k, v) => true)),
@@ -2486,8 +2497,12 @@ class _PermissionsDialogState extends State<_PermissionsDialog> {
                               fontWeight: FontWeight.w600)),
                     ),
                   ]),
-                  const SizedBox(height: 12),
-                  Container(
+          ),
+          const SizedBox(height: 12),
+          Flexible(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+              child: Container(
                     decoration: BoxDecoration(
                       color: AppTheme.pageBg,
                       borderRadius: BorderRadius.circular(10),
@@ -2535,10 +2550,11 @@ class _PermissionsDialogState extends State<_PermissionsDialog> {
                         ]),
                       );
                     }).toList()),
-                  ),
-                ]),
+              ),
+            ),
           ),
         ]),
+      ),
       ),
     );
   }
@@ -4422,6 +4438,7 @@ class _PaymentOptionsSectionState
     _paypalConnected = b['connected_paypal'] as bool? ?? false;
     _venmoConnected  = b['connected_venmo']  as bool? ?? false;
     _squareConnected = b['connected_square'] as bool? ?? false;
+    _testMode        = b['stripe_test_mode'] as bool? ?? false;
     _stripeOnboardingStarted =
         b['stripe_connect_onboarding_started_at'] != null;
     _loadStripeConnect();
@@ -4647,6 +4664,7 @@ class _PaymentOptionsSectionState
                   value: _testMode,
                   onChanged: (v) {
                     setState(() => _testMode = v);
+                    widget.onSave({'stripe_test_mode': v});
                     _loadStripeConnect();
                   },
                   activeColor: Colors.orange,
@@ -9400,6 +9418,7 @@ class _PhoneNumbersSectionState extends State<_PhoneNumbersSection> {
       context: context,
       barrierDismissible: false,
       builder: (_) => _PhoneNumberSearchDialog(
+        businessId: widget.businessId,
         onPurchased: () {
           Navigator.of(context, rootNavigator: true).pop();
           _loadNumbers();
@@ -9659,8 +9678,9 @@ class _PhoneNumberCard extends StatelessWidget {
 // ─────────────────────────────────────────────
 
 class _PhoneNumberSearchDialog extends StatefulWidget {
+  final int businessId;
   final VoidCallback onPurchased;
-  const _PhoneNumberSearchDialog({required this.onPurchased});
+  const _PhoneNumberSearchDialog({required this.businessId, required this.onPurchased});
 
   @override
   State<_PhoneNumberSearchDialog> createState() =>
@@ -9697,7 +9717,7 @@ class _PhoneNumberSearchDialogState extends State<_PhoneNumberSearchDialog> {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer ${session?.accessToken ?? ''}',
         },
-        body: jsonEncode({'action': 'search', 'areaCode': areaCode}),
+        body: jsonEncode({'action': 'search', 'areaCode': areaCode, 'business_id': widget.businessId}),
       );
       final body = jsonDecode(res.body) as Map<String, dynamic>;
       if (res.statusCode == 200) {
@@ -9739,6 +9759,7 @@ class _PhoneNumberSearchDialogState extends State<_PhoneNumberSearchDialog> {
           'friendlyName': result['locality'] != null
               ? '${result['locality']} Number'
               : result['phoneNumber'],
+          'business_id': widget.businessId,
         }),
       );
       final body = jsonDecode(res.body) as Map<String, dynamic>;

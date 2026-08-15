@@ -1,14 +1,16 @@
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
-import Stripe from 'https://esm.sh/stripe@13.3.0?target=deno'
+import { createClient } from 'npm:@supabase/supabase-js@2'
+import Stripe from 'npm:stripe@13.3.0'
 
 const stripe = new Stripe(Deno.env.get('STRIPE_SECRET_KEY') ?? '', {
   apiVersion: '2023-10-16',
   httpClient: Stripe.createFetchHttpClient(),
 })
 
+const secretKeys = JSON.parse(Deno.env.get('SUPABASE_SECRET_KEYS') ?? '{}')
+
 const supabase = createClient(
   Deno.env.get('SUPABASE_URL') ?? '',
-  Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
+  secretKeys.nexaflow_service_role_2026_08 ?? '',
 )
 
 // Maps Stripe Price IDs to internal plan names — never change these IDs
@@ -29,7 +31,7 @@ const STRIPE_STATUS_MAP: Record<string, string> = {
   'incomplete_expired': 'cancelled',
 }
 
-// ── Single unified handler ───────────────────────────────────────────────
+// ── Single unified handler ──────────────────────────────────────────────────
 // Handles two destinations that share this URL:
 //  - "Stripe Payment" (billing) → STRIPE_WEBHOOK_SECRET / STRIPE_WEBHOOK_SECRET_TEST
 //  - "nexaflow-connect-v2" (V2 Connect, thin payload) → STRIPE_CONNECT_V2_WEBHOOK_SECRET
@@ -41,7 +43,7 @@ const STRIPE_STATUS_MAP: Record<string, string> = {
 // async SubtleCrypto provider, so the synchronous constructEvent() always
 // threw — every signature check was failing before secrets were ever compared.
 Deno.serve(async (req: Request) => {
-  // ── Manual cancel action from Flutter UI ──────────────────────────────
+  // ── Manual cancel action from Flutter UI ─────────────────────────
   // The Flutter cancel button calls this function directly with { action: 'cancel' }
   if (req.method === 'POST') {
     const contentType = req.headers.get('content-type') ?? ''
@@ -64,7 +66,7 @@ Deno.serve(async (req: Request) => {
     }
   }
 
-  // ── Stripe webhook signature verification ─────────────────────────────
+  // ── Stripe webhook signature verification ───────────────────────────
   // Try live billing secret, then test/sandbox billing secret, then the
   // V2 Connect secret (distinct from stripe-connect-webhook's secret).
   const signature = req.headers.get('stripe-signature')
@@ -101,9 +103,9 @@ Deno.serve(async (req: Request) => {
     }
   }
 
-  // ── Billing events (NexaFlow subscriptions) ────────────────────────────
+  // ── Billing events (NexaFlow subscriptions) ────────────────────────
   if (!isConnectEvent) {
-    // ── checkout.session.completed ────────────────────────────────────────
+    // ── checkout.session.completed ──────────────────────────────
     // Sets is_paid, client_id, subscription_id only.
     // Plan name is set by customer.subscription.updated which fires immediately after.
     if (event.type === 'checkout.session.completed') {
@@ -140,7 +142,7 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    // ── customer.subscription.updated ────────────────────────────────────
+    // ── customer.subscription.updated ──────────────────────────
     // Writes plan name and subscription lifecycle status separately.
     // This is the source of truth for both columns going forward.
     if (event.type === 'customer.subscription.updated') {
@@ -162,7 +164,7 @@ Deno.serve(async (req: Request) => {
         .eq('client_id', customerId)
     }
 
-    // ── customer.subscription.deleted ────────────────────────────────────
+    // ── customer.subscription.deleted ──────────────────────────
     // Marks the subscription as cancelled and clears payment state.
     // Does NOT touch `plan` — we keep the last known plan for analytics/win-back.
     if (event.type === 'customer.subscription.deleted') {
@@ -185,7 +187,7 @@ Deno.serve(async (req: Request) => {
     })
   }
 
-  // ── V2 Connect events (thin payload) ───────────────────────────────────
+  // ── V2 Connect events (thin payload) ─────────────────────────────
   // Handles account requirement and capability updates from connected accounts.
 
   // v2.core.account[requirements].updated — flip onboarded boolean

@@ -8,7 +8,7 @@ const corsHeaders = {
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
-  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
+  JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") ?? "{}").nexaflow_service_role_2026_08
 );
 
 const BUCKET = "job-form-media";
@@ -108,7 +108,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ── 1. Resolve caller: hub token (field) OR office session ────────────────
+    // ── 1. Resolve caller: hub token (field) OR office session ────────────
     let hubToken: { business_id: number; profile_id: number | null };
     let profile: { id: number; full_name: string } | null = null;
 
@@ -172,7 +172,7 @@ Deno.serve(async (req) => {
       }
     }
 
-    // ── 2. Load + validate submission belongs to this business ───────────────
+    // ── 2. Load + validate submission belongs to this business ─────────
     const { data: submission, error: subError } = await supabase
       .from("job_form_submissions")
       .select("id, business_id, photo_urls, status, job_form_id, answers, appointment_id, rendered_page_urls, extra_pages")
@@ -188,7 +188,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ── save_answers ───────────────────────────────────────────────────────
+    // ── save_answers ───────────────────────────────────────────
     if (action === "save_answers") {
       if (!answers) {
         return new Response(JSON.stringify({ error: "answers is required" }), {
@@ -217,7 +217,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ── set_label ─────────────────────────────────────────────────────────
+    // ── set_label ─────────────────────────────────────────────────
     // A short, tech-chosen nickname for THIS submission only — never
     // touches job_forms.name (the formal template name). Purely a
     // search/identification aid so office staff can tell apart many
@@ -243,7 +243,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ── upload_photo ───────────────────────────────────────────────────────
+    // ── upload_photo ──────────────────────────────────────────────
     if (action === "upload_photo") {
       if (!file || !fieldId) {
         return new Response(JSON.stringify({ error: "file and field_id are required" }), {
@@ -294,7 +294,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ── delete_photo ───────────────────────────────────────────────────────
+    // ── delete_photo ──────────────────────────────────────────────
     if (action === "delete_photo") {
       if (!fieldId || !photoPath) {
         return new Response(JSON.stringify({ error: "field_id and photo_path are required" }), {
@@ -331,7 +331,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ── upload_marker_photo ────────────────────────────────────────────────
+    // ── upload_marker_photo ──────────────────────────────────
     // Writes a real row into job_form_photo_attachments, keyed to a
     // photo_attachment_marker's id — deliberately separate from
     // upload_photo's photo_urls/answers array pattern, matching the
@@ -397,7 +397,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ── delete_marker_photo ────────────────────────────────────────────────
+    // ── delete_marker_photo ────────────────────────────────────
     if (action === "delete_marker_photo") {
       if (!photoAttachmentId) {
         return new Response(JSON.stringify({ error: "photo_attachment_id is required" }), {
@@ -441,7 +441,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ── upload_rendered_page ────────────────────────────────────────────────
+    // ── upload_rendered_page ──────────────────────────────────
     // Real screenshot of one background page's fully-rendered canvas (Fill
     // Screen's RepaintBoundary.toImage() capture), uploaded per page at
     // submit time. Stored as a page-ordered array so the PDF generator can
@@ -498,7 +498,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ── add_page ──────────────────────────────────────────────────────────
+    // ── add_page ────────────────────────────────────────────────
     // Appends a blank, submission-only page — never touches job_forms.
     // background_pages, so the shared template is unaffected. Cornell-style:
     // starts with 3 empty sections a tech can merge down to 2 or 1.
@@ -534,7 +534,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ── delete_extra_page ───────────────────────────────────────────────────
+    // ── delete_extra_page ────────────────────────────────────
     // Removes exactly one tech-added blank page from THIS submission's own
     // extra_pages array — never touches job_forms.background_pages, so the
     // real scanned pages can never be deleted through this action. Remaining
@@ -579,7 +579,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ── update_extra_page_section ───────────────────────────────────────────
+    // ── update_extra_page_section ────────────────────────────
     if (action === "update_extra_page_section") {
       if (pageNumber == null || !sectionId) {
         return new Response(JSON.stringify({ error: "page_number and section_id are required" }), {
@@ -622,7 +622,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ── merge_extra_page_row ────────────────────────────────────────────────
+    // ── merge_extra_page_row ──────────────────────────────────
     // Horizontal, single-row merge: combines text_a and text_b of ONE row
     // into one wide cell for that row only. Initials and every other row
     // are untouched. Repeatable/reversible via unmerge_extra_page_row.
@@ -673,7 +673,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ── unmerge_extra_page_row ──────────────────────────────────────────────
+    // ── unmerge_extra_page_row ────────────────────────────────
     // Flips a merged row back to two columns. Combined text stays sitting
     // in text_a rather than being split apart.
     if (action === "unmerge_extra_page_row") {
@@ -717,7 +717,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ── upload_extra_page_initials ─────────────────────────────────────────
+    // ── upload_extra_page_initials ───────────────────────────
     // Per-row initials on a tech-added blank page — a separate storage path
     // from upload_initials (which writes into answers[field.id] for real
     // template fields), since this row has no job_forms.fields entry —
@@ -775,7 +775,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ── apply_saved_extra_page_initials ─────────────────────────────────────
+    // ── apply_saved_extra_page_initials ─────────────────────
     // "Use My Saved Initials" for a tech-added page row — mirrors
     // apply_saved_image's profile-then-business lookup, but writes into
     // this submission's own extra_pages instead of answers[field.id].
@@ -839,7 +839,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ── clear_extra_page_initials ────────────────────────────────────────
+    // ── clear_extra_page_initials ─────────────────────
     if (action === "clear_extra_page_initials") {
       if (pageNumber == null || !sectionId) {
         return new Response(JSON.stringify({ error: "page_number and section_id are required" }), {
@@ -876,7 +876,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ── upload_signature ───────────────────────────────────────────────────
+    // ── upload_signature ──────────────────────────────────────────
     if (action === "upload_signature") {
       if (!file) {
         return new Response(JSON.stringify({ error: "file is required" }), {
@@ -926,7 +926,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ── upload_initials ───────────────────────────────────────────────────
+    // ── upload_initials ──────────────────────────────────────────
     // Deliberately separate from upload_signature: each Initials cell has
     // its own field_id and stores into answers[fieldId], not the single
     // form-level signature_url column — every cell independently signed,
@@ -983,7 +983,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ── apply_saved_image ───────────────────────────────────────────────────
+    // ── apply_saved_image ────────────────────────────────────────
     // Pulls in the tech's already-saved signature/initials (profile first,
     // business default as fallback) without re-uploading — just references
     // the same storage path.
@@ -1066,7 +1066,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ── clear_signature ─────────────────────────────────────────────────────
+    // ── clear_signature ─────────────────────────────────────────
     // Fully unsigns the form-level signature — distinct from clearing the
     // in-progress drawing pad client-side. Lets a tech back out of a wrong
     // signature entirely and start over.
@@ -1089,7 +1089,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ── clear_initials ──────────────────────────────────────────────────────
+    // ── clear_initials ───────────────────────────────────────────
     // Removes a single Initials cell's saved answer, keyed by field_id —
     // every other cell on the form is untouched.
     if (action === "clear_initials") {
@@ -1120,7 +1120,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ── complete ───────────────────────────────────────────────────────────
+    // ── complete ─────────────────────────────────────────────────
     if (action === "complete") {
       const { data: jobForm } = await supabase
         .from("job_forms")
@@ -1252,7 +1252,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ── reopen_for_correction ─────────────────────────────────────────────
+    // ── reopen_for_correction ───────────────────────────────────
     if (action === "reopen_for_correction") {
       if (submission.status !== "completed") {
         return new Response(JSON.stringify({ error: "Only completed forms can be sent back for correction." }), {

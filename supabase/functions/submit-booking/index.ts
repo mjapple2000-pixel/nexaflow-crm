@@ -1,4 +1,4 @@
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { createClient } from 'npm:@supabase/supabase-js@2'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -11,7 +11,7 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const { calendar_id, slot_start, slot_end, name, email, phone } = await req.json()
+    const { calendar_id, slot_start, slot_end, name, email, phone, appointment_type } = await req.json()
 
     // Validate required fields
     if (!calendar_id || !slot_start || !slot_end || !name || !email || !phone) {
@@ -39,16 +39,18 @@ Deno.serve(async (req) => {
       )
     }
 
+    const secretKeys = JSON.parse(Deno.env.get('SUPABASE_SECRET_KEYS') ?? '{}')
+
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL')!,
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+      secretKeys.nexaflow_service_role_2026_08 ?? ''
     )
 
     // Fetch the calendar — must be public and active
     // business_id is resolved server-side — never trusted from client
     const { data: calendar, error: calendarError } = await supabase
       .from('calendars')
-      .select('id, business_id, name, duration_minutes, is_public, is_active')
+      .select('id, business_id, name, duration_minutes, is_public, is_active, appointment_type_options')
       .eq('id', calendar_id)
       .eq('is_public', true)
       .eq('is_active', true)
@@ -62,6 +64,23 @@ Deno.serve(async (req) => {
     }
 
     const businessId = calendar.business_id
+
+    // Validate appointment_type against the calendar's configured options, if
+    // any are configured. Calendars with no options set (empty array) accept
+    // any value, or none — keeps older calendars working unchanged.
+    const configuredTypes: string[] = calendar.appointment_type_options ?? []
+    let resolvedAppointmentType = 'appointment'
+    if (configuredTypes.length > 0) {
+      if (!appointment_type || !configuredTypes.includes(appointment_type)) {
+        return new Response(
+          JSON.stringify({ error: 'Please select what this appointment is for.' }),
+          { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        )
+      }
+      resolvedAppointmentType = appointment_type
+    } else if (appointment_type) {
+      resolvedAppointmentType = appointment_type
+    }
 
     // Race condition check — verify the slot is still available
     const { data: conflicting, error: conflictError } = await supabase
@@ -162,7 +181,7 @@ Deno.serve(async (req) => {
         start_date_time: slot_start,
         end_date_time: slot_end,
         status: 'confirmed',
-        appointment_type: 'appointment',
+        appointment_type: resolvedAppointmentType,
         lead_name: name,
         lead_email: email,
         lead_phone: phone,

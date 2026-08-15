@@ -1,7 +1,7 @@
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
 const SUPABASE_URL = "https://rllriopqojaraceytdno.supabase.co";
-const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const SERVICE_ROLE_KEY = JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") ?? "{}").nexaflow_service_role_2026_08;
 const TWILIO_ACCOUNT_SID = Deno.env.get("TWILIO_ACCOUNT_SID")!;
 const TWILIO_AUTH_TOKEN = Deno.env.get("TWILIO_AUTH_TOKEN")!;
 
@@ -34,7 +34,7 @@ Deno.serve(async (req) => {
     // business_id is resolved from the appointment row itself — never trusted from the client
     const { data: appointment, error: apptErr } = await supabase
       .from("appointments")
-      .select("id, business_id, lead_id, lead_name, lead_phone, on_my_way_sent_at")
+      .select("id, business_id, on_my_way_sent_at")
       .eq("id", appointment_id)
       .maybeSingle();
     if (apptErr) throw apptErr;
@@ -61,18 +61,20 @@ Deno.serve(async (req) => {
       return new Response(JSON.stringify({ error: "Forbidden" }), { status: 403, headers: corsHeaders });
     }
 
-    // Prefer the live phone number from the linked lead — appointment.lead_phone
-    // is a snapshot taken at booking time and can go stale if the contact's
-    // number changes afterward.
-    let contactPhone = appointment.lead_phone as string | null;
-    if (appointment.lead_id) {
-      const { data: lead } = await supabase
-        .from("leads")
-        .select("lead_phone")
-        .eq("id", appointment.lead_id)
-        .maybeSingle();
-      if (lead?.lead_phone) contactPhone = lead.lead_phone;
-    }
+    // Read the canonical resolved contact info (live lead, or the frozen
+    // snapshot if the lead was deleted) from appointment_contact_info —
+    // same source of truth appointments_screen.dart already reads from,
+    // rather than duplicating the live-vs-frozen precedence logic here.
+    // Now that appointments_screen.dart write-throughs phone/name/email
+    // edits to the linked lead, this view is always current.
+    const { data: contactInfo } = await supabase
+      .from("appointment_contact_info")
+      .select("resolved_name, resolved_phone")
+      .eq("appointment_id", appointment_id)
+      .maybeSingle();
+
+    const contactName = contactInfo?.resolved_name ?? null;
+    const contactPhone = contactInfo?.resolved_phone ?? null;
 
     // Plan gate
     const { data: allowed, error: gateErr } = await supabase
@@ -101,7 +103,7 @@ Deno.serve(async (req) => {
       return new Response(JSON.stringify({ error: "No Twilio number configured for this business" }), { status: 400, headers: corsHeaders });
     }
 
-    const firstName = (appointment.lead_name || "there").trim().split(/\s+/)[0];
+    const firstName = (contactName || "there").trim().split(/\s+/)[0];
     const smsBody = `Hi ${firstName}, this is ${business.business_name} — we're on our way!`;
 
     const twilioRes = await fetch(

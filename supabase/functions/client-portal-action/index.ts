@@ -1,18 +1,20 @@
-import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { createClient } from 'npm:@supabase/supabase-js@2'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-serve(async (req) => {
+Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
 
   try {
+    const secretKeys = JSON.parse(Deno.env.get('SUPABASE_SECRET_KEYS') ?? '{}')
+    const serviceRoleKey = secretKeys.nexaflow_service_role_2026_08 ?? ''
+
     const adminClient = createClient(
       Deno.env.get('SUPABASE_URL')!,
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+      serviceRoleKey
     )
 
     const { token, action_type, target_id, payload } = await req.json()
@@ -126,13 +128,12 @@ serve(async (req) => {
         // itself from invoice_id server-side — never pass amount/business/email
         // from here, since those are exactly what made the old endpoint unsafe.
         const supabaseUrl = Deno.env.get('SUPABASE_URL')!
-        const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
 
         const payRes = await fetch(`${supabaseUrl}/functions/v1/create-invoice-payment`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${serviceKey}`,
+            'Authorization': `Bearer ${serviceRoleKey}`,
           },
           body: JSON.stringify({
             invoice_id: target_id,

@@ -9,6 +9,7 @@ import 'dart:js_interop';
 import 'package:web/web.dart' as web;
 import '../theme/app_theme.dart';
 import '../utils/business_utils.dart';
+import 'package:nexaflow/config/supabase_config.dart';
 
 // ─────────────────────────────────────────────
 //  MODEL
@@ -406,7 +407,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
         ctx.pop();
           _snack('Sending SMS to $withPhone contacts…');
           try {
-            const anonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJsbHJpb3Bxb2phcmFjZXl0ZG5vIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzczOTQzMzgsImV4cCI6MjA5Mjk3MDMzOH0.BxTbaRRD_xc88gyWBm5k7ZVVGP8c3CqW5U8aXBmXPMw';
+            const anonKey = SupabaseConfig.anonKey;
             final res = await http.post(
               Uri.parse('$_supabaseUrl/functions/v1/bulk-sms'),
               headers: {
@@ -451,7 +452,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
         ctx.pop();
           _snack('Sending email to $withEmail contacts…');
           try {
-            const anonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJsbHJpb3Bxb2phcmFjZXl0ZG5vIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzczOTQzMzgsImV4cCI6MjA5Mjk3MDMzOH0.BxTbaRRD_xc88gyWBm5k7ZVVGP8c3CqW5U8aXBmXPMw';
+            const anonKey = SupabaseConfig.anonKey;
             final res = await http.post(
               Uri.parse('$_supabaseUrl/functions/v1/bulk-email'),
               headers: {
@@ -776,9 +777,19 @@ class _ContactsScreenState extends State<ContactsScreen> {
       color: AppTheme.brand.withValues(alpha: 0.06),
       padding: const EdgeInsets.symmetric(horizontal: 24),
       child: Row(children: [
-        Container(width: 20, height: 20,
-          decoration: BoxDecoration(color: AppTheme.brand, borderRadius: BorderRadius.circular(4)),
-          child: const Icon(Icons.check, color: Colors.white, size: 14)),
+        GestureDetector(
+          onTap: _toggleAll,
+          child: MouseRegion(cursor: SystemMouseCursors.click,
+            child: Container(width: 20, height: 20,
+              decoration: BoxDecoration(
+                color: (_selected.length == _page.length && _page.isNotEmpty) ? AppTheme.brand : Colors.transparent,
+                borderRadius: BorderRadius.circular(4),
+                border: Border.all(color: AppTheme.brand, width: 1.5)),
+              child: (_selected.length == _page.length && _page.isNotEmpty)
+                  ? const Icon(Icons.check, color: Colors.white, size: 14)
+                  : null),
+          ),
+        ),
         const SizedBox(width: 10),
         Text('${_selected.length} selected',
           style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13, fontWeight: FontWeight.w600)),

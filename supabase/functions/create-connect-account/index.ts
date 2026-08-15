@@ -1,8 +1,10 @@
 import { createClient } from 'npm:@supabase/supabase-js@2'
 
+const secretKeys = JSON.parse(Deno.env.get('SUPABASE_SECRET_KEYS') ?? '{}')
+
 const supabase = createClient(
   Deno.env.get('SUPABASE_URL') ?? '',
-  Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
+  secretKeys.nexaflow_service_role_2026_08 ?? '',
 )
 
 const STRIPE_API_BASE = 'https://api.stripe.com'
@@ -54,7 +56,7 @@ Deno.serve(async (req) => {
 
     const body = await req.json().catch(() => ({}))
 
-    // ── Test/live key split ──────────────────────────────────────────────
+    // ── Test/live key split ────────────────────────────────────────
     // STRIPE_SECRET_KEY (live) is the single source of truth for all real
     // businesses' Stripe operations and must never be overwritten again.
     // Sandbox/Connect testing now goes through a dedicated STRIPE_SECRET_KEY_TEST
@@ -107,7 +109,7 @@ Deno.serve(async (req) => {
       )
     }
 
-    // ── Environment-aware redirect base ──────────────────────────────────
+    // ── Environment-aware redirect base ───────────────────────
     // Previously hardcoded to the production domain, so local dev testing
     // of the Connect onboarding redirect always landed on the live site
     // instead of localhost. Now derived from the calling browser's Origin

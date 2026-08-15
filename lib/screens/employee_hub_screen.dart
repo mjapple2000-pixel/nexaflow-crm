@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:geolocator/geolocator.dart';
 import 'package:go_router/go_router.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 import '../theme/app_theme.dart';
 
@@ -18,6 +19,7 @@ class EmployeeHubScreen extends StatefulWidget {
 class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
   static const _fnBase =
       'https://rllriopqojaraceytdno.supabase.co/functions/v1';
+  static const _pendingActionKey = 'nexaflow_pending_clock_action';
 
   bool _loading = true;
   String? _error;
@@ -41,6 +43,9 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
   bool _savingLocationPref = false;
   Timer? _locationLoopTimer;
 
+  bool _hasPendingSync = false;
+  Timer? _pendingSyncRetryTimer;
+
   final _jobSearchCtrl = TextEditingController();
   bool _showJobResults = false;
   final _pastFormsSearchCtrl = TextEditingController();
@@ -49,12 +54,14 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
   void initState() {
     super.initState();
     _load();
+    _checkPendingSync();
   }
 
   @override
   void dispose() {
     _tickTimer?.cancel();
     _locationLoopTimer?.cancel();
+    _pendingSyncRetryTimer?.cancel();
     _jobSearchCtrl.dispose();
     _pastFormsSearchCtrl.dispose();
     super.dispose();
@@ -217,6 +224,9 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
 
       return await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
+      ).timeout(
+        const Duration(seconds: 8),
+        onTimeout: () => throw TimeoutException('Location request timed out'),
       );
     } catch (e) {
       debugMsg('Location exception: $e');
@@ -252,23 +262,35 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
       return;
     }
 
+    // Captured the moment the tech actually pressed the button — sent to
+    // the server as client_timestamp so that if this request has to be
+    // queued and retried later (no connectivity right now), the recorded
+    // clock time reflects this exact moment, not whenever the retry
+    // eventually succeeds.
+    final pressedAt = DateTime.now().toUtc().toIso8601String();
+    final actionBody = <String, dynamic>{
+      'token': widget.token,
+      'action': action,
+      if (action == 'clock_in') 'appointment_id': _selectedAppointmentId,
+      'lat': pos?.latitude,
+      'lng': pos?.longitude,
+      'client_timestamp': pressedAt,
+    };
+
     try {
-      final res = await http.post(
-        Uri.parse('$_fnBase/employee-hub-action'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'token': widget.token,
-          'action': action,
-          if (action == 'clock_in') 'appointment_id': _selectedAppointmentId,
-          'lat': pos?.latitude,
-          'lng': pos?.longitude,
-        }),
-      );
+      final res = await http
+          .post(
+            Uri.parse('$_fnBase/employee-hub-action'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode(actionBody),
+          )
+          .timeout(const Duration(seconds: 15));
       if (!mounted) return;
 
       final body = jsonDecode(res.body) as Map<String, dynamic>;
 
       if (res.statusCode == 200) {
+        await _clearPendingSync();
         await _load();
       } else {
         final msg = body['message'] as String? ??
@@ -282,12 +304,81 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
       }
     } catch (e) {
       if (!mounted) return;
+      // No connectivity (or the request otherwise couldn't complete) —
+      // save this exact action + timestamp on-device so it isn't lost,
+      // and keep retrying automatically until it goes through. The tech
+      // sees a clear "saved on this device" message instead of a plain
+      // error implying nothing happened.
+      await _savePendingSync(actionBody);
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Network error — please try again.'),
-        backgroundColor: AppTheme.error,
+        content: Text(
+            'No signal right now — your clock time is saved on this device and will sync automatically once you\'re back in range.'),
+        backgroundColor: Colors.orange,
+        duration: Duration(seconds: 8),
       ));
+      _startPendingSyncRetry();
     } finally {
       if (mounted) setState(() => _submitting = false);
+    }
+  }
+
+  Future<void> _savePendingSync(Map<String, dynamic> actionBody) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_pendingActionKey, jsonEncode(actionBody));
+    if (mounted) setState(() => _hasPendingSync = true);
+  }
+
+  Future<void> _clearPendingSync() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_pendingActionKey);
+    _pendingSyncRetryTimer?.cancel();
+    if (mounted) setState(() => _hasPendingSync = false);
+  }
+
+  Future<void> _checkPendingSync() async {
+    final prefs = await SharedPreferences.getInstance();
+    final saved = prefs.getString(_pendingActionKey);
+    if (saved == null) return;
+    if (mounted) setState(() => _hasPendingSync = true);
+    _attemptPendingSync();
+    _startPendingSyncRetry();
+  }
+
+  void _startPendingSyncRetry() {
+    _pendingSyncRetryTimer?.cancel();
+    _pendingSyncRetryTimer = Timer.periodic(
+        const Duration(seconds: 20), (_) => _attemptPendingSync());
+  }
+
+  Future<void> _attemptPendingSync() async {
+    final prefs = await SharedPreferences.getInstance();
+    final saved = prefs.getString(_pendingActionKey);
+    if (saved == null) {
+      _pendingSyncRetryTimer?.cancel();
+      return;
+    }
+    try {
+      final res = await http
+          .post(
+            Uri.parse('$_fnBase/employee-hub-action'),
+            headers: {'Content-Type': 'application/json'},
+            body: saved,
+          )
+          .timeout(const Duration(seconds: 15));
+      if (res.statusCode == 200) {
+        await _clearPendingSync();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('Synced! Your saved clock time has been recorded.'),
+            backgroundColor: Colors.green,
+            duration: Duration(seconds: 5),
+          ));
+          await _load();
+        }
+      }
+      // Non-200 response: leave it queued, the periodic timer retries.
+    } catch (_) {
+      // Still no connectivity — leave it queued, timer will retry.
     }
   }
 
@@ -320,6 +411,30 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
     }).toList();
   }
 
+  // Splits the merged appointments list from get-employee-hub-data into
+  // today's jobs vs. outstanding ones from a prior date whose job form
+  // still needs attention — the backend returns them as one list, so
+  // this is purely a display-layer split for the two headings below.
+  List<Map<String, dynamic>> get _todaysAppointments {
+    final now = DateTime.now();
+    return _appointments.where((a) {
+      final dt = a['scheduled_at'] != null
+          ? DateTime.tryParse(a['scheduled_at'] as String)?.toLocal()
+          : null;
+      return dt != null && dt.year == now.year && dt.month == now.month && dt.day == now.day;
+    }).toList();
+  }
+
+  List<Map<String, dynamic>> get _outstandingAppointments {
+    final now = DateTime.now();
+    return _appointments.where((a) {
+      final dt = a['scheduled_at'] != null
+          ? DateTime.tryParse(a['scheduled_at'] as String)?.toLocal()
+          : null;
+      return dt == null || dt.year != now.year || dt.month != now.month || dt.day != now.day;
+    }).toList();
+  }
+
   void _selectJob(Map<String, dynamic>? appt) {
     setState(() {
       _selectedAppointmentId = appt?['id'] as int?;
@@ -328,6 +443,20 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
           : '${appt['appointment_type'] ?? 'Appointment'} — ${appt['lead_name'] ?? ''}';
       _showJobResults = false;
     });
+  }
+
+  void _showAppointmentDetail(Map<String, dynamic> appt) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _EmployeeAppointmentDetailSheet(
+        token: widget.token,
+        appt: appt,
+        fnBase: _fnBase,
+        onNoteSaved: _load,
+      ),
+    );
   }
 
   @override
@@ -601,7 +730,7 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
                     ..._routeStops.map((s) => _RouteStopCard(stop: s)),
                   ],
 
-                  if (_appointments.isNotEmpty) ...[
+                  if (_todaysAppointments.isNotEmpty) ...[
                     const SizedBox(height: 24),
                     const Text("Today's Jobs",
                         style: TextStyle(
@@ -609,7 +738,22 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
                             fontWeight: FontWeight.w700,
                             color: AppTheme.textPrimary)),
                     const SizedBox(height: 10),
-                    ..._appointments.map((a) => _AppointmentCard(appt: a, token: widget.token)),
+                    ..._todaysAppointments.map((a) => _AppointmentCard(appt: a, token: widget.token, onTap: () => _showAppointmentDetail(a))),
+                  ],
+                  if (_outstandingAppointments.isNotEmpty) ...[
+                    const SizedBox(height: 24),
+                    const Text("Outstanding",
+                        style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700,
+                            color: AppTheme.textPrimary)),
+                    const SizedBox(height: 2),
+                    const Text('Jobs from a previous date with a form that still needs attention.',
+                        style: TextStyle(
+                            fontSize: 11,
+                            color: AppTheme.textSecondary)),
+                    const SizedBox(height: 10),
+                    ..._outstandingAppointments.map((a) => _AppointmentCard(appt: a, token: widget.token, onTap: () => _showAppointmentDetail(a))),
                   ],
                   if (_pastJobForms.isNotEmpty) ...[
                     const SizedBox(height: 24),
@@ -670,7 +814,8 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
 class _AppointmentCard extends StatelessWidget {
   final Map<String, dynamic> appt;
   final String token;
-  const _AppointmentCard({required this.appt, required this.token});
+  final VoidCallback? onTap;
+  const _AppointmentCard({required this.appt, required this.token, this.onTap});
 
   @override
   Widget build(BuildContext context) {
@@ -690,7 +835,10 @@ class _AppointmentCard extends StatelessWidget {
     final address = appt['lead_address'] as String? ?? '';
     final jobForms = List<Map<String, dynamic>>.from(appt['job_forms'] ?? []);
 
-    return Container(
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(10),
+      child: Container(
       margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
@@ -746,6 +894,7 @@ class _AppointmentCard extends StatelessWidget {
             ),
           ],
         ],
+      ),
       ),
     );
   }
@@ -1038,6 +1187,241 @@ class _HubMessageScreen extends StatelessWidget {
                     color: AppTheme.textSecondary,
                     height: 1.5)),
           ]),
+        ),
+      ),
+    );
+  }
+}
+class _EmployeeAppointmentDetailSheet extends StatefulWidget {
+  final String token;
+  final Map<String, dynamic> appt;
+  final String fnBase;
+  final VoidCallback onNoteSaved;
+
+  const _EmployeeAppointmentDetailSheet({
+    required this.token,
+    required this.appt,
+    required this.fnBase,
+    required this.onNoteSaved,
+  });
+
+  @override
+  State<_EmployeeAppointmentDetailSheet> createState() => _EmployeeAppointmentDetailSheetState();
+}
+
+class _EmployeeAppointmentDetailSheetState extends State<_EmployeeAppointmentDetailSheet> {
+  final _noteCtrl = TextEditingController();
+  bool _savingNote = false;
+  bool _sendingOnMyWay = false;
+  String? _onMyWaySentAt;
+
+  @override
+  void initState() {
+    super.initState();
+    _onMyWaySentAt = widget.appt['on_my_way_sent_at'] as String?;
+  }
+
+  @override
+  void dispose() {
+    _noteCtrl.dispose();
+    super.dispose();
+  }
+
+  String _formatDateTime(String? iso) {
+    if (iso == null) return '';
+    final dt = DateTime.tryParse(iso)?.toLocal();
+    if (dt == null) return '';
+    final h = dt.hour % 12 == 0 ? 12 : dt.hour % 12;
+    final min = dt.minute.toString().padLeft(2, '0');
+    final ampm = dt.hour < 12 ? 'AM' : 'PM';
+    return '${dt.month}/${dt.day}/${dt.year} · $h:$min $ampm';
+  }
+
+  Future<void> _saveNote() async {
+    if (_noteCtrl.text.trim().isEmpty) return;
+    setState(() => _savingNote = true);
+    try {
+      final res = await http.post(
+        Uri.parse('${widget.fnBase}/employee-hub-action'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'token': widget.token,
+          'action': 'add_note',
+          'appointment_id': widget.appt['id'],
+          'notes': _noteCtrl.text.trim(),
+        }),
+      );
+      if (!mounted) return;
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      if (res.statusCode == 200 && data['success'] == true) {
+        _noteCtrl.clear();
+        widget.onNoteSaved();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Note saved.')),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(data['error'] as String? ?? 'Failed to save note.'), backgroundColor: AppTheme.error),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: AppTheme.error),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _savingNote = false);
+    }
+  }
+
+  Future<void> _sendOnMyWay() async {
+    setState(() => _sendingOnMyWay = true);
+    try {
+      final res = await http.post(
+        Uri.parse('${widget.fnBase}/employee-hub-action'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'token': widget.token,
+          'action': 'send_on_my_way',
+          'appointment_id': widget.appt['id'],
+        }),
+      );
+      if (!mounted) return;
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      if (res.statusCode == 200 && data['success'] == true) {
+        setState(() => _onMyWaySentAt = data['sent_at'] as String?);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Text sent.')),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(data['message'] as String? ?? data['error'] as String? ?? 'Failed to send text.'), backgroundColor: AppTheme.error),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: AppTheme.error),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _sendingOnMyWay = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final a = widget.appt;
+    final type = a['appointment_type'] as String? ?? 'Appointment';
+    final leadName = a['lead_name'] as String? ?? '';
+    final address = a['lead_address'] as String? ?? '';
+    final scheduledAt = _formatDateTime(a['scheduled_at'] as String?);
+    final notes = a['notes'] as String? ?? '';
+    final alreadySent = _onMyWaySentAt != null;
+
+    return Container(
+      decoration: const BoxDecoration(
+        color: AppTheme.cardBg,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      padding: EdgeInsets.fromLTRB(20, 16, 20, MediaQuery.of(context).viewInsets.bottom + 24),
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(child: Container(width: 40, height: 4,
+                decoration: BoxDecoration(color: AppTheme.borderColor, borderRadius: BorderRadius.circular(2)))),
+            const SizedBox(height: 16),
+            Text(type, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+            if (scheduledAt.isNotEmpty) ...[
+              const SizedBox(height: 4),
+              Text(scheduledAt, style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary)),
+            ],
+            const SizedBox(height: 16),
+            if (leadName.isNotEmpty) ...[
+              const Text('Customer', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 0.5)),
+              const SizedBox(height: 2),
+              Text(leadName, style: const TextStyle(fontSize: 14, color: AppTheme.textPrimary)),
+              const SizedBox(height: 12),
+            ],
+            if (address.isNotEmpty) ...[
+              const Text('Address', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 0.5)),
+              const SizedBox(height: 2),
+              Text(address, style: const TextStyle(fontSize: 14, color: AppTheme.textPrimary)),
+              const SizedBox(height: 16),
+            ],
+
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: (_sendingOnMyWay) ? null : _sendOnMyWay,
+                icon: _sendingOnMyWay
+                    ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                    : const Icon(Icons.directions_car_filled_outlined, size: 16),
+                label: Text(alreadySent ? 'On My Way Sent — Send Again' : 'On My Way'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: alreadySent ? AppTheme.borderColor : AppTheme.brand,
+                  foregroundColor: alreadySent ? AppTheme.textSecondary : Colors.white,
+                  elevation: 0,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+              ),
+            ),
+            const SizedBox(height: 20),
+
+            if (notes.isNotEmpty) ...[
+              const Text('Notes', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 0.5)),
+              const SizedBox(height: 6),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: AppTheme.pageBg,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppTheme.borderColor),
+                ),
+                child: Text(notes, style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary, height: 1.4)),
+              ),
+              const SizedBox(height: 16),
+            ],
+
+            const Text('Add a Note', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 0.5)),
+            const SizedBox(height: 6),
+            TextField(
+              controller: _noteCtrl,
+              maxLines: 3,
+              style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+              decoration: InputDecoration(
+                hintText: 'e.g. gate code, dog on site, customer not home...',
+                hintStyle: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+                filled: true,
+                fillColor: AppTheme.pageBg,
+                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
+                enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
+                focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide(color: AppTheme.brand, width: 1.5)),
+              ),
+            ),
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton(
+                onPressed: _savingNote ? null : _saveNote,
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppTheme.brand,
+                  side: const BorderSide(color: AppTheme.brand),
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+                child: _savingNote
+                    ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: AppTheme.brand))
+                    : const Text('Save Note'),
+              ),
+            ),
+          ],
         ),
       ),
     );

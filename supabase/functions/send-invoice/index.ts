@@ -21,7 +21,8 @@ Deno.serve(async (req) => {
     }
 
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-    const serviceKey  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+    const secretKeys  = JSON.parse(Deno.env.get('SUPABASE_SECRET_KEYS') ?? '{}');
+    const serviceKey  = secretKeys.nexaflow_service_role_2026_08 ?? '';
     const openAiKey   = Deno.env.get('OPENAI_API_KEY')!;
     const twilioSid   = Deno.env.get('TWILIO_ACCOUNT_SID')!;
     const twilioToken = Deno.env.get('TWILIO_AUTH_TOKEN')!;

@@ -4,6 +4,7 @@ import 'package:nexaflow/theme/app_theme.dart';
 import 'package:nexaflow/navigation/app_router.dart';
 import 'package:nexaflow/screens/business_picker_screen.dart';
 import 'package:flutter_web_plugins/url_strategy.dart';
+import 'package:nexaflow/config/supabase_config.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -26,7 +27,7 @@ Future<void> main() async {
 
   await Supabase.initialize(
     url: 'https://rllriopqojaraceytdno.supabase.co',
-    anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJsbHJpb3Bxb2phcmFjZXl0ZG5vIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzczOTQzMzgsImV4cCI6MjA5Mjk3MDMzOH0.BxTbaRRD_xc88gyWBm5k7ZVVGP8c3CqW5U8aXBmXPMw',
+    anonKey: SupabaseConfig.anonKey,
     authOptions: const FlutterAuthClientOptions(
       authFlowType: AuthFlowType.implicit,
       // Let Supabase handle the token from the URL automatically.

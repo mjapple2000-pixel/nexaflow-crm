@@ -5,6 +5,7 @@ import '../theme/app_theme.dart';
 import '../screens/quotes_screen.dart';
 import '../screens/invoices_screen.dart';
 import '../screens/job_forms_screen.dart';
+import '../utils/business_utils.dart';
 
 class JobsScreen extends StatefulWidget {
   final int initialTab;
@@ -313,17 +314,17 @@ class _ServiceRequestsTabState extends State<_ServiceRequestsTab> {
     _load();
   }
 
+  bool _autoOpenedFromLink = false;
+
   Future<void> _load() async {
     setState(() => _loading = true);
     try {
-      final userId = _db.auth.currentUser?.id;
-      if (userId == null) return;
-      final profile = await _db
-          .from('profiles')
-          .select('business_id')
-          .eq('user_id', userId)
-          .single();
-      final businessId = (profile['business_id'] as num).toInt();
+      // getActiveBusinessId() replaces a direct profiles-table lookup that
+      // failed for the superuser account (which has no profiles row by
+      // design) — .single() threw, was swallowed by the catch block below,
+      // and this tab silently showed empty forever regardless of real data.
+      final businessId = await getActiveBusinessId();
+      if (businessId == null) return;
 
       final data = await _db
           .from('client_service_requests')
@@ -333,7 +334,25 @@ class _ServiceRequestsTabState extends State<_ServiceRequestsTab> {
           .order('created_at', ascending: false);
 
       if (!mounted) return;
-      setState(() => _requests = List<Map<String, dynamic>>.from(data));
+      final requests = List<Map<String, dynamic>>.from(data);
+      setState(() => _requests = requests);
+
+      // If we arrived here via a Recommended Action deep link
+      // (?requestId=...), open that specific request automatically instead
+      // of just landing on the general list.
+      if (!_autoOpenedFromLink) {
+        final requestIdParam = GoRouterState.of(context).uri.queryParameters['requestId'];
+        final requestId = int.tryParse(requestIdParam ?? '');
+        if (requestId != null) {
+          _autoOpenedFromLink = true;
+          final match = requests.where((r) => (r['id'] as num).toInt() == requestId).toList();
+          if (match.isNotEmpty) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) _openDetail(match.first);
+            });
+          }
+        }
+      }
     } catch (e) {
       debugPrint('Service requests load: $e');
     } finally {

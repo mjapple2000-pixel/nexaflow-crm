@@ -765,11 +765,12 @@ class _CreateCampaignModalState extends State<_CreateCampaignModal> {
               ),
               const SizedBox(height: 14),
 
-              if (_type == 'sms') ...[
+              if (_type == 'sms' || _type == 'email') ...[
                 const Divider(color: AppTheme.borderColor),
                 const SizedBox(height: 16),
                 CampaignAudienceSelector(
                   businessId: widget.businessId,
+                  channel: _type,
                   initialFilterConfig: const {},
                   onChanged: (config) =>
                       setState(() => _filterConfig = config),
@@ -1135,7 +1136,10 @@ class _CampaignDetailModalState extends State<_CampaignDetailModal> {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer ${session.accessToken}',
         },
-        body: jsonEncode({'campaign_id': widget.campaign['id']}),
+        body: jsonEncode({
+          'campaign_id': widget.campaign['id'],
+          'business_id': widget.businessId,
+        }),
       );
 
       if (!mounted) return;
@@ -1268,12 +1272,13 @@ class _CampaignDetailModalState extends State<_CampaignDetailModal> {
               ),
               const SizedBox(height: 18),
 
-              // Audience selector (SMS only)
-              if (_type == 'sms' && _isEditable) ...[
+              // Audience selector (SMS and Email)
+              if ((_type == 'sms' || _type == 'email') && _isEditable) ...[
                 const Divider(color: AppTheme.borderColor),
                 const SizedBox(height: 16),
                 CampaignAudienceSelector(
                   businessId: widget.businessId,
+                  channel: _type,
                   initialFilterConfig: Map<String, dynamic>.from(
                       widget.campaign['filter_config'] ?? {}),
                   onChanged: (config) =>

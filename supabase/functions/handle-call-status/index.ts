@@ -1,8 +1,10 @@
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createClient } from "npm:@supabase/supabase-js@2";
+
+const secretKeys = JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") ?? "{}");
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
-  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
+  secretKeys.nexaflow_service_role_2026_08 ?? ""
 );
 
 async function sendSms(to: string, from: string, body: string) {
@@ -46,9 +48,28 @@ Deno.serve(async (req) => {
     // The Dial action callback uses the parent inbound CallSid
     const lookupSid = dialCallStatus ? callSid : parentCallSid;
 
+    const answeredBy = formData.get("AnsweredBy")?.toString() ?? "";
+
+    // AnsweredBy values that mean a voicemail/answering machine picked up,
+    // not the actual business owner. Requires machineDetection="Enable" on
+    // the <Dial> in handle-inbound-call. Twilio can't tell "human" from
+    // "voicemail" from DialCallStatus alone — both register as "completed" —
+    // so a fast voicemail pickup was previously indistinguishable from a
+    // real answer, and the missed-call text-back never fired for it.
+    const voicemailAnsweredByValues = [
+      "machine_start",
+      "machine_end_beep",
+      "machine_end_silence",
+      "machine_end_other",
+      "fax",
+    ];
+    const wasVoicemail = voicemailAnsweredByValues.includes(answeredBy);
+
     // Statuses that mean the owner didn't answer
     const missedStatuses = ["no-answer", "busy", "failed", "canceled"];
-    const wasMissed = missedStatuses.includes(dialCallStatus);
+    const wasMissed = missedStatuses.includes(dialCallStatus) || wasVoicemail;
+
+    console.log("Call outcome:", { dialCallStatus, answeredBy, wasVoicemail, wasMissed });
 
     // Fetch the call_log — use twilio_call_sid for deduplication
     const { data: callLog, error } = await supabase

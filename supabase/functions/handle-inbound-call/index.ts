@@ -1,8 +1,10 @@
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createClient } from "npm:@supabase/supabase-js@2";
+
+const secretKeys = JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") ?? "{}");
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
-  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
+  secretKeys.nexaflow_service_role_2026_08 ?? ""
 );
 
 Deno.serve(async (req) => {
@@ -50,13 +52,20 @@ Deno.serve(async (req) => {
     const statusCallbackUrl = `${Deno.env.get("SUPABASE_URL")}/functions/v1/handle-call-status`;
     console.log("Dialing owner:", business.owner_phone, "statusCallbackUrl:", statusCallbackUrl);
 
-    // TwiML: dial the owner's real phone, ring for 20s, then fire status callback
+    // TwiML: dial the owner's real phone, ring for 20s, then fire status callback.
+    // machineDetection="Enable" makes Twilio analyze the first few seconds of
+    // audio after pickup and report back whether a human or a voicemail/
+    // answering machine answered (via the AnsweredBy param on the same
+    // action callback). Without this, a fast voicemail pickup and a real
+    // human pickup were indistinguishable — both showed as DialCallStatus
+    // "completed", so the missed-call text-back never fired for voicemail.
     const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Dial
     action="${statusCallbackUrl}"
     timeout="20"
-    callerId="${to}">
+    callerId="${to}"
+    machineDetection="Enable">
     <Number statusCallbackEvent="initiated ringing answered completed" statusCallback="${statusCallbackUrl}">
       ${business.owner_phone}
     </Number>

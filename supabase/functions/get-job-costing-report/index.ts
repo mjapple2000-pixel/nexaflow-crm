@@ -1,15 +1,15 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createClient } from "npm:@supabase/supabase-js@2";
 
 const SUPABASE_URL = "https://rllriopqojaraceytdno.supabase.co";
-const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const secretKeys = JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") ?? "{}");
+const SERVICE_ROLE_KEY = secretKeys.nexaflow_service_role_2026_08 ?? "";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-serve(async (req) => {
+Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
   try {
@@ -60,7 +60,7 @@ serve(async (req) => {
 
     const rows = snapshots ?? [];
 
-    // ── Card 1: Profitability by Job Type ─────────────────────────────────
+    // ── Card 1: Profitability by Job Type ─────────────────────────
     const byJobType: Record<string, {
       job_type: string;
       count: number;
@@ -91,7 +91,7 @@ serve(async (req) => {
         : null,
     })).sort((a, b) => b.avg_profit_cents - a.avg_profit_cents);
 
-    // ── Card 2: Profitability by Calendar ─────────────────────────────────
+    // ── Card 2: Profitability by Calendar ────────────────────────
     // Pull appointment calendar_id for each snapshot that has an appointment_id
     const apptIds = rows
       .filter((r) => r.appointment_id != null)
@@ -140,7 +140,7 @@ serve(async (req) => {
       total_profit_cents: g.total_profit,
     })).sort((a, b) => b.total_profit_cents - a.total_profit_cents);
 
-    // ── Card 3: Top 5 / Bottom 5 by gross profit ──────────────────────────
+    // ── Card 3: Top 5 / Bottom 5 by gross profit ──────────────────
     // Only include rows where we have profit data
     const withProfit = rows
       .filter((r) => r.gross_profit_cents !== null)

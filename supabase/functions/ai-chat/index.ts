@@ -25,7 +25,8 @@ serve(async (req) => {
     }
 
     const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? ''
-    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+    const secretKeys = JSON.parse(Deno.env.get('SUPABASE_SECRET_KEYS') ?? '{}')
+    const supabaseKey = secretKeys.nexaflow_service_role_2026_08 ?? ''
     const openAiKey = Deno.env.get('OPENAI_API_KEY') ?? ''
 
     console.log('business_id:', business_id)
@@ -37,7 +38,6 @@ serve(async (req) => {
       {
         headers: {
           'apikey': supabaseKey,
-          'Authorization': `Bearer ${supabaseKey}`,
           'Content-Type': 'application/json',
         },
       }
@@ -51,7 +51,6 @@ serve(async (req) => {
       {
         headers: {
           'apikey': supabaseKey,
-          'Authorization': `Bearer ${supabaseKey}`,
           'Content-Type': 'application/json',
         },
       }

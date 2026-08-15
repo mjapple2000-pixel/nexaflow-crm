@@ -1,9 +1,11 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
+const secretKeys = JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") ?? "{}");
+
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
-  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
+  secretKeys.nexaflow_service_role_2026_08 ?? ""
 );
 
 const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY")!;
@@ -58,7 +60,7 @@ Deno.serve(async (req) => {
       return new Response(JSON.stringify({ error: "Missing message" }), { status: 400 });
     }
 
-    // ── Load NexaFlow KB ────────────────────────────────────────────────────
+    // ── Load NexaFlow KB ────────────────────────────────────────
     const { data: kbEntries } = await supabase
       .from("nexaflow_kb")
       .select("category, title, content")
@@ -73,14 +75,14 @@ Deno.serve(async (req) => {
       ? `${NEXAFLOW_SYSTEM_PROMPT}\n\nKNOWLEDGE BASE:\n${kbText}`
       : NEXAFLOW_SYSTEM_PROMPT;
 
-    // ── Build messages ──────────────────────────────────────────────────────
+    // ── Build messages ───────────────────────────────────────────
     const messages = [
       { role: "system", content: systemPrompt },
       ...(history ?? []).slice(-12),
       { role: "user", content: message },
     ];
 
-    // ── Call OpenAI ─────────────────────────────────────────────────────────
+    // ── Call OpenAI ────────────────────────────────────────────────
     const aiRes = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -99,7 +101,7 @@ Deno.serve(async (req) => {
     if (!aiRes.ok) throw new Error(`OpenAI error: ${JSON.stringify(aiJson)}`);
     const reply = aiJson.choices?.[0]?.message?.content?.trim() ?? "Sorry, I couldn't generate a response.";
 
-    // ── Log to support_chats ────────────────────────────────────────────────
+    // ── Log to support_chats ───────────────────────────────────
     if (business_id || user_id) {
       const updatedHistory = [
         ...(history ?? []),

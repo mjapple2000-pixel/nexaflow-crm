@@ -7,7 +7,7 @@ const corsHeaders = {
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
-  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
+  JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") ?? "{}").nexaflow_service_role_2026_08
 );
 
 const BUCKET = "job-form-media";
@@ -130,7 +130,7 @@ Deno.serve(async (req) => {
       }
     }
 
-    // ── 2. Load submission, scoped to this business ──────────────────────────
+    // ── 2. Load submission, scoped to this business ────────────────────
     const { data: submission, error: subError } = await supabase
       .from("job_form_submissions")
       .select("id, job_form_id, appointment_id, status, answers, photo_urls, signature_url, signed_by_name, signed_at, business_id, pdf_url, submission_label, extra_pages")
@@ -150,7 +150,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ── 3. Load the template ──────────────────────────────────────────────────
+    // ── 3. Load the template ───────────────────────────────────────────────
     const { data: jobForm, error: formError } = await supabase
       .from("job_forms")
       .select("id, name, form_type, fields, requires_signature, background_pages, photo_attachment_markers, signature_box")
@@ -165,7 +165,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ── 3b. Signed URLs for private bucket display ────────────────────────────
+    // ── 3b. Signed URLs for private bucket display ──────────────────
     const rawPhotoUrls: string[] = submission.photo_urls ?? [];
     const signedUrlEntries = await Promise.all(
       rawPhotoUrls.map(async (p) => [p, await getSignedUrl(p)] as [string, string | null])
@@ -212,7 +212,7 @@ Deno.serve(async (req) => {
       console.error("get-job-form-data marker photo lookup error:", markerPhotoError);
     }
 
-    const markerPhotosMap: Record<string, { id: number; signed_url: string | null }[]> = {};
+    const markerPhotosMap: Record<string, { id: number; signed_url: string | null; lat: number | null; lng: number | null; captured_at: string | null }[]> = {};
     for (const row of markerPhotoRows ?? []) {
       const signedUrl = await getSignedUrl(row.storage_path);
       if (!markerPhotosMap[row.marker_id]) markerPhotosMap[row.marker_id] = [];
@@ -264,7 +264,7 @@ Deno.serve(async (req) => {
     const savedSignatureSignedUrl = await getSignedUrl(savedSignatureUrl);
     const savedInitialsSignedUrl = await getSignedUrl(savedInitialsUrl);
 
-    // ── 4. Appointment context (for header display) ──────────────────────────
+    // ── 4. Appointment context (for header display) ─────────────────
     let appointmentInfo: any = null;
     if (submission.appointment_id) {
       const { data: appt } = await supabase

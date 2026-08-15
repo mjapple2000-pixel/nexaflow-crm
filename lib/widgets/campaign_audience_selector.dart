@@ -6,12 +6,14 @@ import '../theme/app_theme.dart';
 
 class CampaignAudienceSelector extends StatefulWidget {
   final int businessId;
+  final String channel; // 'sms' or 'email'
   final Map<String, dynamic> initialFilterConfig;
   final void Function(Map<String, dynamic> filterConfig) onChanged;
 
   const CampaignAudienceSelector({
     super.key,
     required this.businessId,
+    required this.channel,
     required this.initialFilterConfig,
     required this.onChanged,
   });
@@ -158,7 +160,11 @@ class _CampaignAudienceSelectorState
           'Content-Type': 'application/json',
           'Authorization': 'Bearer ${session.accessToken}',
         },
-        body: jsonEncode({'filter_config': config}),
+        body: jsonEncode({
+          'filter_config': config,
+          'business_id': widget.businessId,
+          'channel': widget.channel,
+        }),
       );
 
       if (!mounted) return;

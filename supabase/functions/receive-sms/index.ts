@@ -1,9 +1,11 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
+const secretKeys = JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") ?? "{}");
+
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
-  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
+  secretKeys.nexaflow_service_role_2026_08 ?? ""
 );
 
 const TWILIO_ACCOUNT_SID   = Deno.env.get("TWILIO_ACCOUNT_SID")!;
@@ -11,7 +13,7 @@ const TWILIO_AUTH_TOKEN    = Deno.env.get("TWILIO_AUTH_TOKEN")!;
 const OPENAI_API_KEY       = Deno.env.get("OPENAI_API_KEY")!;
 const NOTIFY_OWNER_WEBHOOK = Deno.env.get("NOTIFY_OWNER_WEBHOOK") ?? "";
 
-// ── Always return empty TwiML ─────────────────────────────────────────────────
+// ── Always return empty TwiML ───────────────────────────────────────────────────
 function twimlEmpty() {
   return new Response(
     `<?xml version='1.0' encoding='UTF-8'?><Response></Response>`,
@@ -19,7 +21,7 @@ function twimlEmpty() {
   );
 }
 
-// ── Send SMS via Twilio REST ──────────────────────────────────────────────────
+// ── Send SMS via Twilio REST ─────────────────────────────────────────────
 async function sendSms(to: string, from: string, body: string) {
   const url   = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`;
   const creds = btoa(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`);
@@ -33,7 +35,7 @@ async function sendSms(to: string, from: string, body: string) {
   return json;
 }
 
-// ── Extract first name from a full name ───────────────────────────────────────
+// ── Extract first name from a full name ────────────────────────────────
 function firstName(fullName: string): string {
   return fullName.trim().split(/\s+/)[0] ?? fullName.trim();
 }
@@ -45,17 +47,17 @@ function looksLikeName(s: string): boolean {
   return trimmed.length >= 2 && trimmed.length <= 60 && /[a-zA-Z]/.test(trimmed) && !/\d/.test(trimmed);
 }
 
-// ── Check if string looks like an email ──────────────────────────────────────
+// ── Check if string looks like an email ─────────────────────────────
 function looksLikeEmail(s: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s.trim());
 }
 
-// ── Check if string looks like an address (has a number + street word) ────────
+// ── Check if string looks like an address (has a number + street word) ────
 function looksLikeAddress(s: string): boolean {
   return /\d/.test(s) && s.trim().split(/\s+/).length >= 3;
 }
 
-// ── Find available booking slots ──────────────────────────────────────────────
+// ── Find available booking slots ──────────────────────────────────
 async function findAvailableSlots(
   businessId: number,
   availability: Record<string, any>,
@@ -140,7 +142,7 @@ async function findAvailableSlots(
   return slots;
 }
 
-// ── Build AI system prompt ────────────────────────────────────────────────────
+// ── Build AI system prompt ──────────────────────────────────────
 async function buildSystemPrompt(
   business: Record<string, any>,
   lead: Record<string, any> | null,
@@ -214,7 +216,7 @@ sections.push(`CONTACT INFO:\nThe person's name is ${knownName}. IMPORTANT: You 
   return sections.join("\n\n");
 }
 
-// ── Generate AI reply ─────────────────────────────────────────────────────────
+// ── Generate AI reply ────────────────────────────────────────────────
 async function generateAiReply(
   systemPrompt: string,
   history: Array<{ role: string; content: string }>,
@@ -239,7 +241,7 @@ async function generateAiReply(
   return json.choices?.[0]?.message?.content?.trim() ?? "";
 }
 
-// ── Detect booking intent via AI ─────────────────────────────────────────────
+// ── Detect booking intent via AI ─────────────────────────────
 async function detectIntent(message: string, history: Array<{ role: string; content: string }>): Promise<{
   wantsBooking: boolean;
   isPickingSlot: boolean; // replied with 1, 2, or 3
@@ -277,7 +279,7 @@ No explanation. JSON only.`,
   }
 }
 
-// ── Main handler ──────────────────────────────────────────────────────────────
+// ── Main handler ───────────────────────────────────────────────────
 Deno.serve(async (req) => {
   try {
     const params     = new URLSearchParams(await req.text());
@@ -289,7 +291,7 @@ Deno.serve(async (req) => {
     if (!from || !body) return twimlEmpty();
     console.log(`Inbound SMS | sid:${messageSid} from:${from} | "${body}"`);
 
-    // ── Deduplication ─────────────────────────────────────────────────────────
+    // ── Deduplication ───────────────────────────────────────────
     if (messageSid) {
       const { data: existing } = await supabase
         .from("messages").select("id").eq("twilio_sid", messageSid).maybeSingle();
@@ -299,13 +301,13 @@ Deno.serve(async (req) => {
       }
     }
 
-    // ── 1. Find business ──────────────────────────────────────────────────────
+    // ── 1. Find business ─────────────────────────────────────────
     const { data: business } = await supabase
       .from("businesses").select("*").eq("ai_phone_number", to).maybeSingle();
     if (!business) { console.error(`No business for: ${to}`); return twimlEmpty(); }
     const businessId = business.id as number;
 
-    // ── Resolve the calendar this business books AI/SMS appointments into ──────
+    // ── Resolve the calendar this business books AI/SMS appointments into ────
     let bookingCalendar: Record<string, any> | null = null;
     if (business.default_calendar_id) {
       const { data: cal } = await supabase
@@ -328,7 +330,7 @@ Deno.serve(async (req) => {
     const bookingCalendarId = bookingCalendar?.id as number | undefined;
     const bookingAvailability = bookingCalendar?.availability_hours ?? business.availability_hours ?? {};
 
-    // ── 2. Look up lead ───────────────────────────────────────────────────────
+    // ── 2. Look up lead ───────────────────────────────────────
     const { data: lead } = await supabase
       .from("leads")
       .select("id, lead_name, lead_phone, lead_email, lead_address, lead_status, tags, notes, source")
@@ -336,7 +338,7 @@ Deno.serve(async (req) => {
       .eq("lead_phone", from)
       .maybeSingle();
 
-    // ── 3. Find or create conversation ────────────────────────────────────────
+    // ── 3. Find or create conversation ────────────────────────
     let { data: conversation } = lead?.id
       ? await supabase
           .from("conversations")
@@ -396,7 +398,7 @@ Deno.serve(async (req) => {
 
     const conversationId = conversation!.id as number;
 
-    // ── 4. Save inbound message ───────────────────────────────────────────────
+    // ── 4. Save inbound message ────────────────────────────
     await supabase.from("messages").insert({
       conversation_id: conversationId,
       business_id:     businessId,
@@ -408,13 +410,13 @@ Deno.serve(async (req) => {
       twilio_sid:      messageSid || null,
     });
 
-    // ── 5. Check AI enabled ───────────────────────────────────────────────────
+    // ── 5. Check AI enabled ────────────────────────────────
     if (!(conversation!.ai_enabled ?? true)) {
       console.log(`AI paused for convo ${conversationId}`);
       return twimlEmpty();
     }
 
-    // ── 6. Load conversation history ──────────────────────────────────────────
+    // ── 6. Load conversation history ───────────────────────────
     const { data: recentMessages } = await supabase
       .from("messages")
       .select("body, direction")
@@ -427,9 +429,9 @@ Deno.serve(async (req) => {
       content: m.body,
     }));
 
-    // ═════════════════════════════════════════════════════════════════════════
+    // ═══════════════════════════════════════════════════════════════════════════════
     //  STEP A: If we were waiting for a specific piece of info, capture it
-    // ═════════════════════════════════════════════════════════════════════════
+    // ═══════════════════════════════════════════════════════════════════════════════
     let aiReply = "";
     let skipNormalFlow = false;
 
@@ -596,13 +598,13 @@ Deno.serve(async (req) => {
       }
     }
 
-    // ═════════════════════════════════════════════════════════════════════════
+    // ═══════════════════════════════════════════════════════════════════════════════
     //  STEP B: Normal flow (if not already handled above)
-    // ═════════════════════════════════════════════════════════════════════════
+    // ═══════════════════════════════════════════════════════════════════════════════
 
     if (!skipNormalFlow) {
 
-      // ── B1: If we don't know their name yet, ask for it first ────────────
+      // ── B1: If we don't know their name yet, ask for it first ────
       const currentName = collectingInfo.name_collected
         ? conversation!.contact_name
         : knownName;
@@ -617,7 +619,7 @@ Deno.serve(async (req) => {
         }).eq("id", conversationId);
 
       } else {
-        // ── B2: We know their name — proceed with intent detection ─────────
+        // ── B2: We know their name — proceed with intent detection ─────
         const first = firstName(currentName);
 
         // Check for pending booking slot selection (1, 2, or 3)
@@ -625,7 +627,7 @@ Deno.serve(async (req) => {
 
         const intent = await detectIntent(body, history);
 
-        // ── B2a: Lead is picking a slot ──────────────────────────────────
+        // ── B2a: Lead is picking a slot ──────────────────
         if (pendingSlots && pendingSlots.length > 0 && intent.isPickingSlot && intent.slotChoice) {
           const chosenSlot = pendingSlots[intent.slotChoice - 1];
 
@@ -706,7 +708,7 @@ Deno.serve(async (req) => {
             }
           }
 
-        // ── B2b: Lead wants to book ───────────────────────────────────────
+        // ── B2b: Lead wants to book ────────────────────
         } else if (intent.wantsBooking) {
 
           // Check what info we still need (SMS needs email + address)
@@ -749,7 +751,7 @@ Deno.serve(async (req) => {
             }
           }
 
-        // ── B2c: Normal conversation ──────────────────────────────────────
+        // ── B2c: Normal conversation ──────────────────
         } else {
           // Check if we were mid-booking-info-collection and they resumed
           if (collectingInfo.booking_requested && !collectingInfo.waiting_for) {
@@ -786,10 +788,10 @@ Deno.serve(async (req) => {
 
     console.log(`AI reply: "${aiReply}"`);
 
-    // ── Send SMS ──────────────────────────────────────────────────────────────
+    // ── Send SMS ───────────────────────────────────────────────────
     await sendSms(from, to, aiReply);
 
-    // ── Save outbound message ─────────────────────────────────────────────────
+    // ── Save outbound message ─────────────────────────────────
     const currentDisplayName = collectingInfo.name_collected
       ? conversation!.contact_name
       : (knownName ?? from);
@@ -815,7 +817,7 @@ Deno.serve(async (req) => {
       last_message_at: new Date().toISOString(),
     }).eq("id", lead.id);
   }
-    // ── Fire new_lead automation on first contact ─────────────────────────────
+    // ── Fire new_lead automation on first contact ─────────────
     if (isNewConvo) {
       fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/run-automation`, {
         method: "POST",

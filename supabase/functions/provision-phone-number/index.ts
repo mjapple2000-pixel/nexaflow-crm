@@ -1,9 +1,10 @@
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { createClient } from 'npm:@supabase/supabase-js@2'
 
 const TWILIO_ACCOUNT_SID = Deno.env.get('TWILIO_ACCOUNT_SID')!
 const TWILIO_AUTH_TOKEN = Deno.env.get('TWILIO_AUTH_TOKEN')!
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
-const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+const secretKeys = JSON.parse(Deno.env.get('SUPABASE_SECRET_KEYS') ?? '{}')
+const SUPABASE_SERVICE_ROLE_KEY = secretKeys.nexaflow_service_role_2026_08 ?? ''
 
 const twilioAuth = btoa(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`)
 
@@ -41,18 +42,37 @@ Deno.serve(async (req) => {
       return jsonResponse({ error: 'Unauthorized' }, 401)
     }
 
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('business_id')
+    const { action, areaCode, phoneNumber, friendlyName, phoneNumberId, business_id: bodyBusinessId } = await req.json()
+
+    // ── Superuser bypass ── same pattern as the Stripe Connect functions.
+    // The superuser account (vantagecaretech@gmail.com) has no profiles row
+    // by design, so the plain profile lookup below always failed for it —
+    // this showed as "No business found for user" whenever tested as superuser.
+    const { data: suRow } = await supabase
+      .from('superusers')
+      .select('user_id')
       .eq('user_id', user.id)
-      .single()
+      .maybeSingle()
+    const isSuperuser = !!suRow
 
-    if (!profile?.business_id) {
-      return jsonResponse({ error: 'No business found for user' }, 403)
+    let businessId: number | null = null
+    if (isSuperuser) {
+      businessId = bodyBusinessId ?? null
+      if (!businessId) {
+        return jsonResponse({ error: 'business_id is required' }, 400)
+      }
+    } else {
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('business_id')
+        .eq('user_id', user.id)
+        .single()
+
+      if (!profile?.business_id) {
+        return jsonResponse({ error: 'No business found for user' }, 403)
+      }
+      businessId = profile.business_id
     }
-
-    const businessId = profile.business_id
-    const { action, areaCode, phoneNumber, friendlyName, phoneNumberId } = await req.json()
 
     if (action === 'search') {
       if (!areaCode || areaCode.length !== 3) {

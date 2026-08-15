@@ -44,6 +44,7 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
   // Portal state
   bool _sendingPortalLink = false;
   String? _portalLastSent;
+  int? _businessId;
 
   static const _suggestedTags = [
     'Hot Lead', 'Follow Up', 'VIP', 'Cold', 'Booked',
@@ -59,6 +60,12 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
     _tabs = TabController(length: 3, vsync: this);
     _load();
     _loadTeamMembers();
+    _loadBusinessId();
+  }
+
+  Future<void> _loadBusinessId() async {
+    final id = await getActiveBusinessId();
+    if (mounted) setState(() => _businessId = id);
   }
 
   Future<void> _loadTeamMembers() async {
@@ -320,7 +327,11 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
           'Content-Type': 'application/json',
           'Authorization': 'Bearer ${session.accessToken}',
         },
-        body: jsonEncode({'lead_id': id, 'channel': channel}),
+        body: jsonEncode({
+          'lead_id': id,
+          'channel': channel,
+          'business_id': _businessId,
+        }),
       );
       if (!mounted) return;
       if (res.statusCode == 200) {

@@ -7,7 +7,7 @@ const corsHeaders = {
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
-  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
+  JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") ?? "{}").nexaflow_service_role_2026_08
 );
 
 const SITE_BASE = "https://nexaflow-crm.web.app";
@@ -138,7 +138,7 @@ Deno.serve(async (req) => {
     }
     const apptById = new Map((appointments ?? []).map((a) => [a.id, a]));
 
-    // ── 2. Job form names, for the email body ───────────────────────────────
+    // ── 2. Job form names, for the email body ─────────────────────
     const jobFormIds = [...new Set(validSubmissions.map((s) => s.job_form_id))];
     const { data: jobForms } = await supabase
       .from("job_forms")
@@ -159,7 +159,7 @@ Deno.serve(async (req) => {
       markerLabelByForm.set(f.id, labelMap);
     }
 
-    // ── 3. Group valid submissions by lead_id ───────────────────────────────
+    // ── 3. Group valid submissions by lead_id ─────────────────────
     const groups = new Map<number, typeof validSubmissions>();
     for (const s of validSubmissions) {
       const appt = apptById.get(s.appointment_id);

@@ -1,11 +1,11 @@
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { createClient } from 'npm:@supabase/supabase-js@2'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-// ── Plan feature matrix ──────────────────────────────────────────────────────
+// ── Plan feature matrix ───────────────────────────────────────────────
 // Source of truth for what each tier unlocks.
 // When adding a new gated feature, add its key here before wiring it up.
 const PLAN_FEATURES: Record<string, string[]> = {
@@ -19,7 +19,6 @@ const PLAN_FEATURES: Record<string, string[]> = {
     'review_requests',
     'contact_timeline',
     'appointment_reminders',
-    'on_my_way_sms',
   ],
   growth: [
     // Includes everything in starter
@@ -80,7 +79,7 @@ Deno.serve(async (req) => {
   }
 
   try {
-    // ── Auth: resolve the calling user's business ──────────────────────────
+    // ── Auth: resolve the calling user's business ────────────────
     const authHeader = req.headers.get('Authorization')
     if (!authHeader) {
       return new Response(
@@ -103,10 +102,11 @@ Deno.serve(async (req) => {
       )
     }
 
-    // ── Resolve business_id from profile ──────────────────────────────────
+    // ── Resolve business_id from profile ──────────────────
+    const secretKeys = JSON.parse(Deno.env.get('SUPABASE_SECRET_KEYS') ?? '{}')
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL')!,
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
+      secretKeys.nexaflow_service_role_2026_08 ?? '',
     )
 
     const { data: profile } = await supabase
@@ -124,7 +124,7 @@ Deno.serve(async (req) => {
 
     const businessId: number = profile.business_id
 
-    // ── Parse the feature being checked ───────────────────────────────────
+    // ── Parse the feature being checked ───────────────────
     const body = await req.json()
     const featureName: string = body.feature
 
@@ -135,7 +135,7 @@ Deno.serve(async (req) => {
       )
     }
 
-    // ── Load the business record ───────────────────────────────────────────
+    // ── Load the business record ─────────────────────
     // Beta/paid/subscription-status logic now lives entirely inside
     // check_plan_feature() in Postgres — this is the single source of
     // truth, also usable directly from RLS policies and other functions.
@@ -153,7 +153,7 @@ Deno.serve(async (req) => {
       )
     }
 
-    // ── Check feature via the canonical Postgres function ──────────────────
+    // ── Check feature via the canonical Postgres function ────────────
     // check-plan-feature no longer maintains its own copy of the feature
     // matrix — check_plan_feature() in Postgres is the single source of
     // truth, also usable directly from RLS policies and other functions.

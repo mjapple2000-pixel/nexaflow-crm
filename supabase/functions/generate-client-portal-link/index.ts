@@ -1,4 +1,4 @@
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { createClient } from 'npm:@supabase/supabase-js@2'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -13,7 +13,8 @@ Deno.serve(async (req) => {
 
   try {
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!
-    const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+    const secretKeys = JSON.parse(Deno.env.get('SUPABASE_SECRET_KEYS') ?? '{}')
+    const serviceRoleKey = secretKeys.nexaflow_service_role_2026_08 ?? ''
     const appDomain = 'https://nexaflow-crm.web.app'
 
     // Authenticated client — verify the calling staff user
@@ -27,22 +28,40 @@ Deno.serve(async (req) => {
     const { data: { user }, error: authError } = await userClient.auth.getUser()
     if (authError || !user) return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401, headers: corsHeaders })
 
-    // Resolve business_id from profiles
     const adminClient = createClient(supabaseUrl, serviceRoleKey)
-    const { data: profile } = await adminClient
-      .from('profiles')
-      .select('business_id')
-      .eq('user_id', user.id)
-      .single()
-
-    if (!profile?.business_id) return new Response(JSON.stringify({ error: 'No business found' }), { status: 400, headers: corsHeaders })
-
-    const businessId = profile.business_id
 
     // Parse body — channel defaults to 'sms' so existing callers keep working unchanged
-    const { lead_id, channel } = await req.json()
+    const { lead_id, channel, business_id: bodyBusinessId } = await req.json()
     if (!lead_id) return new Response(JSON.stringify({ error: 'lead_id required' }), { status: 400, headers: corsHeaders })
     const sendChannel = channel === 'email' ? 'email' : 'sms'
+
+    // ── Superuser bypass ── same pattern as the Stripe Connect functions.
+    // The superuser account (vantagecaretech@gmail.com) has no profiles row
+    // by design, so the plain profile lookup below always failed for it —
+    // this showed as "No business found" whenever tested as superuser.
+    const { data: suRow } = await adminClient
+      .from('superusers')
+      .select('user_id')
+      .eq('user_id', user.id)
+      .maybeSingle()
+    const isSuperuser = !!suRow
+
+    let businessId: number | null = null
+    if (isSuperuser) {
+      businessId = bodyBusinessId ?? null
+      if (!businessId) {
+        return new Response(JSON.stringify({ error: 'business_id is required' }), { status: 400, headers: corsHeaders })
+      }
+    } else {
+      const { data: profile } = await adminClient
+        .from('profiles')
+        .select('business_id')
+        .eq('user_id', user.id)
+        .single()
+
+      if (!profile?.business_id) return new Response(JSON.stringify({ error: 'No business found' }), { status: 400, headers: corsHeaders })
+      businessId = profile.business_id
+    }
 
     // Verify lead belongs to this business
     const { data: lead } = await adminClient

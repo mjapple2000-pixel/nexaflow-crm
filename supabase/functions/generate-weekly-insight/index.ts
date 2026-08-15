@@ -1,9 +1,11 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
+const secretKeys = JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") ?? "{}");
+
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
-  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
+  secretKeys.nexaflow_service_role_2026_08 ?? ""
 );
 
 const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY")!;
@@ -24,7 +26,7 @@ Deno.serve(async (req) => {
   }
 
   try {
-    // ── 1. Fetch all eligible businesses (Growth, Pro, or beta) ────────────
+    // ── 1. Fetch all eligible businesses (Growth, Pro, or beta) ───────────
     const { data: businesses, error: bizErr } = await supabase
       .from("businesses")
       .select("id, business_name, timezone, plan, subscription_status, is_beta");
@@ -49,7 +51,7 @@ Deno.serve(async (req) => {
       try {
         const businessId = business.id as number;
 
-        // ── 2. Pull 7-day data scoped to this business ─────────────────
+        // ── 2. Pull 7-day data scoped to this business ─────────
 
         const [leadsRes, apptsRes, convosRes] = await Promise.all([
           supabase
@@ -78,7 +80,7 @@ Deno.serve(async (req) => {
         const appts = apptsRes.data ?? [];
         const convos = convosRes.data ?? [];
 
-        // ── 3. Build summary stats for the prompt ─────────────────────
+        // ── 3. Build summary stats for the prompt ─────────────
         const totalLeads = leads.length;
         const convertedLeads = leads.filter((l: any) => l.converted_to_appointment).length;
         const leadsByStatus: Record<string, number> = {};
@@ -103,7 +105,7 @@ Deno.serve(async (req) => {
         const openConvos = convos.filter((c: any) => c.status === "open").length;
         const smsConvos = convos.filter((c: any) => c.channel === "sms").length;
 
-        // ── 4. Call GPT-4o-mini ─────────────────────────────────
+        // ── 4. Call GPT-4o-mini ─────────────────────
         const prompt = `You are a business analyst writing a brief weekly performance summary for a home service business owner.
 
 Business: ${business.business_name ?? "this business"}
@@ -145,7 +147,7 @@ Write a 3–4 sentence plain-text weekly insight summary. Be specific, use the a
 
         if (!summary) throw new Error("Empty summary from OpenAI");
 
-        // ── 5. Write insight back to businesses row ──────────────────
+        // ── 5. Write insight back to businesses row ────────────
         const { error: updateErr } = await supabase
           .from("businesses")
           .update({
@@ -164,7 +166,7 @@ Write a 3–4 sentence plain-text weekly insight summary. Be specific, use the a
 
         if (updateErr) throw new Error(`Update businesses: ${updateErr.message}`);
 
-        // ── 6. Log AI usage ─────────────────────────────────
+        // ── 6. Log AI usage ───────────────────
         await supabase.from("ai_usage_logs").insert({
           business_id: businessId,
           action: "weekly_insight",

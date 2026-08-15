@@ -7,7 +7,7 @@ const corsHeaders = {
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
-  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
+  JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") ?? "{}").nexaflow_service_role_2026_08
 );
 
 Deno.serve(async (req) => {
@@ -33,7 +33,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ── 1. Resolve caller's business (session + superuser bypass) ────────────
+    // ── 1. Resolve caller's business (session + superuser bypass) ────────
     const { data: userData, error: userError } = await supabase.auth.getUser(
       authHeader.replace("Bearer ", "")
     );
@@ -70,7 +70,7 @@ Deno.serve(async (req) => {
       businessId = profile.business_id;
     }
 
-    // ── 2. Load completed submissions in the date range ───────────────────────
+    // ── 2. Load completed submissions in the date range ───────────────
     // Explicit start_date/end_date (from the Forms tab's own date-range
     // picker) take priority over the day-bucket when both are present —
     // independent of the 7d/30d/90d chips elsewhere on the Reporting
@@ -116,7 +116,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ── 3. Batch-load related data ─────────────────────────────────────────────
+    // ── 3. Batch-load related data ─────────────────────────────────────────
     const jobFormIds = [...new Set(rows.map((r) => r.job_form_id).filter(Boolean))];
     const profileIds = [...new Set(rows.map((r) => r.completed_by_profile_id).filter(Boolean))];
     const appointmentIds = [...new Set(rows.map((r) => r.appointment_id).filter(Boolean))];

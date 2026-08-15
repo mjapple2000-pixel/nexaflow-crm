@@ -7,8 +7,37 @@ const corsHeaders = {
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
-  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
+  JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") ?? "{}").nexaflow_service_role_2026_08
 );
+
+const TWILIO_ACCOUNT_SID = Deno.env.get("TWILIO_ACCOUNT_SID")!;
+const TWILIO_AUTH_TOKEN = Deno.env.get("TWILIO_AUTH_TOKEN")!;
+
+// Resolves the timestamp to record for a clock action. If the client
+// captured its own timestamp at button-press time (used when the request
+// had to be queued locally due to no connectivity and retried later),
+// that is used instead of "now" — otherwise a tech who clocked in while
+// out of cell range would have their time silently recorded as whenever
+// the retry finally succeeded, not when they actually pressed the button.
+// Bounded to a sane window (max 48h in the past, max 5min in the future
+// for clock skew) so a malformed client_timestamp can't corrupt payroll
+// data — falls back to server time outside that window.
+function resolveClockTimestamp(clientTimestamp: unknown): { iso: string; offline: boolean } {
+  const now = new Date();
+  if (typeof clientTimestamp === "string") {
+    const parsed = new Date(clientTimestamp);
+    if (!isNaN(parsed.getTime())) {
+      const diffMs = now.getTime() - parsed.getTime();
+      const maxPastMs = 48 * 60 * 60 * 1000;
+      const maxFutureMs = 5 * 60 * 1000;
+      if (diffMs <= maxPastMs && diffMs >= -maxFutureMs) {
+        const offline = diffMs > 15000;
+        return { iso: parsed.toISOString(), offline };
+      }
+    }
+  }
+  return { iso: now.toISOString(), offline: false };
+}
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -17,7 +46,7 @@ Deno.serve(async (req) => {
 
   try {
     const body = await req.json();
-    const { token, action, appointment_id, lat, lng, notes, enabled, accuracy } = body;
+    const { token, action, appointment_id, lat, lng, notes, enabled, accuracy, client_timestamp } = body;
 
     if (!token) {
       return new Response(JSON.stringify({ error: "token is required" }), {
@@ -26,7 +55,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    const validActions = ["clock_in", "clock_out", "toggle_location_sharing", "update_location"];
+    const validActions = ["clock_in", "clock_out", "toggle_location_sharing", "update_location", "add_note", "send_on_my_way"];
     if (!validActions.includes(action)) {
       return new Response(JSON.stringify({ error: "Invalid action" }), {
         status: 400,
@@ -53,7 +82,7 @@ Deno.serve(async (req) => {
     // ── 2. Resolve profile / user_id ─────────────────────────────────────────
     const { data: profile, error: profileError } = await supabase
       .from("profiles")
-      .select("user_id")
+      .select("user_id, full_name")
       .eq("id", hubToken.profile_id)
       .maybeSingle();
 
@@ -149,6 +178,170 @@ Deno.serve(async (req) => {
       });
     }
 
+    // ── Add note: tech leaves a note on an appointment from the read-only
+    // detail view. Appends rather than overwrites, same pattern as
+    // force-clock-out's noteAddition, so a tech's note never silently
+    // wipes out anything office staff already wrote there.
+    if (action === "add_note") {
+      if (!appointment_id || typeof notes !== "string" || notes.trim().length === 0) {
+        return new Response(JSON.stringify({ error: "appointment_id and non-empty notes are required" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const { data: appt, error: apptError } = await supabase
+        .from("appointments")
+        .select("id, notes")
+        .eq("id", appointment_id)
+        .eq("business_id", businessId)
+        .maybeSingle();
+
+      if (apptError || !appt) {
+        return new Response(JSON.stringify({ error: "Appointment not found for this business" }), {
+          status: 404,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const techName = profile.full_name ?? "Field tech";
+      const stamped = `[${techName}, ${new Date().toLocaleString()}]: ${notes.trim()}`;
+      const combined = appt.notes ? `${appt.notes}\n${stamped}` : stamped;
+
+      const { error: noteErr } = await supabase
+        .from("appointments")
+        .update({ notes: combined })
+        .eq("id", appointment_id);
+
+      if (noteErr) {
+        return new Response(JSON.stringify({ error: "Error saving note: " + noteErr.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      return new Response(JSON.stringify({ success: true, notes: combined }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    // ── Send on-my-way SMS from the Employee Hub — token-authenticated
+    // mirror of send-on-my-way-sms, which requires a real JWT session the
+    // Hub never has. Resolves business_id from the hub token (never the
+    // client), reads contact info from appointment_contact_info (the same
+    // live-lead-or-frozen-snapshot source of truth appointments_screen.dart
+    // and send-on-my-way-sms both use), and updates on_my_way_sent_at.
+    if (action === "send_on_my_way") {
+      if (!appointment_id) {
+        return new Response(JSON.stringify({ error: "appointment_id is required" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const { data: appt, error: apptError } = await supabase
+        .from("appointments")
+        .select("id")
+        .eq("id", appointment_id)
+        .eq("business_id", businessId)
+        .maybeSingle();
+
+      if (apptError || !appt) {
+        return new Response(JSON.stringify({ error: "Appointment not found for this business" }), {
+          status: 404,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const { data: allowed, error: gateErr } = await supabase
+        .rpc("check_plan_feature", { p_business_id: businessId, p_feature: "on_my_way_sms" });
+      if (gateErr) {
+        return new Response(JSON.stringify({ error: "Error checking plan: " + gateErr.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      if (!allowed) {
+        return new Response(JSON.stringify({
+          error: "upgrade_required",
+          message: "On My Way texts require the Starter plan or above.",
+        }), { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
+      const { data: contactInfo } = await supabase
+        .from("appointment_contact_info")
+        .select("resolved_name, resolved_phone")
+        .eq("appointment_id", appointment_id)
+        .maybeSingle();
+
+      const contactName = contactInfo?.resolved_name ?? null;
+      const contactPhone = contactInfo?.resolved_phone ?? null;
+
+      if (!contactPhone) {
+        return new Response(JSON.stringify({ error: "No phone number on file for this appointment" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const { data: business, error: bizErr } = await supabase
+        .from("businesses")
+        .select("business_name, ai_phone_number")
+        .eq("id", businessId)
+        .maybeSingle();
+      if (bizErr || !business?.ai_phone_number) {
+        return new Response(JSON.stringify({ error: "No Twilio number configured for this business" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const firstName = (contactName || "there").trim().split(/\s+/)[0];
+      const smsBody = `Hi ${firstName}, this is ${business.business_name} — we're on our way!`;
+
+      const twilioRes = await fetch(
+        `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Basic ${btoa(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`)}`,
+            "Content-Type": "application/x-www-form-urlencoded",
+          },
+          body: new URLSearchParams({
+            To: contactPhone,
+            From: business.ai_phone_number,
+            Body: smsBody,
+          }).toString(),
+        }
+      );
+
+      if (!twilioRes.ok) {
+        const twilioErr = await twilioRes.text();
+        return new Response(JSON.stringify({ error: `Twilio error: ${twilioErr}` }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const sentAt = new Date().toISOString();
+      const { error: updateErr } = await supabase
+        .from("appointments")
+        .update({ on_my_way_sent_at: sentAt })
+        .eq("id", appointment_id);
+      if (updateErr) {
+        return new Response(JSON.stringify({ error: "Sent, but failed to record: " + updateErr.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      return new Response(JSON.stringify({ success: true, sent_at: sentAt }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
     // ── 3. Check location requirement ────────────────────────────────────────
     const { data: bizSettings } = await supabase
       .from("businesses")
@@ -221,16 +414,19 @@ Deno.serve(async (req) => {
         });
       }
 
+      const { iso: clockedInIso, offline: clockedInOffline } = resolveClockTimestamp(client_timestamp);
+
       const { data: newEntry, error: insertError } = await supabase
         .from("time_entries")
         .insert({
           business_id: businessId,
           appointment_id: appointment_id ?? null,
           user_id: callerUserId,
-          clocked_in_at: new Date().toISOString(),
+          clocked_in_at: clockedInIso,
           clock_in_lat: lat ?? null,
           clock_in_lng: lng ?? null,
           status: "active",
+          recorded_offline: clockedInOffline,
         })
         .select()
         .single();
@@ -271,19 +467,21 @@ Deno.serve(async (req) => {
         });
       }
 
-      const clockedOutAt = new Date();
+      const { iso: clockedOutIso, offline: clockedOutOffline } = resolveClockTimestamp(client_timestamp);
+      const clockedOutAt = new Date(clockedOutIso);
       const clockedInAt = new Date(active.clocked_in_at);
       const durationMinutes = Math.round((clockedOutAt.getTime() - clockedInAt.getTime()) / 60000);
 
       const { data: updatedEntry, error: updateError } = await supabase
         .from("time_entries")
         .update({
-          clocked_out_at: clockedOutAt.toISOString(),
+          clocked_out_at: clockedOutIso,
           duration_minutes: durationMinutes,
           clock_out_lat: lat ?? null,
           clock_out_lng: lng ?? null,
           notes: notes ?? active.notes,
           status: "completed",
+          recorded_offline: active.recorded_offline === true ? true : clockedOutOffline,
         })
         .eq("id", active.id)
         .select()
@@ -301,6 +499,11 @@ Deno.serve(async (req) => {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
+
+    return new Response(JSON.stringify({ error: "Unhandled action" }), {
+      status: 400,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   } catch (err) {
     return new Response(
       JSON.stringify({ error: "Unexpected error: " + (err instanceof Error ? err.message : String(err)) }),

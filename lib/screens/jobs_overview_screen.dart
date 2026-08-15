@@ -114,7 +114,7 @@ class _JobsOverviewScreenState extends State<JobsOverviewScreen> {
             .filter('deleted_at', 'is', null),
         // 4: incomplete job form submissions with appointment context
         _db.from('job_form_submissions')
-            .select('id, status, job_forms(name), appointments(appointment_name, start_date_time)')
+            .select('id, status, appointment_id, job_forms(name), appointments(appointment_name, start_date_time)')
             .eq('business_id', businessId)
             .neq('status', 'completed')
             .filter('deleted_at', 'is', null)
@@ -212,7 +212,7 @@ class _JobsOverviewScreenState extends State<JobsOverviewScreen> {
               ? a['appointment_name'] as String
               : (a['lead_name'] as String? ?? 'Appointment'),
           subtitle: 'Late · ${daysLate}d overdue',
-          route: '/appointments',
+          route: '/appointments?appointmentId=${a['id']}',
         ));
       }
 
@@ -223,7 +223,7 @@ class _JobsOverviewScreenState extends State<JobsOverviewScreen> {
           color: const Color(0xFF1D4ED8),
           title: 'New request from $leadName',
           subtitle: 'Awaiting review',
-          route: '/jobs/board?tab=2',
+          route: '/jobs/board?tab=2&requestId=${r['id']}',
         ));
       }
 
@@ -271,7 +271,7 @@ class _JobsOverviewScreenState extends State<JobsOverviewScreen> {
           color: const Color(0xFF8B5CF6),
           title: '$formName incomplete',
           subtitle: startAt.isBefore(todayStart) ? '$apptName · overdue' : '$apptName · today',
-          route: '/jobs/board?tab=3',
+          route: '/appointments?appointmentId=${s['appointment_id']}',
         ));
         incompleteFormsAdded++;
       }

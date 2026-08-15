@@ -9,9 +9,11 @@ const MAILGUN_API_KEY = Deno.env.get('MAILGUN_API_KEY') ?? ''
 const MAILGUN_DOMAIN = Deno.env.get('MAILGUN_DOMAIN') ?? 'mail.vantagecaretech.com'
 const CRON_SECRET = Deno.env.get('CRON_SECRET') ?? ''
 
+const secretKeys = JSON.parse(Deno.env.get('SUPABASE_SECRET_KEYS') ?? '{}')
+
 const supabase = createClient(
   Deno.env.get('SUPABASE_URL') ?? '',
-  Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
+  secretKeys.nexaflow_service_role_2026_08 ?? '',
 )
 
 // Runs weekly. Reads cron_run_log for daily-ticket-digest's activity in the

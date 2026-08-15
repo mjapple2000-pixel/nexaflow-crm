@@ -1,12 +1,11 @@
-import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { createClient } from 'npm:@supabase/supabase-js@2'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-serve(async (req) => {
+Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
   }
@@ -29,15 +28,17 @@ serve(async (req) => {
       )
     }
 
+    const secretKeys = JSON.parse(Deno.env.get('SUPABASE_SECRET_KEYS') ?? '{}')
+
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL')!,
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+      secretKeys.nexaflow_service_role_2026_08 ?? ''
     )
 
     // Fetch calendar — must be public and active
     const { data: calendar, error: calendarError } = await supabase
       .from('calendars')
-      .select('id, business_id, name, duration_minutes, availability_hours, is_public, is_active, booking_page_title, booking_page_description')
+      .select('id, business_id, name, duration_minutes, availability_hours, is_public, is_active, booking_page_title, booking_page_description, appointment_type_options')
       .eq('id', calendar_id)
       .eq('is_public', true)
       .eq('is_active', true)
@@ -59,6 +60,7 @@ serve(async (req) => {
 
     const timezone = business?.timezone || 'America/New_York'
     const businessName = business?.business_name || ''
+    const appointmentTypeOptions = calendar.appointment_type_options ?? []
 
     // Get the day of week for the requested date in the business's timezone
     const dateInTz = new Date(`${date}T12:00:00.000Z`)
@@ -80,6 +82,7 @@ serve(async (req) => {
             booking_page_title: calendar.booking_page_title,
             booking_page_description: calendar.booking_page_description,
             duration_minutes: calendar.duration_minutes,
+            appointment_type_options: appointmentTypeOptions,
             availability_days: Object.entries(availability)
               .filter(([_, cfg]: [string, any]) => cfg?.enabled === true)
               .map(([day]) => day),
@@ -180,6 +183,7 @@ serve(async (req) => {
           booking_page_title: calendar.booking_page_title,
           booking_page_description: calendar.booking_page_description,
           duration_minutes: durationMinutes,
+          appointment_type_options: appointmentTypeOptions,
           availability_days: enabledDays,
         },
       }),

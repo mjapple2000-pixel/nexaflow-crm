@@ -12,7 +12,7 @@ const OPENAI_API_KEY = Deno.env.get('OPENAI_API_KEY') ?? ''
 
 const supabase = createClient(
   Deno.env.get('SUPABASE_URL') ?? '',
-  Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
+  JSON.parse(Deno.env.get('SUPABASE_SECRET_KEYS') ?? '{}').nexaflow_service_role_2026_08 ?? '',
 )
 
 // Migrated from the "NexaFlow Daily Ticket Digest" Make scenario.
@@ -106,7 +106,7 @@ Deno.serve(async (req) => {
       })
     }
 
-    // ── 1. Fetch all unresolved tickets ────────────────────────────
+    // ── 1. Fetch all unresolved tickets ──────────────────
     const { data: tickets, error } = await supabase
       .from('support_tickets')
       .select('id, business_id, category, category_other, description, status, inserted_at, businesses(business_name)')
@@ -155,7 +155,7 @@ Deno.serve(async (req) => {
       )
     }
 
-    // ── 4. Aggregate all tickets into one text blob ──────────────
+    // ── 4. Aggregate all tickets into one text blob ────────────
     const aggregated = (tickets ?? [])
       .map((t: any) =>
         `Ticket ID: ${t.id} | Business: ${t.businesses?.business_name ?? 'Unknown'} | Category: ${t.category ?? ''} | Other: ${t.category_other ?? ''} | Description: ${t.description ?? ''} | Status: ${t.status} | Submitted: ${t.inserted_at}`
@@ -178,7 +178,7 @@ Deno.serve(async (req) => {
       2048,
     )
 
-    // ── 6. Email the digest via Mailgun ───────────────────
+    // ── 6. Email the digest via Mailgun ─────────────
     const now = new Date()
     const dateLabel = now.toLocaleDateString('en-US', {
       timeZone: 'America/New_York', weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',

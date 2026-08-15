@@ -20,7 +20,7 @@ Deno.serve(async (req) => {
     }
 
     const supabaseUrl = "https://rllriopqojaraceytdno.supabase.co";
-    const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+    const serviceRoleKey = JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") ?? "{}").nexaflow_service_role_2026_08;
 
     const supabaseAuth = createClient(supabaseUrl, Deno.env.get("SUPABASE_ANON_KEY")!, {
       global: { headers: { Authorization: authHeader } },
@@ -74,7 +74,6 @@ Deno.serve(async (req) => {
       headers: {
         "Content-Type": "application/json",
         apikey: serviceRoleKey,
-        Authorization: `Bearer ${serviceRoleKey}`,
       },
       body: JSON.stringify({
         type: "invite",

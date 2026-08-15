@@ -20,7 +20,7 @@ Deno.serve(async (req) => {
     }
 
     const supabaseUrl = "https://rllriopqojaraceytdno.supabase.co";
-    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+    const supabaseServiceKey = JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") ?? "{}").nexaflow_service_role_2026_08;
 
     const supabaseAuth = createClient(supabaseUrl, Deno.env.get("SUPABASE_ANON_KEY")!, {
       global: { headers: { Authorization: authHeader } },
@@ -78,7 +78,7 @@ Deno.serve(async (req) => {
       isOwner = true; // superuser sees the full team view
     }
 
-    // ── Fetch active entry for the caller ─────────────────────────────────
+    // ── Fetch active entry for the caller ──────────────────────
     const { data: myActiveEntry } = await supabase
       .from("time_entries")
       .select("*")
@@ -87,7 +87,7 @@ Deno.serve(async (req) => {
       .is("deleted_at", null)
       .maybeSingle();
 
-    // ── Fetch all profiles for this business (for name lookup) ────────────
+    // ── Fetch all profiles for this business (for name lookup) ────────
     const { data: teamProfiles } = await supabase
       .from("profiles")
       .select("user_id, full_name, role")
@@ -98,7 +98,7 @@ Deno.serve(async (req) => {
       profileMap[p.user_id] = p.full_name ?? "Unknown";
     }
 
-    // ── Build time_entries query ──────────────────────────────────────────
+    // ── Build time_entries query ────────────────────────────
     let query = supabase
       .from("time_entries")
       .select("*")
@@ -129,7 +129,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ── Fetch appointment details for entries that have one ────────────────
+    // ── Fetch appointment details for entries that have one ──────────
     const appointmentIds = [...new Set(
       (entries ?? []).map((e) => e.appointment_id).filter((id) => id != null)
     )];
@@ -150,14 +150,14 @@ Deno.serve(async (req) => {
       }
     }
 
-    // ── Enrich entries with full_name and appointment info ─────────────────
+    // ── Enrich entries with full_name and appointment info ───────────
     const enriched = (entries ?? []).map((e) => ({
       ...e,
       full_name: profileMap[e.user_id] ?? "Unknown",
       appointment_info: e.appointment_id ? (appointmentMap[e.appointment_id] ?? null) : null,
     }));
 
-    // ── Compute per-member totals (owner view) ─────────────────────────────
+    // ── Compute per-member totals (owner view) ────────────────
     const totals: Record<string, { full_name: string; total_minutes: number; entry_count: number }> = {};
     if (isOwner) {
       for (const e of enriched) {
@@ -173,7 +173,7 @@ Deno.serve(async (req) => {
       }
     }
 
-    // ── Flag stale entries (active for 14+ hours) ─────────────────────────
+    // ── Flag stale entries (active for 14+ hours) ───────────────
     const now = new Date();
     const enrichedWithStale = enriched.map((e) => {
       if (e.status !== "active") return e;

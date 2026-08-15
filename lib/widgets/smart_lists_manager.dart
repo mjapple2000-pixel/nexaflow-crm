@@ -408,6 +408,7 @@ class _SmartListFormDialogState extends State<_SmartListFormDialog> {
 
               CampaignAudienceSelector(
                 businessId: widget.businessId,
+                channel: 'sms',
                 initialFilterConfig: _filterConfig,
                 onChanged: (config) =>
                     setState(() => _filterConfig = config),

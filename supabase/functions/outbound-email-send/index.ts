@@ -29,9 +29,9 @@ Deno.serve(async (req) => {
     }
 
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!
-    const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+    const serviceRoleKey = JSON.parse(Deno.env.get('SUPABASE_SECRET_KEYS') ?? '{}').nexaflow_service_role_2026_08
 
-    // ── Resolve the sending business's own reply-to email, server-side ──────
+    // ── Resolve the sending business's own reply-to email, server-side ─────
     // Never trust business context from the client — always derive it from
     // conversation_id -> conversations.business_id -> businesses.owner_email.
     let replyTo = ''
@@ -44,7 +44,6 @@ Deno.serve(async (req) => {
           {
             headers: {
               'apikey': serviceRoleKey,
-              'Authorization': `Bearer ${serviceRoleKey}`,
             },
           }
         )
@@ -57,7 +56,6 @@ Deno.serve(async (req) => {
             {
               headers: {
                 'apikey': serviceRoleKey,
-                'Authorization': `Bearer ${serviceRoleKey}`,
               },
             }
           )

@@ -39,6 +39,8 @@ class _PublicBookingScreenState extends State<PublicBookingScreen> {
   final _nameController = TextEditingController();
   final _emailController = TextEditingController();
   final _phoneController = TextEditingController();
+  List<String> _appointmentTypeOptions = [];
+  String? _selectedAppointmentType;
   bool _submitting = false;
   String? _submitError;
 
@@ -90,6 +92,10 @@ class _PublicBookingScreenState extends State<PublicBookingScreen> {
           _bookingPageTitle = calendar['booking_page_title'] ?? '';
           _bookingPageDescription = calendar['booking_page_description'] ?? '';
           _durationMinutes = calendar['duration_minutes'] ?? 60;
+          final options = calendar['appointment_type_options'];
+          if (options != null) {
+            _appointmentTypeOptions = List<String>.from(options);
+          }
           final days = calendar['availability_days'];
           if (days != null) {
             _availabilityDays = List<String>.from(days);
@@ -128,6 +134,10 @@ class _PublicBookingScreenState extends State<PublicBookingScreen> {
   Future<void> _submitBooking() async {
     if (!_formKey.currentState!.validate()) return;
     if (_selectedSlot == null) return;
+    if (_appointmentTypeOptions.isNotEmpty && _selectedAppointmentType == null) {
+      setState(() => _submitError = 'Please select what this appointment is for.');
+      return;
+    }
 
     setState(() {
       _submitting = true;
@@ -145,6 +155,7 @@ class _PublicBookingScreenState extends State<PublicBookingScreen> {
           'name': _nameController.text.trim(),
           'email': _emailController.text.trim(),
           'phone': _phoneController.text.trim(),
+          'appointment_type': _selectedAppointmentType,
         }),
       );
 
@@ -709,6 +720,46 @@ class _PublicBookingScreenState extends State<PublicBookingScreen> {
               ),
             ),
             const SizedBox(height: 16),
+            if (_appointmentTypeOptions.isNotEmpty) ...[
+              const Text(
+                'What is this appointment for?',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                  color: Color(0xFF374151),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: _appointmentTypeOptions.map((option) {
+                  final isSelected = _selectedAppointmentType == option;
+                  return GestureDetector(
+                    onTap: () => setState(() => _selectedAppointmentType = option),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+                      decoration: BoxDecoration(
+                        color: isSelected ? const Color(0xFF6366F1) : const Color(0xFFF9FAFB),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: isSelected ? const Color(0xFF6366F1) : const Color(0xFFE5E7EB),
+                        ),
+                      ),
+                      child: Text(
+                        option,
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w500,
+                          color: isSelected ? Colors.white : const Color(0xFF374151),
+                        ),
+                      ),
+                    ),
+                  );
+                }).toList(),
+              ),
+              const SizedBox(height: 20),
+            ],
             _buildField(
               controller: _nameController,
               label: 'Full Name',

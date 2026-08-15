@@ -1,14 +1,16 @@
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
-import Stripe from 'https://esm.sh/stripe@13.3.0?target=deno'
+import { createClient } from 'npm:@supabase/supabase-js@2'
+import Stripe from 'npm:stripe@13.3.0'
 
 const stripe = new Stripe(Deno.env.get('STRIPE_SECRET_KEY') ?? '', {
   apiVersion: '2023-10-16',
   httpClient: Stripe.createFetchHttpClient(),
 })
 
+const secretKeys = JSON.parse(Deno.env.get('SUPABASE_SECRET_KEYS') ?? '{}')
+
 const supabase = createClient(
   Deno.env.get('SUPABASE_URL') ?? '',
-  Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
+  secretKeys.nexaflow_service_role_2026_08 ?? '',
 )
 
 // Uses constructEventAsync(): Deno's Edge Function runtime only exposes an
@@ -35,6 +37,8 @@ Deno.serve(async (req) => {
     console.error('Webhook signature failed:', err)
     return new Response(`Webhook signature failed: ${err}`, { status: 400 })
   }
+
+  console.log('stripe-connect-webhook received event:', event.type)
 
   // ── account.updated ──
   if (event.type === 'account.updated') {
@@ -64,68 +68,103 @@ Deno.serve(async (req) => {
 
   // ── checkout.session.completed ──
   // Fires on the connected account when a customer completes payment.
-  // We match the invoice by amount and customer email within the business.
+  // create-invoice-payment always writes stripe_checkout_session_id onto
+  // the invoice at session-creation time — matching on that exact id is
+  // reliable and can't fail. The old amount+email heuristic below is kept
+  // ONLY as a fallback for any invoice that somehow has no session id
+  // recorded (e.g. an older/other flow), since Stripe test checkouts often
+  // don't collect a customer email at all, which made that heuristic
+  // silently match nothing — the invoice just never flipped to paid, with
+  // no error anywhere.
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object as Stripe.Checkout.Session
-
-    // The connected account ID is in the event account field
-    const connectedAccountId = (event as any).account as string | undefined
-    const customerEmail = session.customer_details?.email ?? session.customer_email ?? ''
     const amountTotal = session.amount_total ?? 0
 
-    if (connectedAccountId && customerEmail) {
-      // Find the business by stripe_connect_id
-      const { data: business } = await supabase
-        .from('businesses')
-        .select('id')
-        .eq('stripe_connect_id', connectedAccountId)
-        .maybeSingle()
+    // Primary path: exact match on the session id we stored ourselves.
+    const { data: invoiceBySession } = await supabase
+      .from('invoices')
+      .select('id, business_id')
+      .eq('stripe_checkout_session_id', session.id)
+      .in('status', ['approved', 'sent'])
+      .is('deleted_at', null)
+      .maybeSingle()
 
-      if (business) {
-        // Find matching unpaid invoice by business + customer email + amount
-        const { data: lead } = await supabase
-          .from('leads')
+    if (invoiceBySession) {
+      const now = new Date().toISOString()
+      await supabase
+        .from('invoices')
+        .update({
+          status: 'paid',
+          paid_at: now,
+          updated_at: now,
+          amount_paid: amountTotal / 100,
+        })
+        .eq('id', invoiceBySession.id)
+
+      await supabase
+        .from('businesses')
+        .update({ stripe_connect_ready: true })
+        .eq('id', invoiceBySession.business_id)
+
+      console.log(`checkout.session.completed: invoice ${invoiceBySession.id} marked paid via session id match (${session.id})`)
+    } else {
+      // Fallback: old amount+email heuristic
+      const connectedAccountId = (event as any).account as string | undefined
+      const customerEmail = session.customer_details?.email ?? session.customer_email ?? ''
+
+      if (connectedAccountId && customerEmail) {
+        const { data: business } = await supabase
+          .from('businesses')
           .select('id')
-          .eq('business_id', business.id)
-          .eq('lead_email', customerEmail)
+          .eq('stripe_connect_id', connectedAccountId)
           .maybeSingle()
 
-        if (lead) {
-          const { data: invoice } = await supabase
-            .from('invoices')
+        if (business) {
+          const { data: lead } = await supabase
+            .from('leads')
             .select('id')
             .eq('business_id', business.id)
-            .eq('contact_id', lead.id)
-            .eq('amount_due', amountTotal / 100)
-            .in('status', ['approved', 'sent'])
-            .filter('deleted_at', 'is', null)
-            .order('created_at', { ascending: false })
-            .limit(1)
+            .eq('lead_email', customerEmail)
             .maybeSingle()
 
-          if (invoice) {
-            const now = new Date().toISOString()
-            await supabase
+          if (lead) {
+            const { data: invoice } = await supabase
               .from('invoices')
-              .update({
-                status: 'paid',
-                paid_at: now,
-                updated_at: now,
-                amount_paid: amountTotal / 100,
-              })
-              .eq('id', invoice.id)
+              .select('id')
+              .eq('business_id', business.id)
+              .eq('contact_id', lead.id)
+              .eq('amount_due', amountTotal / 100)
+              .in('status', ['approved', 'sent'])
+              .filter('deleted_at', 'is', null)
+              .order('created_at', { ascending: false })
+              .limit(1)
+              .maybeSingle()
 
-            // Also sync businesses table ready flag in case webhook fires
-            await supabase
-              .from('businesses')
-              .update({ stripe_connect_ready: true })
-              .eq('id', business.id)
+            if (invoice) {
+              const now = new Date().toISOString()
+              await supabase
+                .from('invoices')
+                .update({
+                  status: 'paid',
+                  paid_at: now,
+                  updated_at: now,
+                  amount_paid: amountTotal / 100,
+                })
+                .eq('id', invoice.id)
 
-            console.log(`checkout.session.completed: invoice ${invoice.id} marked paid for ${customerEmail}`)
-          } else {
-            console.log(`checkout.session.completed: no matching invoice for ${customerEmail} amount=${amountTotal}`)
+              await supabase
+                .from('businesses')
+                .update({ stripe_connect_ready: true })
+                .eq('id', business.id)
+
+              console.log(`checkout.session.completed: invoice ${invoice.id} marked paid via amount+email fallback for ${customerEmail}`)
+            } else {
+              console.log(`checkout.session.completed: no matching invoice (fallback) for ${customerEmail} amount=${amountTotal}`)
+            }
           }
         }
+      } else {
+        console.log(`checkout.session.completed: no session-id match and no email/account to fall back on (session ${session.id})`)
       }
     }
   }

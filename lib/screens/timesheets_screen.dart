@@ -114,20 +114,12 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
   }
 
   Future<Position?> _getLocation() async {
-    try {
-      LocationPermission permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
-        if (permission == LocationPermission.denied) return null;
-      }
-      if (permission == LocationPermission.deniedForever) return null;
-      return await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
-      );
-    } catch (e) {
-      debugPrint('Location error: $e');
-      return null;
-    }
+    // GPS/location capture is intentionally scoped to the Employee Hub
+    // (field-tech magic-link) clock-in flow only, not this in-app CRM
+    // Timesheets screen — office staff clocking in from a desktop have no
+    // real GPS hardware, and attempting geolocation here previously caused
+    // the Clock In button to hang indefinitely with no way to recover.
+    return null;
   }
 
   Future<void> _toggleClock() async {
@@ -243,13 +235,17 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
       final token = _db.auth.currentSession?.accessToken;
       if (token == null) throw Exception('Not authenticated');
 
+      final body = <String, dynamic>{'entry_id': entryId};
+      final activeBusinessId = await getActiveBusinessId();
+      if (activeBusinessId != null) body['business_id'] = activeBusinessId;
+
       final resp = await http.post(
         Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/force-clock-out'),
         headers: {
           'Authorization': 'Bearer $token',
           'Content-Type': 'application/json',
         },
-        body: jsonEncode({'entry_id': entryId}),
+        body: jsonEncode(body),
       );
       if (!mounted) return;
       final data = jsonDecode(resp.body);

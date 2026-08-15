@@ -22,15 +22,15 @@ Deno.serve(async (req) => {
     }
 
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!
-    const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+    const secretKeys = JSON.parse(Deno.env.get('SUPABASE_SECRET_KEYS') ?? '{}')
+    const serviceRoleKey = secretKeys.nexaflow_service_role_2026_08 ?? ''
 
-    // ── Step 1: Generate magic invite link ───────────────────────────────────
+    // ── Step 1: Generate magic invite link ────────────────────────
     const linkRes = await fetch(`${supabaseUrl}/auth/v1/admin/generate_link`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'apikey': serviceRoleKey,
-        'Authorization': `Bearer ${serviceRoleKey}`,
       },
       body: JSON.stringify({
         type: 'invite',
@@ -65,13 +65,12 @@ Deno.serve(async (req) => {
       }
     }
 
-    // ── Step 2: Insert pending profile row ───────────────────────────────────
+    // ── Step 2: Insert pending profile row ────────────────────────
     const profileRes = await fetch(`${supabaseUrl}/rest/v1/profiles`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'apikey': serviceRoleKey,
-        'Authorization': `Bearer ${serviceRoleKey}`,
         'Prefer': 'return=representation',
       },
       body: JSON.stringify({
@@ -109,7 +108,7 @@ Deno.serve(async (req) => {
     const profileRows = await profileRes.json()
     const newProfileId = profileRows?.[0]?.id ?? null
 
-    // ── Step 3: Generate employee hub token + text it to the new member ───────
+    // ── Step 3: Generate employee hub token + text it to the new member ───
     let hubLink = ''
     if (newProfileId && phone) {
       const hubToken = crypto.randomUUID()
@@ -119,7 +118,6 @@ Deno.serve(async (req) => {
         headers: {
           'Content-Type': 'application/json',
           'apikey': serviceRoleKey,
-          'Authorization': `Bearer ${serviceRoleKey}`,
           'Prefer': 'return=minimal',
         },
         body: JSON.stringify({
@@ -160,7 +158,7 @@ Deno.serve(async (req) => {
       }
     }
 
-    // ── Step 4: Send invite email directly via Mailgun ─────────────────────────
+    // ── Step 4: Send invite email directly via Mailgun ─────────────
     if (MAILGUN_API_KEY && inviteLink) {
       try {
         const mgForm = new URLSearchParams()

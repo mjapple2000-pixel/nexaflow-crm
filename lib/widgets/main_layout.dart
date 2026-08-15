@@ -312,36 +312,41 @@ class _AppNavBarState extends State<AppNavBar> {
           ),
         ),
         _SectionLabel('Jobs'),
-        _NavItem(
-          icon: Icons.space_dashboard_outlined,
-          label: 'Overview',
-          route: '/jobs',
-          active: location == '/jobs',
-        ),
-        _NavItem(
-          icon: Icons.work_outline_rounded,
-          label: 'Job Board',
-          route: '/jobs/board',
-          active: location.startsWith('/jobs/board'),
-        ),
-        _NavItem(
-          icon: Icons.access_time_outlined,
-          label: 'Timesheets',
-          route: '/timesheets',
-          active: location.startsWith('/timesheets'),
-        ),
-        _NavItem(
-          icon: Icons.route_outlined,
-          label: 'Routes',
-          route: '/routes',
-          active: location.startsWith('/routes'),
-        ),
-        _NavItem(
-          icon: Icons.checklist_rtl_rounded,
-          label: 'Manage Job Forms',
-          route: '/jobs/manage-forms',
-          active: location.startsWith('/jobs/manage-forms'),
-        ),
+        if (_can('jobs_overview'))
+          _NavItem(
+            icon: Icons.space_dashboard_outlined,
+            label: 'Overview',
+            route: '/jobs',
+            active: location == '/jobs',
+          ),
+        if (_can('job_board'))
+          _NavItem(
+            icon: Icons.work_outline_rounded,
+            label: 'Job Board',
+            route: '/jobs/board',
+            active: location.startsWith('/jobs/board'),
+          ),
+        if (_can('timesheets'))
+          _NavItem(
+            icon: Icons.access_time_outlined,
+            label: 'Timesheets',
+            route: '/timesheets',
+            active: location.startsWith('/timesheets'),
+          ),
+        if (_can('routes'))
+          _NavItem(
+            icon: Icons.route_outlined,
+            label: 'Routes',
+            route: '/routes',
+            active: location.startsWith('/routes'),
+          ),
+        if (_can('manage_job_forms'))
+          _NavItem(
+            icon: Icons.checklist_rtl_rounded,
+            label: 'Manage Job Forms',
+            route: '/jobs/manage-forms',
+            active: location.startsWith('/jobs/manage-forms'),
+          ),
       ],
     );
   }
@@ -653,7 +658,7 @@ class _AppNavBarState extends State<AppNavBar> {
                       route: '/appointments',
                       active: location.startsWith('/appointments'),
                     ),
-                  if (_can('pipelines'))
+                  if (_can('jobs_overview') || _can('job_board') || _can('timesheets') || _can('routes') || _can('manage_job_forms'))
                     _NavItem(
                       icon: Icons.work_outline_rounded,
                       label: 'Jobs',

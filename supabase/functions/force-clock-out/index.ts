@@ -20,7 +20,7 @@ Deno.serve(async (req) => {
     }
 
     const supabaseUrl = "https://rllriopqojaraceytdno.supabase.co";
-    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+    const supabaseServiceKey = JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") ?? "{}").nexaflow_service_role_2026_08;
 
     const supabaseAuth = createClient(supabaseUrl, Deno.env.get("SUPABASE_ANON_KEY")!, {
       global: { headers: { Authorization: authHeader } },
@@ -36,27 +36,7 @@ Deno.serve(async (req) => {
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    const { data: profile, error: profileError } = await supabase
-      .from("profiles")
-      .select("business_id, role, full_name")
-      .eq("user_id", userData.user.id)
-      .single();
-
-    if (profileError || !profile?.business_id) {
-      return new Response(JSON.stringify({ error: "No business association found" }), {
-        status: 403,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-
-    if (profile.role !== "owner" && profile.role !== "admin") {
-      return new Response(JSON.stringify({ error: "Not authorized" }), {
-        status: 403,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-
-    const { entry_id } = await req.json();
+    const { entry_id, business_id: bodyBusinessId } = await req.json();
     if (!entry_id) {
       return new Response(JSON.stringify({ error: "entry_id is required" }), {
         status: 400,
@@ -64,11 +44,58 @@ Deno.serve(async (req) => {
       });
     }
 
+    // Superuser bypass — same pattern as get-connect-status. The superuser
+    // account intentionally has no profiles row, so business_id must come
+    // from the request body instead of a profile lookup when impersonating.
+    const { data: suRow } = await supabase
+      .from("superusers")
+      .select("user_id")
+      .eq("user_id", userData.user.id)
+      .maybeSingle();
+    const isSuperuser = !!suRow;
+
+    let effectiveBusinessId: number | null = null;
+    let actorName = "an admin";
+
+    if (isSuperuser) {
+      if (!bodyBusinessId) {
+        return new Response(JSON.stringify({ error: "business_id is required" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      effectiveBusinessId = bodyBusinessId;
+      actorName = "NexaFlow Support";
+    } else {
+      const { data: profile, error: profileError } = await supabase
+        .from("profiles")
+        .select("business_id, role, full_name")
+        .eq("user_id", userData.user.id)
+        .single();
+
+      if (profileError || !profile?.business_id) {
+        return new Response(JSON.stringify({ error: "No business association found" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      if (profile.role !== "owner" && profile.role !== "admin") {
+        return new Response(JSON.stringify({ error: "Not authorized" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      effectiveBusinessId = profile.business_id;
+      actorName = profile.full_name ?? "an admin";
+    }
+
     const { data: entry, error: entryError } = await supabase
       .from("time_entries")
       .select("*")
       .eq("id", entry_id)
-      .eq("business_id", profile.business_id)
+      .eq("business_id", effectiveBusinessId)
       .maybeSingle();
 
     if (entryError || !entry) {
@@ -89,7 +116,7 @@ Deno.serve(async (req) => {
     const clockedInAt = new Date(entry.clocked_in_at);
     const durationMinutes = Math.round((clockedOutAt.getTime() - clockedInAt.getTime()) / 60000);
 
-    const noteAddition = `Force clocked out by ${profile.full_name ?? "an admin"} on ${clockedOutAt.toLocaleString()}.`;
+    const noteAddition = `Force clocked out by ${actorName} on ${clockedOutAt.toLocaleString()}.`;
     const combinedNotes = entry.notes ? `${entry.notes}\n${noteAddition}` : noteAddition;
 
     const { data: updatedEntry, error: updateError } = await supabase
