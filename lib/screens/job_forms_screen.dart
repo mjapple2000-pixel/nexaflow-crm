@@ -1,5 +1,7 @@
 import 'dart:convert';
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:go_router/go_router.dart';
 import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -24,6 +26,7 @@ class _JobFormsScreenState extends State<JobFormsScreen> {
   List<Map<String, dynamic>> _forms = [];
   int? _previewingFormId;
   final TextEditingController _formsSearchCtrl = TextEditingController();
+  bool _autoOpenedFromLink = false;
 
   // Forms Library — shared templates browsing, toggled in place of the
   // normal job forms list rather than a separate route.
@@ -39,7 +42,24 @@ class _JobFormsScreenState extends State<JobFormsScreen> {
   @override
   void initState() {
     super.initState();
-    _load();
+    _load().then((_) => _checkDeepLink());
+  }
+
+  // Opens a specific form automatically when arriving via ?editFormId=...
+  // (e.g. clicked from Manage Job Forms) instead of just landing on the
+  // general list. Same pattern as appointments_screen.dart's deep link.
+  void _checkDeepLink() {
+    if (_autoOpenedFromLink || !mounted) return;
+    final idParam = GoRouterState.of(context).uri.queryParameters['editFormId'];
+    final id = int.tryParse(idParam ?? '');
+    if (id == null) return;
+    _autoOpenedFromLink = true;
+    final match = _forms.where((f) => f['id'] == id).toList();
+    if (match.isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _openBuilder(existing: match.first);
+      });
+    }
   }
 
   @override
@@ -486,6 +506,34 @@ class _JobFormsScreenState extends State<JobFormsScreen> {
     }
   }
 
+  Future<void> _duplicateForm(Map<String, dynamic> form) async {
+    try {
+      final session = _db.auth.currentSession;
+      final res = await http.post(
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/job-form-editor'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ${session?.accessToken ?? ''}',
+        },
+        body: jsonEncode({'action': 'duplicate_form', 'job_form_id': form['id']}),
+      );
+      if (!mounted) return;
+      if (res.statusCode != 200) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not duplicate form: ${res.body}')),
+        );
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('"${form['name']}" duplicated.')),
+      );
+      await _load();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
+    }
+  }
+
   void _openBuilder({Map<String, dynamic>? existing}) {
     showDialog(
       context: context,
@@ -869,6 +917,14 @@ class _JobFormsScreenState extends State<JobFormsScreen> {
                               : const Icon(Icons.visibility_outlined, size: 18, color: AppTheme.textSecondary),
                           onPressed:
                               _previewingFormId != null ? null : () => _previewForm((form['id'] as num).toInt()),
+                        ),
+                      ),
+                      MouseRegion(
+                        cursor: SystemMouseCursors.click,
+                        child: IconButton(
+                          tooltip: 'Duplicate Form',
+                          icon: const Icon(Icons.content_copy_outlined, size: 18, color: AppTheme.textSecondary),
+                          onPressed: () => _duplicateForm(form),
                         ),
                       ),
                       MouseRegion(
@@ -1925,6 +1981,19 @@ class _FieldSettingsDialogState extends State<_FieldSettingsDialog> {
   int _originalFieldCount = 0;
   bool _mergeMode = false;
   final Set<String> _mergeSelection = {};
+  // Erase permanently whites out a rectangle of the actual background
+  // page image — separate from moving/resizing a field's position.
+  // _backgroundPagePaths holds the RAW storage paths (not signed URLs,
+  // which _pageUrls holds) since that's what job-form-editor's 'erase'
+  // action validates against job_forms.background_pages.
+  bool _eraseMode = false;
+  bool _erasing = false;
+  List<String> _backgroundPagePaths = [];
+  Map<String, dynamic> _backgroundPageBackups = {};
+  Map<String, double>? _eraseSelection;
+  Map<String, double>? _pendingEraseRect;
+  Offset? _eraseDragStartLocal;
+  final GlobalKey _eraseCaptureKey = GlobalKey();
   // Only fields added via _addField in THIS dialog session get the
   // draggable/resizable treatment — existing fields (including every
   // AI-recreated one, tuned over weeks) stay exactly as static as they
@@ -2006,6 +2075,8 @@ class _FieldSettingsDialogState extends State<_FieldSettingsDialog> {
         _fields = loadedFields;
         _originalFieldCount = loadedFields.length;
         _pageUrls = List<String>.from(body['page_urls'] as List? ?? []);
+        _backgroundPagePaths = List<String>.from(body['background_pages'] as List? ?? []);
+        _backgroundPageBackups = Map<String, dynamic>.from(body['background_page_backups'] as Map? ?? {});
         _photoMarkers = List<Map<String, dynamic>>.from(
             (body['photo_attachment_markers'] as List? ?? []).map((m) => Map<String, dynamic>.from(m as Map)));
         _loading = false;
@@ -2044,6 +2115,173 @@ class _FieldSettingsDialogState extends State<_FieldSettingsDialog> {
         _selectedMarkerId = null;
       }
     });
+  }
+
+  void _toggleEraseMode() {
+    setState(() {
+      _eraseMode = !_eraseMode;
+      _eraseSelection = null;
+      _pendingEraseRect = null;
+      if (_eraseMode) {
+        _mergeMode = false;
+        _mergeSelection.clear();
+        _selectedFieldId = null;
+        _selectedMarkerId = null;
+      }
+    });
+  }
+
+  void _startEraseDrag(Offset localPos, double finalW, double h) {
+    final xPct = (localPos.dx / finalW * 100).clamp(0.0, 100.0);
+    final yPct = (localPos.dy / h * 100).clamp(0.0, 100.0);
+    setState(() {
+      _eraseDragStartLocal = localPos;
+      _eraseSelection = {'x': xPct, 'y': yPct, 'w': 0.0, 'h': 0.0};
+    });
+  }
+
+  void _updateEraseDrag(Offset localPos, double finalW, double h) {
+    if (_eraseDragStartLocal == null) return;
+    final startXPct = (_eraseDragStartLocal!.dx / finalW * 100).clamp(0.0, 100.0);
+    final startYPct = (_eraseDragStartLocal!.dy / h * 100).clamp(0.0, 100.0);
+    final curXPct = (localPos.dx / finalW * 100).clamp(0.0, 100.0);
+    final curYPct = (localPos.dy / h * 100).clamp(0.0, 100.0);
+    setState(() {
+      _eraseSelection = {
+        'x': startXPct < curXPct ? startXPct : curXPct,
+        'y': startYPct < curYPct ? startYPct : curYPct,
+        'w': (curXPct - startXPct).abs(),
+        'h': (curYPct - startYPct).abs(),
+      };
+    });
+  }
+
+  void _endEraseDrag() {
+    _eraseDragStartLocal = null;
+  }
+
+  Future<void> _undoErase() async {
+    if (_currentPage - 1 >= _backgroundPagePaths.length) return;
+    final path = _backgroundPagePaths[_currentPage - 1];
+    if (!_backgroundPageBackups.containsKey(path)) return;
+    setState(() => _erasing = true);
+    try {
+      final session = _db.auth.currentSession;
+      final res = await http.post(
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/job-form-editor'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ${session?.accessToken ?? ''}',
+        },
+        body: jsonEncode({
+          'action': 'undo_erase',
+          'job_form_id': widget.jobFormId,
+          'path': path,
+        }),
+      );
+      if (!mounted) return;
+      if (res.statusCode != 200) {
+        setState(() => _erasing = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not undo: ${res.body}')),
+        );
+        return;
+      }
+      setState(() => _erasing = false);
+      await _load();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _erasing = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Undo failed: $e')),
+      );
+    }
+  }
+
+  // Captures ONLY the image+erase-rect RepaintBoundary (a sibling, not a
+  // parent, of the field/marker overlay boxes) — toImage() rasters just
+  // its own subtree, so field markers drawn on top in the visible UI are
+  // never baked into the uploaded image, with no need to hide them first.
+  // Works against the REAL, full-resolution stored image — not a
+  // screenshot of the on-screen canvas. A screen capture re-rasterizes
+  // the entire page at whatever size it happens to be rendered on
+  // screen, silently destroying quality and shifting content on every
+  // single erase; drawing directly onto a decoded copy of the actual
+  // file touches nothing outside the selected rectangle.
+  Future<void> _applyErase() async {
+    if (_eraseSelection == null || _eraseSelection!['w']! < 1 || _eraseSelection!['h']! < 1) return;
+    if (_currentPage - 1 >= _backgroundPagePaths.length) return;
+    setState(() {
+      _pendingEraseRect = _eraseSelection;
+      _erasing = true;
+    });
+    try {
+      final imageUrl = _pageUrls[_currentPage - 1];
+      final response = await http.get(Uri.parse(imageUrl));
+      if (response.statusCode != 200) throw Exception('Could not fetch original image');
+      final codec = await ui.instantiateImageCodec(response.bodyBytes);
+      final frame = await codec.getNextFrame();
+      final original = frame.image;
+      final w = original.width.toDouble();
+      final h = original.height.toDouble();
+
+      final recorder = ui.PictureRecorder();
+      final canvas = Canvas(recorder);
+      canvas.drawImage(original, Offset.zero, Paint());
+      final rectLeft = w * (_eraseSelection!['x']! / 100);
+      final rectTop = h * (_eraseSelection!['y']! / 100);
+      final rectW = w * (_eraseSelection!['w']! / 100);
+      final rectH = h * (_eraseSelection!['h']! / 100);
+      canvas.drawRect(Rect.fromLTWH(rectLeft, rectTop, rectW, rectH), Paint()..color = Colors.white);
+      final picture = recorder.endRecording();
+      final composited = await picture.toImage(original.width, original.height);
+      final byteData = await composited.toByteData(format: ui.ImageByteFormat.png);
+      if (byteData == null) throw Exception('Could not encode image');
+      final base64Str = base64Encode(byteData.buffer.asUint8List());
+      final path = _backgroundPagePaths[_currentPage - 1];
+      final session = _db.auth.currentSession;
+      final res = await http.post(
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/job-form-editor'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ${session?.accessToken ?? ''}',
+        },
+        body: jsonEncode({
+          'action': 'erase',
+          'job_form_id': widget.jobFormId,
+          'path': path,
+          'file_base64': base64Str,
+        }),
+      );
+      if (!mounted) return;
+      if (res.statusCode != 200) {
+        setState(() { _pendingEraseRect = null; _erasing = false; });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not erase: ${res.body}')),
+        );
+        return;
+      }
+      setState(() {
+        _eraseSelection = null;
+        _pendingEraseRect = null;
+        _erasing = false;
+        _eraseMode = false;
+      });
+      // Cache-bust: a signed URL for the same storage path can come back
+      // close enough to the previous one that Flutter's image cache
+      // serves the stale copy — this forces a genuinely fresh fetch so
+      // the erase is actually visible immediately, not just on next
+      // reopen.
+      imageCache.clear();
+      imageCache.clearLiveImages();
+      await _load();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() { _pendingEraseRect = null; _erasing = false; });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Erase failed: $e')),
+      );
+    }
   }
 
   void _handleFieldTap(Map<String, dynamic> f) {
@@ -2516,6 +2754,28 @@ class _FieldSettingsDialogState extends State<_FieldSettingsDialog> {
                               icon: Icon(Icons.call_merge_rounded, size: 20, color: _mergeMode ? Colors.green : null),
                             ),
                           ),
+                          MouseRegion(
+                            cursor: SystemMouseCursors.click,
+                            child: IconButton(
+                              tooltip: _eraseMode ? 'Exit Erase Mode' : 'Erase Area',
+                              onPressed: _toggleEraseMode,
+                              icon: Icon(Icons.auto_fix_off_rounded, size: 20, color: _eraseMode ? Colors.redAccent : null),
+                            ),
+                          ),
+                          Builder(builder: (_) {
+                            final currentPath = _currentPage - 1 < _backgroundPagePaths.length
+                                ? _backgroundPagePaths[_currentPage - 1]
+                                : null;
+                            final hasBackup = currentPath != null && _backgroundPageBackups.containsKey(currentPath);
+                            return MouseRegion(
+                              cursor: hasBackup ? SystemMouseCursors.click : SystemMouseCursors.basic,
+                              child: IconButton(
+                                tooltip: hasBackup ? 'Undo Last Erase' : 'No erase to undo on this page',
+                                onPressed: hasBackup && !_erasing ? _undoErase : null,
+                                icon: Icon(Icons.undo_rounded, size: 20, color: hasBackup ? Colors.orange : null),
+                              ),
+                            );
+                          }),
                         ],
                         IconButton(
                           onPressed: () => Navigator.of(context, rootNavigator: true).pop(),
@@ -2655,14 +2915,44 @@ class _FieldSettingsDialogState extends State<_FieldSettingsDialog> {
                   maxScale: 4.0,
                   boundaryMargin: const EdgeInsets.all(300),
                   child: Center(
-                  child: SizedBox(
+                  child: GestureDetector(
+                    onPanStart: _eraseMode ? (details) => _startEraseDrag(details.localPosition, finalW, h) : null,
+                    onPanUpdate: _eraseMode ? (details) => _updateEraseDrag(details.localPosition, finalW, h) : null,
+                    onPanEnd: _eraseMode ? (_) => _endEraseDrag() : null,
+                    child: SizedBox(
                     width: finalW,
                     height: h,
                     child: Stack(children: [
                       Positioned.fill(
-                        child: Image.network(_pageUrls[_currentPage - 1], fit: BoxFit.fill),
+                        child: RepaintBoundary(
+                          key: _eraseCaptureKey,
+                          child: Stack(children: [
+                            Image.network(_pageUrls[_currentPage - 1], fit: BoxFit.fill),
+                            if (_pendingEraseRect != null)
+                              Positioned(
+                                left: finalW * (_pendingEraseRect!['x']! / 100),
+                                top: h * (_pendingEraseRect!['y']! / 100),
+                                width: finalW * (_pendingEraseRect!['w']! / 100),
+                                height: h * (_pendingEraseRect!['h']! / 100),
+                                child: Container(color: Colors.white),
+                              ),
+                          ]),
+                        ),
                       ),
-                      ...pageFields.map((f) {
+                      if (_eraseMode && _eraseSelection != null)
+                        Positioned(
+                          left: finalW * (_eraseSelection!['x']! / 100),
+                          top: h * (_eraseSelection!['y']! / 100),
+                          width: finalW * (_eraseSelection!['w']! / 100),
+                          height: h * (_eraseSelection!['h']! / 100),
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: Colors.redAccent.withValues(alpha: 0.25),
+                              border: Border.all(color: Colors.redAccent, width: 2),
+                            ),
+                          ),
+                        ),
+                      if (!_eraseMode) ...pageFields.map((f) {
                         final box = f['box'] as Map?;
                         if (box == null) return const SizedBox.shrink();
                         final fieldId = f['id'] as String?;
@@ -2715,7 +3005,7 @@ class _FieldSettingsDialogState extends State<_FieldSettingsDialog> {
                           ),
                         );
                       }),
-                      ...pageMarkers.map((m) => _DraggablePhotoMarkerBox(
+                      if (!_eraseMode) ...pageMarkers.map((m) => _DraggablePhotoMarkerBox(
                             key: ValueKey(m['id']),
                             marker: m,
                             containerW: finalW,
@@ -2728,6 +3018,7 @@ class _FieldSettingsDialogState extends State<_FieldSettingsDialog> {
                             onCommit: (newBox) => _setMarkerBox(m, newBox),
                           )),
                     ]),
+                    ),
                   ),
                   ),
                 );
@@ -2741,7 +3032,46 @@ class _FieldSettingsDialogState extends State<_FieldSettingsDialog> {
         flex: 2,
         child: Padding(
           padding: const EdgeInsets.all(16),
-          child: selectedMarker != null
+          child: _eraseMode
+              ? Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  const Text('Erase Mode', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: Colors.redAccent)),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Drag a rectangle over the image to permanently white out that area. This edits the actual background image and cannot be undone.',
+                    style: TextStyle(fontSize: 12, color: AppTheme.textSecondary, height: 1.4),
+                  ),
+                  if (_eraseSelection != null && _eraseSelection!['w']! >= 1 && _eraseSelection!['h']! >= 1) ...[
+                    const SizedBox(height: 16),
+                    MouseRegion(
+                      cursor: SystemMouseCursors.click,
+                      child: SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton(
+                          onPressed: _erasing ? null : _applyErase,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.redAccent,
+                            foregroundColor: Colors.white,
+                            elevation: 0,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                            padding: const EdgeInsets.symmetric(vertical: 10),
+                          ),
+                          child: _erasing
+                              ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                              : const Text('Erase Selected Area'),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    MouseRegion(
+                      cursor: SystemMouseCursors.click,
+                      child: TextButton(
+                        onPressed: () => setState(() => _eraseSelection = null),
+                        child: const Text('Clear Selection', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+                      ),
+                    ),
+                  ],
+                ])
+              : selectedMarker != null
               ? _buildMarkerPanel(selectedMarker)
               : unplacedFields.isNotEmpty && !_mergeMode && selected.isEmpty
               ? SingleChildScrollView(

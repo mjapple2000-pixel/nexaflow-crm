@@ -3,6 +3,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme/app_theme.dart';
 import '../widgets/clickable.dart';
 import '../utils/business_utils.dart';
+import 'package:go_router/go_router.dart';
 
 // Standalone "Manage Job Forms" screen, living under the Jobs area rather
 // than Settings — every job form in one place, usage stats (completed vs.
@@ -238,7 +239,9 @@ class _JobsManageFormsScreenState extends State<JobsManageFormsScreen> {
                                               final autoAttach = form['auto_attach_to_new_appointments'] as bool? ?? false;
                                               final completed = _completedCounts[id] ?? 0;
                                               final pending = _pendingCounts[id] ?? 0;
-                                              return Container(
+                                              return Clickable(
+                                                onTap: () => context.go('/jobs/board?tab=3&editFormId=$id'),
+                                                child: Container(
                                                 color: isActive ? null : AppTheme.pageBg.withValues(alpha: 0.5),
                                                 padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                                                 child: Row(children: [
@@ -287,6 +290,7 @@ class _JobsManageFormsScreenState extends State<JobsManageFormsScreen> {
                                                     ],
                                                   )),
                                                 ]),
+                                                ),
                                               );
                                             },
                                           ),

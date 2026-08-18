@@ -36,7 +36,7 @@ Deno.serve(async (req) => {
         type: 'invite',
         email,
         options: {
-          redirect_to: 'https://nexaflow.app/login',
+          redirect_to: 'https://nexaflow-crm.web.app/login',
         },
       }),
     })

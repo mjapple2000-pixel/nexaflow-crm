@@ -39,9 +39,20 @@ Deno.serve(async (req) => {
       .from("profiles")
       .select("business_id, role")
       .eq("user_id", userData.user.id)
-      .single();
+      .maybeSingle();
 
-    if (!callerProfile || (callerProfile.role !== "owner" && callerProfile.role !== "admin")) {
+    // Superuser bypass — same pattern as force-clock-out and
+    // resend-employee-hub-link. The superuser account intentionally has no
+    // profiles row, so the owner/admin role check below would otherwise
+    // always reject it before ever reaching the actual resend logic.
+    const { data: superuserRow } = await supabase
+      .from("superusers")
+      .select("user_id")
+      .eq("user_id", userData.user.id)
+      .maybeSingle();
+    const isSuperuser = !!superuserRow;
+
+    if (!isSuperuser && (!callerProfile || (callerProfile.role !== "owner" && callerProfile.role !== "admin"))) {
       return new Response(JSON.stringify({ error: "Not authorized" }), {
         status: 403,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -62,7 +73,7 @@ Deno.serve(async (req) => {
       .eq("id", profile_id)
       .single();
 
-    if (targetError || !targetProfile || targetProfile.business_id !== callerProfile.business_id) {
+    if (targetError || !targetProfile || (!isSuperuser && targetProfile.business_id !== callerProfile?.business_id)) {
       return new Response(JSON.stringify({ error: "Team member not found" }), {
         status: 404,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -76,9 +87,17 @@ Deno.serve(async (req) => {
         apikey: serviceRoleKey,
       },
       body: JSON.stringify({
-        type: "invite",
+        // Anyone this function resends to already has a real auth.users
+        // row — it was created the moment the original invite-member call
+        // first generated their link. Asking for another "invite" link
+        // for an email Supabase already considers registered always fails
+        // with "already registered". A "recovery" link works for any
+        // existing email regardless of whether they ever set a password,
+        // and it fires the same passwordRecovery event our reset-password
+        // screen already handles (including the profile-claiming fix).
+        type: "recovery",
         email: targetProfile.email,
-        options: { redirect_to: "https://nexaflow.app/login" },
+        options: { redirect_to: "https://nexaflow-crm.web.app/login" },
       }),
     });
 

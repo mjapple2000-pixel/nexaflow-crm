@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 import '../theme/app_theme.dart';
 import '../utils/business_utils.dart';
+import '../utils/phone_utils.dart';
 
 class ContactDetailScreen extends StatefulWidget {
   final String leadId;
@@ -197,13 +198,18 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
   }
 
   Future<void> _save() async {
+    if (_phoneCtrl.text.trim().isNotEmpty && normalizeUsPhone(_phoneCtrl.text.trim()) == null) {
+      _snack('Phone number must be a valid 10-digit US number');
+      return;
+    }
     setState(() => _saving = true);
     try {
       final id = int.tryParse(widget.leadId) ?? 0;
+      final normalizedPhone = _phoneCtrl.text.trim().isEmpty ? null : normalizeUsPhone(_phoneCtrl.text.trim());
       await _db.from('leads').update({
         'lead_name':       _nameCtrl.text.trim(),
         'lead_email':      _emailCtrl.text.trim().isEmpty ? null : _emailCtrl.text.trim(),
-        'lead_phone':      _phoneCtrl.text.trim().isEmpty ? null : _phoneCtrl.text.trim(),
+        'lead_phone':      normalizedPhone,
         'lead_status':     _editStatus,
         'source':          _editSource,
         'notes':           _notesCtrl.text.trim().isEmpty ? null : _notesCtrl.text.trim(),
@@ -538,7 +544,7 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                 decoration: BoxDecoration(
-                  color: _statusColor(status).withOpacity(0.12),
+                  color: _statusColor(status).withValues(alpha: 0.12),
                   borderRadius: BorderRadius.circular(4)),
                 child: Text(status, style: TextStyle(
                   color: _statusColor(status), fontSize: 11, fontWeight: FontWeight.w600)),
@@ -608,9 +614,9 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
               child: Container(
                 width: 34, height: 34,
                 decoration: BoxDecoration(
-                  color: AppTheme.error.withOpacity(0.08),
+                  color: AppTheme.error.withValues(alpha: 0.08),
                   borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: AppTheme.error.withOpacity(0.3))),
+                  border: Border.all(color: AppTheme.error.withValues(alpha: 0.3))),
                 child: Icon(Icons.delete_outline,
                     size: 16, color: AppTheme.error),
               ),
@@ -664,7 +670,7 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
                 margin: const EdgeInsets.only(right: 6, top: 10, bottom: 10),
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
                 decoration: BoxDecoration(
-                  color: active ? col.withOpacity(0.12) : Colors.transparent,
+                  color: active ? col.withValues(alpha: 0.12) : Colors.transparent,
                   borderRadius: BorderRadius.circular(20),
                   border: Border.all(
                     color: active ? col : AppTheme.borderColor,
@@ -750,9 +756,9 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                 decoration: BoxDecoration(
-                  color: AppTheme.success.withOpacity(0.08),
+                  color: AppTheme.success.withValues(alpha: 0.08),
                   borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: AppTheme.success.withOpacity(0.25))),
+                  border: Border.all(color: AppTheme.success.withValues(alpha: 0.25))),
                 child: Row(children: [
                   Icon(Icons.attach_money, size: 16, color: AppTheme.success),
                   const SizedBox(width: 6),
@@ -777,9 +783,9 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
                 children: _tags.map((t) => Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                   decoration: BoxDecoration(
-                    color: AppTheme.brand.withOpacity(0.08),
+                    color: AppTheme.brand.withValues(alpha: 0.08),
                     borderRadius: BorderRadius.circular(20),
-                    border: Border.all(color: AppTheme.brand.withOpacity(0.25))),
+                    border: Border.all(color: AppTheme.brand.withValues(alpha: 0.25))),
                   child: Text(t, style: const TextStyle(
                       color: AppTheme.brand, fontSize: 11, fontWeight: FontWeight.w500)),
                 )).toList()),
@@ -1124,7 +1130,7 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
               Container(
                 width: 32, height: 32,
                 decoration: BoxDecoration(
-                  color: (e['color'] as Color).withOpacity(0.1),
+                  color: (e['color'] as Color).withValues(alpha: 0.1),
                   shape: BoxShape.circle),
                 child: Icon(e['icon'] as IconData,
                     size: 15, color: e['color'] as Color),
@@ -1228,7 +1234,7 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
                     Text(_timeAgo(m['created_at'] as String?),
                       style: TextStyle(
                         color: isOut
-                            ? Colors.white.withOpacity(0.6) : AppTheme.textSecondary,
+                            ? Colors.white.withValues(alpha: 0.6) : AppTheme.textSecondary,
                         fontSize: 10)),
                   ],
                 ),
@@ -1251,7 +1257,10 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
           _editCard('Basic Info', [
             _editField(_nameCtrl,  'Full Name *'),
             _editField(_emailCtrl, 'Email', type: TextInputType.emailAddress),
-            _editField(_phoneCtrl, 'Phone', type: TextInputType.phone),
+            _editField(_phoneCtrl, 'Phone', type: TextInputType.phone,
+                inputFormatters: [PhoneNumberInputFormatter()],
+                validator: (v) => (v != null && v.trim().isNotEmpty && normalizeUsPhone(v.trim()) == null)
+                    ? 'Invalid phone number' : null),
             _editField(_bizCtrl,   'Business Name'),
           ]),
           const SizedBox(height: 16),
@@ -1321,11 +1330,11 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
                       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                       decoration: BoxDecoration(
                         color: selected
-                            ? AppTheme.brand.withOpacity(0.12) : AppTheme.pageBg,
+                            ? AppTheme.brand.withValues(alpha: 0.12) : AppTheme.pageBg,
                         borderRadius: BorderRadius.circular(20),
                         border: Border.all(
                           color: selected
-                              ? AppTheme.brand.withOpacity(0.4) : AppTheme.borderColor)),
+                              ? AppTheme.brand.withValues(alpha: 0.4) : AppTheme.borderColor)),
                       child: Text(t, style: TextStyle(
                         color: selected ? AppTheme.brand : AppTheme.textSecondary,
                         fontSize: 12,
@@ -1363,9 +1372,9 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
                   child: Container(
                     width: 40, height: 40,
                     decoration: BoxDecoration(
-                      color: AppTheme.brand.withOpacity(0.1),
+                      color: AppTheme.brand.withValues(alpha: 0.1),
                       borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: AppTheme.brand.withOpacity(0.3))),
+                      border: Border.all(color: AppTheme.brand.withValues(alpha: 0.3))),
                     child: const Icon(Icons.add, color: AppTheme.brand, size: 18)),
                 ),
               ]);
@@ -1378,9 +1387,9 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
                   child: Container(
                     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                     decoration: BoxDecoration(
-                      color: AppTheme.brand.withOpacity(0.1),
+                      color: AppTheme.brand.withValues(alpha: 0.1),
                       borderRadius: BorderRadius.circular(20),
-                      border: Border.all(color: AppTheme.brand.withOpacity(0.3))),
+                      border: Border.all(color: AppTheme.brand.withValues(alpha: 0.3))),
                     child: Row(mainAxisSize: MainAxisSize.min, children: [
                       Text(t, style: const TextStyle(color: AppTheme.brand, fontSize: 12)),
                       const SizedBox(width: 4),
@@ -1415,6 +1424,8 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
 
   Widget _editField(TextEditingController ctrl, String label, {
     TextInputType? type, int maxLines = 1,
+    List<TextInputFormatter>? inputFormatters,
+    String? Function(String?)? validator,
   }) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
@@ -1422,6 +1433,8 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
         controller: ctrl,
         keyboardType: type,
         maxLines: maxLines,
+        inputFormatters: inputFormatters,
+        validator: validator,
         style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13),
         decoration: InputDecoration(labelText: label,
           labelStyle: const TextStyle(color: AppTheme.textSecondary, fontSize: 13)),

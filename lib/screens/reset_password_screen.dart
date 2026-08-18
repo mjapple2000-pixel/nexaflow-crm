@@ -16,6 +16,7 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
   final _confirmController = TextEditingController();
   bool _loading = true;
   bool _sessionReady = false;
+  bool _isNewMemberSetup = false;
   bool _obscurePassword = true;
   bool _obscureConfirm = true;
   String? _errorMessage;
@@ -32,6 +33,7 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
     final session = Supabase.instance.client.auth.currentSession;
     if (session != null) {
       AppRouter.isPasswordRecovery = false;
+      await _checkIfNewMemberSetup();
       if (mounted) setState(() { _sessionReady = true; _loading = false; });
       return;
     }
@@ -40,6 +42,30 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
         _errorMessage = 'This reset link has expired. Please request a new one.';
         _loading = false;
       });
+    }
+  }
+
+  // Distinguishes "setting a password for the first time" from a genuine
+  // forgot-password reset by checking whether a still-pending, never-
+  // claimed invite exists for this email — true for both a first invite
+  // and a resend, false for an existing member resetting a forgotten
+  // password. More reliable than the Supabase link type alone, since a
+  // resend now correctly uses type=recovery too (see resend-invite fix).
+  Future<void> _checkIfNewMemberSetup() async {
+    try {
+      final email = Supabase.instance.client.auth.currentUser?.email;
+      if (email == null) return;
+      final pending = await Supabase.instance.client
+          .from('profiles')
+          .select('id')
+          .eq('status', 'pending')
+          .filter('user_id', 'is', null)
+          .ilike('email', email)
+          .limit(1)
+          .maybeSingle();
+      if (mounted) setState(() => _isNewMemberSetup = pending != null);
+    } catch (e) {
+      debugPrint('Check new member setup error: $e');
     }
   }
 
@@ -74,6 +100,8 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
         UserAttributes(password: password),
       );
       if (!mounted) return;
+      await _claimPendingInviteProfile();
+      if (!mounted) return;
       await Supabase.instance.client.auth.signOut();
       if (!mounted) return;
       context.go('/login?reset=complete');
@@ -83,6 +111,56 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
       if (mounted) setState(() => _errorMessage = 'An unexpected error occurred.');
     } finally {
       if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  // Runs on every successful password save — invite AND recovery. For a
+  // brand-new invite, on_auth_user_created fires the moment
+  // invite-member/resend-invite calls generate_link, inserting a bare
+  // profiles row (real user_id, no business_id) completely separate from
+  // the real business-scoped invite row (business_id + name + role, but
+  // user_id left null since it wasn't known yet). This never got linked
+  // together until now — the "already registered" resend error and every
+  // recurring duplicate-profile mixup this session traces back to this
+  // single missing step. For a normal password recovery on an existing
+  // account, both queries below simply match zero rows and are no-ops.
+  Future<void> _claimPendingInviteProfile() async {
+    try {
+      final user = Supabase.instance.client.auth.currentUser;
+      final email = user?.email;
+      if (user == null || email == null) return;
+
+      // profiles.user_id has a plain UNIQUE constraint (predates
+      // deleted_at, and can't safely be made a partial index — it's the
+      // FK target for time_entries/team_locations/routes/appointments).
+      // That means the bare orphan the trigger created MUST be cleared
+      // first, in this order: NULL is never a duplicate under a UNIQUE
+      // constraint, but a still-populated user_id is, so claiming the
+      // real pending profile before freeing this one up throws a
+      // constraint-violation exception on every single invite, every
+      // time, silently swallowed by the catch below.
+      await Supabase.instance.client
+          .from('profiles')
+          .update({
+            'user_id': null,
+            'deleted_at': DateTime.now().toUtc().toIso8601String(),
+          })
+          .eq('user_id', user.id)
+          .filter('business_id', 'is', null)
+          .filter('deleted_at', 'is', null);
+
+      // Claim every pending business profile for this email — a person
+      // can be invited to more than one business with the same email,
+      // and each pending row becomes theirs once they've proven
+      // ownership of the email by completing signup here.
+      await Supabase.instance.client
+          .from('profiles')
+          .update({'user_id': user.id, 'status': 'active'})
+          .eq('status', 'pending')
+          .filter('user_id', 'is', null)
+          .ilike('email', email);
+    } catch (e) {
+      debugPrint('Claim pending invite profile error: $e');
     }
   }
 
@@ -200,18 +278,26 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
                             mainAxisSize: MainAxisSize.min,
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              const Icon(Icons.lock_reset_rounded,
+                              Icon(
+                                  _isNewMemberSetup
+                                      ? Icons.celebration_outlined
+                                      : Icons.lock_reset_rounded,
                                   size: 36, color: AppTheme.brand),
                               const SizedBox(height: 16),
-                              const Text('Set new password',
-                                  style: TextStyle(
+                              Text(
+                                  _isNewMemberSetup
+                                      ? 'Welcome to the team!'
+                                      : 'Set new password',
+                                  style: const TextStyle(
                                       fontSize: 24,
                                       fontWeight: FontWeight.bold,
                                       color: AppTheme.textPrimary)),
                               const SizedBox(height: 8),
-                              const Text(
-                                  'Choose a strong password for your account.',
-                                  style: TextStyle(
+                              Text(
+                                  _isNewMemberSetup
+                                      ? 'Set your password to get started.'
+                                      : 'Choose a strong password for your account.',
+                                  style: const TextStyle(
                                       fontSize: 14,
                                       color: AppTheme.textSecondary)),
                               const SizedBox(height: 28),
@@ -366,8 +452,8 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
                                             child: CircularProgressIndicator(
                                                 strokeWidth: 2,
                                                 color: Colors.white))
-                                        : const Text('Save Password',
-                                            style: TextStyle(
+                                        : Text(_isNewMemberSetup ? 'Get Started' : 'Save Password',
+                                            style: const TextStyle(
                                                 fontSize: 15,
                                                 fontWeight:
                                                     FontWeight.w600)),

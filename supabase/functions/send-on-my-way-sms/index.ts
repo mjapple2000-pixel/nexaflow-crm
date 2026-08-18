@@ -92,6 +92,13 @@ Deno.serve(async (req) => {
       return new Response(JSON.stringify({ error: "No phone number on file for this appointment" }), { status: 400, headers: corsHeaders });
     }
 
+    const digits = contactPhone.replace(/\D/g, "");
+    const formattedPhone = digits.length === 10 ? `+1${digits}`
+      : (digits.length === 11 && digits.startsWith("1")) ? `+${digits}`
+      : null;
+    if (!formattedPhone) {
+      return new Response(JSON.stringify({ error: `Phone number on file (${contactPhone}) isn't a valid 10-digit US number — fix it on the contact before sending.` }), { status: 400, headers: corsHeaders });
+    }
 
     const { data: business, error: bizErr } = await supabase
       .from("businesses")
@@ -115,7 +122,7 @@ Deno.serve(async (req) => {
           "Content-Type": "application/x-www-form-urlencoded",
         },
         body: new URLSearchParams({
-          To: contactPhone,
+          To: formattedPhone,
           From: business.ai_phone_number,
           Body: smsBody,
         }).toString(),

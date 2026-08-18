@@ -10,6 +10,7 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 import '../utils/business_utils.dart';
 import '../widgets/office_job_form_viewer_sheet.dart';
+import '../utils/phone_utils.dart';
 
 class AppointmentsScreen extends StatefulWidget {
   const AppointmentsScreen({super.key});
@@ -124,7 +125,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
         _db.from('appointments').select().eq('business_id', _businessId!).order('start_date_time', ascending: true),
         _db.from('businesses').select('availability_hours, slot_duration_minutes').eq('id', _businessId!).maybeSingle(),
         _db.from('profiles').select('id, full_name, role').eq('business_id', _businessId!),
-        _db.from('leads').select('id, lead_name, lead_email, lead_phone').eq('business_id', _businessId!).order('lead_name', ascending: true),
+        _db.from('leads').select('id, lead_name, lead_email, lead_phone, lead_address').eq('business_id', _businessId!).order('lead_name', ascending: true),
         _db.from('calendars').select().eq('business_id', _businessId!).order('created_at', ascending: true),
         _db.from('calendar_groups').select().eq('business_id', _businessId!).order('created_at', ascending: true),
         _db.from('service_menu_items').select().eq('business_id', _businessId!).order('created_at', ascending: true),
@@ -4284,6 +4285,10 @@ class _AppointmentFormTabState extends State<_AppointmentFormTab> {
       _contactCtrl.text = lead['lead_name']  ?? '';
       _phoneCtrl.text   = lead['lead_phone'] ?? '';
       _emailCtrl.text   = lead['lead_email'] ?? '';
+      final leadAddress = (lead['lead_address'] ?? '').toString();
+      if (_locationCtrl.text.trim().isEmpty && leadAddress.isNotEmpty) {
+        _locationCtrl.text = leadAddress;
+      }
       _showDropdown     = false;
     });
   }
@@ -4321,10 +4326,70 @@ class _AppointmentFormTabState extends State<_AppointmentFormTab> {
     });
   }
 
+  // Matches the typed Contact Name/Phone against existing leads for this
+  // business, so typing a name without selecting it from the dropdown
+  // doesn't silently create a second, disconnected copy of a contact's
+  // info that only LOOKS the same in the UI. Phone match takes priority
+  // over name match since phone is the more reliable identifier.
+  Map<String, dynamic>? _findMatchingLead() {
+    final typedName  = _contactCtrl.text.trim().toLowerCase();
+    final typedPhone = _phoneCtrl.text.trim().replaceAll(RegExp(r'\D'), '');
+    if (typedName.isEmpty) return null;
+    for (final lead in widget.leads) {
+      final leadPhone = (lead['lead_phone'] ?? '').toString().replaceAll(RegExp(r'\D'), '');
+      if (typedPhone.length >= 10 && leadPhone.isNotEmpty && leadPhone == typedPhone) return lead;
+    }
+    for (final lead in widget.leads) {
+      final leadName = (lead['lead_name'] ?? '').toString().trim().toLowerCase();
+      if (leadName.isNotEmpty && leadName == typedName) return lead;
+    }
+    return null;
+  }
+
   Future<void> _save() async {
     if (_titleCtrl.text.trim().isEmpty) {
       setState(() => _error = 'Appointment title is required');
       return;
+    }
+    if (_phoneCtrl.text.trim().isNotEmpty && normalizeUsPhone(_phoneCtrl.text.trim()) == null) {
+      setState(() => _error = 'Phone number must be a valid 10-digit US number');
+      return;
+    }
+    if (_selectedLeadId == null) {
+      final match = _findMatchingLead();
+      if (match != null && mounted) {
+        final useExisting = await showDialog<bool>(
+          context: context,
+          barrierColor: Colors.black54,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: AppTheme.cardBg,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            title: const Text('Contact Already Exists',
+                style: TextStyle(color: AppTheme.textPrimary, fontWeight: FontWeight.w700)),
+            content: Text(
+              'A contact named "${match['lead_name']}" already exists. Link this appointment to that contact instead of creating a separate, disconnected entry?',
+              style: const TextStyle(color: AppTheme.textSecondary, fontSize: 13, height: 1.5),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(false),
+                child: const Text('Create Separate Entry', style: TextStyle(color: AppTheme.textSecondary)),
+              ),
+              ElevatedButton(
+                onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(true),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppTheme.brand, foregroundColor: Colors.white, elevation: 0,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+                child: const Text('Link to Existing'),
+              ),
+            ],
+          ),
+        );
+        if (useExisting == true) {
+          _selectLead(match);
+        }
+      }
     }
     if (_endDt.isBefore(_startDt)) {
       setState(() => _error = 'End time must be after start time');
@@ -4392,13 +4457,17 @@ class _AppointmentFormTabState extends State<_AppointmentFormTab> {
       // record too, not just this new appointment's own copy — same
       // reasoning as the Edit Appointment sheet, so the two never diverge
       // from the moment this appointment is created.
+      final normalizedPhone = _phoneCtrl.text.trim().isEmpty
+          ? ''
+          : (normalizeUsPhone(_phoneCtrl.text.trim()) ?? _phoneCtrl.text.trim());
+
       if (_selectedLeadId != null) {
         final leadId = int.tryParse(_selectedLeadId!);
         if (leadId != null) {
           try {
             await _db.from('leads').update({
               'lead_name':  _contactCtrl.text.trim(),
-              'lead_phone': _phoneCtrl.text.trim(),
+              'lead_phone': normalizedPhone,
               'lead_email': _emailCtrl.text.trim(),
             }).eq('id', leadId);
           } catch (e) {
@@ -4416,7 +4485,7 @@ class _AppointmentFormTabState extends State<_AppointmentFormTab> {
         'location':         _locationCtrl.text.trim(),
         'lead_id':          _selectedLeadId != null ? int.tryParse(_selectedLeadId!) : null,
         'lead_name':        _contactCtrl.text.trim(),
-        'lead_phone':       _phoneCtrl.text.trim(),
+        'lead_phone':       normalizedPhone,
         'lead_email':       _emailCtrl.text.trim(),
         'notes':            _notesCtrl.text.trim(),
         'booking_source':   _sourceCtrl.text.trim(),
@@ -4737,7 +4806,7 @@ if (_showDropdown) ...[
           Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             _label('Phone'),
             const SizedBox(height: 4),
-            _textField(_phoneCtrl, hint: '555-0100', keyboard: TextInputType.phone),
+            _textField(_phoneCtrl, hint: '555-0100', keyboard: TextInputType.phone, inputFormatters: [PhoneNumberInputFormatter()]),
           ])),
           const SizedBox(width: 12),
           Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -4788,9 +4857,9 @@ if (_showDropdown) ...[
   Widget _label(String text) => Text(text,
       style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: AppTheme.textPrimary));
 
-  Widget _textField(TextEditingController ctrl, {String? hint, TextInputType? keyboard, int maxLines = 1}) {
+  Widget _textField(TextEditingController ctrl, {String? hint, TextInputType? keyboard, int maxLines = 1, List<TextInputFormatter>? inputFormatters}) {
     return TextField(
-      controller: ctrl, keyboardType: keyboard, maxLines: maxLines,
+      controller: ctrl, keyboardType: keyboard, maxLines: maxLines, inputFormatters: inputFormatters,
       style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
       decoration: InputDecoration(
         hintText: hint,
@@ -6030,6 +6099,14 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
   }
 
   Future<void> _save() async {
+    if (_leadPhoneCtrl.text.trim().isNotEmpty && normalizeUsPhone(_leadPhoneCtrl.text.trim()) == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Phone number must be a valid 10-digit US number'), backgroundColor: Colors.red),
+        );
+      }
+      return;
+    }
     final shouldProceed = await _confirmCompleteWithIncompleteFormsIfNeeded();
     if (!shouldProceed) return;
 
@@ -6107,12 +6184,16 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
       // updated too, right alongside, so the frozen fallback captured by
       // appointment_contact_info stays reasonably fresh if this lead is ever
       // deleted later — it's just no longer the only writable copy.
+      final normalizedPhone = _leadPhoneCtrl.text.trim().isEmpty
+          ? ''
+          : (normalizeUsPhone(_leadPhoneCtrl.text.trim()) ?? _leadPhoneCtrl.text.trim());
+
       final leadId = widget.appointment['lead_id'] as int?;
       if (leadId != null) {
         try {
           await _db.from('leads').update({
             'lead_name':  _leadNameCtrl.text.trim(),
-            'lead_phone': _leadPhoneCtrl.text.trim(),
+            'lead_phone': normalizedPhone,
             'lead_email': _leadEmailCtrl.text.trim(),
           }).eq('id', leadId);
         } catch (e) {
@@ -6128,7 +6209,7 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
         'end_date_time':    _endDt.toUtc().toIso8601String(),
         'location':         _locationCtrl.text.trim(),
         'lead_name':        _leadNameCtrl.text.trim(),
-        'lead_phone':       _leadPhoneCtrl.text.trim(),
+        'lead_phone':       normalizedPhone,
         'lead_email':       _leadEmailCtrl.text.trim(),
         'notes':            _notesCtrl.text.trim(),
         'booking_source':   _sourceCtrl.text.trim(),
@@ -6424,7 +6505,7 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
             _field('Contact Name', _leadNameCtrl),
             const SizedBox(height: 10),
             Row(children: [
-              Expanded(child: _field('Phone', _leadPhoneCtrl, hint: '555-0100', keyboard: TextInputType.phone)),
+              Expanded(child: _field('Phone', _leadPhoneCtrl, hint: '555-0100', keyboard: TextInputType.phone, inputFormatters: [PhoneNumberInputFormatter()])),
               const SizedBox(width: 12),
               Expanded(child: _field('Email', _leadEmailCtrl, hint: 'jane@example.com', keyboard: TextInputType.emailAddress)),
             ]),
@@ -6847,12 +6928,12 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
   );
 
   Widget _field(String label, TextEditingController ctrl,
-      {String? hint, TextInputType? keyboard, int maxLines = 1}) {
+      {String? hint, TextInputType? keyboard, int maxLines = 1, List<TextInputFormatter>? inputFormatters}) {
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: AppTheme.textSecondary)),
       const SizedBox(height: 4),
       TextField(
-        controller: ctrl, keyboardType: keyboard, maxLines: maxLines,
+        controller: ctrl, keyboardType: keyboard, maxLines: maxLines, inputFormatters: inputFormatters,
         style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
         decoration: InputDecoration(
           hintText: hint,

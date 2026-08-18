@@ -239,12 +239,26 @@ class _RoutesScreenState extends State<RoutesScreen> {
         .subscribe();
   }
 
+  // Resolves a stop's map coordinates, preferring the linked appointment's
+  // live latitude/longitude over the route's frozen snapshot — same
+  // reasoning as the List view's hasLocation check above.
+  ll.LatLng? _resolvedStopLatLng(Map<String, dynamic> stop) {
+    final apptId = stop['appointment_id'] as int?;
+    final appt = apptId != null ? _stopAppointments[apptId] : null;
+    final liveLat = appt?['latitude'];
+    final liveLng = appt?['longitude'];
+    if (liveLat != null && liveLng != null) {
+      return ll.LatLng((liveLat as num).toDouble(), (liveLng as num).toDouble());
+    }
+    if (stop['lat'] != null && stop['lng'] != null) {
+      return ll.LatLng((stop['lat'] as num).toDouble(), (stop['lng'] as num).toDouble());
+    }
+    return null;
+  }
+
   List<ll.LatLng> _stopPoints() {
     final stops = List<Map<String, dynamic>>.from(_currentRoute?['stops'] as List? ?? []);
-    return stops
-        .where((s) => s['lat'] != null && s['lng'] != null)
-        .map((s) => ll.LatLng((s['lat'] as num).toDouble(), (s['lng'] as num).toDouble()))
-        .toList();
+    return stops.map(_resolvedStopLatLng).whereType<ll.LatLng>().toList();
   }
 
   ll.LatLng? _liveLatLng() {
@@ -583,6 +597,8 @@ class _RoutesScreenState extends State<RoutesScreen> {
           if (_currentRoute != null) ...[
             const SizedBox(width: 10),
             _buildViewToggle(),
+            const SizedBox(width: 10),
+            _buildReoptimizeButton(),
           ],
         ],
       ]),
@@ -623,6 +639,30 @@ class _RoutesScreenState extends State<RoutesScreen> {
         _viewToggleButton('List', Icons.list, !_showMap, () => setState(() => _showMap = false)),
         _viewToggleButton('Map', Icons.map_outlined, _showMap, () => setState(() => _showMap = true)),
       ]),
+    );
+  }
+
+  Widget _buildReoptimizeButton() {
+    return Tooltip(
+      message: 'Re-run optimization using each appointment\'s current address',
+      child: Clickable(
+        onTap: _creatingRoute ? null : _createRoute,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          decoration: BoxDecoration(
+            color: AppTheme.pageBg,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: AppTheme.borderColor),
+          ),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            _creatingRoute
+                ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.refresh, size: 14, color: AppTheme.textSecondary),
+            const SizedBox(width: 6),
+            const Text('Re-optimize', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
+          ]),
+        ),
+      ),
     );
   }
 
@@ -808,7 +848,14 @@ class _RoutesScreenState extends State<RoutesScreen> {
             final stop = stops[i];
             final apptId = stop['appointment_id'] as int?;
             final appt = apptId != null ? _stopAppointments[apptId] : null;
-            final hasLocation = stop['lat'] != null && stop['lng'] != null;
+            // Prefer the appointment's live coordinates (already joined
+            // fresh in _loadRoute) over the route's frozen snapshot — an
+            // address can get geocoded after a route was built, and this
+            // keeps the status accurate without forcing a re-optimize.
+            final liveLat = appt?['latitude'];
+            final liveLng = appt?['longitude'];
+            final hasLocation = (liveLat != null && liveLng != null) ||
+                (stop['lat'] != null && stop['lng'] != null);
             return Container(
               key: ValueKey('stop-$i-${apptId ?? 'none'}'),
               margin: const EdgeInsets.only(bottom: 8),
@@ -892,9 +939,9 @@ class _RoutesScreenState extends State<RoutesScreen> {
             ]),
           MarkerLayer(markers: [
             for (var i = 0; i < stops.length; i++)
-              if (stops[i]['lat'] != null && stops[i]['lng'] != null)
+              if (_resolvedStopLatLng(stops[i]) != null)
                 Marker(
-                  point: ll.LatLng((stops[i]['lat'] as num).toDouble(), (stops[i]['lng'] as num).toDouble()),
+                  point: _resolvedStopLatLng(stops[i])!,
                   width: 32,
                   height: 32,
                   child: Container(

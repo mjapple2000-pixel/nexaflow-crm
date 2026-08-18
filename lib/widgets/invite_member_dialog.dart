@@ -1,7 +1,9 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../utils/phone_utils.dart';
 
 /// Shared invite member dialog.
 /// Import this in both settings_screen.dart and launchpad_screen.dart.
@@ -119,7 +121,7 @@ class _InviteMemberDialogState extends State<InviteMemberDialog> {
 
     final name = _nameController.text.trim();
     final email = _emailController.text.trim();
-    final phone = _phoneController.text.trim();
+    final phone = normalizeUsPhone(_phoneController.text.trim()) ?? _phoneController.text.trim();
 
     try {
       // Call Edge Function — uses service role key server-side
@@ -410,10 +412,11 @@ class _IdentityRow extends StatelessWidget {
           prefixIcon: Icon(Icons.phone_outlined, size: 20),
         ),
         keyboardType: TextInputType.phone,
+        inputFormatters: [PhoneNumberInputFormatter()],
         validator: (v) {
           if (v == null || v.trim().isEmpty) return 'Phone is required';
-          if (v.trim().replaceAll(RegExp(r'\D'), '').length < 7) {
-            return 'Enter a valid phone number';
+          if (normalizeUsPhone(v.trim()) == null) {
+            return 'Enter a valid 10-digit US number';
           }
           return null;
         },

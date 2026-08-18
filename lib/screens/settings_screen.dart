@@ -1619,6 +1619,7 @@ class _MyStaffSectionState extends State<_MyStaffSection> {
           .from('profiles')
           .select()
           .eq('business_id', widget.businessId)
+          .filter('deleted_at', 'is', null)
           .order('invited_at');
       setState(() {
         _members = List<Map<String, dynamic>>.from(res as List);
@@ -1813,6 +1814,68 @@ class _MyStaffSectionState extends State<_MyStaffSection> {
     }
   }
 
+  // Soft delete only — matches the app-wide rule of never hard-deleting
+  // rows. Their profile row (and any work history tied to it) stays in
+  // the database, just filtered out of every future load. Only offered
+  // for inactive members: an abandoned invite that never got accepted,
+  // or a past employee already deactivated.
+  Future<void> _deleteMember(Map<String, dynamic> member) async {
+    final name = member['full_name'] as String? ??
+        member['email'] as String? ??
+        'this member';
+    bool confirmed = false;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.cardBg,
+        title: const Text('Delete Team Member',
+            style: TextStyle(color: AppTheme.textPrimary)),
+        content: Text(
+            'Remove $name from this list? Their record and work history are kept, just hidden — this cannot be undone from this screen.',
+            style: const TextStyle(
+                color: AppTheme.textSecondary, height: 1.5)),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () {
+              confirmed = true;
+              Navigator.pop(ctx);
+            },
+            style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red,
+                foregroundColor: Colors.white,
+                elevation: 0),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (!confirmed || !mounted) return;
+    try {
+      await _supabase
+          .from('profiles')
+          .update({'deleted_at': DateTime.now().toUtc().toIso8601String()})
+          .eq('id', member['id']);
+      await _loadMembers();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text('Team member deleted.'),
+              behavior: SnackBarBehavior.floating),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'),
+              behavior: SnackBarBehavior.floating),
+        );
+      }
+    }
+  }
+
   List<Map<String, dynamic>> get _filteredMembers {
     if (_searchQuery.trim().isEmpty) return _members;
     final q = _searchQuery.trim().toLowerCase();
@@ -1915,8 +1978,9 @@ class _MyStaffSectionState extends State<_MyStaffSection> {
                             _showPermissionsDialog(member),
                         onRemove: () => _removeMember(member),
                         onReactivate: null,
+                        onCardTap: () => context.push('/contacts/employees/${member['id']}'),
                         onResendInvite:
-                            (member['status'] as String?) == 'pending'
+                            member['user_id'] == null
                                 ? () => _resendInvite(member)
                                 : null,
                         onResendHubLink:
@@ -1949,7 +2013,12 @@ class _MyStaffSectionState extends State<_MyStaffSection> {
                             _showPermissionsDialog(member),
                         onRemove: () => _removeMember(member),
                         onReactivate: () => _reactivateMember(member),
-                        onResendInvite: null,
+                        onDelete: () => _deleteMember(member),
+                        onCardTap: () => context.push('/contacts/employees/${member['id']}'),
+                        onResendInvite:
+                            member['user_id'] == null
+                                ? () => _resendInvite(member)
+                                : null,
                         onResendHubLink:
                             (member['phone'] as String?)?.isNotEmpty == true
                                 ? () => _resendHubLink(member)
@@ -2042,6 +2111,8 @@ class _MemberCard extends StatelessWidget {
   final VoidCallback? onResendInvite;
   final VoidCallback? onResendHubLink;
   final VoidCallback? onReactivate;
+  final VoidCallback? onDelete;
+  final VoidCallback? onCardTap;
 
   const _MemberCard({
     required this.member,
@@ -2051,6 +2122,8 @@ class _MemberCard extends StatelessWidget {
     this.onResendInvite,
     this.onResendHubLink,
     this.onReactivate,
+    this.onDelete,
+    this.onCardTap,
   });
 
   @override
@@ -2079,6 +2152,188 @@ class _MemberCard extends StatelessWidget {
     final enabledCount =
         perms.values.where((v) => v == true).length;
 
+    final avatar = Container(
+      width: 40,
+      height: 40,
+      decoration: BoxDecoration(
+        color: isOwner
+            ? AppTheme.brand.withValues(alpha: 0.15)
+            : const Color(0xFF6366F1).withValues(alpha: 0.12),
+        shape: BoxShape.circle,
+      ),
+      child: Center(
+        child: Text(initials,
+            style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w700,
+                color: isOwner
+                    ? AppTheme.brand
+                    : const Color(0xFF6366F1))),
+      ),
+    );
+
+    final nameColumn = Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(mainAxisSize: MainAxisSize.min, children: [
+            Flexible(child: Text(displayName,
+                style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: AppTheme.textPrimary),
+                overflow: TextOverflow.ellipsis)),
+            if (isCurrentUser) ...[
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 7, vertical: 2),
+                decoration: BoxDecoration(
+                  color:
+                      AppTheme.brand.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: const Text('You',
+                    style: TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                        color: AppTheme.brand)),
+              ),
+            ],
+          ]),
+          if (name.isNotEmpty && email.isNotEmpty)
+            Text(email,
+                style: const TextStyle(
+                    fontSize: 12,
+                    color: AppTheme.textSecondary)),
+        ]);
+
+    // Extracted so the same set of badges/action icons can be laid out
+    // either inline (desktop) or wrapped below the name (mobile) without
+    // duplicating any of the tap handlers or styling.
+    final badgesAndActions = <Widget>[
+      _Badge(
+          label: role[0].toUpperCase() + role.substring(1),
+          color:
+              isOwner ? AppTheme.brand : const Color(0xFF6366F1)),
+      isInactive
+          ? Clickable(
+              onTap: onReactivate,
+              child: Tooltip(
+                message: 'Click to reactivate',
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: AppTheme.textMuted.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: AppTheme.textMuted.withValues(alpha: 0.3)),
+                  ),
+                  child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                    Icon(Icons.refresh_rounded, size: 11, color: AppTheme.textSecondary),
+                    SizedBox(width: 4),
+                    Text('Inactive',
+                        style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
+                  ]),
+                ),
+              ),
+            )
+          : _StatusBadge(isPending: isPending),
+      if (!isOwner && !isCurrentUser) ...[
+        Clickable(
+          onTap: onEditPermissions,
+          child: Tooltip(
+            message: 'Edit permissions',
+            child: Container(
+              padding: const EdgeInsets.all(6),
+              decoration: BoxDecoration(
+                color: AppTheme.pageBg,
+                borderRadius: BorderRadius.circular(6),
+                border:
+                    Border.all(color: AppTheme.borderColor),
+              ),
+              child: const Icon(Icons.tune_rounded,
+                  size: 15,
+                  color: AppTheme.textSecondary),
+            ),
+          ),
+        ),
+        if (onResendInvite != null)
+          Clickable(
+            onTap: onResendInvite,
+            child: Tooltip(
+              message: 'Resend invite',
+              child: Container(
+                padding: const EdgeInsets.all(6),
+                decoration: BoxDecoration(
+                  color: AppTheme.brand.withValues(alpha: 0.06),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(
+                      color: AppTheme.brand
+                          .withValues(alpha: 0.2)),
+                ),
+                child: const Icon(Icons.send_outlined,
+                    size: 15, color: AppTheme.brand),
+              ),
+            ),
+          ),
+        if (onResendHubLink != null)
+          Clickable(
+            onTap: onResendHubLink,
+            child: Tooltip(
+              message: 'Resend hub link',
+              child: Container(
+                padding: const EdgeInsets.all(6),
+                decoration: BoxDecoration(
+                  color: AppTheme.brand.withValues(alpha: 0.06),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(
+                      color: AppTheme.brand
+                          .withValues(alpha: 0.2)),
+                ),
+                child: const Icon(Icons.phone_iphone_outlined,
+                    size: 15, color: AppTheme.brand),
+              ),
+            ),
+          ),
+        if (!isInactive)
+          Clickable(
+            onTap: onRemove,
+            child: Tooltip(
+              message: 'Deactivate member',
+              child: Container(
+                padding: const EdgeInsets.all(6),
+                decoration: BoxDecoration(
+                  color: Colors.red.withValues(alpha: 0.06),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(
+                      color: Colors.red.withValues(alpha: 0.2)),
+                ),
+                child: const Icon(Icons.person_off_outlined,
+                    size: 15, color: Colors.red),
+              ),
+            ),
+          ),
+        if (isInactive && onDelete != null)
+          Clickable(
+            onTap: onDelete,
+            child: Tooltip(
+              message: 'Delete member',
+              child: Container(
+                padding: const EdgeInsets.all(6),
+                decoration: BoxDecoration(
+                  color: Colors.red.withValues(alpha: 0.06),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(
+                      color: Colors.red.withValues(alpha: 0.2)),
+                ),
+                child: const Icon(Icons.delete_outline,
+                    size: 15, color: Colors.red),
+              ),
+            ),
+          ),
+      ],
+    ];
+
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.all(16),
@@ -2089,175 +2344,32 @@ class _MemberCard extends StatelessWidget {
       ),
       child: Column(
         children: [
-          Row(
-            children: [
-              Container(
-                width: 40,
-                height: 40,
-                decoration: BoxDecoration(
-                  color: isOwner
-                      ? AppTheme.brand.withValues(alpha: 0.15)
-                      : const Color(0xFF6366F1).withValues(alpha: 0.12),
-                  shape: BoxShape.circle,
-                ),
-                child: Center(
-                  child: Text(initials,
-                      style: TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w700,
-                          color: isOwner
-                              ? AppTheme.brand
-                              : const Color(0xFF6366F1))),
-                ),
-              ),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(children: [
-                        Text(displayName,
-                            style: const TextStyle(
-                                fontSize: 13,
-                                fontWeight: FontWeight.w600,
-                                color: AppTheme.textPrimary)),
-                        if (isCurrentUser) ...[
-                          const SizedBox(width: 8),
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 7, vertical: 2),
-                            decoration: BoxDecoration(
-                              color:
-                                  AppTheme.brand.withValues(alpha: 0.1),
-                              borderRadius: BorderRadius.circular(20),
-                            ),
-                            child: const Text('You',
-                                style: TextStyle(
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.w700,
-                                    color: AppTheme.brand)),
-                          ),
-                        ],
-                      ]),
-                      if (name.isNotEmpty && email.isNotEmpty)
-                        Text(email,
-                            style: const TextStyle(
-                                fontSize: 12,
-                                color: AppTheme.textSecondary)),
-                    ]),
-              ),
-              _Badge(
-                  label: role[0].toUpperCase() + role.substring(1),
-                  color:
-                      isOwner ? AppTheme.brand : const Color(0xFF6366F1)),
+          LayoutBuilder(builder: (context, constraints) {
+            // Below ~480px (typical phone width), the name column and the
+            // row of action icons no longer fit on one line without
+            // clipping — stack them instead so every action stays visible
+            // and tappable on mobile.
+            final isNarrow = constraints.maxWidth < 480;
+            final identityRow = Clickable(
+              onTap: onCardTap,
+              child: Row(children: [avatar, const SizedBox(width: 14), Expanded(child: nameColumn)]),
+            );
+            if (isNarrow) {
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  identityRow,
+                  const SizedBox(height: 10),
+                  Wrap(spacing: 8, runSpacing: 8, children: badgesAndActions),
+                ],
+              );
+            }
+            return Row(children: [
+              Expanded(child: identityRow),
               const SizedBox(width: 8),
-              isInactive
-                  ? Clickable(
-                      onTap: onReactivate,
-                      child: Tooltip(
-                        message: 'Click to reactivate',
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: AppTheme.textMuted.withValues(alpha: 0.1),
-                            borderRadius: BorderRadius.circular(20),
-                            border: Border.all(color: AppTheme.textMuted.withValues(alpha: 0.3)),
-                          ),
-                          child: const Row(mainAxisSize: MainAxisSize.min, children: [
-                            Icon(Icons.refresh_rounded, size: 11, color: AppTheme.textSecondary),
-                            SizedBox(width: 4),
-                            Text('Inactive',
-                                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
-                          ]),
-                        ),
-                      ),
-                    )
-                  : _StatusBadge(isPending: isPending),
-              if (!isOwner && !isCurrentUser) ...[
-                const SizedBox(width: 8),
-                Clickable(
-                  onTap: onEditPermissions,
-                  child: Tooltip(
-                    message: 'Edit permissions',
-                    child: Container(
-                      padding: const EdgeInsets.all(6),
-                      decoration: BoxDecoration(
-                        color: AppTheme.pageBg,
-                        borderRadius: BorderRadius.circular(6),
-                        border:
-                            Border.all(color: AppTheme.borderColor),
-                      ),
-                      child: const Icon(Icons.tune_rounded,
-                          size: 15,
-                          color: AppTheme.textSecondary),
-                    ),
-                  ),
-                ),
-                if (onResendInvite != null) ...[
-                  const SizedBox(width: 6),
-                  Clickable(
-                    onTap: onResendInvite,
-                    child: Tooltip(
-                      message: 'Resend invite',
-                      child: Container(
-                        padding: const EdgeInsets.all(6),
-                        decoration: BoxDecoration(
-                          color: AppTheme.brand.withValues(alpha: 0.06),
-                          borderRadius: BorderRadius.circular(6),
-                          border: Border.all(
-                              color: AppTheme.brand
-                                  .withValues(alpha: 0.2)),
-                        ),
-                        child: const Icon(Icons.send_outlined,
-                            size: 15, color: AppTheme.brand),
-                      ),
-                    ),
-                  ),
-                ],
-                if (onResendHubLink != null) ...[
-                  const SizedBox(width: 6),
-                  Clickable(
-                    onTap: onResendHubLink,
-                    child: Tooltip(
-                      message: 'Resend hub link',
-                      child: Container(
-                        padding: const EdgeInsets.all(6),
-                        decoration: BoxDecoration(
-                          color: AppTheme.brand.withValues(alpha: 0.06),
-                          borderRadius: BorderRadius.circular(6),
-                          border: Border.all(
-                              color: AppTheme.brand
-                                  .withValues(alpha: 0.2)),
-                        ),
-                        child: const Icon(Icons.phone_iphone_outlined,
-                            size: 15, color: AppTheme.brand),
-                      ),
-                    ),
-                  ),
-                ],
-                if (!isInactive) ...[
-                  const SizedBox(width: 6),
-                  Clickable(
-                    onTap: onRemove,
-                    child: Tooltip(
-                      message: 'Deactivate member',
-                      child: Container(
-                        padding: const EdgeInsets.all(6),
-                        decoration: BoxDecoration(
-                          color: Colors.red.withValues(alpha: 0.06),
-                          borderRadius: BorderRadius.circular(6),
-                          border: Border.all(
-                              color: Colors.red.withValues(alpha: 0.2)),
-                        ),
-                        child: const Icon(Icons.person_off_outlined,
-                            size: 15, color: Colors.red),
-                      ),
-                    ),
-                  ),
-                ],
-              ],
-            ],
-          ),
+              Wrap(spacing: 8, runSpacing: 8, crossAxisAlignment: WrapCrossAlignment.center, children: badgesAndActions),
+            ]);
+          }),
           if (!isOwner) ...[
             const SizedBox(height: 12),
             Container(

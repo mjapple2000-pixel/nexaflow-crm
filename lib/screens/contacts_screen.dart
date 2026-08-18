@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:csv/csv.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -9,6 +10,7 @@ import 'dart:js_interop';
 import 'package:web/web.dart' as web;
 import '../theme/app_theme.dart';
 import '../utils/business_utils.dart';
+import '../utils/phone_utils.dart';
 import 'package:nexaflow/config/supabase_config.dart';
 
 // ─────────────────────────────────────────────
@@ -524,7 +526,13 @@ class _ContactsScreenState extends State<ContactsScreen> {
       context: context, barrierDismissible: false,
       builder: (_) => _ImportCsvDialog(
         csvString: csvString, businessId: _businessId ?? 0,
-        onImported: (count) { context.pop(); _loadLeads(); _snack('Imported $count contacts successfully!'); },
+        onImported: (count, skipped) {
+          context.pop();
+          _loadLeads();
+          _snack(skipped > 0
+              ? 'Imported $count contacts — $skipped skipped as duplicates.'
+              : 'Imported $count contacts successfully!');
+        },
       ),
     );
   }
@@ -2013,8 +2021,81 @@ class _AddSheetState extends State<_AddSheet> {
     if (t.isNotEmpty && !_tags.contains(t)) setState(() { _tags.add(t); _tagCtrl.clear(); });
   }
 
+  // Checks for an existing lead with a matching phone (checked first, more
+  // reliable) or matching name before inserting a new one, so clicking
+  // "Add Lead" for someone who already exists doesn't silently create a
+  // second, disconnected contact record — the exact problem that produced
+  // duplicate "Michael Apple" rows previously.
+  Future<Map<String, dynamic>?> _findExistingLead() async {
+    final typedName = _nameCtrl.text.trim();
+    final typedPhone = normalizeUsPhone(_phoneCtrl.text.trim());
+    try {
+      if (typedPhone != null) {
+        final phoneMatches = await _db.from('leads')
+            .select('id, lead_name, lead_phone')
+            .eq('business_id', widget.businessId)
+            .eq('lead_phone', typedPhone)
+            .filter('deleted_at', 'is', null)
+            .limit(1);
+        if ((phoneMatches as List).isNotEmpty) return Map<String, dynamic>.from(phoneMatches.first);
+      }
+      if (typedName.isNotEmpty) {
+        final nameMatches = await _db.from('leads')
+            .select('id, lead_name, lead_phone')
+            .eq('business_id', widget.businessId)
+            .ilike('lead_name', typedName)
+            .filter('deleted_at', 'is', null)
+            .limit(1);
+        if ((nameMatches as List).isNotEmpty) return Map<String, dynamic>.from(nameMatches.first);
+      }
+    } catch (e) {
+      debugPrint('Find existing lead error: $e');
+    }
+    return null;
+  }
+
   Future<void> _save() async {
     if (!_fk.currentState!.validate()) return;
+
+    final existing = await _findExistingLead();
+    if (existing != null && mounted) {
+      final proceedAnyway = await showDialog<bool>(
+        context: context,
+        barrierColor: Colors.black54,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: AppTheme.cardBg,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          title: const Text('Contact Already Exists',
+              style: TextStyle(color: AppTheme.textPrimary, fontWeight: FontWeight.w700)),
+          content: Text(
+            'A contact named "${existing['lead_name']}" already exists with a matching name or phone number. Add a separate, disconnected contact anyway?',
+            style: const TextStyle(color: AppTheme.textSecondary, fontSize: 13, height: 1.5),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(false),
+              child: const Text('View Existing Contact', style: TextStyle(color: AppTheme.textSecondary)),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(true),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.error, foregroundColor: Colors.white, elevation: 0,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              child: const Text('Add Anyway'),
+            ),
+          ],
+        ),
+      );
+      if (proceedAnyway != true) {
+        if (mounted) {
+          context.pop();
+          context.push('/contacts/${existing['id']}');
+        }
+        return;
+      }
+    }
+
     setState(() => _saving = true);
     try {
       final addrParts = [_addrCtrl.text.trim(), _cityCtrl.text.trim(),
@@ -2022,7 +2103,7 @@ class _AddSheetState extends State<_AddSheet> {
       await _db.from('leads').insert({
         'lead_name': _nameCtrl.text.trim(),
         'lead_email': _emailCtrl.text.trim().isEmpty ? null : _emailCtrl.text.trim(),
-        'lead_phone': _phoneCtrl.text.trim().isEmpty ? null : _phoneCtrl.text.trim(),
+        'lead_phone': _phoneCtrl.text.trim().isEmpty ? null : (normalizeUsPhone(_phoneCtrl.text.trim()) ?? _phoneCtrl.text.trim()),
         'lead_status': _status,
         'source': _source,
         'notes': _notesCtrl.text.trim().isEmpty ? null : _notesCtrl.text.trim(),
@@ -2082,7 +2163,10 @@ class _AddSheetState extends State<_AddSheet> {
             Row(children: [
               Expanded(child: _field(_emailCtrl, 'Email', type: TextInputType.emailAddress)),
               const SizedBox(width: 12),
-              Expanded(child: _field(_phoneCtrl, 'Phone', type: TextInputType.phone)),
+              Expanded(child: _field(_phoneCtrl, 'Phone', type: TextInputType.phone,
+                  inputFormatters: [PhoneNumberInputFormatter()],
+                  validator: (v) => (v != null && v.trim().isNotEmpty && normalizeUsPhone(v.trim()) == null)
+                      ? 'Invalid phone number' : null)),
             ]),
             const SizedBox(height: 16),
             Row(children: [
@@ -2198,9 +2282,10 @@ class _AddSheetState extends State<_AddSheet> {
   Widget _field(TextEditingController ctrl, String label, {
     TextInputType? type, int maxLines = 1,
     String? Function(String?)? validator, ValueChanged<String>? onSubmit,
+    List<TextInputFormatter>? inputFormatters,
   }) => TextFormField(
     controller: ctrl, keyboardType: type, maxLines: maxLines,
-    onFieldSubmitted: onSubmit, validator: validator,
+    onFieldSubmitted: onSubmit, validator: validator, inputFormatters: inputFormatters,
     style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13),
     decoration: InputDecoration(labelText: label,
       labelStyle: const TextStyle(color: AppTheme.textSecondary, fontSize: 13)),
@@ -2248,7 +2333,7 @@ class _AddSheetState extends State<_AddSheet> {
 class _ImportCsvDialog extends StatefulWidget {
   final String csvString;
   final int businessId;
-  final void Function(int count) onImported;
+  final void Function(int imported, int skippedDuplicates) onImported;
   const _ImportCsvDialog({required this.csvString, required this.businessId, required this.onImported});
   @override
   State<_ImportCsvDialog> createState() => _ImportCsvDialogState();
@@ -2301,10 +2386,39 @@ class _ImportCsvDialogState extends State<_ImportCsvDialog> {
     if (_mapName == null) { setState(() => _error = 'Please map the Name column.'); return; }
     setState(() { _importing = true; _error = null; });
     try {
+      // Load existing contacts once so the whole import can be checked in
+      // memory rather than one query per row — same phone-first-then-name
+      // matching used by Add Lead and New Appointment, so a bad CSV can't
+      // silently bulk-create duplicates for people who already exist.
+      final existingLeads = await _db.from('leads')
+          .select('lead_name, lead_phone')
+          .eq('business_id', widget.businessId)
+          .filter('deleted_at', 'is', null);
+      final seenPhones = <String>{};
+      final seenNames = <String>{};
+      for (final l in (existingLeads as List)) {
+        final phone = (l['lead_phone'] as String?)?.trim();
+        final name = (l['lead_name'] as String?)?.trim().toLowerCase();
+        if (phone != null && phone.isNotEmpty) seenPhones.add(phone);
+        if (name != null && name.isNotEmpty) seenNames.add(name);
+      }
+
       final batch = <Map<String, dynamic>>[];
+      var skippedDuplicates = 0;
       for (final row in _dataRows) {
         final name = _val(row, _mapName);
         if (name == null || name.isEmpty) continue;
+
+        final rawPhone = _val(row, _mapPhone);
+        final normalizedPhone = rawPhone == null ? null : (normalizeUsPhone(rawPhone) ?? rawPhone);
+        final lowerName = name.trim().toLowerCase();
+
+        final isDuplicate = (normalizedPhone != null && seenPhones.contains(normalizedPhone)) ||
+            seenNames.contains(lowerName);
+        if (isDuplicate) { skippedDuplicates++; continue; }
+        if (normalizedPhone != null) seenPhones.add(normalizedPhone);
+        seenNames.add(lowerName);
+
         final tagsRaw = _val(row, _mapTags);
         final tags = tagsRaw != null
             ? tagsRaw.split(';').map((t) => t.trim()).where((t) => t.isNotEmpty).toList()
@@ -2316,21 +2430,30 @@ class _ImportCsvDialogState extends State<_ImportCsvDialog> {
         }
         batch.add({
           'lead_name': name, 'lead_email': _val(row, _mapEmail),
-          'lead_phone': _val(row, _mapPhone), 'lead_status': _val(row, _mapStatus) ?? 'New',
+          'lead_phone': normalizedPhone,
+          'lead_status': _val(row, _mapStatus) ?? 'New',
           'source': _val(row, _mapSource) ?? 'Import', 'business_name': _val(row, _mapBusiness),
           'lead_address': _val(row, _mapAddress), 'notes': _val(row, _mapNotes),
           'estimated_value': estValue, 'tags': tags,
           'business_id': widget.businessId, 'date_added': DateTime.now().toIso8601String(),
         });
       }
-      if (batch.isEmpty) { setState(() { _error = 'No valid rows found.'; _importing = false; }); return; }
+      if (batch.isEmpty) {
+        setState(() {
+          _error = skippedDuplicates > 0
+              ? 'No new contacts to import — all $skippedDuplicates row(s) matched existing contacts.'
+              : 'No valid rows found.';
+          _importing = false;
+        });
+        return;
+      }
       var imported = 0;
       for (var i = 0; i < batch.length; i += 100) {
         final chunk = batch.sublist(i, (i + 100).clamp(0, batch.length));
         await _db.from('leads').insert(chunk);
         imported += chunk.length;
       }
-      widget.onImported(imported);
+      widget.onImported(imported, skippedDuplicates);
     } catch (e) { setState(() { _error = e.toString(); _importing = false; }); }
   }
 

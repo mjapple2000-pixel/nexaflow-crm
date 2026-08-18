@@ -664,10 +664,20 @@ class AppRouter {
 class GoRouterRefreshStream extends ChangeNotifier {
   GoRouterRefreshStream(Stream<AuthState> stream) {
     _subscription = stream.listen((authState) {
-      // When Supabase fires the passwordRecovery event, set the flag
-      // and notify the router to redirect to /reset-password.
-      // The session is already established at this point.
-      if (authState.event == AuthChangeEvent.passwordRecovery) {
+      // Recovery links fire passwordRecovery directly. Invite links do
+      // NOT — Supabase only special-cases "recovery" for that event; an
+      // invite link authenticates the browser and fires a normal signedIn
+      // event instead, which previously left new members stuck looking at
+      // the login form while secretly already authenticated
+      // (cachedIsSuperuser stayed null since they never went through
+      // LoginScreen._signIn(), and the router's "check still in flight"
+      // guard kept them parked on /login). Detecting type=invite in the
+      // URL fragment and reusing the same reset-password screen closes
+      // that gap — setting an initial password and resetting one are the
+      // same UI and the same updateUser() call.
+      final isInviteLink = Uri.base.fragment.contains('type=invite');
+      if (authState.event == AuthChangeEvent.passwordRecovery ||
+          (authState.event == AuthChangeEvent.signedIn && isInviteLink)) {
         AppRouter.isPasswordRecovery = true;
       }
       notifyListeners();

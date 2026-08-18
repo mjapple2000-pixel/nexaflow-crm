@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme/app_theme.dart';
+import '../utils/phone_utils.dart';
 
 const _kPermissionLabels = {
   'launchpad':     'Launchpad',
@@ -294,13 +296,21 @@ class _EditEmployeeSheet extends StatefulWidget {
 class _EditEmployeeSheetState extends State<_EditEmployeeSheet> {
   final _db = Supabase.instance.client;
   late final _nameCtrl = TextEditingController(text: widget.profile['full_name'] as String?);
+  late final _emailCtrl = TextEditingController(text: widget.profile['email'] as String?);
   late final _phoneCtrl = TextEditingController(text: widget.profile['phone'] as String?);
   late final _jobTitleCtrl = TextEditingController(text: widget.profile['job_title'] as String?);
   bool _saving = false;
 
+  // True once this person has completed signup and has a real Supabase
+  // Auth account. Editing email here only updates the business record —
+  // it does NOT change their actual sign-in email in auth.users, so for
+  // anyone already active we surface a warning instead of letting it look
+  // like a real login-email change.
+  bool get _hasRealAccount => widget.profile['user_id'] != null;
+
   @override
   void dispose() {
-    _nameCtrl.dispose(); _phoneCtrl.dispose(); _jobTitleCtrl.dispose();
+    _nameCtrl.dispose(); _emailCtrl.dispose(); _phoneCtrl.dispose(); _jobTitleCtrl.dispose();
     super.dispose();
   }
 
@@ -309,7 +319,8 @@ class _EditEmployeeSheetState extends State<_EditEmployeeSheet> {
     try {
       await _db.from('profiles').update({
         'full_name': _nameCtrl.text.trim(),
-        'phone': _phoneCtrl.text.trim().isEmpty ? null : _phoneCtrl.text.trim(),
+        'email': _emailCtrl.text.trim().isEmpty ? null : _emailCtrl.text.trim(),
+        'phone': _phoneCtrl.text.trim().isEmpty ? null : (normalizeUsPhone(_phoneCtrl.text.trim()) ?? _phoneCtrl.text.trim()),
         'job_title': _jobTitleCtrl.text.trim().isEmpty ? null : _jobTitleCtrl.text.trim(),
       }).eq('id', widget.profile['id']);
       widget.onSaved();
@@ -347,11 +358,24 @@ class _EditEmployeeSheetState extends State<_EditEmployeeSheet> {
             TextFormField(controller: _nameCtrl, style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13),
               decoration: const InputDecoration(labelText: 'Full Name', labelStyle: TextStyle(color: AppTheme.textSecondary, fontSize: 13))),
             const SizedBox(height: 16),
-            TextFormField(controller: _phoneCtrl, keyboardType: TextInputType.phone, style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13),
+            TextFormField(controller: _emailCtrl, keyboardType: TextInputType.emailAddress, style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13),
+              decoration: const InputDecoration(labelText: 'Email', labelStyle: TextStyle(color: AppTheme.textSecondary, fontSize: 13))),
+            if (_hasRealAccount) ...[
+              const SizedBox(height: 6),
+              const Text('This person already has a login. Changing this updates their business record only — it does not change their sign-in email.',
+                style: TextStyle(color: Colors.orange, fontSize: 11, height: 1.4)),
+            ],
+            const SizedBox(height: 16),
+            TextFormField(controller: _phoneCtrl, keyboardType: TextInputType.phone,
+              inputFormatters: [PhoneNumberInputFormatter()],
+              style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13),
               decoration: const InputDecoration(labelText: 'Phone', labelStyle: TextStyle(color: AppTheme.textSecondary, fontSize: 13))),
             const SizedBox(height: 16),
             TextFormField(controller: _jobTitleCtrl, style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13),
               decoration: const InputDecoration(labelText: 'Job Title', labelStyle: TextStyle(color: AppTheme.textSecondary, fontSize: 13))),
+            // Add any future general-info fields here, following the same
+            // TextFormField pattern above — this sheet stays intentionally
+            // scoped to non-access-critical fields (see note at top).
           ])),
           Container(
             padding: const EdgeInsets.all(20),

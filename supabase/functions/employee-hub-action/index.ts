@@ -39,6 +39,20 @@ function resolveClockTimestamp(clientTimestamp: unknown): { iso: string; offline
   return { iso: now.toISOString(), offline: false };
 }
 
+// Normalizes a raw phone number to E.164 for Twilio's To field. Twilio
+// will happily accept a malformed number like "+8139518523" (a 10-digit
+// US number with a "+" but no "1" country code) and silently misparse it
+// as country code 81 (Japan), which then fails as an opaque "Short Code"
+// error with no hint the real problem is a missing "1". Stripping to
+// digits first and re-adding "+1" for any 10-digit number — regardless
+// of how it was originally formatted — closes that gap.
+function normalizePhoneE164(raw: string): string | null {
+  const digits = raw.replace(/\D/g, "");
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+  return null;
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -285,6 +299,14 @@ Deno.serve(async (req) => {
         });
       }
 
+      const formattedPhone = normalizePhoneE164(contactPhone);
+      if (!formattedPhone) {
+        return new Response(JSON.stringify({ error: `Phone number on file (${contactPhone}) isn't a valid 10-digit US number — fix it on the contact before sending.` }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
       const { data: business, error: bizErr } = await supabase
         .from("businesses")
         .select("business_name, ai_phone_number")
@@ -309,7 +331,7 @@ Deno.serve(async (req) => {
             "Content-Type": "application/x-www-form-urlencoded",
           },
           body: new URLSearchParams({
-            To: contactPhone,
+            To: formattedPhone,
             From: business.ai_phone_number,
             Body: smsBody,
           }).toString(),

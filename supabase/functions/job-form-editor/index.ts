@@ -66,7 +66,7 @@ Deno.serve(async (req: Request) => {
       }
       const { data: fetchedForm, error: formErr } = await supabase
         .from('job_forms')
-        .select('id, business_id, fields, sections, background_pages, recreation_mode, signature_box, requires_signature, photo_attachment_markers, name, form_type, page_number_start, page_number_total_override, is_blank_template')
+        .select('id, business_id, fields, sections, background_pages, recreation_mode, signature_box, requires_signature, photo_attachment_markers, name, form_type, page_number_start, page_number_total_override, is_blank_template, background_page_backups')
         .eq('id', job_form_id)
         .maybeSingle();
 
@@ -102,6 +102,7 @@ Deno.serve(async (req: Request) => {
         signature_box: jobForm.signature_box ?? null,
         requires_signature: jobForm.requires_signature ?? false,
         photo_attachment_markers: jobForm.photo_attachment_markers ?? [],
+        background_page_backups: jobForm.background_page_backups ?? {},
       });
     }
 
@@ -114,11 +115,53 @@ Deno.serve(async (req: Request) => {
       if (!backgroundPages.includes(String(path))) {
         return jsonResponse({ error: 'Path does not belong to this form' }, 400);
       }
+
+      // Single-level undo: back up whatever image currently exists at
+      // this path BEFORE overwriting it. Overwrites any PRIOR backup for
+      // this same path — only the most recent pre-erase state is ever
+      // recoverable, not a full history.
+      const backupPath = `${path}.pre-erase.png`;
+      const { data: currentFile } = await supabase.storage.from('job-form-media').download(String(path));
+      if (currentFile) {
+        const currentBytes = new Uint8Array(await currentFile.arrayBuffer());
+        await supabase.storage.from('job-form-media').upload(backupPath, currentBytes, {
+          contentType: 'image/png',
+          upsert: true,
+        });
+        const backups = { ...(jobForm.background_page_backups ?? {}), [String(path)]: backupPath };
+        await supabase.from('job_forms').update({ background_page_backups: backups }).eq('id', job_form_id);
+      }
+
       const bytes = base64ToBytes(String(file_base64));
       const { error: uploadError } = await supabase.storage
         .from('job-form-media')
         .upload(String(path), bytes, { contentType: 'image/png', upsert: true });
       if (uploadError) return jsonResponse({ error: 'Upload failed: ' + uploadError.message }, 500);
+      return jsonResponse({ success: true });
+    }
+
+    // Restores the single backup created by the erase action above.
+    // Consumes it — once restored, that backup is gone; erasing again
+    // creates a fresh one from this now-restored state.
+    if (action === 'undo_erase') {
+      const { path } = body;
+      if (!path) return jsonResponse({ error: 'path is required for undo_erase' }, 400);
+      const backups: Record<string, string> = jobForm.background_page_backups ?? {};
+      const backupPath = backups[String(path)];
+      if (!backupPath) return jsonResponse({ error: 'No backup available for this page' }, 404);
+
+      const { data: backupFile, error: dlErr } = await supabase.storage.from('job-form-media').download(String(backupPath));
+      if (dlErr || !backupFile) return jsonResponse({ error: 'Backup file could not be read' }, 500);
+      const backupBytes = new Uint8Array(await backupFile.arrayBuffer());
+      const { error: restoreErr } = await supabase.storage
+        .from('job-form-media')
+        .upload(String(path), backupBytes, { contentType: 'image/png', upsert: true });
+      if (restoreErr) return jsonResponse({ error: 'Restore failed: ' + restoreErr.message }, 500);
+
+      const newBackups = { ...backups };
+      delete newBackups[String(path)];
+      await supabase.from('job_forms').update({ background_page_backups: newBackups }).eq('id', job_form_id);
+
       return jsonResponse({ success: true });
     }
 
@@ -130,6 +173,77 @@ Deno.serve(async (req: Request) => {
         .eq('id', job_form_id);
       if (updateError) return jsonResponse({ error: 'Save failed: ' + updateError.message }, 500);
       return jsonResponse({ success: true });
+    }
+
+    // Duplicates a form within the SAME business — a new, independent
+    // row, not a reference. Reuses use_template's exact page-copying
+    // approach below: background page images live in a private bucket
+    // (job-form-media), so they must be physically copied to a path
+    // scoped to the new form's id, and storage writes to that bucket
+    // only ever happen via service-role.
+    if (action === 'duplicate_form') {
+      // Ascending-number naming, not a flat "(Copy)" suffix — strip any
+      // existing " (N)" so duplicating an already-numbered copy continues
+      // the same sequence instead of nesting "(2) (Copy)".
+      const baseNameMatch = String(jobForm.name ?? 'Job Form').match(/^(.*?)(?:\s\((\d+)\))?$/);
+      const baseName = baseNameMatch?.[1]?.trim() || String(jobForm.name ?? 'Job Form');
+
+      const { data: siblingForms } = await supabase
+        .from('job_forms')
+        .select('name')
+        .eq('business_id', jobForm.business_id)
+        .is('deleted_at', null)
+        .ilike('name', `${baseName}%`);
+
+      let maxN = 1; // the original, unnumbered form counts as "1"
+      for (const row of siblingForms ?? []) {
+        const m = String(row.name ?? '').match(/^(.*?)(?:\s\((\d+)\))?$/);
+        const rowBase = m?.[1]?.trim();
+        if (rowBase !== baseName) continue;
+        const n = m?.[2] ? parseInt(m[2], 10) : 1;
+        if (n > maxN) maxN = n;
+      }
+      const newName = `${baseName} (${maxN + 1})`;
+
+      const { data: newForm, error: insertErr } = await supabase
+        .from('job_forms')
+        .insert({
+          business_id: jobForm.business_id,
+          name: newName,
+          form_type: jobForm.form_type,
+          fields: jobForm.fields ?? [],
+          sections: jobForm.sections ?? [],
+          signature_box: jobForm.signature_box ?? null,
+          requires_signature: jobForm.requires_signature ?? false,
+          photo_attachment_markers: jobForm.photo_attachment_markers ?? [],
+          recreation_mode: jobForm.recreation_mode ?? 'standard',
+          background_pages: [],
+          page_number_start: jobForm.page_number_start ?? 1,
+          page_number_total_override: jobForm.page_number_total_override ?? null,
+          is_blank_template: jobForm.is_blank_template ?? false,
+          available_to_other_businesses: false,
+        })
+        .select('id')
+        .single();
+      if (insertErr || !newForm) return jsonResponse({ error: 'Could not duplicate form: ' + insertErr?.message }, 500);
+
+      const sourcePages: string[] = jobForm.background_pages ?? [];
+      const newPaths: string[] = [];
+      for (let i = 0; i < sourcePages.length; i++) {
+        const { data: fileBlob, error: dlErr } = await supabase.storage.from('job-form-media').download(sourcePages[i]);
+        if (dlErr || !fileBlob) continue;
+        const bytes = new Uint8Array(await fileBlob.arrayBuffer());
+        const newPath = `${jobForm.business_id}/${newForm.id}/page-${i + 1}.png`;
+        const { error: upErr } = await supabase.storage.from('job-form-media').upload(newPath, bytes, {
+          contentType: 'image/png',
+          upsert: true,
+        });
+        if (!upErr) newPaths.push(newPath);
+      }
+      if (newPaths.length > 0) {
+        await supabase.from('job_forms').update({ background_pages: newPaths }).eq('id', newForm.id);
+      }
+      return jsonResponse({ success: true, job_form_id: newForm.id });
     }
 
     // Publishes a business's own job_forms row into the shared library —

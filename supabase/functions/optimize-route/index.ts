@@ -149,15 +149,21 @@ Deno.serve(async (req) => {
     ];
 
     const nowIso = new Date().toISOString();
+    // Upserts on (business_id, assigned_user_id, route_date) rather than a
+    // blind insert, so re-running optimization for the same tech/day (e.g.
+    // via the Routes screen's "Re-optimize" button, after an address gets
+    // geocoded or an appointment changes) updates the existing route in
+    // place instead of creating a second row that the Routes screen's
+    // .maybeSingle() lookup would then choke on.
     const { data: route, error: routeErr } = await supabase
       .from("routes")
-      .insert({
+      .upsert({
         business_id: businessId,
         assigned_user_id,
         route_date,
         stops,
         optimized_at: nowIso,
-      })
+      }, { onConflict: "business_id,assigned_user_id,route_date" })
       .select()
       .maybeSingle();
     if (routeErr) throw routeErr;
