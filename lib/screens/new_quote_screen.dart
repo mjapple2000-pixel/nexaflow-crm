@@ -27,6 +27,14 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
   List<Map<String, dynamic>> _clientResults = [];
   bool _searchingClients = false;
 
+  // Which specific job (appointment) this quote is for — optional,
+  // scoped to whichever lead is selected. Carries through to the
+  // invoice on Convert-to-Invoice so Job Costing can attach revenue to
+  // the exact job via invoices.appointment_id.
+  Map<String, dynamic>? _selectedAppointment;
+  List<Map<String, dynamic>> _leadAppointments = [];
+  bool _loadingAppointments = false;
+
   // Quote fields
   final _jobTitleCtrl = TextEditingController();
   final _notesCtrl = TextEditingController();
@@ -129,6 +137,15 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
         _taxRate = (quote['tax_rate'] as num?)?.toDouble() ?? defaultTax;
         _lineItems.addAll(existingItems.isEmpty ? [_LineItemRow()] : existingItems);
       });
+
+      if (lead != null && lead['id'] != null) {
+        await _loadAppointmentsForLead(lead['id']);
+        final apptId = quote['appointment_id'];
+        if (apptId != null && mounted) {
+          final match = _leadAppointments.where((a) => a['id'].toString() == apptId.toString());
+          if (match.isNotEmpty) setState(() => _selectedAppointment = match.first);
+        }
+      }
     } else {
       setState(() {
         _taxRate = defaultTax;
@@ -158,6 +175,33 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
       });
     } catch (e) {
       if (mounted) setState(() => _searchingClients = false);
+    }
+  }
+
+  Future<void> _loadAppointmentsForLead(dynamic leadId) async {
+    if (leadId == null || _businessId == null) {
+      setState(() => _leadAppointments = []);
+      return;
+    }
+    setState(() => _loadingAppointments = true);
+    try {
+      final res = await _supabase
+          .from('appointments')
+          .select('id, appointment_name, start_date_time')
+          .eq('business_id', _businessId!)
+          .eq('lead_id', leadId)
+          .order('start_date_time', ascending: false);
+      if (!mounted) return;
+      setState(() {
+        _leadAppointments = List<Map<String, dynamic>>.from(res as List);
+        _loadingAppointments = false;
+        if (_selectedAppointment != null &&
+            !_leadAppointments.any((a) => a['id'] == _selectedAppointment!['id'])) {
+          _selectedAppointment = null;
+        }
+      });
+    } catch (e) {
+      if (mounted) setState(() => _loadingAppointments = false);
     }
   }
 
@@ -226,7 +270,8 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
         // Update existing quote
         quoteId = widget.quoteId!;
         await _supabase.from('quotes').update({
-          'contact_id': _selectedLead!['id'],
+          'contact_id':     _selectedLead!['id'],
+          'appointment_id': _selectedAppointment?['id'],
           'job_title': _jobTitleCtrl.text.trim(),
           'expires_at': _expiresAt?.toUtc().toIso8601String(),
           'notes': _notesCtrl.text.trim(),
@@ -250,6 +295,7 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
         final quoteRes = await _supabase.from('quotes').insert({
           'business_id': _businessId,
           'contact_id': _selectedLead!['id'],
+          'appointment_id': _selectedAppointment?['id'],
           'quote_number': await _nextQuoteNumber(),
           'status': 'draft',
           'job_title': _jobTitleCtrl.text.trim(),
@@ -422,6 +468,7 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
                   }).select().single();
                   if (mounted) {
                     setState(() => _selectedLead = res);
+                    _loadAppointmentsForLead(res['id']);
                     Navigator.of(ctx, rootNavigator: true).pop();
                   }
                 } catch (e) {
@@ -547,7 +594,7 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
       child: Row(
         children: [
           Clickable(
-            onTap: () => context.go('/jobs'),
+            onTap: () => context.go('/jobs/board'),
             child: const Row(
               children: [
                 Icon(Icons.arrow_back_rounded, size: 16, color: AppTheme.textSecondary),
@@ -640,6 +687,8 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
                       _selectedLead = null;
                       _clientSearchCtrl.clear();
                       _clientResults = [];
+                      _selectedAppointment = null;
+                      _leadAppointments = [];
                     }),
                     child: const Icon(Icons.close, size: 16, color: AppTheme.textSecondary),
                   ),
@@ -685,11 +734,14 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
                     final lead = e.value;
                     final isLast = i == _clientResults.length - 1;
                     return Clickable(
-                      onTap: () => setState(() {
-                        _selectedLead = lead;
-                        _clientSearchCtrl.clear();
-                        _clientResults = [];
-                      }),
+                      onTap: () {
+                        setState(() {
+                          _selectedLead = lead;
+                          _clientSearchCtrl.clear();
+                          _clientResults = [];
+                        });
+                        _loadAppointmentsForLead(lead['id']);
+                      },
                       child: Container(
                         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                         decoration: BoxDecoration(
@@ -752,22 +804,101 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
   Widget _buildJobTitleSection() {
     return _SectionCard(
       title: 'Job / Service Description',
-      child: TextField(
-        controller: _jobTitleCtrl,
-        style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
-        decoration: InputDecoration(
-          hintText: 'e.g. Roof Replacement, HVAC Install, Plumbing Repair...',
-          hintStyle: const TextStyle(fontSize: 13, color: AppTheme.textSecondary),
-          filled: true,
-          fillColor: AppTheme.pageBg,
-          contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
-          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
-              borderSide: const BorderSide(color: AppTheme.borderColor)),
-          enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
-              borderSide: const BorderSide(color: AppTheme.borderColor)),
-          focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
-              borderSide: BorderSide(color: AppTheme.brand, width: 1.5)),
-        ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          TextField(
+            controller: _jobTitleCtrl,
+            style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+            decoration: InputDecoration(
+              hintText: 'e.g. Roof Replacement, HVAC Install, Plumbing Repair...',
+              hintStyle: const TextStyle(fontSize: 13, color: AppTheme.textSecondary),
+              filled: true,
+              fillColor: AppTheme.pageBg,
+              contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                  borderSide: const BorderSide(color: AppTheme.borderColor)),
+              enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                  borderSide: const BorderSide(color: AppTheme.borderColor)),
+              focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                  borderSide: BorderSide(color: AppTheme.brand, width: 1.5)),
+            ),
+          ),
+          const SizedBox(height: 16),
+          const Text('Linked Appointment (optional)',
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
+          const SizedBox(height: 6),
+          const Text(
+            'Carries through to the invoice on Convert to Invoice, so Job Costing can track its revenue accurately.',
+            style: TextStyle(fontSize: 11, color: AppTheme.textMuted),
+          ),
+          const SizedBox(height: 8),
+          if (_selectedLead == null)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+              decoration: BoxDecoration(
+                color: AppTheme.pageBg,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: AppTheme.borderColor),
+              ),
+              child: const Text('Select a client first', style: TextStyle(fontSize: 12, color: AppTheme.textMuted)),
+            )
+          else if (_loadingAppointments)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+            )
+          else if (_leadAppointments.isEmpty)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+              decoration: BoxDecoration(
+                color: AppTheme.pageBg,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: AppTheme.borderColor),
+              ),
+              child: const Text('No appointments found for this client', style: TextStyle(fontSize: 12, color: AppTheme.textMuted)),
+            )
+          else
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14),
+              decoration: BoxDecoration(
+                color: AppTheme.pageBg,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: AppTheme.borderColor),
+              ),
+              child: DropdownButtonHideUnderline(
+                child: DropdownButton<String>(
+                  value: _selectedAppointment != null ? _selectedAppointment!['id'].toString() : '__none__',
+                  isExpanded: true,
+                  dropdownColor: AppTheme.cardBg,
+                  style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                  items: [
+                    const DropdownMenuItem<String>(
+                        value: '__none__', child: Text('None — not tied to a specific job')),
+                    ..._leadAppointments.map((a) {
+                      final dt = DateTime.tryParse(a['start_date_time']?.toString() ?? '');
+                      final dateLabel = dt != null ? '${dt.month}/${dt.day}/${dt.year}' : '';
+                      final name = a['appointment_name'] as String? ?? 'Appointment';
+                      return DropdownMenuItem<String>(
+                        value: a['id'].toString(),
+                        child: Text('$name${dateLabel.isNotEmpty ? ' — $dateLabel' : ''}',
+                            overflow: TextOverflow.ellipsis),
+                      );
+                    }),
+                  ],
+                  onChanged: (v) {
+                    setState(() {
+                      if (v == null || v == '__none__') {
+                        _selectedAppointment = null;
+                      } else {
+                        _selectedAppointment = _leadAppointments.firstWhere((a) => a['id'].toString() == v);
+                      }
+                    });
+                  },
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }

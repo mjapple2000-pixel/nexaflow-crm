@@ -22,15 +22,33 @@ Deno.serve(async (req) => {
       .auth.getUser(authHeader.replace("Bearer ", ""));
     if (userErr || !user) return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: corsHeaders });
 
+    // Body is parsed here (rather than further down) so a superuser's
+    // client-supplied business_id is available for the bypass below —
+    // the rest of the fields are destructured from this same object later.
+    const body = await req.json();
+
     const { data: profile, error: profErr } = await userClient
       .from("profiles")
       .select("id, business_id")
       .eq("user_id", user.id)
       .maybeSingle();
-    if (profErr || !profile) return new Response(JSON.stringify({ error: "Profile not found" }), { status: 403, headers: corsHeaders });
 
-    const businessId: number = profile.business_id;
-    const profileId: number = profile.id;
+    let businessId: number;
+    let profileId: number | null;
+
+    if (profErr || !profile) {
+      // Superuser intentionally has no profiles row — trust a
+      // client-supplied business_id only for that one account.
+      if (user.email === "vantagecaretech@gmail.com" && body.business_id) {
+        businessId = body.business_id;
+        profileId = null;
+      } else {
+        return new Response(JSON.stringify({ error: "Profile not found" }), { status: 403, headers: corsHeaders });
+      }
+    } else {
+      businessId = profile.business_id;
+      profileId = profile.id;
+    }
 
     // Plan gate — Growth tier required
     const { data: allowed, error: gateErr } = await userClient
@@ -44,7 +62,6 @@ Deno.serve(async (req) => {
       }), { status: 403, headers: corsHeaders });
     }
 
-    const body = await req.json();
     const {
       appointment_id,
       deal_id,
@@ -146,7 +163,7 @@ Deno.serve(async (req) => {
 
   } catch (err) {
     console.error("log-job-expense error:", err);
-    return new Response(JSON.stringify({ error: err.message ?? "Internal error" }), {
+    return new Response(JSON.stringify({ error: (err as Error).message ?? "Internal error" }), {
       status: 500,
       headers: corsHeaders,
     });

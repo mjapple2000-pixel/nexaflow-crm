@@ -133,7 +133,7 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
       child: Row(
         children: [
           Clickable(
-            onTap: () => context.go('/jobs?tab=1'),
+            onTap: () => context.go('/jobs/board?tab=1'),
             child: const Row(
               children: [
                 Icon(Icons.arrow_back_rounded, size: 16, color: AppTheme.textSecondary),
@@ -586,6 +586,12 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
       buttons.add(_btn('Delete', AppTheme.error, _onDelete));
     } else if (status == 'draft') {
       buttons.add(_sendToClientButton());
+      buttons.add(const SizedBox(height: 8));
+      // Draft invoices created directly (not via Convert to Invoice) had
+      // no way to ever reach "paid" status — this button was only shown
+      // for approved/sent invoices, leaving directly-created drafts stuck
+      // with no path forward except sending to the client first.
+      buttons.add(_btn('Mark as Paid Manually', AppTheme.success, _onMarkPaid));
       buttons.add(const SizedBox(height: 8));
       buttons.add(_btn('Edit Invoice', null, () =>
           context.go('/jobs/invoices/edit?invoiceId=${widget.invoiceId}')));

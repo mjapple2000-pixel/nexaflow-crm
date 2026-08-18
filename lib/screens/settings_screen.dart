@@ -4608,42 +4608,19 @@ class _PaymentOptionsSectionState
     }
   }
 
+  // No edge function call needed — every account created under the
+  // current Connect onboarding config (including Test Roofer's) is set
+  // up for the full Stripe Dashboard, not the Express Dashboard, so
+  // stripe.accounts.createLoginLink() always fails for it ("does not
+  // have access to the Express Dashboard"). The business logs into
+  // Stripe directly with their own credentials instead — a stronger
+  // security model than handing out a live login-link URL, and it
+  // works for every existing and future account regardless of how it
+  // was onboarded.
   Future<void> _manageStripe() async {
-    setState(() => _stripeManaging = true);
-    try {
-      final session = Supabase.instance.client.auth.currentSession;
-      final businessId = widget.business['id'] as int?;
-      final res = await http.post(
-        Uri.parse(
-            'https://rllriopqojaraceytdno.supabase.co/functions/v1/get-express-dashboard-link'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer ${session?.accessToken ?? ''}',
-        },
-        body: jsonEncode({'business_id': businessId, 'test_mode': _testMode}),
-      );
-      if (!mounted) return;
-      final body = jsonDecode(res.body) as Map<String, dynamic>;
-      if (res.statusCode == 200 && body['url'] != null) {
-        final uri = Uri.parse(body['url'] as String);
-        if (await canLaunchUrl(uri)) {
-          await launchUrl(uri, mode: LaunchMode.externalApplication);
-        }
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(body['error']?.toString() ?? 'Failed to open Stripe dashboard.'),
-          behavior: SnackBarBehavior.floating,
-        ));
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Error: $e'),
-          behavior: SnackBarBehavior.floating,
-        ));
-      }
-    } finally {
-      if (mounted) setState(() => _stripeManaging = false);
+    final uri = Uri.parse('https://dashboard.stripe.com');
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
     }
   }
 

@@ -28,9 +28,23 @@ Deno.serve(async (req) => {
       .select("business_id")
       .eq("user_id", user.id)
       .maybeSingle();
-    if (profErr || !profile) return new Response(JSON.stringify({ error: "Profile not found" }), { status: 403, headers: corsHeaders });
 
-    const businessId: number = profile.business_id;
+    const url = new URL(req.url);
+
+    let businessId: number;
+    if (profErr || !profile) {
+      // Superuser intentionally has no profiles row — trust a
+      // client-supplied business_id in the query string only for that
+      // one account.
+      const businessIdParam = url.searchParams.get("business_id");
+      if (user.email === "vantagecaretech@gmail.com" && businessIdParam) {
+        businessId = parseInt(businessIdParam);
+      } else {
+        return new Response(JSON.stringify({ error: "Profile not found" }), { status: 403, headers: corsHeaders });
+      }
+    } else {
+      businessId = profile.business_id;
+    }
 
     // Plan gate
     const { data: allowed, error: gateErr } = await supabase
@@ -44,7 +58,6 @@ Deno.serve(async (req) => {
       }), { status: 403, headers: corsHeaders });
     }
 
-    const url = new URL(req.url);
     const dateRangeDays = parseInt(url.searchParams.get("date_range_days") ?? "30");
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - dateRangeDays);
@@ -155,14 +168,14 @@ Deno.serve(async (req) => {
     if (allApptIds.length > 0) {
       const { data: apptDetails } = await supabase
         .from("appointments")
-        .select("id, title, start_time")
+        .select("id, appointment_name, start_date_time")
         .in("id", allApptIds)
         .eq("business_id", businessId);
 
       for (const a of apptDetails ?? []) {
         apptTitleMap[a.id] = {
-          title: a.title ?? "Untitled Job",
-          date: a.start_time ?? "",
+          title: a.appointment_name ?? "Untitled Job",
+          date: a.start_date_time ?? "",
         };
       }
     }
@@ -197,7 +210,7 @@ Deno.serve(async (req) => {
 
   } catch (err) {
     console.error("get-job-costing-report error:", err);
-    return new Response(JSON.stringify({ error: err.message ?? "Internal error" }), {
+    return new Response(JSON.stringify({ error: (err as Error).message ?? "Internal error" }), {
       status: 500,
       headers: corsHeaders,
     });

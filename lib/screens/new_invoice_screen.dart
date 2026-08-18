@@ -24,6 +24,14 @@ class _NewInvoiceScreenState extends State<NewInvoiceScreen> {
   List<Map<String, dynamic>> _clientResults = [];
   bool _searchingClients = false;
 
+  // Which specific job (appointment) this invoice is for — optional,
+  // scoped to whichever lead is selected. Lets Job Costing attach this
+  // invoice's revenue to the exact job via invoices.appointment_id
+  // instead of guessing across every job for the same lead.
+  Map<String, dynamic>? _selectedAppointment;
+  List<Map<String, dynamic>> _leadAppointments = [];
+  bool _loadingAppointments = false;
+
   final _jobTitleCtrl = TextEditingController();
   final _notesCtrl = TextEditingController();
   DateTime? _dueDate;
@@ -115,6 +123,15 @@ class _NewInvoiceScreenState extends State<NewInvoiceScreen> {
         _taxRate = (invoice['tax_rate'] as num?)?.toDouble() ?? defaultTax;
         _lineItems.addAll(existingItems.isEmpty ? [_LineItemRow()] : existingItems);
       });
+
+      if (lead != null && lead['id'] != null) {
+        await _loadAppointmentsForLead(lead['id']);
+        final apptId = invoice['appointment_id'];
+        if (apptId != null && mounted) {
+          final match = _leadAppointments.where((a) => a['id'].toString() == apptId.toString());
+          if (match.isNotEmpty) setState(() => _selectedAppointment = match.first);
+        }
+      }
     } else {
       setState(() {
         _taxRate = defaultTax;
@@ -145,6 +162,36 @@ class _NewInvoiceScreenState extends State<NewInvoiceScreen> {
       });
     } catch (e) {
       if (mounted) setState(() => _searchingClients = false);
+    }
+  }
+
+  Future<void> _loadAppointmentsForLead(dynamic leadId) async {
+    if (leadId == null || _businessId == null) {
+      setState(() => _leadAppointments = []);
+      return;
+    }
+    setState(() => _loadingAppointments = true);
+    try {
+      final res = await _supabase
+          .from('appointments')
+          .select('id, appointment_name, start_date_time')
+          .eq('business_id', _businessId!)
+          .eq('lead_id', leadId)
+          .order('start_date_time', ascending: false);
+      if (!mounted) return;
+      setState(() {
+        _leadAppointments = List<Map<String, dynamic>>.from(res as List);
+        _loadingAppointments = false;
+        // If the previously selected appointment doesn't belong to this
+        // lead's appointment list, clear it rather than leaving a stale
+        // selection from a different client on screen.
+        if (_selectedAppointment != null &&
+            !_leadAppointments.any((a) => a['id'] == _selectedAppointment!['id'])) {
+          _selectedAppointment = null;
+        }
+      });
+    } catch (e) {
+      if (mounted) setState(() => _loadingAppointments = false);
     }
   }
 
@@ -201,15 +248,16 @@ class _NewInvoiceScreenState extends State<NewInvoiceScreen> {
       if (_isEditing) {
         invoiceId = widget.invoiceId!;
         await _supabase.from('invoices').update({
-          'contact_id': _selectedLead!['id'],
-          'job_title':  _jobTitleCtrl.text.trim(),
-          'notes':      _notesCtrl.text.trim(),
-          'due_date':   _dueDate?.toUtc().toIso8601String(),
-          'tax_rate':   _taxRate,
-          'tax_amount': _taxAmount,
-          'subtotal':   _subtotal,
-          'amount_due': _total,
-          'updated_at': now,
+          'contact_id':     _selectedLead!['id'],
+          'appointment_id': _selectedAppointment?['id'],
+          'job_title':      _jobTitleCtrl.text.trim(),
+          'notes':          _notesCtrl.text.trim(),
+          'due_date':       _dueDate?.toUtc().toIso8601String(),
+          'tax_rate':       _taxRate,
+          'tax_amount':     _taxAmount,
+          'subtotal':       _subtotal,
+          'amount_due':     _total,
+          'updated_at':     now,
         }).eq('id', invoiceId);
 
         await _supabase.from('line_items')
@@ -222,6 +270,7 @@ class _NewInvoiceScreenState extends State<NewInvoiceScreen> {
         final invoiceRes = await _supabase.from('invoices').insert({
           'business_id':    _businessId,
           'contact_id':     _selectedLead!['id'],
+          'appointment_id': _selectedAppointment?['id'],
           'invoice_number': invoiceNumber,
           'job_title':      _jobTitleCtrl.text.trim(),
           'status':         'draft',
@@ -345,6 +394,7 @@ class _NewInvoiceScreenState extends State<NewInvoiceScreen> {
                   }).select().single();
                   if (mounted) {
                     setState(() => _selectedLead = res);
+                    _loadAppointmentsForLead(res['id']);
                     Navigator.of(ctx, rootNavigator: true).pop();
                   }
                 } catch (e) {
@@ -476,7 +526,7 @@ class _NewInvoiceScreenState extends State<NewInvoiceScreen> {
       child: Row(
         children: [
           Clickable(
-            onTap: () => context.go('/jobs?tab=1'),
+            onTap: () => context.go('/jobs/board?tab=1'),
             child: const Row(
               children: [
                 Icon(Icons.arrow_back_rounded, size: 16, color: AppTheme.textSecondary),
@@ -553,6 +603,8 @@ class _NewInvoiceScreenState extends State<NewInvoiceScreen> {
                       _selectedLead = null;
                       _clientSearchCtrl.clear();
                       _clientResults = [];
+                      _selectedAppointment = null;
+                      _leadAppointments = [];
                     }),
                     child: const Icon(Icons.close, size: 16, color: AppTheme.textSecondary),
                   ),
@@ -598,11 +650,14 @@ class _NewInvoiceScreenState extends State<NewInvoiceScreen> {
                     final lead = e.value;
                     final isLast = i == _clientResults.length - 1;
                     return Clickable(
-                      onTap: () => setState(() {
-                        _selectedLead = lead;
-                        _clientSearchCtrl.clear();
-                        _clientResults = [];
-                      }),
+                      onTap: () {
+                        setState(() {
+                          _selectedLead = lead;
+                          _clientSearchCtrl.clear();
+                          _clientResults = [];
+                        });
+                        _loadAppointmentsForLead(lead['id']);
+                      },
                       child: Container(
                         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                         decoration: BoxDecoration(
@@ -665,22 +720,101 @@ class _NewInvoiceScreenState extends State<NewInvoiceScreen> {
   Widget _buildJobTitleSection() {
     return _SectionCard(
       title: 'Job / Service Description',
-      child: TextField(
-        controller: _jobTitleCtrl,
-        style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
-        decoration: InputDecoration(
-          hintText: 'e.g. Roof Replacement, HVAC Install, Plumbing Repair...',
-          hintStyle: const TextStyle(fontSize: 13, color: AppTheme.textSecondary),
-          filled: true,
-          fillColor: AppTheme.pageBg,
-          contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
-          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
-              borderSide: const BorderSide(color: AppTheme.borderColor)),
-          enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
-              borderSide: const BorderSide(color: AppTheme.borderColor)),
-          focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
-              borderSide: BorderSide(color: AppTheme.brand, width: 1.5)),
-        ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          TextField(
+            controller: _jobTitleCtrl,
+            style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+            decoration: InputDecoration(
+              hintText: 'e.g. Roof Replacement, HVAC Install, Plumbing Repair...',
+              hintStyle: const TextStyle(fontSize: 13, color: AppTheme.textSecondary),
+              filled: true,
+              fillColor: AppTheme.pageBg,
+              contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                  borderSide: const BorderSide(color: AppTheme.borderColor)),
+              enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                  borderSide: const BorderSide(color: AppTheme.borderColor)),
+              focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                  borderSide: BorderSide(color: AppTheme.brand, width: 1.5)),
+            ),
+          ),
+          const SizedBox(height: 16),
+          const Text('Linked Appointment (optional)',
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
+          const SizedBox(height: 6),
+          const Text(
+            'Attaching this invoice to a specific job lets Job Costing track its revenue accurately.',
+            style: TextStyle(fontSize: 11, color: AppTheme.textMuted),
+          ),
+          const SizedBox(height: 8),
+          if (_selectedLead == null)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+              decoration: BoxDecoration(
+                color: AppTheme.pageBg,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: AppTheme.borderColor),
+              ),
+              child: const Text('Select a client first', style: TextStyle(fontSize: 12, color: AppTheme.textMuted)),
+            )
+          else if (_loadingAppointments)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+            )
+          else if (_leadAppointments.isEmpty)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+              decoration: BoxDecoration(
+                color: AppTheme.pageBg,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: AppTheme.borderColor),
+              ),
+              child: const Text('No appointments found for this client', style: TextStyle(fontSize: 12, color: AppTheme.textMuted)),
+            )
+          else
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14),
+              decoration: BoxDecoration(
+                color: AppTheme.pageBg,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: AppTheme.borderColor),
+              ),
+              child: DropdownButtonHideUnderline(
+                child: DropdownButton<String>(
+                  value: _selectedAppointment != null ? _selectedAppointment!['id'].toString() : '__none__',
+                  isExpanded: true,
+                  dropdownColor: AppTheme.cardBg,
+                  style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                  items: [
+                    const DropdownMenuItem<String>(
+                        value: '__none__', child: Text('None — not tied to a specific job')),
+                    ..._leadAppointments.map((a) {
+                      final dt = DateTime.tryParse(a['start_date_time']?.toString() ?? '');
+                      final dateLabel = dt != null ? '${dt.month}/${dt.day}/${dt.year}' : '';
+                      final name = a['appointment_name'] as String? ?? 'Appointment';
+                      return DropdownMenuItem<String>(
+                        value: a['id'].toString(),
+                        child: Text('$name${dateLabel.isNotEmpty ? ' — $dateLabel' : ''}',
+                            overflow: TextOverflow.ellipsis),
+                      );
+                    }),
+                  ],
+                  onChanged: (v) {
+                    setState(() {
+                      if (v == null || v == '__none__') {
+                        _selectedAppointment = null;
+                      } else {
+                        _selectedAppointment = _leadAppointments.firstWhere((a) => a['id'].toString() == v);
+                      }
+                    });
+                  },
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }

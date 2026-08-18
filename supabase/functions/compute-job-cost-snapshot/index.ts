@@ -54,19 +54,53 @@ Deno.serve(async (req) => {
       jobType = appt?.job_type ?? null;
     }
 
-    // 3. Try to find paid invoice revenue (JG-01 integration — nullable until JG-01 ships)
+    // 3. Find paid invoice revenue for this job.
+    // Primary path: invoices.appointment_id — an exact, unambiguous link
+    // to this specific job, set when the invoice is created for a job.
+    // Fallback path: invoices with no appointment_id but linked to the
+    // same lead (invoices.contact_id -> leads.id, locked JG-01 decision)
+    // — covers invoices created before this link existed, or invoices
+    // genuinely created at the lead level rather than for one job.
     let totalRevenueCents: number | null = null;
     if (appointment_id) {
-      const { data: invoice } = await supabase
+      const { data: directInvoices } = await supabase
         .from("invoices")
         .select("amount_due")
         .eq("business_id", business_id)
+        .eq("appointment_id", appointment_id)
         .eq("status", "paid")
-        .filter("deleted_at", "is", null)
-        .maybeSingle();
-      if (invoice?.amount_due) {
-        // amount_due is stored in dollars — convert to cents
-        totalRevenueCents = Math.round(invoice.amount_due * 100);
+        .filter("deleted_at", "is", null);
+
+      if (directInvoices && directInvoices.length > 0) {
+        const totalDue = directInvoices.reduce(
+          (sum: number, inv: { amount_due: number }) => sum + (inv.amount_due ?? 0), 0
+        );
+        totalRevenueCents = Math.round(totalDue * 100);
+      } else {
+        const { data: appt } = await supabase
+          .from("appointments")
+          .select("lead_id")
+          .eq("id", appointment_id)
+          .eq("business_id", business_id)
+          .maybeSingle();
+
+        if (appt?.lead_id) {
+          const { data: leadInvoices } = await supabase
+            .from("invoices")
+            .select("amount_due")
+            .eq("business_id", business_id)
+            .eq("contact_id", appt.lead_id)
+            .eq("status", "paid")
+            .filter("deleted_at", "is", null)
+            .filter("appointment_id", "is", null);
+
+          if (leadInvoices && leadInvoices.length > 0) {
+            const totalDue = leadInvoices.reduce(
+              (sum: number, inv: { amount_due: number }) => sum + (inv.amount_due ?? 0), 0
+            );
+            totalRevenueCents = Math.round(totalDue * 100);
+          }
+        }
       }
     }
 
@@ -109,7 +143,7 @@ Deno.serve(async (req) => {
 
   } catch (err) {
     console.error("compute-job-cost-snapshot error:", err);
-    return new Response(JSON.stringify({ error: err.message ?? "Internal error" }), {
+    return new Response(JSON.stringify({ error: (err as Error).message ?? "Internal error" }), {
       status: 500,
       headers: corsHeaders,
     });

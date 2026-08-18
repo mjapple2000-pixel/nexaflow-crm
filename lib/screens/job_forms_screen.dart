@@ -2754,28 +2754,6 @@ class _FieldSettingsDialogState extends State<_FieldSettingsDialog> {
                               icon: Icon(Icons.call_merge_rounded, size: 20, color: _mergeMode ? Colors.green : null),
                             ),
                           ),
-                          MouseRegion(
-                            cursor: SystemMouseCursors.click,
-                            child: IconButton(
-                              tooltip: _eraseMode ? 'Exit Erase Mode' : 'Erase Area',
-                              onPressed: _toggleEraseMode,
-                              icon: Icon(Icons.auto_fix_off_rounded, size: 20, color: _eraseMode ? Colors.redAccent : null),
-                            ),
-                          ),
-                          Builder(builder: (_) {
-                            final currentPath = _currentPage - 1 < _backgroundPagePaths.length
-                                ? _backgroundPagePaths[_currentPage - 1]
-                                : null;
-                            final hasBackup = currentPath != null && _backgroundPageBackups.containsKey(currentPath);
-                            return MouseRegion(
-                              cursor: hasBackup ? SystemMouseCursors.click : SystemMouseCursors.basic,
-                              child: IconButton(
-                                tooltip: hasBackup ? 'Undo Last Erase' : 'No erase to undo on this page',
-                                onPressed: hasBackup && !_erasing ? _undoErase : null,
-                                icon: Icon(Icons.undo_rounded, size: 20, color: hasBackup ? Colors.orange : null),
-                              ),
-                            );
-                          }),
                         ],
                         IconButton(
                           onPressed: () => Navigator.of(context, rootNavigator: true).pop(),
@@ -2916,9 +2894,6 @@ class _FieldSettingsDialogState extends State<_FieldSettingsDialog> {
                   boundaryMargin: const EdgeInsets.all(300),
                   child: Center(
                   child: GestureDetector(
-                    onPanStart: _eraseMode ? (details) => _startEraseDrag(details.localPosition, finalW, h) : null,
-                    onPanUpdate: _eraseMode ? (details) => _updateEraseDrag(details.localPosition, finalW, h) : null,
-                    onPanEnd: _eraseMode ? (_) => _endEraseDrag() : null,
                     child: SizedBox(
                     width: finalW,
                     height: h,
@@ -3032,46 +3007,7 @@ class _FieldSettingsDialogState extends State<_FieldSettingsDialog> {
         flex: 2,
         child: Padding(
           padding: const EdgeInsets.all(16),
-          child: _eraseMode
-              ? Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  const Text('Erase Mode', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: Colors.redAccent)),
-                  const SizedBox(height: 8),
-                  const Text(
-                    'Drag a rectangle over the image to permanently white out that area. This edits the actual background image and cannot be undone.',
-                    style: TextStyle(fontSize: 12, color: AppTheme.textSecondary, height: 1.4),
-                  ),
-                  if (_eraseSelection != null && _eraseSelection!['w']! >= 1 && _eraseSelection!['h']! >= 1) ...[
-                    const SizedBox(height: 16),
-                    MouseRegion(
-                      cursor: SystemMouseCursors.click,
-                      child: SizedBox(
-                        width: double.infinity,
-                        child: ElevatedButton(
-                          onPressed: _erasing ? null : _applyErase,
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.redAccent,
-                            foregroundColor: Colors.white,
-                            elevation: 0,
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
-                            padding: const EdgeInsets.symmetric(vertical: 10),
-                          ),
-                          child: _erasing
-                              ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                              : const Text('Erase Selected Area'),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    MouseRegion(
-                      cursor: SystemMouseCursors.click,
-                      child: TextButton(
-                        onPressed: () => setState(() => _eraseSelection = null),
-                        child: const Text('Clear Selection', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
-                      ),
-                    ),
-                  ],
-                ])
-              : selectedMarker != null
+          child: selectedMarker != null
               ? _buildMarkerPanel(selectedMarker)
               : unplacedFields.isNotEmpty && !_mergeMode && selected.isEmpty
               ? SingleChildScrollView(

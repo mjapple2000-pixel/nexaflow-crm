@@ -258,7 +258,7 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
       final token = _supabase.auth.currentSession?.accessToken;
       if (token == null) return;
       final resp = await http.get(
-        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/get-job-costing-report?date_range_days=$_range'),
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/get-job-costing-report?date_range_days=$_range&business_id=$_businessId'),
         headers: {'Authorization': 'Bearer $token'},
       );
       if (!mounted) return;

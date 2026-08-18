@@ -6015,12 +6015,14 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
 
   void _showAddExpenseSheet(BuildContext context, {Map<String, dynamic>? existing}) {
     final apptId = widget.appointment['id'] as int;
+    final businessId = widget.appointment['business_id'] as int?;
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (_) => _AddExpenseSheet(
         appointmentId: apptId,
+        businessId: businessId,
         existing: existing,
         onSaved: () {
           Navigator.pop(context);
@@ -6992,12 +6994,14 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
 
 class _AddExpenseSheet extends StatefulWidget {
   final int appointmentId;
+  final int? businessId;
   final Map<String, dynamic>? existing;
   final VoidCallback onSaved;
 
   const _AddExpenseSheet({
     required this.appointmentId,
     required this.onSaved,
+    this.businessId,
     this.existing,
   });
 
@@ -7055,6 +7059,7 @@ class _AddExpenseSheetState extends State<_AddExpenseSheet> {
 
       final body = <String, dynamic>{
         'appointment_id': widget.appointmentId,
+        if (widget.businessId != null) 'business_id': widget.businessId,
         'expense_type':   _expenseType,
         'amount_cents':   amountCents,
         'description':    _descCtrl.text.trim().isEmpty ? null : _descCtrl.text.trim(),

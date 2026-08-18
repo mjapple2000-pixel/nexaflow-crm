@@ -25,6 +25,21 @@ class _JobsScreenState extends State<JobsScreen>
     _tabController = TabController(length: 5, vsync: this, initialIndex: widget.initialTab);
   }
 
+  // GoRouter reuses this widget instance across /jobs?tab=0 and /jobs?tab=1
+  // navigations (same route, different query param) — initState only runs
+  // once, so without this, clicking "← Jobs" from Invoice/Quote Detail
+  // always lands wherever the tab controller was last left, not on the
+  // Invoices tab the query param actually asked for.
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final tabParam = GoRouterState.of(context).uri.queryParameters['tab'];
+    final tabIndex = int.tryParse(tabParam ?? '') ?? 0;
+    if (tabIndex >= 0 && tabIndex < _tabController.length && _tabController.index != tabIndex) {
+      _tabController.index = tabIndex;
+    }
+  }
+
   @override
   void dispose() {
     _tabController.dispose();
