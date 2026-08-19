@@ -42,7 +42,7 @@ class _QuoteDetailScreenState extends State<QuoteDetailScreen> {
       // Load quote + lead + check if invoice exists
       final quoteRes = await _db
           .from('quotes')
-          .select('*, leads(id, lead_name, lead_email, lead_phone, lead_address), invoices(id)')
+          .select('*, leads(id, lead_name, lead_email, lead_phone, lead_address), invoices(id), appointments!quotes_appointment_id_fkey(id, appointment_name, start_date_time)')
           .eq('id', widget.quoteId)
           .single();
 
@@ -152,7 +152,7 @@ class _QuoteDetailScreenState extends State<QuoteDetailScreen> {
       child: Row(
         children: [
           Clickable(
-            onTap: () => context.go('/jobs'),
+            onTap: () => context.go('/jobs/board?tab=0'),
             child: const Row(
               children: [
                 Icon(Icons.arrow_back_rounded, size: 16, color: AppTheme.textSecondary),
@@ -266,8 +266,31 @@ class _QuoteDetailScreenState extends State<QuoteDetailScreen> {
             const SizedBox(height: 2),
             Text(address, style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary)),
           ],
+          _linkedAppointmentRow(),
         ],
       ),
+    );
+  }
+
+  Widget _linkedAppointmentRow() {
+    final appt = _quote?['appointments'] as Map<String, dynamic>?;
+    if (appt == null) {
+      return const Padding(
+        padding: EdgeInsets.only(top: 10),
+        child: Text('No linked appointment', style: TextStyle(fontSize: 12, color: AppTheme.textMuted)),
+      );
+    }
+    final name = appt['appointment_name'] as String? ?? 'Appointment';
+    final dt = DateTime.tryParse(appt['start_date_time']?.toString() ?? '');
+    final dateLabel = dt != null ? '${dt.month}/${dt.day}/${dt.year}' : '';
+    return Padding(
+      padding: const EdgeInsets.only(top: 10),
+      child: Row(children: [
+        const Icon(Icons.event_outlined, size: 14, color: AppTheme.textSecondary),
+        const SizedBox(width: 6),
+        Text('Linked to: $name${dateLabel.isNotEmpty ? ' — $dateLabel' : ''}',
+            style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+      ]),
     );
   }
 
@@ -1027,7 +1050,7 @@ class _QuoteDetailScreenState extends State<QuoteDetailScreen> {
       await _db.from('line_items').update({'deleted_at': now}).eq('parent_id', widget.quoteId);
       await _db.from('quotes').update({'deleted_at': now}).eq('id', widget.quoteId);
       if (!mounted) return;
-      context.go('/jobs');
+      context.go('/jobs/board?tab=0');
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));

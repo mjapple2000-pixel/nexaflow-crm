@@ -145,6 +145,53 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
     _locationLoopTimer = Timer.periodic(const Duration(seconds: 60), (_) => _sendLocationUpdate());
   }
 
+  Future<bool> _checkInAtStop(int appointmentId) async {
+    final pos = await _getLocation();
+    if (pos == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Could not get your location. Please allow location access and try again.'),
+          backgroundColor: AppTheme.error,
+        ));
+      }
+      return false;
+    }
+    try {
+      final res = await http.post(
+        Uri.parse('$_fnBase/employee-hub-action'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'token': widget.token,
+          'action': 'check_in_at_stop',
+          'appointment_id': appointmentId,
+          'lat': pos.latitude,
+          'lng': pos.longitude,
+          'accuracy': pos.accuracy,
+        }),
+      );
+      if (res.statusCode == 200) {
+        await _load();
+        return true;
+      }
+      if (mounted) {
+        final body = jsonDecode(res.body) as Map<String, dynamic>;
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(body['message'] as String? ?? body['error'] as String? ?? 'Could not check in.'),
+          backgroundColor: AppTheme.error,
+        ));
+      }
+      return false;
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Error: $e'),
+          backgroundColor: AppTheme.error,
+        ));
+      }
+      return false;
+    }
+  }
+
   Future<void> _sendLocationUpdate() async {
     final pos = await _getLocation();
     if (pos == null) return;
@@ -727,7 +774,11 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
                             fontWeight: FontWeight.w700,
                             color: AppTheme.textPrimary)),
                     const SizedBox(height: 10),
-                    ..._routeStops.map((s) => _RouteStopCard(stop: s)),
+                    ..._routeStops.map((s) => _RouteStopCard(
+                          stop: s,
+                          showCheckIn: _gpsTrackingEnabled && _locationSharingEnabled,
+                          onArrived: () => _checkInAtStop(s['appointment_id'] as int),
+                        )),
                   ],
 
                   if (_todaysAppointments.isNotEmpty) ...[
@@ -738,7 +789,13 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
                             fontWeight: FontWeight.w700,
                             color: AppTheme.textPrimary)),
                     const SizedBox(height: 10),
-                    ..._todaysAppointments.map((a) => _AppointmentCard(appt: a, token: widget.token, onTap: () => _showAppointmentDetail(a))),
+                    ..._todaysAppointments.map((a) => _AppointmentCard(
+                          appt: a,
+                          token: widget.token,
+                          onTap: () => _showAppointmentDetail(a),
+                          showCheckIn: _gpsTrackingEnabled && _locationSharingEnabled,
+                          onArrived: _checkInAtStop,
+                        )),
                   ],
                   if (_outstandingAppointments.isNotEmpty) ...[
                     const SizedBox(height: 24),
@@ -753,7 +810,13 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
                             fontSize: 11,
                             color: AppTheme.textSecondary)),
                     const SizedBox(height: 10),
-                    ..._outstandingAppointments.map((a) => _AppointmentCard(appt: a, token: widget.token, onTap: () => _showAppointmentDetail(a))),
+                    ..._outstandingAppointments.map((a) => _AppointmentCard(
+                          appt: a,
+                          token: widget.token,
+                          onTap: () => _showAppointmentDetail(a),
+                          showCheckIn: _gpsTrackingEnabled && _locationSharingEnabled,
+                          onArrived: _checkInAtStop,
+                        )),
                   ],
                   if (_pastJobForms.isNotEmpty) ...[
                     const SizedBox(height: 24),
@@ -811,14 +874,37 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
 
 // ── Today's job card ──────────────────────────────────────────────────────────
 
-class _AppointmentCard extends StatelessWidget {
+class _AppointmentCard extends StatefulWidget {
   final Map<String, dynamic> appt;
   final String token;
   final VoidCallback? onTap;
-  const _AppointmentCard({required this.appt, required this.token, this.onTap});
+  final bool showCheckIn;
+  final Future<bool> Function(int appointmentId)? onArrived;
+  const _AppointmentCard({
+    required this.appt,
+    required this.token,
+    this.onTap,
+    this.showCheckIn = false,
+    this.onArrived,
+  });
+
+  @override
+  State<_AppointmentCard> createState() => _AppointmentCardState();
+}
+
+class _AppointmentCardState extends State<_AppointmentCard> {
+  bool _checkingIn = false;
+
+  Future<void> _handleArrived() async {
+    if (widget.onArrived == null) return;
+    setState(() => _checkingIn = true);
+    await widget.onArrived!(widget.appt['id'] as int);
+    if (mounted) setState(() => _checkingIn = false);
+  }
 
   @override
   Widget build(BuildContext context) {
+    final appt = widget.appt;
     final dt = appt['scheduled_at'] != null
         ? DateTime.tryParse(appt['scheduled_at'] as String)?.toLocal()
         : null;
@@ -834,9 +920,12 @@ class _AppointmentCard extends StatelessWidget {
     final leadName = appt['lead_name'] as String? ?? '';
     final address = appt['lead_address'] as String? ?? '';
     final jobForms = List<Map<String, dynamic>>.from(appt['job_forms'] ?? []);
+    final checkedInAt = appt['checked_in_at'] != null
+        ? DateTime.tryParse(appt['checked_in_at'] as String)?.toLocal()
+        : null;
 
     return InkWell(
-      onTap: onTap,
+      onTap: widget.onTap,
       borderRadius: BorderRadius.circular(10),
       child: Container(
       margin: const EdgeInsets.only(bottom: 8),
@@ -844,7 +933,11 @@ class _AppointmentCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: AppTheme.cardBg,
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: AppTheme.borderColor),
+        border: Border.all(
+          color: checkedInAt != null
+              ? AppTheme.success.withValues(alpha: 0.4)
+              : AppTheme.borderColor,
+        ),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -889,8 +982,40 @@ class _AppointmentCard extends StatelessWidget {
               spacing: 6,
               runSpacing: 6,
               children: jobForms
-                  .map((f) => _JobFormChip(token: token, form: f))
+                  .map((f) => _JobFormChip(token: widget.token, form: f))
                   .toList(),
+            ),
+          ],
+          if (widget.showCheckIn) ...[
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: checkedInAt != null
+                  ? OutlinedButton.icon(
+                      onPressed: _checkingIn ? null : _handleArrived,
+                      icon: const Icon(Icons.check_circle_outline, size: 15, color: AppTheme.success),
+                      label: Text('Arrived at ${_time(checkedInAt)} — Update',
+                          style: const TextStyle(fontSize: 12)),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: AppTheme.success,
+                        side: const BorderSide(color: AppTheme.success),
+                        padding: const EdgeInsets.symmetric(vertical: 10),
+                      ),
+                    )
+                  : ElevatedButton.icon(
+                      onPressed: _checkingIn ? null : _handleArrived,
+                      icon: _checkingIn
+                          ? const SizedBox(width: 13, height: 13,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                          : const Icon(Icons.location_on_outlined, size: 15),
+                      label: const Text('Arrived', style: TextStyle(fontSize: 12)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppTheme.brand,
+                        foregroundColor: Colors.white,
+                        elevation: 0,
+                        padding: const EdgeInsets.symmetric(vertical: 10),
+                      ),
+                    ),
             ),
           ],
         ],
@@ -1068,12 +1193,36 @@ IconData _formStatusIcon(String status) {
 
 // ── Route stop card (employee's ordered route for today) ───────────────────────
 
-class _RouteStopCard extends StatelessWidget {
+class _RouteStopCard extends StatefulWidget {
   final Map<String, dynamic> stop;
-  const _RouteStopCard({required this.stop});
+  final bool showCheckIn;
+  final Future<bool> Function()? onArrived;
+  const _RouteStopCard({required this.stop, this.showCheckIn = false, this.onArrived});
+
+  @override
+  State<_RouteStopCard> createState() => _RouteStopCardState();
+}
+
+class _RouteStopCardState extends State<_RouteStopCard> {
+  bool _checkingIn = false;
+
+  Future<void> _handleArrived() async {
+    if (widget.onArrived == null) return;
+    setState(() => _checkingIn = true);
+    await widget.onArrived!();
+    if (mounted) setState(() => _checkingIn = false);
+  }
+
+  String _time(DateTime dt) {
+    final h = dt.hour % 12 == 0 ? 12 : dt.hour % 12;
+    final min = dt.minute.toString().padLeft(2, '0');
+    final ampm = dt.hour < 12 ? 'AM' : 'PM';
+    return '$h:$min $ampm';
+  }
 
   @override
   Widget build(BuildContext context) {
+    final stop = widget.stop;
     final dt = stop['scheduled_at'] != null
         ? DateTime.tryParse(stop['scheduled_at'] as String)?.toLocal()
         : null;
@@ -1082,6 +1231,9 @@ class _RouteStopCard extends StatelessWidget {
     final leadName = stop['lead_name'] as String? ?? '';
     final address = stop['location'] as String? ?? '';
     final sequence = stop['sequence'] as int? ?? 0;
+    final checkedInAt = stop['checked_in_at'] != null
+        ? DateTime.tryParse(stop['checked_in_at'] as String)?.toLocal()
+        : null;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
@@ -1089,63 +1241,100 @@ class _RouteStopCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: AppTheme.cardBg,
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: AppTheme.borderColor),
+        border: Border.all(
+          color: checkedInAt != null
+              ? AppTheme.success.withValues(alpha: 0.4)
+              : AppTheme.borderColor,
+        ),
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            width: 26,
-            height: 26,
-            decoration: const BoxDecoration(
-                color: AppTheme.brand, shape: BoxShape.circle),
-            alignment: Alignment.center,
-            child: Text('$sequence',
-                style: const TextStyle(
-                    fontSize: 11,
-                    color: Colors.white,
-                    fontWeight: FontWeight.w700)),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(type,
+          Row(
+            children: [
+              Container(
+                width: 26,
+                height: 26,
+                decoration: BoxDecoration(
+                    color: checkedInAt != null ? AppTheme.success : AppTheme.brand,
+                    shape: BoxShape.circle),
+                alignment: Alignment.center,
+                child: checkedInAt != null
+                    ? const Icon(Icons.check, size: 14, color: Colors.white)
+                    : Text('$sequence',
+                        style: const TextStyle(
+                            fontSize: 11,
+                            color: Colors.white,
+                            fontWeight: FontWeight.w700)),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(type,
+                        style: const TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: AppTheme.textPrimary)),
+                    if (leadName.isNotEmpty) ...[
+                      const SizedBox(height: 2),
+                      Text(leadName,
+                          style: const TextStyle(
+                              fontSize: 12, color: AppTheme.textSecondary)),
+                    ],
+                    if (address.isNotEmpty) ...[
+                      const SizedBox(height: 2),
+                      Text(address,
+                          style: const TextStyle(
+                              fontSize: 11, color: AppTheme.textSecondary)),
+                    ],
+                  ],
+                ),
+              ),
+              if (timeStr.isNotEmpty)
+                Text(timeStr,
                     style: const TextStyle(
-                        fontSize: 13,
+                        fontSize: 12,
                         fontWeight: FontWeight.w600,
-                        color: AppTheme.textPrimary)),
-                if (leadName.isNotEmpty) ...[
-                  const SizedBox(height: 2),
-                  Text(leadName,
-                      style: const TextStyle(
-                          fontSize: 12, color: AppTheme.textSecondary)),
-                ],
-                if (address.isNotEmpty) ...[
-                  const SizedBox(height: 2),
-                  Text(address,
-                      style: const TextStyle(
-                          fontSize: 11, color: AppTheme.textSecondary)),
-                ],
-              ],
-            ),
+                        color: AppTheme.textSecondary)),
+            ],
           ),
-          if (timeStr.isNotEmpty)
-            Text(timeStr,
-                style: const TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    color: AppTheme.textSecondary)),
+          if (widget.showCheckIn) ...[
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: checkedInAt != null
+                  ? OutlinedButton.icon(
+                      onPressed: _checkingIn ? null : _handleArrived,
+                      icon: const Icon(Icons.check_circle_outline, size: 15, color: AppTheme.success),
+                      label: Text('Arrived at ${_time(checkedInAt)} — Update',
+                          style: const TextStyle(fontSize: 12)),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: AppTheme.success,
+                        side: const BorderSide(color: AppTheme.success),
+                        padding: const EdgeInsets.symmetric(vertical: 10),
+                      ),
+                    )
+                  : ElevatedButton.icon(
+                      onPressed: _checkingIn ? null : _handleArrived,
+                      icon: _checkingIn
+                          ? const SizedBox(width: 13, height: 13,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                          : const Icon(Icons.location_on_outlined, size: 15),
+                      label: const Text('Arrived', style: TextStyle(fontSize: 12)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppTheme.brand,
+                        foregroundColor: Colors.white,
+                        elevation: 0,
+                        padding: const EdgeInsets.symmetric(vertical: 10),
+                      ),
+                    ),
+            ),
+          ],
         ],
       ),
     );
-  }
-
-  String _time(DateTime dt) {
-    final h = dt.hour % 12 == 0 ? 12 : dt.hour % 12;
-    final min = dt.minute.toString().padLeft(2, '0');
-    final ampm = dt.hour < 12 ? 'AM' : 'PM';
-    return '$h:$min $ampm';
   }
 }
 

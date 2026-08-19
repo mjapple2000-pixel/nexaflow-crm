@@ -383,7 +383,7 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
       if (_isEditing) {
         context.go('/jobs/quotes/${widget.quoteId}');
       } else {
-        context.go('/jobs');
+        context.go('/jobs/board?tab=0');
       }
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(

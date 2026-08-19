@@ -6430,6 +6430,8 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
             _buildClockSection(),
             const SizedBox(height: 12),
             _buildOnMyWaySection(),
+            const SizedBox(height: 12),
+            _buildCheckInSection(),
             const SizedBox(height: 20),
           ],
 
@@ -6596,6 +6598,41 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
                 : Text(isClockedIn ? 'Clock Out' : 'Clock In', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
           ),
         ),
+      ]),
+    );
+  }
+
+  Widget _buildCheckInSection() {
+    final checkedInAtRaw = widget.appointment['checked_in_at'] as String?;
+    final checkedInAt = checkedInAtRaw != null ? DateTime.tryParse(checkedInAtRaw)?.toLocal() : null;
+    final address = _locationCtrl.text.trim();
+
+    String timeStr(DateTime dt) {
+      final h = dt.hour % 12 == 0 ? 12 : dt.hour % 12;
+      final m = dt.minute.toString().padLeft(2, '0');
+      return '$h:$m ${dt.hour < 12 ? 'AM' : 'PM'}';
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: checkedInAt != null ? AppTheme.success.withValues(alpha: 0.06) : AppTheme.pageBg,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: checkedInAt != null ? AppTheme.success.withValues(alpha: 0.3) : AppTheme.borderColor),
+      ),
+      child: Row(children: [
+        Icon(Icons.location_on_outlined,
+            size: 18, color: checkedInAt != null ? AppTheme.success : AppTheme.textSecondary),
+        const SizedBox(width: 10),
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(
+            checkedInAt != null ? 'Tech checked in at ${timeStr(checkedInAt)}' : 'Not checked in yet',
+            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600,
+                color: checkedInAt != null ? AppTheme.success : AppTheme.textPrimary),
+          ),
+          if (checkedInAt != null && address.isNotEmpty)
+            Text(address, style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+        ])),
       ]),
     );
   }

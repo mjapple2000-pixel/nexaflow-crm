@@ -99,7 +99,7 @@ Deno.serve(async (req) => {
 
     const { data: appointments, error: apptError } = await supabase
       .from("appointments")
-      .select("id, appointment_type, start_date_time, status, lead_name, location, notes")
+      .select("id, appointment_type, start_date_time, status, lead_name, location, notes, checked_in_at")
       .eq("business_id", hubToken.business_id)
       .eq("assigned_to", profile.full_name)
       .gte("start_date_time", todayStart.toISOString())
@@ -113,7 +113,7 @@ Deno.serve(async (req) => {
     // ── 6a2. Appointments with outstanding (non-completed) job forms, any date ──
     const { data: outstandingAppts, error: outstandingApptsError } = await supabase
       .from("appointments")
-      .select("id, appointment_type, start_date_time, status, lead_name, location, notes")
+      .select("id, appointment_type, start_date_time, status, lead_name, location, notes, checked_in_at")
       .eq("business_id", hubToken.business_id)
       .eq("assigned_to_profile_id", profile.id);
 
@@ -323,7 +323,7 @@ Deno.serve(async (req) => {
 
       const { data: stopAppts, error: stopApptError } = await supabase
         .from("appointments")
-        .select("id, appointment_type, lead_name, location, start_date_time")
+        .select("id, appointment_type, lead_name, location, start_date_time, checked_in_at")
         .eq("business_id", hubToken.business_id)
         .in("id", stopApptIds);
 
@@ -341,6 +341,7 @@ Deno.serve(async (req) => {
           lead_name: appt?.lead_name ?? null,
           location: appt?.location ?? null,
           scheduled_at: appt?.start_date_time ?? null,
+          checked_in_at: appt?.checked_in_at ?? null,
         };
       });
     }
@@ -363,6 +364,7 @@ Deno.serve(async (req) => {
           lead_name: a.lead_name,
           lead_address: a.location,
           notes: a.notes,
+          checked_in_at: a.checked_in_at,
           job_forms: jobFormsByAppt.get(a.id) ?? [],
         })),
         past_job_forms: pastJobForms,

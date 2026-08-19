@@ -5021,24 +5021,39 @@ class _StripeConnectCard extends StatelessWidget {
                     ]),
                   ),
                   const SizedBox(height: 12),
-                  MouseRegion(
-                    cursor: SystemMouseCursors.click,
-                    child: OutlinedButton.icon(
-                      onPressed: managing ? null : onManage,
-                      icon: managing
-                          ? SizedBox(
-                              width: 14, height: 14,
-                              child: CircularProgressIndicator(
-                                  strokeWidth: 2, color: stripeColor))
-                          : const Icon(Icons.open_in_new_rounded, size: 14),
-                      label: const Text('Manage in Stripe'),
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: stripeColor,
-                        side: BorderSide(color: stripeColor.withValues(alpha: 0.4)),
-                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                  Row(children: [
+                    MouseRegion(
+                      cursor: SystemMouseCursors.click,
+                      child: OutlinedButton.icon(
+                        onPressed: managing ? null : onManage,
+                        icon: managing
+                            ? SizedBox(
+                                width: 14, height: 14,
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2, color: stripeColor))
+                            : const Icon(Icons.open_in_new_rounded, size: 14),
+                        label: const Text('Manage in Stripe'),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: stripeColor,
+                          side: BorderSide(color: stripeColor.withValues(alpha: 0.4)),
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                        ),
                       ),
                     ),
-                  ),
+                    const SizedBox(width: 10),
+                    MouseRegion(
+                      cursor: SystemMouseCursors.click,
+                      child: TextButton.icon(
+                        onPressed: () => context.go('/jobs'),
+                        icon: const Icon(Icons.account_balance_outlined, size: 14),
+                        label: const Text('View Payouts'),
+                        style: TextButton.styleFrom(
+                          foregroundColor: stripeColor,
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                        ),
+                      ),
+                    ),
+                  ]),
                 ] else ...[
                   const SizedBox(height: 16),
                   Container(

@@ -90,12 +90,14 @@ Deno.serve(async (req) => {
     // ── Fetch all profiles for this business (for name lookup) ────────
     const { data: teamProfiles } = await supabase
       .from("profiles")
-      .select("user_id, full_name, role")
+      .select("id, user_id, full_name, role")
       .eq("business_id", businessId);
 
     const profileMap: Record<string, string> = {};
+    const profileIdByUserId: Record<string, number> = {};
     for (const p of (teamProfiles ?? [])) {
       profileMap[p.user_id] = p.full_name ?? "Unknown";
+      if (typeof p.id === "number") profileIdByUserId[p.user_id] = p.id;
     }
 
     // ── Build time_entries query ────────────────────────────
@@ -150,12 +152,56 @@ Deno.serve(async (req) => {
       }
     }
 
-    // ── Enrich entries with full_name and appointment info ───────────
-    const enriched = (entries ?? []).map((e) => ({
-      ...e,
-      full_name: profileMap[e.user_id] ?? "Unknown",
-      appointment_info: e.appointment_id ? (appointmentMap[e.appointment_id] ?? null) : null,
-    }));
+    // ── Fetch job-site check-ins for the profiles/date range covered by
+    // these entries. appointments.checked_in_at is the real history (one
+    // row per visited stop); team_locations only ever holds the latest
+    // ping, so it can't answer "what stops did this shift cover."
+    const involvedProfileIds = [...new Set(
+      (entries ?? []).map((e) => profileIdByUserId[e.user_id]).filter((id) => id != null)
+    )];
+
+    let checkInsByProfileId: Record<number, Array<{ appointment_id: number; appointment_name: string; location: string | null; checked_in_at: string }>> = {};
+    if (involvedProfileIds.length > 0) {
+      const { data: checkedInAppts } = await supabase
+        .from("appointments")
+        .select("id, appointment_name, location, checked_in_at, assigned_to_profile_id")
+        .eq("business_id", businessId)
+        .in("assigned_to_profile_id", involvedProfileIds)
+        .not("checked_in_at", "is", null);
+
+      for (const a of (checkedInAppts ?? [])) {
+        const pid = a.assigned_to_profile_id;
+        if (!checkInsByProfileId[pid]) checkInsByProfileId[pid] = [];
+        checkInsByProfileId[pid].push({
+          appointment_id: a.id,
+          appointment_name: a.appointment_name,
+          location: a.location,
+          checked_in_at: a.checked_in_at,
+        });
+      }
+    }
+
+    // ── Enrich entries with full_name, appointment info, and any
+    // check-ins that fall within this shift's clock-in/out window ──────
+    const enriched = (entries ?? []).map((e) => {
+      const profileId = profileIdByUserId[e.user_id];
+      const shiftStart = new Date(e.clocked_in_at).getTime();
+      const shiftEnd = e.clocked_out_at ? new Date(e.clocked_out_at).getTime() : Date.now();
+      const allCheckIns = profileId != null ? (checkInsByProfileId[profileId] ?? []) : [];
+      const shiftCheckIns = allCheckIns
+        .filter((c) => {
+          const t = new Date(c.checked_in_at).getTime();
+          return t >= shiftStart && t <= shiftEnd;
+        })
+        .sort((a, b) => new Date(a.checked_in_at).getTime() - new Date(b.checked_in_at).getTime());
+
+      return {
+        ...e,
+        full_name: profileMap[e.user_id] ?? "Unknown",
+        appointment_info: e.appointment_id ? (appointmentMap[e.appointment_id] ?? null) : null,
+        shift_check_ins: shiftCheckIns,
+      };
+    });
 
     // ── Compute per-member totals (owner view) ────────────────
     const totals: Record<string, { full_name: string; total_minutes: number; entry_count: number }> = {};

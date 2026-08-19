@@ -48,6 +48,7 @@ class _JobsOverviewScreenState extends State<JobsOverviewScreen> {
   bool _stripeConnected = false;
   int? _stripeAvailableCents;
   int? _stripePendingCents;
+  bool _stripeTestMode = false;
 
   StreamSubscription<AuthState>? _authSub;
 
@@ -76,6 +77,17 @@ class _JobsOverviewScreenState extends State<JobsOverviewScreen> {
       final businessId = await getActiveBusinessId();
       if (businessId == null) return;
 
+      // Needed so the balance call below matches whatever mode this
+      // business's stripe_connect_id was actually created under — a
+      // test-mode account queried with the live key (or vice versa)
+      // is rejected outright by Stripe, not just empty.
+      final bizRow = await _db
+          .from('businesses')
+          .select('stripe_test_mode')
+          .eq('id', businessId)
+          .maybeSingle();
+      _stripeTestMode = bizRow?['stripe_test_mode'] as bool? ?? false;
+
       final now = DateTime.now();
       final todayStart = DateTime(now.year, now.month, now.day).toUtc();
       final todayEnd = todayStart.add(const Duration(days: 1));
@@ -100,7 +112,7 @@ class _JobsOverviewScreenState extends State<JobsOverviewScreen> {
             .filter('deleted_at', 'is', null),
         // 2: today's appointments
         _db.from('appointments')
-            .select('id, appointment_name, lead_name, start_date_time, assigned_to, status')
+            .select('id, appointment_name, lead_name, start_date_time, assigned_to, status, location')
             .eq('business_id', businessId)
             .filter('deleted_at', 'is', null)
             .gte('start_date_time', todayStart.toIso8601String())
@@ -153,6 +165,12 @@ class _JobsOverviewScreenState extends State<JobsOverviewScreen> {
             .eq('business_id', businessId)
             .eq('status', 'active')
             .filter('deleted_at', 'is', null),
+        // 10: latest location ping per tech — used to show which specific
+        // job/stop each clocked-in tech last checked into, alongside the
+        // Crew Status "currently on" line below.
+        _db.from('team_locations')
+            .select('user_id, current_appointment_id, updated_at')
+            .eq('business_id', businessId),
       ]);
 
       final newRequests = List<Map<String, dynamic>>.from(results[0] as List);
@@ -167,6 +185,7 @@ class _JobsOverviewScreenState extends State<JobsOverviewScreen> {
       final paidThisWeek = List<Map<String, dynamic>>.from(results[7] as List);
       final lateAppts = List<Map<String, dynamic>>.from(results[8] as List);
       final activeTimeEntries = List<Map<String, dynamic>>.from(results[9] as List);
+      final teamLocations = List<Map<String, dynamic>>.from(results[10] as List);
 
       List<Map<String, dynamic>> crewProfiles = [];
       if (activeTimeEntries.isNotEmpty) {
@@ -186,10 +205,27 @@ class _JobsOverviewScreenState extends State<JobsOverviewScreen> {
           (a) => a['id'] == t['appointment_id'],
           orElse: () => {},
         );
+
+        // Last explicit "Arrived" check-in for this tech, if any — separate
+        // from which job they clocked in under, since a tech can check in
+        // at multiple stops during one continuous clock-in.
+        final locationPing = teamLocations.firstWhere(
+          (l) => l['user_id'] == t['user_id'],
+          orElse: () => {},
+        );
+        final checkedInApptId = locationPing['current_appointment_id'];
+        final checkedInAppt = checkedInApptId != null
+            ? appts.firstWhere((a) => a['id'] == checkedInApptId, orElse: () => {})
+            : <String, dynamic>{};
+
         return _CrewStatusItem(
           name: profile['full_name'] as String? ?? 'Team member',
           clockedInAt: DateTime.tryParse(t['clocked_in_at'] as String? ?? ''),
           currentJob: (matchedAppt['appointment_name'] as String?) ?? (matchedAppt['lead_name'] as String?),
+          checkedInAddress: checkedInAppt['location'] as String?,
+          checkedInAt: checkedInApptId != null
+              ? DateTime.tryParse(locationPing['updated_at'] as String? ?? '')
+              : null,
         );
       }).toList();
 
@@ -305,7 +341,7 @@ class _JobsOverviewScreenState extends State<JobsOverviewScreen> {
               'Authorization': 'Bearer $token',
               'Content-Type': 'application/json',
             },
-            body: jsonEncode({'business_id': businessId}),
+            body: jsonEncode({'business_id': businessId, 'test_mode': _stripeTestMode}),
           );
           if (resp.statusCode == 200) {
             final data = jsonDecode(resp.body);
@@ -742,13 +778,28 @@ class _CrewStatusItem {
   final String name;
   final DateTime? clockedInAt;
   final String? currentJob;
+  final String? checkedInAddress;
+  final DateTime? checkedInAt;
 
-  const _CrewStatusItem({required this.name, this.clockedInAt, this.currentJob});
+  const _CrewStatusItem({
+    required this.name,
+    this.clockedInAt,
+    this.currentJob,
+    this.checkedInAddress,
+    this.checkedInAt,
+  });
 }
 
 class _CrewStatusPanel extends StatelessWidget {
   final List<_CrewStatusItem> items;
   const _CrewStatusPanel({required this.items});
+
+  String _time(DateTime dt) {
+    final local = dt.toLocal();
+    final h = local.hour % 12 == 0 ? 12 : local.hour % 12;
+    final m = local.minute.toString().padLeft(2, '0');
+    return '$h:$m ${local.hour < 12 ? 'AM' : 'PM'}';
+  }
 
   String _elapsed(DateTime? clockedInAt) {
     if (clockedInAt == null) return '';
@@ -794,26 +845,52 @@ class _CrewStatusPanel extends StatelessWidget {
           else
             ...items.map((c) => Padding(
                   padding: const EdgeInsets.only(bottom: 10),
-                  child: Row(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Container(
-                        width: 8,
-                        height: 8,
-                        decoration: const BoxDecoration(color: Color(0xFF10B981), shape: BoxShape.circle),
+                      Row(
+                        children: [
+                          Container(
+                            width: 8,
+                            height: 8,
+                            decoration: const BoxDecoration(color: Color(0xFF10B981), shape: BoxShape.circle),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(c.name,
+                                style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+                          ),
+                          if (c.currentJob != null)
+                            Expanded(
+                              child: Text(c.currentJob!,
+                                  style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+                                  overflow: TextOverflow.ellipsis),
+                            ),
+                          Text(_elapsed(c.clockedInAt),
+                              style: const TextStyle(fontSize: 11.5, color: AppTheme.textMuted)),
+                        ],
                       ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Text(c.name,
-                            style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
-                      ),
-                      if (c.currentJob != null)
-                        Expanded(
-                          child: Text(c.currentJob!,
-                              style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
-                              overflow: TextOverflow.ellipsis),
+                      if (c.checkedInAddress != null && c.checkedInAddress!.isNotEmpty) ...[
+                        const SizedBox(height: 3),
+                        Padding(
+                          padding: const EdgeInsets.only(left: 18),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.location_on_outlined, size: 11, color: Color(0xFF10B981)),
+                              const SizedBox(width: 4),
+                              Expanded(
+                                child: Text(
+                                  c.checkedInAt != null
+                                      ? '${c.checkedInAddress} — checked in ${_time(c.checkedInAt!)}'
+                                      : c.checkedInAddress!,
+                                  style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
-                      Text(_elapsed(c.clockedInAt),
-                          style: const TextStyle(fontSize: 11.5, color: AppTheme.textMuted)),
+                      ],
                     ],
                   ),
                 )),

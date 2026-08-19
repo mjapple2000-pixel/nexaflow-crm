@@ -704,6 +704,181 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
   }
 }
 
+class _CheckInDetailSheet extends StatefulWidget {
+  final int appointmentId;
+  final String appointmentName;
+  final String? location;
+  final DateTime? checkedInAt;
+
+  const _CheckInDetailSheet({
+    required this.appointmentId,
+    required this.appointmentName,
+    this.location,
+    this.checkedInAt,
+  });
+
+  @override
+  State<_CheckInDetailSheet> createState() => _CheckInDetailSheetState();
+}
+
+class _CheckInDetailSheetState extends State<_CheckInDetailSheet> {
+  final _db = Supabase.instance.client;
+  bool _loading = true;
+  Map<String, dynamic>? _appt;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final data = await _db
+          .from('appointments')
+          .select('appointment_type, lead_name, lead_phone, status, start_date_time, notes')
+          .eq('id', widget.appointmentId)
+          .maybeSingle();
+      if (!mounted) return;
+      setState(() { _appt = data; _loading = false; });
+    } catch (e) {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  String _fmtDateTime(String? iso) {
+    if (iso == null) return '—';
+    final dt = DateTime.tryParse(iso)?.toLocal();
+    if (dt == null) return '—';
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    final h = dt.hour == 0 ? 12 : dt.hour > 12 ? dt.hour - 12 : dt.hour;
+    final m = dt.minute.toString().padLeft(2, '0');
+    return '${months[dt.month - 1]} ${dt.day} · $h:$m ${dt.hour < 12 ? 'AM' : 'PM'}';
+  }
+
+  String _fmtTime(DateTime dt) {
+    final h = dt.hour % 12 == 0 ? 12 : dt.hour % 12;
+    final m = dt.minute.toString().padLeft(2, '0');
+    return '$h:$m ${dt.hour < 12 ? 'AM' : 'PM'}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        color: AppTheme.cardBg,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
+      child: SingleChildScrollView(
+        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Center(child: Container(width: 40, height: 4,
+              decoration: BoxDecoration(color: AppTheme.borderColor, borderRadius: BorderRadius.circular(2)))),
+          const SizedBox(height: 16),
+          Row(children: [
+            const Icon(Icons.location_on_outlined, size: 20, color: AppTheme.success),
+            const SizedBox(width: 10),
+            Expanded(child: Text(widget.appointmentName,
+                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
+          ]),
+          if (widget.checkedInAt != null) ...[
+            const SizedBox(height: 4),
+            Text('Checked in at ${_fmtTime(widget.checkedInAt!)}',
+                style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+          ],
+          const SizedBox(height: 16),
+
+          if (_loading)
+            const Center(child: Padding(padding: EdgeInsets.symmetric(vertical: 24), child: CircularProgressIndicator()))
+          else if (_appt == null)
+            const Text('Could not load appointment details.', style: TextStyle(fontSize: 13, color: AppTheme.textSecondary))
+          else ...[
+            _row('Type', _appt!['appointment_type'] as String? ?? '—'),
+            _row('Status', _appt!['status'] as String? ?? '—'),
+            _row('Scheduled', _fmtDateTime(_appt!['start_date_time'] as String?)),
+            if ((_appt!['lead_name'] as String? ?? '').isNotEmpty)
+              _row('Customer', _appt!['lead_name'] as String),
+            if ((_appt!['lead_phone'] as String? ?? '').isNotEmpty)
+              _row('Phone', _appt!['lead_phone'] as String),
+          ],
+
+          const SizedBox(height: 12),
+          const Text('Location', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+          const SizedBox(height: 8),
+          if (widget.location != null && widget.location!.isNotEmpty)
+            InkWell(
+              onTap: () async {
+                final uri = Uri.parse('https://www.google.com/maps/search/?api=1&query=${Uri.encodeComponent(widget.location!)}');
+                if (await canLaunchUrl(uri)) {
+                  await launchUrl(uri, mode: LaunchMode.externalApplication);
+                }
+              },
+              borderRadius: BorderRadius.circular(8),
+              child: Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: AppTheme.brand.withValues(alpha: 0.05),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppTheme.brand.withValues(alpha: 0.2)),
+                ),
+                child: Row(children: [
+                  const Icon(Icons.map_outlined, size: 18, color: AppTheme.brand),
+                  const SizedBox(width: 10),
+                  Expanded(child: Text(widget.location!, style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary))),
+                  const Icon(Icons.open_in_new_rounded, size: 15, color: AppTheme.brand),
+                ]),
+              ),
+            )
+          else
+            const Text('No address on file.', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+
+          if (_appt != null && (_appt!['notes'] as String? ?? '').isNotEmpty) ...[
+            const SizedBox(height: 16),
+            const Text('Notes', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+            const SizedBox(height: 6),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: AppTheme.pageBg,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: AppTheme.borderColor),
+              ),
+              child: Text(_appt!['notes'] as String, style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary, height: 1.4)),
+            ),
+          ],
+
+          const SizedBox(height: 20),
+          SizedBox(
+            width: double.infinity, height: 44,
+            child: ElevatedButton(
+              onPressed: () => Navigator.of(context, rootNavigator: true).pop(),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.brand, foregroundColor: Colors.white, elevation: 0,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              child: const Text('Close'),
+            ),
+          ),
+        ]),
+      ),
+    );
+  }
+
+  Widget _row(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(width: 90, child: Text(label, style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary))),
+          Expanded(child: Text(value, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: AppTheme.textPrimary))),
+        ],
+      ),
+    );
+  }
+}
+
 class _LiveDuration extends StatefulWidget {
   final String? clockedInAt;
   final TextStyle style;
@@ -826,12 +1001,19 @@ class _TimeEntryDetailDialog extends StatelessWidget {
     );
   }
 
+  String _fmtCheckInTime(DateTime dt) {
+    final h = dt.hour % 12 == 0 ? 12 : dt.hour % 12;
+    final m = dt.minute.toString().padLeft(2, '0');
+    return '$h:$m ${dt.hour < 12 ? 'AM' : 'PM'}';
+  }
+
   @override
   Widget build(BuildContext context) {
     final status = entry['status'] as String? ?? 'completed';
     final isActive = status == 'active';
     final name = entry['full_name'] as String? ?? 'Unknown';
     final notes = entry['notes'] as String?;
+    final shiftCheckIns = List<Map<String, dynamic>>.from(entry['shift_check_ins'] as List? ?? []);
 
     final clockInLat = (entry['clock_in_lat'] as num?)?.toDouble();
     final clockInLng = (entry['clock_in_lng'] as num?)?.toDouble();
@@ -940,6 +1122,58 @@ class _TimeEntryDetailDialog extends StatelessWidget {
                     style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
                 const SizedBox(height: 8),
                 _mapOrPlaceholder(clockOutLat, clockOutLng),
+                if (shiftCheckIns.isNotEmpty) ...[
+                  const SizedBox(height: 16),
+                  const Text('Job Site Check-Ins',
+                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+                  const SizedBox(height: 8),
+                  ...shiftCheckIns.map((c) {
+                    final name = c['appointment_name'] as String? ?? 'Job';
+                    final loc = c['location'] as String?;
+                    final at = DateTime.tryParse(c['checked_in_at'] as String? ?? '')?.toLocal();
+                    return InkWell(
+                      onTap: () => showModalBottomSheet(
+                        context: context,
+                        isScrollControlled: true,
+                        backgroundColor: Colors.transparent,
+                        builder: (_) => _CheckInDetailSheet(
+                          appointmentId: c['appointment_id'] as int,
+                          appointmentName: name,
+                          location: loc,
+                          checkedInAt: at,
+                        ),
+                      ),
+                      borderRadius: BorderRadius.circular(8),
+                      child: Container(
+                        margin: const EdgeInsets.only(bottom: 6),
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: AppTheme.success.withValues(alpha: 0.05),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: AppTheme.success.withValues(alpha: 0.2)),
+                        ),
+                        child: Row(children: [
+                          const Icon(Icons.location_on_outlined, size: 15, color: AppTheme.success),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(name, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+                                if (loc != null && loc.isNotEmpty)
+                                  Text(loc, style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                              ],
+                            ),
+                          ),
+                          if (at != null)
+                            Text(_fmtCheckInTime(at), style: const TextStyle(fontSize: 11, color: AppTheme.textMuted)),
+                          const SizedBox(width: 4),
+                          const Icon(Icons.chevron_right, size: 15, color: AppTheme.textMuted),
+                        ]),
+                      ),
+                    );
+                  }),
+                ],
                 if (notes != null && notes.trim().isNotEmpty) ...[
                   const SizedBox(height: 16),
                   const Text('Notes',

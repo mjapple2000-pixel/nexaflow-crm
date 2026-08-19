@@ -69,7 +69,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    const validActions = ["clock_in", "clock_out", "toggle_location_sharing", "update_location", "add_note", "send_on_my_way"];
+    const validActions = ["clock_in", "clock_out", "toggle_location_sharing", "update_location", "add_note", "send_on_my_way", "check_in_at_stop"];
     if (!validActions.includes(action)) {
       return new Response(JSON.stringify({ error: "Invalid action" }), {
         status: 400,
@@ -187,6 +187,98 @@ Deno.serve(async (req) => {
       }
 
       return new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+        // ── Check in at a route stop: distinct from the periodic update_location
+    // heartbeat — this is an explicit "I've arrived" action tied to a
+    // specific appointment, so office staff can see both where a tech is
+    // AND which stop they're actually on, not just a raw lat/lng.
+    if (action === "check_in_at_stop") {
+      if (!appointment_id || lat == null || lng == null) {
+        return new Response(JSON.stringify({ error: "appointment_id, lat, and lng are required" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const { data: appt, error: apptError } = await supabase
+        .from("appointments")
+        .select("id")
+        .eq("id", appointment_id)
+        .eq("business_id", businessId)
+        .maybeSingle();
+
+      if (apptError || !appt) {
+        return new Response(JSON.stringify({ error: "Appointment not found for this business" }), {
+          status: 404,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const { data: bizGps } = await supabase
+        .from("businesses")
+        .select("gps_tracking_enabled")
+        .eq("id", businessId)
+        .maybeSingle();
+
+      if (!bizGps?.gps_tracking_enabled) {
+        return new Response(JSON.stringify({ error: "feature_disabled", message: "GPS tracking is not enabled for this business." }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const { data: profSharing } = await supabase
+        .from("profiles")
+        .select("location_sharing_enabled")
+        .eq("id", hubToken.profile_id)
+        .maybeSingle();
+
+      if (!profSharing?.location_sharing_enabled) {
+        return new Response(JSON.stringify({ error: "consent_required", message: "Location sharing is turned off." }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const nowIso = new Date().toISOString();
+
+      const { error: locErr } = await supabase
+        .from("team_locations")
+        .upsert({
+          user_id: callerUserId,
+          business_id: businessId,
+          latitude: lat,
+          longitude: lng,
+          accuracy_meters: accuracy ?? null,
+          current_appointment_id: appointment_id,
+          recorded_at: nowIso,
+          updated_at: nowIso,
+        }, { onConflict: "user_id" });
+
+      if (locErr) {
+        return new Response(JSON.stringify({ error: "Error updating location: " + locErr.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const { error: checkInErr } = await supabase
+        .from("appointments")
+        .update({ checked_in_at: nowIso })
+        .eq("id", appointment_id);
+
+      if (checkInErr) {
+        return new Response(JSON.stringify({ error: "Error recording check-in: " + checkInErr.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      return new Response(JSON.stringify({ success: true, checked_in_at: nowIso }), {
         status: 200,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });

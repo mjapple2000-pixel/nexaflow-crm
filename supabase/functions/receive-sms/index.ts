@@ -57,6 +57,29 @@ function looksLikeAddress(s: string): boolean {
   return /\d/.test(s) && s.trim().split(/\s+/).length >= 3;
 }
 
+// ── Best-effort geocode via Nominatim — same service geocode-location uses.
+// Inlined here rather than calling that function directly, since it requires
+// a full user JWT session that this Twilio webhook never has. Failure here
+// is never fatal — the appointment still saves with location text either way.
+async function geocodeAddress(address: string): Promise<{ lat: number; lng: number } | null> {
+  try {
+    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(address)}&format=json&limit=1`;
+    const res = await fetch(url, {
+      headers: { "User-Agent": "NexaFlow CRM (contact: vantagecaretech@gmail.com)" },
+    });
+    if (!res.ok) return null;
+    const results = await res.json();
+    if (!Array.isArray(results) || results.length === 0) return null;
+    const lat = parseFloat(results[0].lat);
+    const lng = parseFloat(results[0].lon);
+    if (Number.isNaN(lat) || Number.isNaN(lng)) return null;
+    return { lat, lng };
+  } catch (e) {
+    console.error("SMS booking geocode error:", e);
+    return null;
+  }
+}
+
 // ── Find available booking slots ──────────────────────────────────
 async function findAvailableSlots(
   businessId: number,
@@ -657,6 +680,14 @@ Deno.serve(async (req) => {
               // Book it!
               const freshLead = (await supabase.from("leads").select("*").eq("business_id", businessId).eq("lead_phone", from).maybeSingle()).data;
 
+              // Address goes into the real location field (and gets geocoded
+              // for lat/lng right away, same as the manual geocode button on
+              // the appointment screen) — never into notes, since notes was
+              // never a structured field Routes/Job Costing/the map could
+              // actually read.
+              const addressText = freshLead?.lead_address ?? "";
+              const geo = addressText ? await geocodeAddress(addressText) : null;
+
               const { data: newAppt } = await supabase.from("appointments").insert({
                 business_id:      businessId,
                 calendar_id:      bookingCalendarId ?? null,
@@ -668,7 +699,9 @@ Deno.serve(async (req) => {
                 lead_name:        currentName,
                 lead_phone:       from,
                 lead_email:       freshLead?.lead_email ?? "",
-                notes:            freshLead?.lead_address ? `Address: ${freshLead.lead_address}` : "",
+                location:         addressText || null,
+                latitude:         geo?.lat ?? null,
+                longitude:        geo?.lng ?? null,
                 confirmation_sent: false,
               }).select().maybeSingle();
 

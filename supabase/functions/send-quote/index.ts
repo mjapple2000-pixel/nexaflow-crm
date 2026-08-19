@@ -12,9 +12,9 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const { quote_id, business_id, channel } = await req.json();
+    const { quote_id, business_id: requestedBusinessId, channel } = await req.json();
 
-    if (!quote_id || !business_id || !channel) {
+    if (!quote_id || !requestedBusinessId || !channel) {
       return new Response(JSON.stringify({ error: 'Missing required fields' }), {
         status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
@@ -29,6 +29,33 @@ Deno.serve(async (req) => {
     const twilioFrom  = Deno.env.get('TWILIO_PHONE_NUMBER')!;
 
     const db = createClient(supabaseUrl, serviceKey);
+
+    // Resolve business_id server-side from the caller's own session —
+    // never trust the client-supplied business_id directly. Superuser
+    // (no profiles row by design) is allowed to pass business_id through.
+    const authHeader = req.headers.get('Authorization') ?? '';
+    const callerToken = authHeader.replace('Bearer ', '');
+    const { data: userData, error: userErr } = await db.auth.getUser(callerToken);
+    if (userErr || !userData?.user) {
+      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+        status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    let business_id = requestedBusinessId;
+    if (userData.user.email !== 'vantagecaretech@gmail.com') {
+      const { data: callerProfile } = await db
+        .from('profiles')
+        .select('business_id')
+        .eq('user_id', userData.user.id)
+        .maybeSingle();
+      if (!callerProfile?.business_id) {
+        return new Response(JSON.stringify({ error: 'Profile not found' }), {
+          status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+      business_id = callerProfile.business_id;
+    }
 
     // Load quote + lead
     const { data: quote, error: quoteErr } = await db
@@ -47,7 +74,7 @@ Deno.serve(async (req) => {
     // Load business
     const { data: business } = await db
       .from('businesses')
-      .select('business_name')
+      .select('business_name, ai_phone_number')
       .eq('id', business_id)
       .single();
 
@@ -120,7 +147,7 @@ Never use the word "quote" as a cold noun — make it feel like a natural update
             'Authorization': `Basic ${btoa(`${twilioSid}:${twilioToken}`)}`,
           },
           body: new URLSearchParams({
-            From: twilioFrom,
+            From: business?.ai_phone_number || twilioFrom,
             To:   leadPhone,
             Body: smsBody,
           }),

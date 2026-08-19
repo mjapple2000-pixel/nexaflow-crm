@@ -146,6 +146,37 @@ class _CampaignsScreenState extends State<CampaignsScreen> {
     }
   }
 
+  Future<void> _duplicateCampaign(Map<String, dynamic> campaign) async {
+    try {
+      await _supabase.from('campaigns').insert({
+        'business_id': _businessId,
+        'name': '${campaign['name'] ?? 'Campaign'} (Copy)',
+        'type': campaign['type'],
+        'status': 'draft',
+        'message_body': campaign['message_body'],
+        'subject': campaign['subject'],
+        'filter_config': campaign['filter_config'],
+        'total_contacts': 0,
+        'sent_count': 0,
+        'delivered_count': 0,
+        'failed_count': 0,
+        'reply_count': 0,
+      });
+      _loadCampaigns();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Duplicated as a new draft.'), behavior: SnackBarBehavior.floating),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to duplicate: $e')),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -340,6 +371,7 @@ class _CampaignsScreenState extends State<CampaignsScreen> {
         campaign: campaigns[i],
         onTap: () => _openCampaignDetail(campaigns[i]),
         onDelete: () => _deleteCampaign(campaigns[i]),
+        onDuplicate: () => _duplicateCampaign(campaigns[i]),
       ),
     );
   }
@@ -352,9 +384,10 @@ class _CampaignCard extends StatelessWidget {
   final Map<String, dynamic> campaign;
   final VoidCallback onTap;
   final VoidCallback onDelete;
+  final VoidCallback onDuplicate;
 
   const _CampaignCard(
-      {required this.campaign, required this.onTap, required this.onDelete});
+      {required this.campaign, required this.onTap, required this.onDelete, required this.onDuplicate});
 
   Color _statusColor(String? status) {
     switch (status) {
@@ -424,6 +457,15 @@ class _CampaignCard extends StatelessWidget {
                 _StatusBadge(
                     status: status, color: _statusColor(status)),
                 const SizedBox(width: 8),
+                MouseRegion(
+                  cursor: SystemMouseCursors.click,
+                  child: IconButton(
+                    icon: const Icon(Icons.copy_outlined,
+                        size: 18, color: AppTheme.textSecondary),
+                    onPressed: onDuplicate,
+                    tooltip: 'Duplicate campaign',
+                  ),
+                ),
                 MouseRegion(
                   cursor: SystemMouseCursors.click,
                   child: IconButton(
@@ -1119,8 +1161,14 @@ class _CampaignDetailModalState extends State<_CampaignDetailModal> {
     });
 
     try {
-      // Save filter_config and message_body first
+      // Save channel, subject, filter_config, and message_body first —
+      // send-campaign reads campaign.type straight from the database, so
+      // switching channels in this dialog without persisting it here would
+      // silently send via whatever channel the campaign was originally
+      // created with.
       await _supabase.from('campaigns').update({
+        'type': _type,
+        'subject': _type == 'email' ? _subjectCtrl.text.trim() : null,
         'message_body': _bodyCtrl.text.trim(),
         'filter_config': _filterConfig,
       }).eq('id', widget.campaign['id']);
