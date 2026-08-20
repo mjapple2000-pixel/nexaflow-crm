@@ -79,6 +79,28 @@ Deno.serve(async (req) => {
       console.error("get-employee-hub-data business lookup error:", businessError);
     }
 
+    // ── 4a. Expense categories + Job Costing plan gate — powers the
+    // "Log an Expense" section in the appointment detail sheet. Categories
+    // are business-scoped and configurable in Settings; the gate matches
+    // the same office-side "job_costing" feature Growth+ requires.
+    const { data: jobCostingAllowed } = await supabase
+      .rpc("check_plan_feature", { p_business_id: hubToken.business_id, p_feature: "job_costing" });
+
+    let expenseCategories: any[] = [];
+    if (jobCostingAllowed) {
+      const { data: categories, error: categoriesError } = await supabase
+        .from("expense_categories")
+        .select("id, name")
+        .eq("business_id", hubToken.business_id)
+        .eq("is_active", true)
+        .is("deleted_at", null)
+        .order("name", { ascending: true });
+      if (categoriesError) {
+        console.error("get-employee-hub-data expense categories lookup error:", categoriesError);
+      }
+      expenseCategories = categories ?? [];
+    }
+
     // ── 5. Active time entry ─────────────────────────────────────────────
     const { data: activeEntry } = await supabase
       .from("time_entries")
@@ -354,6 +376,8 @@ Deno.serve(async (req) => {
         require_location_on_clock: business?.require_location_on_clock === true,
         gps_tracking_enabled: business?.gps_tracking_enabled === true,
         location_sharing_enabled: profile.location_sharing_enabled === true,
+        job_costing_enabled: jobCostingAllowed === true,
+        expense_categories: expenseCategories,
         active_entry: activeEntry ?? null,
         route_stops: routeStops,
         appointments: allAppointments.map((a: any) => ({

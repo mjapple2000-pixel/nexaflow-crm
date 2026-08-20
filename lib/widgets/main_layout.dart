@@ -163,6 +163,7 @@ class _AppNavBarState extends State<AppNavBar> {
         // JOBS
     ('/settings?section=service_library', Icons.inventory_2_outlined,       'Service Library'),
     ('/settings?section=job_types',        Icons.category_outlined,         'Job Types'),
+    ('/settings?section=expense_categories', Icons.receipt_long_outlined,   'Expense Categories'),
     // DOCUMENTS
     ('/settings?section=documents',        Icons.picture_as_pdf_outlined,   'Client Document Settings'),
   ];
@@ -484,7 +485,7 @@ class _AppNavBarState extends State<AppNavBar> {
 
         // JOBS SECTION
         _SectionLabel('JOBS'),
-        ..._settingsSections.skip(25).take(2).map((s) {
+        ..._settingsSections.skip(25).take(3).map((s) {
           final isActive = location == s.$1;
           return Clickable(
             onTap: () => context.go(s.$1),
@@ -520,7 +521,7 @@ class _AppNavBarState extends State<AppNavBar> {
 
         // DOCUMENTS SECTION
         _SectionLabel('DOCUMENTS'),
-        ..._settingsSections.skip(27).map((s) {
+        ..._settingsSections.skip(28).map((s) {
           final isActive = location == s.$1;
           return Clickable(
             onTap: () => context.go(s.$1),

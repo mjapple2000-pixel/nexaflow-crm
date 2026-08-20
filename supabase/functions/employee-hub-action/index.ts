@@ -60,7 +60,10 @@ Deno.serve(async (req) => {
 
   try {
     const body = await req.json();
-    const { token, action, appointment_id, lat, lng, notes, enabled, accuracy, client_timestamp } = body;
+    const {
+      token, action, appointment_id, lat, lng, notes, enabled, accuracy, client_timestamp,
+      category_id, amount_cents, description, billable, receipt_base64, receipt_filename,
+    } = body;
 
     if (!token) {
       return new Response(JSON.stringify({ error: "token is required" }), {
@@ -69,7 +72,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    const validActions = ["clock_in", "clock_out", "toggle_location_sharing", "update_location", "add_note", "send_on_my_way", "check_in_at_stop"];
+    const validActions = ["clock_in", "clock_out", "toggle_location_sharing", "update_location", "add_note", "send_on_my_way", "check_in_at_stop", "log_expense"];
     if (!validActions.includes(action)) {
       return new Response(JSON.stringify({ error: "Invalid action" }), {
         status: 400,
@@ -279,6 +282,125 @@ Deno.serve(async (req) => {
       }
 
       return new Response(JSON.stringify({ success: true, checked_in_at: nowIso }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    // ── Log a job expense from the field — token-authenticated mirror of
+    // log-job-expense, which requires a real JWT session the Hub never has.
+    // Resolves business_id/profile_id from the hub token (never the
+    // client), same category-ownership and appointment-ownership checks
+    // as the office-side version, and writes logged_by_profile_id from
+    // the token's own profile so the expense is correctly attributed.
+    if (action === "log_expense") {
+      if (!appointment_id) {
+        return new Response(JSON.stringify({ error: "appointment_id is required" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      if (!category_id) {
+        return new Response(JSON.stringify({ error: "category_id is required" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      if (!amount_cents || typeof amount_cents !== "number" || amount_cents <= 0) {
+        return new Response(JSON.stringify({ error: "amount_cents must be a positive number" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const { data: allowed, error: gateErr } = await supabase
+        .rpc("check_plan_feature", { p_business_id: businessId, p_feature: "job_costing" });
+      if (gateErr) {
+        return new Response(JSON.stringify({ error: "Error checking plan: " + gateErr.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      if (!allowed) {
+        return new Response(JSON.stringify({
+          error: "upgrade_required",
+          message: "Job Costing requires the Growth plan or above.",
+        }), { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
+      const { data: appt, error: apptError } = await supabase
+        .from("appointments")
+        .select("id")
+        .eq("id", appointment_id)
+        .eq("business_id", businessId)
+        .maybeSingle();
+      if (apptError || !appt) {
+        return new Response(JSON.stringify({ error: "Appointment not found for this business" }), {
+          status: 404,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const { data: category, error: categoryError } = await supabase
+        .from("expense_categories")
+        .select("business_id")
+        .eq("id", category_id)
+        .maybeSingle();
+      if (categoryError || !category || category.business_id !== businessId) {
+        return new Response(JSON.stringify({ error: "Invalid category_id" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const { data: expense, error: insertError } = await supabase
+        .from("job_expenses")
+        .insert({
+          business_id: businessId,
+          appointment_id,
+          category_id,
+          amount_cents,
+          description: description ?? null,
+          billable: billable ?? true,
+          logged_by_profile_id: hubToken.profile_id,
+          logged_at: new Date().toISOString(),
+        })
+        .select()
+        .single();
+
+      if (insertError) {
+        return new Response(JSON.stringify({ error: "Error saving expense: " + insertError.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      let receiptPath: string | null = null;
+      if (typeof receipt_base64 === "string" && receipt_base64.length > 0) {
+        try {
+          const bytes = Uint8Array.from(atob(receipt_base64), (c) => c.charCodeAt(0));
+          const ext = (typeof receipt_filename === "string" && receipt_filename.includes("."))
+            ? receipt_filename.split(".").pop()
+            : "jpg";
+          const fileName = `${businessId}/${expense.id}/${Date.now()}.${ext}`;
+          const { error: uploadError } = await supabase.storage
+            .from("job-expense-receipts")
+            .upload(fileName, bytes, { contentType: "image/jpeg", upsert: false });
+          if (!uploadError) {
+            await supabase
+              .from("job_expenses")
+              .update({ receipt_photo_path: fileName })
+              .eq("id", expense.id);
+            receiptPath = fileName;
+          } else {
+            console.error("log_expense receipt upload error:", uploadError.message);
+          }
+        } catch (e) {
+          console.error("log_expense receipt decode error:", e);
+        }
+      }
+
+      return new Response(JSON.stringify({ success: true, expense: { ...expense, receipt_photo_path: receiptPath } }), {
         status: 200,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });

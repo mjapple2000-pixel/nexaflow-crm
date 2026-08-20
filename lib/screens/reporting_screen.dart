@@ -72,10 +72,19 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
   List<Map<String, dynamic>> _topJobs = [];
   List<Map<String, dynamic>> _bottomJobs = [];
 
+  // Expense report data
+  bool _loadingExpenseReport = false;
+  bool _expenseReportUpgradeRequired = false;
+  int _expenseTotalCents = 0;
+  int _expenseBillableCents = 0;
+  List<Map<String, dynamic>> _expensesByJob = [];
+  List<Map<String, dynamic>> _expensesByMember = [];
+  List<Map<String, dynamic>> _expensesByCategory = [];
+
   @override
   void initState() {
     super.initState();
-    _reportTabController = TabController(length: 3, vsync: this, initialIndex: widget.initialTabIndex);
+    _reportTabController = TabController(length: 4, vsync: this, initialIndex: widget.initialTabIndex);
     _loadData().then((_) => _loadChecklistsReport());
   }
 
@@ -243,6 +252,7 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
 
       setState(() => _loading = false);
       _loadJobCostingData();
+      _loadExpenseReport();
     } catch (e) {
       setState(() {
         _error = e.toString();
@@ -279,6 +289,38 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
       debugPrint('Job costing report error: $e');
     } finally {
       if (mounted) setState(() => _loadingJobCosting = false);
+    }
+  }
+
+  Future<void> _loadExpenseReport() async {
+    if (_businessId == null) return;
+    setState(() { _loadingExpenseReport = true; _expenseReportUpgradeRequired = false; });
+    try {
+      final token = _supabase.auth.currentSession?.accessToken;
+      if (token == null) return;
+      final resp = await http.get(
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/get-expense-report?date_range_days=$_range&business_id=$_businessId'),
+        headers: {'Authorization': 'Bearer $token'},
+      );
+      if (!mounted) return;
+      final data = jsonDecode(resp.body);
+      if (resp.statusCode == 403 && data['error'] == 'upgrade_required') {
+        setState(() => _expenseReportUpgradeRequired = true);
+        return;
+      }
+      if (resp.statusCode == 200 && data['success'] == true) {
+        setState(() {
+          _expenseTotalCents    = data['total_cents'] as int? ?? 0;
+          _expenseBillableCents = data['billable_cents'] as int? ?? 0;
+          _expensesByJob        = List<Map<String, dynamic>>.from(data['expenses_by_job'] ?? []);
+          _expensesByMember     = List<Map<String, dynamic>>.from(data['expenses_by_member'] ?? []);
+          _expensesByCategory   = List<Map<String, dynamic>>.from(data['expenses_by_category'] ?? []);
+        });
+      }
+    } catch (e) {
+      debugPrint('Expense report error: $e');
+    } finally {
+      if (mounted) setState(() => _loadingExpenseReport = false);
     }
   }
 
@@ -712,6 +754,7 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
               tabs: const [
                 Tab(text: 'Overview'),
                 Tab(text: 'Job Costing'),
+                Tab(text: 'Expenses'),
                 Tab(text: 'Forms'),
               ],
             ),
@@ -726,6 +769,7 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
                         children: [
                           _buildOverviewTab(),
                           _buildJobCostingTab(),
+                          _buildExpensesTab(),
                           _buildChecklistsTab(),
                         ],
                       ),
@@ -869,6 +913,21 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
             style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
         const SizedBox(height: 12),
         _buildJobCostingSection(),
+        const SizedBox(height: 24),
+      ],
+    );
+  }
+
+  Widget _buildExpensesTab() {
+    return ListView(
+      padding: const EdgeInsets.all(24),
+      children: [
+        _sectionTitle('Expenses'),
+        const SizedBox(height: 4),
+        const Text('What\'s being spent, broken down by job, team member, and category.',
+            style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+        const SizedBox(height: 12),
+        _buildExpenseReportSection(),
         const SizedBox(height: 24),
       ],
     );
@@ -1882,6 +1941,147 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
             ]),
           )),
         ]),
+    ]);
+  }
+
+  Widget _buildExpenseReportSection() {
+    if (_expenseReportUpgradeRequired) {
+      return Container(
+        padding: const EdgeInsets.all(24),
+        decoration: _cardDecoration(),
+        child: Row(children: [
+          Container(
+            width: 40, height: 40,
+            decoration: BoxDecoration(
+              color: AppTheme.brand.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: const Icon(Icons.lock_outline, size: 20, color: AppTheme.brand),
+          ),
+          const SizedBox(width: 16),
+          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            const Text('Expense Reporting is a Growth Plan feature',
+                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+            const SizedBox(height: 4),
+            const Text('Upgrade to Growth to see spend broken down by job, team member, and category.',
+                style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+          ])),
+          const SizedBox(width: 16),
+          ElevatedButton(
+            onPressed: () {},
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.brand, foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            child: const Text('Upgrade'),
+          ),
+        ]),
+      );
+    }
+
+    if (_loadingExpenseReport) {
+      return Container(
+        height: 120,
+        decoration: _cardDecoration(),
+        child: const Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    if (_expensesByCategory.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.all(24),
+        decoration: _cardDecoration(),
+        child: Column(children: [
+          const Icon(Icons.receipt_long_outlined, size: 40, color: AppTheme.textMuted),
+          const SizedBox(height: 12),
+          const Text('No expenses logged yet',
+              style: TextStyle(fontSize: 14, color: AppTheme.textSecondary)),
+          const SizedBox(height: 6),
+          const Text('Add expenses to appointments or deals to see them broken down here.',
+              style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+              textAlign: TextAlign.center),
+        ]),
+      );
+    }
+
+    String fmtCents(int? cents) {
+      if (cents == null) return '—';
+      final dollars = cents / 100.0;
+      if (dollars >= 1000) return '\$${(dollars / 1000).toStringAsFixed(1)}k';
+      return '\$${dollars.toStringAsFixed(0)}';
+    }
+
+    Widget breakdownCard({
+      required String title,
+      required IconData icon,
+      required List<Map<String, dynamic>> rows,
+      required String labelKey,
+    }) {
+      return Expanded(child: Container(
+        decoration: _cardDecoration(),
+        child: Column(children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: AppTheme.borderColor))),
+            child: Row(children: [
+              Icon(icon, size: 14, color: AppTheme.brand),
+              const SizedBox(width: 6),
+              Text(title, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+            ]),
+          ),
+          ...rows.map((row) => Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: AppTheme.borderColor))),
+            child: Row(children: [
+              Expanded(child: Text(
+                row[labelKey] as String? ?? 'Unknown',
+                style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary),
+                overflow: TextOverflow.ellipsis,
+              )),
+              const SizedBox(width: 8),
+              Text('${row['count'] ?? 0}',
+                  style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+              const SizedBox(width: 10),
+              Text(fmtCents(row['total_cents'] as int?),
+                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+            ]),
+          )),
+        ]),
+      ));
+    }
+
+    return Column(children: [
+      Row(children: [
+        Expanded(child: Container(
+          padding: const EdgeInsets.all(16),
+          decoration: _cardDecoration(),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            const Text('Total Expenses', style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+            const SizedBox(height: 4),
+            Text(fmtCents(_expenseTotalCents),
+                style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: AppTheme.textPrimary)),
+          ]),
+        )),
+        const SizedBox(width: 16),
+        Expanded(child: Container(
+          padding: const EdgeInsets.all(16),
+          decoration: _cardDecoration(),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            const Text('Billable to Customer', style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+            const SizedBox(height: 4),
+            Text(fmtCents(_expenseBillableCents),
+                style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: Color(0xFF10B981))),
+          ]),
+        )),
+      ]),
+      const SizedBox(height: 16),
+      Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        breakdownCard(title: 'BY JOB', icon: Icons.work_outline_rounded, rows: _expensesByJob, labelKey: 'job_name'),
+        const SizedBox(width: 16),
+        breakdownCard(title: 'BY TEAM MEMBER', icon: Icons.person_outline_rounded, rows: _expensesByMember, labelKey: 'member'),
+        const SizedBox(width: 16),
+        breakdownCard(title: 'BY CATEGORY', icon: Icons.category_outlined, rows: _expensesByCategory, labelKey: 'category'),
+      ]),
     ]);
   }
 

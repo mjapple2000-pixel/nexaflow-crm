@@ -65,9 +65,11 @@ Deno.serve(async (req) => {
     const {
       appointment_id,
       deal_id,
+      category_id,
       expense_type,
       amount_cents,
       description,
+      billable,
       logged_at,
       expense_id, // if provided → update existing row
     } = body;
@@ -77,10 +79,17 @@ Deno.serve(async (req) => {
       return new Response(JSON.stringify({ error: "appointment_id or deal_id is required" }), { status: 400, headers: corsHeaders });
     }
 
-    // Validate expense_type
-    const validTypes = ["labor", "material", "subcontractor", "other"];
-    if (!validTypes.includes(expense_type)) {
-      return new Response(JSON.stringify({ error: "Invalid expense_type" }), { status: 400, headers: corsHeaders });
+    // Validate category — must belong to this business
+    if (!category_id) {
+      return new Response(JSON.stringify({ error: "category_id is required" }), { status: 400, headers: corsHeaders });
+    }
+    const { data: category } = await userClient
+      .from("expense_categories")
+      .select("business_id")
+      .eq("id", category_id)
+      .maybeSingle();
+    if (!category || category.business_id !== businessId) {
+      return new Response(JSON.stringify({ error: "Invalid category_id" }), { status: 400, headers: corsHeaders });
     }
 
     // Validate amount
@@ -127,9 +136,11 @@ Deno.serve(async (req) => {
       const { data, error } = await userClient
         .from("job_expenses")
         .update({
-          expense_type,
+          category_id,
+          expense_type: expense_type ?? null,
           amount_cents,
           description: description ?? null,
+          billable: billable ?? true,
           logged_at: logged_at ?? new Date().toISOString(),
         })
         .eq("id", expense_id)
@@ -145,9 +156,11 @@ Deno.serve(async (req) => {
           business_id: businessId,
           appointment_id: appointment_id ?? null,
           deal_id: deal_id ?? null,
-          expense_type,
+          category_id,
+          expense_type: expense_type ?? null,
           amount_cents,
           description: description ?? null,
+          billable: billable ?? true,
           logged_by_profile_id: profileId,
           logged_at: logged_at ?? new Date().toISOString(),
         })

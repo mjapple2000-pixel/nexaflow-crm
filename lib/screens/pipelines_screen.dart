@@ -1,9 +1,12 @@
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:go_router/go_router.dart';
 import '../theme/app_theme.dart';
 import '../utils/business_utils.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'package:image_picker/image_picker.dart';
 
 // ─────────────────────────────────────────────
 //  MODELS
@@ -132,6 +135,21 @@ class _PipelinesScreenState extends State<PipelinesScreen> {
   bool _loading = true;
   String? _error;
   int? _businessId;
+  bool _jobCostingEnabled = false;
+
+  // Mirrors check_plan_feature('job_costing') server-side exactly — beta
+  // bypasses everything, otherwise requires a paid, active/trialing
+  // subscription on Growth or Pro. Kept in sync so the teaser shown here
+  // never disagrees with what log-job-expense actually allows.
+  bool _computeJobCostingEnabled(Map<String, dynamic>? business) {
+    if (business == null) return false;
+    if (business['is_beta'] == true) return true;
+    if (business['is_paid'] != true) return false;
+    final sub = business['subscription_status'] as String?;
+    if (sub != 'active' && sub != 'trialing') return false;
+    final plan = business['plan'] as String?;
+    return plan == 'growth' || plan == 'pro';
+  }
 
   List<_Stage> _stages = [];
   List<_Deal> _deals = [];
@@ -161,6 +179,12 @@ class _PipelinesScreenState extends State<PipelinesScreen> {
       _businessId = await getActiveBusinessId();
       if (!mounted) return;
       if (_businessId == null) return;
+
+      final businessRow = await _db.from('businesses')
+          .select('plan, is_paid, subscription_status, is_beta')
+          .eq('id', _businessId!)
+          .maybeSingle();
+      _jobCostingEnabled = _computeJobCostingEnabled(businessRow);
 
       final pipelinesData = await _db.from('pipelines')
           .select()
@@ -1217,6 +1241,7 @@ Widget _viewToggleBtn(IconData icon, String view) {
       context: context,
       builder: (dialogCtx) => _DealDetailDialog(
         deal: deal, stage: stage, stages: _stages,
+        jobCostingEnabled: _jobCostingEnabled,
         onUpdated: () {
           Navigator.of(dialogCtx).pop();
           _load();
@@ -1669,9 +1694,11 @@ class _DealDetailDialog extends StatefulWidget {
   final List<_Stage> stages;
   final VoidCallback onUpdated;
   final VoidCallback onDeleted;
+  final bool jobCostingEnabled;
 
   const _DealDetailDialog({required this.deal, required this.stage,
-      required this.stages, required this.onUpdated, required this.onDeleted});
+      required this.stages, required this.onUpdated, required this.onDeleted,
+      this.jobCostingEnabled = false});
 
   @override
   State<_DealDetailDialog> createState() => _DealDetailDialogState();
@@ -1693,6 +1720,7 @@ class _DealDetailDialogState extends State<_DealDetailDialog> {
   final _tagCtrl = TextEditingController();
   List<Map<String, dynamic>> _teamMembers = [];
   String? _selectedAssignedToName;
+  int? _businessId;
 
   // Job Costs
   List<Map<String, dynamic>> _jobExpenses = [];
@@ -1721,7 +1749,7 @@ class _DealDetailDialogState extends State<_DealDetailDialog> {
     try {
       final data = await _db
           .from('job_expenses')
-          .select()
+          .select('*, expense_categories(id, name)')
           .eq('deal_id', widget.deal.id)
           .filter('deleted_at', 'is', null)
           .order('logged_at', ascending: true);
@@ -1751,6 +1779,7 @@ class _DealDetailDialogState extends State<_DealDetailDialog> {
       context: context,
       builder: (_) => _DealExpenseDialog(
         dealId: widget.deal.id,
+        businessId: _businessId,
         existing: existing,
         onSaved: () {
           Navigator.of(context).pop();
@@ -1763,14 +1792,53 @@ class _DealDetailDialogState extends State<_DealDetailDialog> {
   Widget _buildJobCostsSection(BuildContext context) {
     final totalCents = _jobExpenses.fold<int>(0, (s, e) => s + ((e['amount_cents'] as int?) ?? 0));
     final totalDollars = totalCents / 100.0;
-    final typeColor = {
-      'labor': const Color(0xFF6366F1), 'material': const Color(0xFF10B981),
-      'subcontractor': const Color(0xFFF59E0B), 'other': const Color(0xFF94A3B8),
-    };
-    final typeLabel = {
-      'labor': 'Labor', 'material': 'Material',
-      'subcontractor': 'Sub', 'other': 'Other',
-    };
+    const categoryColor = Color(0xFF6366F1);
+
+    if (!widget.jobCostingEnabled) {
+      return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Text('JOB COSTS', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700,
+            color: AppTheme.textSecondary, letterSpacing: 0.5)),
+        const SizedBox(height: 8),
+        Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: AppTheme.pageBg,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: AppTheme.borderColor),
+          ),
+          child: Row(children: [
+            Container(
+              width: 32, height: 32,
+              decoration: BoxDecoration(
+                color: AppTheme.brand.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Icon(Icons.lock_outline, size: 16, color: AppTheme.brand),
+            ),
+            const SizedBox(width: 12),
+            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Text('Job Costing is a Growth plan feature',
+                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+              const SizedBox(height: 2),
+              const Text('Track material, subcontractor, and other job expenses.',
+                  style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+            ])),
+            const SizedBox(width: 8),
+            GestureDetector(
+              onTap: () {
+                Navigator.of(context, rootNavigator: true).pop();
+                context.go('/settings?section=billing');
+              },
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(color: AppTheme.brand, borderRadius: BorderRadius.circular(6)),
+                child: const Text('Upgrade', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.white)),
+              ),
+            ),
+          ]),
+        ),
+      ]);
+    }
 
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Row(children: [
@@ -1844,10 +1912,11 @@ class _DealDetailDialogState extends State<_DealDetailDialog> {
                 final exp = entry.value;
                 final cents = (exp['amount_cents'] as int?) ?? 0;
                 final dollars = cents / 100.0;
-                final type = exp['expense_type'] as String? ?? 'other';
-                final color = typeColor[type] ?? const Color(0xFF94A3B8);
-                final label = typeLabel[type] ?? type;
+                final category = exp['expense_categories'] as Map<String, dynamic>?;
+                final label = category?['name'] as String? ?? 'Other';
                 final desc = exp['description'] as String? ?? '';
+                final billable = exp['billable'] as bool? ?? true;
+                final hasReceipt = (exp['receipt_photo_path'] as String?)?.isNotEmpty == true;
                 return Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                   decoration: BoxDecoration(
@@ -1859,12 +1928,28 @@ class _DealDetailDialogState extends State<_DealDetailDialog> {
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
                       decoration: BoxDecoration(
-                        color: color.withValues(alpha: 0.12),
+                        color: categoryColor.withValues(alpha: 0.12),
                         borderRadius: BorderRadius.circular(4),
                       ),
-                      child: Text(label, style: TextStyle(fontSize: 10,
-                          fontWeight: FontWeight.w600, color: color)),
+                      child: Text(label, style: const TextStyle(fontSize: 10,
+                          fontWeight: FontWeight.w600, color: categoryColor)),
                     ),
+                    if (!billable) ...[
+                      const SizedBox(width: 4),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: AppTheme.textSecondary.withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: const Text('Not billable', style: TextStyle(fontSize: 9,
+                            fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
+                      ),
+                    ],
+                    if (hasReceipt) ...[
+                      const SizedBox(width: 4),
+                      const Icon(Icons.receipt_long, size: 12, color: AppTheme.textSecondary),
+                    ],
                     const SizedBox(width: 10),
                     Expanded(child: Text(desc.isNotEmpty ? desc : label,
                         style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary),
@@ -1899,6 +1984,7 @@ class _DealDetailDialogState extends State<_DealDetailDialog> {
     try {
       final businessId = await getActiveBusinessId();
       if (!mounted) return;
+      _businessId = businessId;
       final data = await Supabase.instance.client
           .from('profiles')
           .select('id, user_id, full_name')
@@ -2349,12 +2435,14 @@ class _DealDetailDialogState extends State<_DealDetailDialog> {
 
 class _DealExpenseDialog extends StatefulWidget {
   final int dealId;
+  final int? businessId;
   final Map<String, dynamic>? existing;
   final VoidCallback onSaved;
 
   const _DealExpenseDialog({
     required this.dealId,
     required this.onSaved,
+    this.businessId,
     this.existing,
   });
 
@@ -2363,29 +2451,33 @@ class _DealExpenseDialog extends StatefulWidget {
 }
 
 class _DealExpenseDialogState extends State<_DealExpenseDialog> {
+  final _db = Supabase.instance.client;
   final _amountCtrl = TextEditingController();
   final _descCtrl   = TextEditingController();
-  String  _expenseType = 'labor';
-  bool    _saving      = false;
+
+  List<Map<String, dynamic>> _categories = [];
+  int?    _categoryId;
+  bool    _billable          = true;
+  bool    _loadingCategories = true;
+  bool    _saving            = false;
   String? _error;
 
-  static const _types      = ['labor', 'material', 'subcontractor', 'other'];
-  static const _typeLabels = ['Labor', 'Material', 'Subcontractor', 'Other'];
-  static const _typeIcons  = [Icons.people_outline, Icons.inventory_2_outlined,
-      Icons.handshake_outlined, Icons.more_horiz];
-  static const _typeColors = [Color(0xFF6366F1), Color(0xFF10B981),
-      Color(0xFFF59E0B), Color(0xFF94A3B8)];
+  Uint8List? _receiptBytes;
+  String?    _receiptName;
+  bool       _pickingPhoto = false;
 
   @override
   void initState() {
     super.initState();
     if (widget.existing != null) {
       final e = widget.existing!;
-      _expenseType = e['expense_type'] as String? ?? 'labor';
-      final cents  = (e['amount_cents'] as int?) ?? 0;
+      _categoryId = e['category_id'] as int?;
+      _billable   = e['billable'] as bool? ?? true;
+      final cents = (e['amount_cents'] as int?) ?? 0;
       _amountCtrl.text = (cents / 100.0).toStringAsFixed(2);
       _descCtrl.text   = e['description'] as String? ?? '';
     }
+    _loadCategories();
   }
 
   @override
@@ -2395,7 +2487,72 @@ class _DealExpenseDialogState extends State<_DealExpenseDialog> {
     super.dispose();
   }
 
+  Future<void> _loadCategories() async {
+    if (widget.businessId == null) {
+      if (mounted) setState(() => _loadingCategories = false);
+      return;
+    }
+    try {
+      final data = await _db
+          .from('expense_categories')
+          .select()
+          .eq('business_id', widget.businessId!)
+          .eq('is_active', true)
+          .filter('deleted_at', 'is', null)
+          .order('name', ascending: true);
+      if (!mounted) return;
+      setState(() {
+        _categories = List<Map<String, dynamic>>.from(data);
+        if (_categoryId == null && _categories.isNotEmpty) {
+          _categoryId = _categories.first['id'] as int?;
+        }
+      });
+    } catch (e) {
+      debugPrint('Load expense categories error: $e');
+    } finally {
+      if (mounted) setState(() => _loadingCategories = false);
+    }
+  }
+
+  Future<void> _pickPhoto(ImageSource source) async {
+    setState(() => _pickingPhoto = true);
+    try {
+      final picked = await ImagePicker().pickImage(source: source, imageQuality: 80);
+      if (picked == null) return;
+      final bytes = await picked.readAsBytes();
+      if (!mounted) return;
+      setState(() {
+        _receiptBytes = bytes;
+        _receiptName  = picked.name;
+      });
+    } catch (e) {
+      debugPrint('Pick photo error: $e');
+    } finally {
+      if (mounted) setState(() => _pickingPhoto = false);
+    }
+  }
+
+  Future<void> _uploadReceipt(int expenseId, String token) async {
+    if (_receiptBytes == null) return;
+    try {
+      final req = http.MultipartRequest(
+        'POST',
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/upload-expense-receipt'),
+      );
+      req.headers['Authorization'] = 'Bearer $token';
+      req.fields['expense_id'] = expenseId.toString();
+      req.files.add(http.MultipartFile.fromBytes('receipt', _receiptBytes!, filename: _receiptName ?? 'receipt.jpg'));
+      await req.send();
+    } catch (e) {
+      debugPrint('Upload receipt error: $e');
+    }
+  }
+
   Future<void> _save() async {
+    if (_categoryId == null) {
+      setState(() => _error = 'Select a category');
+      return;
+    }
     final dollars = double.tryParse(_amountCtrl.text.trim().replaceAll(',', ''));
     if (dollars == null || dollars <= 0) {
       setState(() => _error = 'Enter a valid amount');
@@ -2404,15 +2561,16 @@ class _DealExpenseDialogState extends State<_DealExpenseDialog> {
     final amountCents = (dollars * 100).round();
     setState(() { _saving = true; _error = null; });
     try {
-      final db    = Supabase.instance.client;
-      final token = db.auth.currentSession?.accessToken;
+      final token = _db.auth.currentSession?.accessToken;
       if (token == null) throw Exception('Not authenticated');
 
       final body = <String, dynamic>{
         'deal_id':      widget.dealId,
-        'expense_type': _expenseType,
+        if (widget.businessId != null) 'business_id': widget.businessId,
+        'category_id':  _categoryId,
         'amount_cents': amountCents,
         'description':  _descCtrl.text.trim().isEmpty ? null : _descCtrl.text.trim(),
+        'billable':     _billable,
         if (widget.existing != null) 'expense_id': widget.existing!['id'],
       };
 
@@ -2431,6 +2589,12 @@ class _DealExpenseDialogState extends State<_DealExpenseDialog> {
       if (resp.statusCode != 200 || data['success'] != true) {
         throw Exception(data['error'] ?? 'Failed to save expense');
       }
+
+      final expenseId = data['expense']?['id'] as int?;
+      if (expenseId != null && _receiptBytes != null) {
+        await _uploadReceipt(expenseId, token);
+      }
+      if (!mounted) return;
       widget.onSaved();
     } catch (e) {
       if (mounted) setState(() { _error = e.toString(); _saving = false; });
@@ -2446,100 +2610,155 @@ class _DealExpenseDialogState extends State<_DealExpenseDialog> {
         constraints: const BoxConstraints(maxWidth: 440),
         child: Padding(
           padding: const EdgeInsets.all(24),
-          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Row(children: [
-              const Expanded(child: Text('Add Expense', style: TextStyle(
-                  fontSize: 16, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
-              GestureDetector(
-                onTap: () => Navigator.of(context).pop(),
-                child: const Icon(Icons.close, size: 18, color: AppTheme.textSecondary),
+          child: SingleChildScrollView(
+            child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
+                const Expanded(child: Text('Add Expense', style: TextStyle(
+                    fontSize: 16, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
+                GestureDetector(
+                  onTap: () => Navigator.of(context).pop(),
+                  child: const Icon(Icons.close, size: 18, color: AppTheme.textSecondary),
+                ),
+              ]),
+              const SizedBox(height: 20),
+
+              const Text('Category', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
+              const SizedBox(height: 8),
+              if (_loadingCategories)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 8),
+                  child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+                )
+              else if (_categories.isEmpty)
+                const Text('No categories set up for this business yet.',
+                    style: TextStyle(fontSize: 12, color: AppTheme.textSecondary))
+              else
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  decoration: BoxDecoration(color: AppTheme.pageBg, borderRadius: BorderRadius.circular(8), border: Border.all(color: AppTheme.borderColor)),
+                  child: DropdownButtonHideUnderline(child: DropdownButton<int>(
+                    value: _categoryId,
+                    isExpanded: true,
+                    dropdownColor: AppTheme.cardBg,
+                    style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                    items: _categories.map((c) => DropdownMenuItem<int>(
+                      value: c['id'] as int,
+                      child: Text(c['name'] as String? ?? 'Unnamed'),
+                    )).toList(),
+                    onChanged: (v) => setState(() => _categoryId = v),
+                  )),
+                ),
+              const SizedBox(height: 16),
+
+              const Text('Amount', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
+              const SizedBox(height: 4),
+              TextField(
+                controller: _amountCtrl,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: AppTheme.textPrimary),
+                decoration: InputDecoration(
+                  prefixText: '\$ ',
+                  prefixStyle: const TextStyle(fontSize: 15, color: AppTheme.textSecondary),
+                  hintText: '0.00',
+                  filled: true, fillColor: AppTheme.pageBg,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                  border:        OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
+                  enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
+                  focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.brand, width: 2)),
+                ),
+              ),
+              const SizedBox(height: 12),
+
+              const Text('Description (optional)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
+              const SizedBox(height: 4),
+              TextField(
+                controller: _descCtrl,
+                maxLines: 2,
+                style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                decoration: InputDecoration(
+                  hintText: 'e.g. Site visit, materials estimate...',
+                  hintStyle: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+                  filled: true, fillColor: AppTheme.pageBg,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  border:        OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
+                  enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
+                  focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.brand, width: 2)),
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              Row(children: [
+                Switch(value: _billable, onChanged: (v) => setState(() => _billable = v), activeColor: AppTheme.brand),
+                const SizedBox(width: 8),
+                const Text('Billable to customer', style: TextStyle(fontSize: 13, color: AppTheme.textPrimary)),
+              ]),
+              const SizedBox(height: 12),
+
+              const Text('Receipt (optional)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
+              const SizedBox(height: 8),
+              if (_receiptBytes != null)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  decoration: BoxDecoration(color: AppTheme.pageBg, borderRadius: BorderRadius.circular(8), border: Border.all(color: AppTheme.borderColor)),
+                  child: Row(children: [
+                    const Icon(Icons.image_outlined, size: 16, color: AppTheme.brand),
+                    const SizedBox(width: 8),
+                    Expanded(child: Text(_receiptName ?? 'Photo attached',
+                        style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary), overflow: TextOverflow.ellipsis)),
+                    GestureDetector(
+                      onTap: () => setState(() { _receiptBytes = null; _receiptName = null; }),
+                      child: const Icon(Icons.close, size: 14, color: AppTheme.error),
+                    ),
+                  ]),
+                )
+              else
+                Row(children: [
+                  Expanded(child: OutlinedButton.icon(
+                    onPressed: _pickingPhoto ? null : () => _pickPhoto(ImageSource.camera),
+                    icon: const Icon(Icons.camera_alt_outlined, size: 16),
+                    label: const Text('Take Photo'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: AppTheme.textPrimary,
+                      side: const BorderSide(color: AppTheme.borderColor),
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    ),
+                  )),
+                  const SizedBox(width: 8),
+                  Expanded(child: OutlinedButton.icon(
+                    onPressed: _pickingPhoto ? null : () => _pickPhoto(ImageSource.gallery),
+                    icon: const Icon(Icons.photo_library_outlined, size: 16),
+                    label: const Text('Choose File'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: AppTheme.textPrimary,
+                      side: const BorderSide(color: AppTheme.borderColor),
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    ),
+                  )),
+                ]),
+
+              if (_error != null) ...[
+                const SizedBox(height: 10),
+                Text(_error!, style: const TextStyle(fontSize: 12, color: AppTheme.error)),
+              ],
+              const SizedBox(height: 20),
+              SizedBox(
+                width: double.infinity, height: 44,
+                child: ElevatedButton(
+                  onPressed: _saving ? null : _save,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppTheme.brand, foregroundColor: Colors.white, elevation: 0,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  child: _saving
+                      ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                      : Text(widget.existing != null ? 'Save Changes' : 'Add Expense',
+                          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+                ),
               ),
             ]),
-            const SizedBox(height: 20),
-            const Text('Type', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
-            const SizedBox(height: 8),
-            Row(children: List.generate(_types.length, (i) {
-              final sel = _expenseType == _types[i];
-              return Expanded(child: Padding(
-                padding: EdgeInsets.only(right: i < _types.length - 1 ? 8 : 0),
-                child: GestureDetector(
-                  onTap: () => setState(() => _expenseType = _types[i]),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(vertical: 10),
-                    decoration: BoxDecoration(
-                      color: sel ? _typeColors[i].withValues(alpha: 0.12) : AppTheme.pageBg,
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(
-                          color: sel ? _typeColors[i] : AppTheme.borderColor,
-                          width: sel ? 1.5 : 1),
-                    ),
-                    child: Column(mainAxisSize: MainAxisSize.min, children: [
-                      Icon(_typeIcons[i], size: 16,
-                          color: sel ? _typeColors[i] : AppTheme.textSecondary),
-                      const SizedBox(height: 4),
-                      Text(_typeLabels[i], style: TextStyle(fontSize: 10,
-                          fontWeight: FontWeight.w600,
-                          color: sel ? _typeColors[i] : AppTheme.textSecondary)),
-                    ]),
-                  ),
-                ),
-              ));
-            })),
-            const SizedBox(height: 16),
-            const Text('Amount', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
-            const SizedBox(height: 4),
-            TextField(
-              controller: _amountCtrl,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: AppTheme.textPrimary),
-              decoration: InputDecoration(
-                prefixText: '\$ ',
-                prefixStyle: const TextStyle(fontSize: 15, color: AppTheme.textSecondary),
-                hintText: '0.00',
-                filled: true, fillColor: AppTheme.pageBg,
-                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-                border:        OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
-                enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
-                focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.brand, width: 2)),
-              ),
-            ),
-            const SizedBox(height: 12),
-            const Text('Description (optional)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
-            const SizedBox(height: 4),
-            TextField(
-              controller: _descCtrl,
-              maxLines: 2,
-              style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
-              decoration: InputDecoration(
-                hintText: 'e.g. Site visit, materials estimate...',
-                hintStyle: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
-                filled: true, fillColor: AppTheme.pageBg,
-                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                border:        OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
-                enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
-                focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.brand, width: 2)),
-              ),
-            ),
-            if (_error != null) ...[
-              const SizedBox(height: 10),
-              Text(_error!, style: const TextStyle(fontSize: 12, color: AppTheme.error)),
-            ],
-            const SizedBox(height: 20),
-            SizedBox(
-              width: double.infinity, height: 44,
-              child: ElevatedButton(
-                onPressed: _saving ? null : _save,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppTheme.brand, foregroundColor: Colors.white, elevation: 0,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                ),
-                child: _saving
-                    ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                    : Text(widget.existing != null ? 'Save Changes' : 'Add Expense',
-                        style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
-              ),
-            ),
-          ]),
+          ),
         ),
       ),
     );

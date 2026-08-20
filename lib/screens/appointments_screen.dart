@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -11,6 +12,7 @@ import 'dart:convert';
 import '../utils/business_utils.dart';
 import '../widgets/office_job_form_viewer_sheet.dart';
 import '../utils/phone_utils.dart';
+import 'package:image_picker/image_picker.dart';
 
 class AppointmentsScreen extends StatefulWidget {
   const AppointmentsScreen({super.key});
@@ -35,6 +37,21 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
   List<Map<String, dynamic>> _jobTypes     = [];
   int? _businessId;
   Map<String, dynamic>? _business;
+  bool _jobCostingEnabled = false;
+
+  // Mirrors check_plan_feature('job_costing') server-side exactly — beta
+  // bypasses everything, otherwise requires a paid, active/trialing
+  // subscription on Growth or Pro. Kept in sync so the teaser shown here
+  // never disagrees with what log-job-expense actually allows.
+  bool _computeJobCostingEnabled(Map<String, dynamic>? business) {
+    if (business == null) return false;
+    if (business['is_beta'] == true) return true;
+    if (business['is_paid'] != true) return false;
+    final sub = business['subscription_status'] as String?;
+    if (sub != 'active' && sub != 'trialing') return false;
+    final plan = business['plan'] as String?;
+    return plan == 'growth' || plan == 'pro';
+  }
 
   late final _AppLifecycleObserver _observer = _AppLifecycleObserver(onResume: _load);
   String   _calView   = 'week';
@@ -123,7 +140,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
       if (_businessId == null) return;
       final results = await Future.wait([
         _db.from('appointments').select().eq('business_id', _businessId!).order('start_date_time', ascending: true),
-        _db.from('businesses').select('availability_hours, slot_duration_minutes').eq('id', _businessId!).maybeSingle(),
+        _db.from('businesses').select('availability_hours, slot_duration_minutes, plan, is_paid, subscription_status, is_beta').eq('id', _businessId!).maybeSingle(),
         _db.from('profiles').select('id, full_name, role').eq('business_id', _businessId!),
         _db.from('leads').select('id, lead_name, lead_email, lead_phone, lead_address').eq('business_id', _businessId!).order('lead_name', ascending: true),
         _db.from('calendars').select().eq('business_id', _businessId!).order('created_at', ascending: true),
@@ -135,6 +152,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
       ]);
       _appointments  = List<Map<String, dynamic>>.from(results[0] as List);
       _business      = results[1] as Map<String, dynamic>?;
+      _jobCostingEnabled = _computeJobCostingEnabled(_business);
       await _mergeResolvedContactInfo();
       _teamMembers   = List<Map<String, dynamic>>.from(results[2] as List);
       if (_selectedUserIds.isEmpty) {
@@ -2103,6 +2121,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
         teamMembers: _teamMembers,
         jobTypes: _jobTypes,
         businessDefaultHours: _business?['availability_hours'],
+        jobCostingEnabled: _jobCostingEnabled,
         onUpdated: () { Navigator.pop(context); _load(); },
       ));
   }
@@ -5451,6 +5470,7 @@ class _AppointmentDetailSheet extends StatefulWidget {
   final List<Map<String, dynamic>> teamMembers;
   final List<Map<String, dynamic>> jobTypes;
   final dynamic businessDefaultHours;
+  final bool jobCostingEnabled;
 
   const _AppointmentDetailSheet({
     required this.appointment,
@@ -5461,6 +5481,7 @@ class _AppointmentDetailSheet extends StatefulWidget {
     this.teamMembers = const [],
     this.jobTypes = const [],
     this.businessDefaultHours,
+    this.jobCostingEnabled = false,
   });
 
   @override
@@ -5576,7 +5597,7 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
       final apptId = widget.appointment['id'] as int;
       final data = await _db
           .from('job_expenses')
-          .select()
+          .select('*, expense_categories(id, name)')
           .eq('appointment_id', apptId)
           .filter('deleted_at', 'is', null)
           .order('logged_at', ascending: true);
@@ -6683,17 +6704,53 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
   Widget _buildJobCostsSection(BuildContext context) {
     final totalCents = _jobExpenses.fold<int>(0, (s, e) => s + ((e['amount_cents'] as int?) ?? 0));
     final totalDollars = totalCents / 100.0;
+    const categoryColor = Color(0xFF6366F1);
 
-    final typeColor = {
-      'labor':        const Color(0xFF6366F1),
-      'material':     const Color(0xFF10B981),
-      'subcontractor': const Color(0xFFF59E0B),
-      'other':        const Color(0xFF94A3B8),
-    };
-    final typeLabel = {
-      'labor': 'Labor', 'material': 'Material',
-      'subcontractor': 'Sub', 'other': 'Other',
-    };
+    if (!widget.jobCostingEnabled) {
+      return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Text('JOB COSTS', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700,
+            color: AppTheme.textSecondary, letterSpacing: 0.5)),
+        const SizedBox(height: 8),
+        Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: AppTheme.pageBg,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: AppTheme.borderColor),
+          ),
+          child: Row(children: [
+            Container(
+              width: 32, height: 32,
+              decoration: BoxDecoration(
+                color: AppTheme.brand.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Icon(Icons.lock_outline, size: 16, color: AppTheme.brand),
+            ),
+            const SizedBox(width: 12),
+            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Text('Job Costing is a Growth plan feature',
+                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+              const SizedBox(height: 2),
+              const Text('Track fuel, materials, and other job expenses.',
+                  style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+            ])),
+            const SizedBox(width: 8),
+            GestureDetector(
+              onTap: () => context.go('/settings?section=billing'),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: AppTheme.brand,
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: const Text('Upgrade', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.white)),
+              ),
+            ),
+          ]),
+        ),
+      ]);
+    }
 
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       // Header row
@@ -6772,10 +6829,11 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
                 final exp = entry.value;
                 final cents = (exp['amount_cents'] as int?) ?? 0;
                 final dollars = cents / 100.0;
-                final type = exp['expense_type'] as String? ?? 'other';
-                final color = typeColor[type] ?? const Color(0xFF94A3B8);
-                final label = typeLabel[type] ?? type;
+                final category = exp['expense_categories'] as Map<String, dynamic>?;
+                final label = category?['name'] as String? ?? 'Other';
                 final desc = exp['description'] as String? ?? '';
+                final billable = exp['billable'] as bool? ?? true;
+                final hasReceipt = (exp['receipt_photo_path'] as String?)?.isNotEmpty == true;
                 return Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                   decoration: BoxDecoration(
@@ -6787,12 +6845,28 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
                       decoration: BoxDecoration(
-                        color: color.withValues(alpha: 0.12),
+                        color: categoryColor.withValues(alpha: 0.12),
                         borderRadius: BorderRadius.circular(4),
                       ),
-                      child: Text(label, style: TextStyle(fontSize: 10,
-                          fontWeight: FontWeight.w600, color: color)),
+                      child: Text(label, style: const TextStyle(fontSize: 10,
+                          fontWeight: FontWeight.w600, color: categoryColor)),
                     ),
+                    if (!billable) ...[
+                      const SizedBox(width: 4),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: AppTheme.textSecondary.withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: const Text('Not billable', style: TextStyle(fontSize: 9,
+                            fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
+                      ),
+                    ],
+                    if (hasReceipt) ...[
+                      const SizedBox(width: 4),
+                      const Icon(Icons.receipt_long, size: 12, color: AppTheme.textSecondary),
+                    ],
                     const SizedBox(width: 10),
                     Expanded(child: Text(
                       desc.isNotEmpty ? desc : label,
@@ -7047,29 +7121,33 @@ class _AddExpenseSheet extends StatefulWidget {
 }
 
 class _AddExpenseSheetState extends State<_AddExpenseSheet> {
+  final _db = Supabase.instance.client;
   final _amountCtrl = TextEditingController();
   final _descCtrl   = TextEditingController();
-  String  _expenseType = 'labor';
-  bool    _saving      = false;
+
+  List<Map<String, dynamic>> _categories = [];
+  int?    _categoryId;
+  bool    _billable        = true;
+  bool    _loadingCategories = true;
+  bool    _saving          = false;
   String? _error;
 
-  static const _types = ['labor', 'material', 'subcontractor', 'other'];
-  static const _typeLabels = ['Labor', 'Material', 'Subcontractor', 'Other'];
-  static const _typeIcons  = [Icons.people_outline, Icons.inventory_2_outlined,
-      Icons.handshake_outlined, Icons.more_horiz];
-  static const _typeColors = [Color(0xFF6366F1), Color(0xFF10B981),
-      Color(0xFFF59E0B), Color(0xFF94A3B8)];
+  Uint8List? _receiptBytes;
+  String?    _receiptName;
+  bool       _pickingPhoto = false;
 
   @override
   void initState() {
     super.initState();
     if (widget.existing != null) {
       final e = widget.existing!;
-      _expenseType = e['expense_type'] as String? ?? 'labor';
-      final cents  = (e['amount_cents'] as int?) ?? 0;
+      _categoryId = e['category_id'] as int?;
+      _billable   = e['billable'] as bool? ?? true;
+      final cents = (e['amount_cents'] as int?) ?? 0;
       _amountCtrl.text = (cents / 100.0).toStringAsFixed(2);
       _descCtrl.text   = e['description'] as String? ?? '';
     }
+    _loadCategories();
   }
 
   @override
@@ -7079,7 +7157,72 @@ class _AddExpenseSheetState extends State<_AddExpenseSheet> {
     super.dispose();
   }
 
+  Future<void> _loadCategories() async {
+    if (widget.businessId == null) {
+      if (mounted) setState(() => _loadingCategories = false);
+      return;
+    }
+    try {
+      final data = await _db
+          .from('expense_categories')
+          .select()
+          .eq('business_id', widget.businessId!)
+          .eq('is_active', true)
+          .filter('deleted_at', 'is', null)
+          .order('name', ascending: true);
+      if (!mounted) return;
+      setState(() {
+        _categories = List<Map<String, dynamic>>.from(data);
+        if (_categoryId == null && _categories.isNotEmpty) {
+          _categoryId = _categories.first['id'] as int?;
+        }
+      });
+    } catch (e) {
+      debugPrint('Load expense categories error: $e');
+    } finally {
+      if (mounted) setState(() => _loadingCategories = false);
+    }
+  }
+
+  Future<void> _pickPhoto(ImageSource source) async {
+    setState(() => _pickingPhoto = true);
+    try {
+      final picked = await ImagePicker().pickImage(source: source, imageQuality: 80);
+      if (picked == null) return;
+      final bytes = await picked.readAsBytes();
+      if (!mounted) return;
+      setState(() {
+        _receiptBytes = bytes;
+        _receiptName  = picked.name;
+      });
+    } catch (e) {
+      debugPrint('Pick photo error: $e');
+    } finally {
+      if (mounted) setState(() => _pickingPhoto = false);
+    }
+  }
+
+  Future<void> _uploadReceipt(int expenseId, String token) async {
+    if (_receiptBytes == null) return;
+    try {
+      final req = http.MultipartRequest(
+        'POST',
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/upload-expense-receipt'),
+      );
+      req.headers['Authorization'] = 'Bearer $token';
+      req.fields['expense_id'] = expenseId.toString();
+      req.files.add(http.MultipartFile.fromBytes('receipt', _receiptBytes!, filename: _receiptName ?? 'receipt.jpg'));
+      await req.send();
+    } catch (e) {
+      debugPrint('Upload receipt error: $e');
+    }
+  }
+
   Future<void> _save() async {
+    if (_categoryId == null) {
+      setState(() => _error = 'Select a category');
+      return;
+    }
     final amountText = _amountCtrl.text.trim().replaceAll(',', '');
     final dollars    = double.tryParse(amountText);
     if (dollars == null || dollars <= 0) {
@@ -7090,16 +7233,16 @@ class _AddExpenseSheetState extends State<_AddExpenseSheet> {
     setState(() { _saving = true; _error = null; });
 
     try {
-      final db    = Supabase.instance.client;
-      final token = db.auth.currentSession?.accessToken;
+      final token = _db.auth.currentSession?.accessToken;
       if (token == null) throw Exception('Not authenticated');
 
       final body = <String, dynamic>{
         'appointment_id': widget.appointmentId,
         if (widget.businessId != null) 'business_id': widget.businessId,
-        'expense_type':   _expenseType,
+        'category_id':    _categoryId,
         'amount_cents':   amountCents,
         'description':    _descCtrl.text.trim().isEmpty ? null : _descCtrl.text.trim(),
+        'billable':       _billable,
         if (widget.existing != null) 'expense_id': widget.existing!['id'],
       };
 
@@ -7121,6 +7264,12 @@ class _AddExpenseSheetState extends State<_AddExpenseSheet> {
       if (resp.statusCode != 200 || data['success'] != true) {
         throw Exception(data['error'] ?? 'Failed to save expense');
       }
+
+      final expenseId = data['expense']?['id'] as int?;
+      if (expenseId != null && _receiptBytes != null) {
+        await _uploadReceipt(expenseId, token);
+      }
+      if (!mounted) return;
       widget.onSaved();
     } catch (e) {
       if (mounted) setState(() { _error = e.toString(); _saving = false; });
@@ -7143,37 +7292,33 @@ class _AddExpenseSheetState extends State<_AddExpenseSheet> {
             style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
         const SizedBox(height: 20),
 
-        // Type selector
-        const Text('Type', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
+        // Category selector
+        const Text('Category', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
         const SizedBox(height: 8),
-        Row(children: List.generate(_types.length, (i) {
-          final sel = _expenseType == _types[i];
-          return Expanded(child: Padding(
-            padding: EdgeInsets.only(right: i < _types.length - 1 ? 8 : 0),
-            child: GestureDetector(
-              onTap: () => setState(() => _expenseType = _types[i]),
-              child: Container(
-                padding: const EdgeInsets.symmetric(vertical: 10),
-                decoration: BoxDecoration(
-                  color: sel ? _typeColors[i].withValues(alpha: 0.12) : AppTheme.pageBg,
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(
-                    color: sel ? _typeColors[i] : AppTheme.borderColor,
-                    width: sel ? 1.5 : 1,
-                  ),
-                ),
-                child: Column(mainAxisSize: MainAxisSize.min, children: [
-                  Icon(_typeIcons[i], size: 16,
-                      color: sel ? _typeColors[i] : AppTheme.textSecondary),
-                  const SizedBox(height: 4),
-                  Text(_typeLabels[i], style: TextStyle(
-                      fontSize: 10, fontWeight: FontWeight.w600,
-                      color: sel ? _typeColors[i] : AppTheme.textSecondary)),
-                ]),
-              ),
-            ),
-          ));
-        })),
+        if (_loadingCategories)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 8),
+            child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+          )
+        else if (_categories.isEmpty)
+          const Text('No categories set up for this business yet.',
+              style: TextStyle(fontSize: 12, color: AppTheme.textSecondary))
+        else
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            decoration: BoxDecoration(color: AppTheme.pageBg, borderRadius: BorderRadius.circular(8), border: Border.all(color: AppTheme.borderColor)),
+            child: DropdownButtonHideUnderline(child: DropdownButton<int>(
+              value: _categoryId,
+              isExpanded: true,
+              dropdownColor: AppTheme.cardBg,
+              style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+              items: _categories.map((c) => DropdownMenuItem<int>(
+                value: c['id'] as int,
+                child: Text(c['name'] as String? ?? 'Unnamed'),
+              )).toList(),
+              onChanged: (v) => setState(() => _categoryId = v),
+            )),
+          ),
         const SizedBox(height: 16),
 
         // Amount
@@ -7214,6 +7359,60 @@ class _AddExpenseSheetState extends State<_AddExpenseSheet> {
             focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.brand, width: 2)),
           ),
         ),
+        const SizedBox(height: 16),
+
+        // Billable toggle
+        Row(children: [
+          Switch(value: _billable, onChanged: (v) => setState(() => _billable = v), activeColor: AppTheme.brand),
+          const SizedBox(width: 8),
+          const Text('Billable to customer', style: TextStyle(fontSize: 13, color: AppTheme.textPrimary)),
+        ]),
+        const SizedBox(height: 12),
+
+        // Receipt photo
+        const Text('Receipt (optional)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
+        const SizedBox(height: 8),
+        if (_receiptBytes != null)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(color: AppTheme.pageBg, borderRadius: BorderRadius.circular(8), border: Border.all(color: AppTheme.borderColor)),
+            child: Row(children: [
+              const Icon(Icons.image_outlined, size: 16, color: AppTheme.brand),
+              const SizedBox(width: 8),
+              Expanded(child: Text(_receiptName ?? 'Photo attached',
+                  style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary), overflow: TextOverflow.ellipsis)),
+              GestureDetector(
+                onTap: () => setState(() { _receiptBytes = null; _receiptName = null; }),
+                child: const Icon(Icons.close, size: 14, color: AppTheme.error),
+              ),
+            ]),
+          )
+        else
+          Row(children: [
+            Expanded(child: OutlinedButton.icon(
+              onPressed: _pickingPhoto ? null : () => _pickPhoto(ImageSource.camera),
+              icon: const Icon(Icons.camera_alt_outlined, size: 16),
+              label: const Text('Take Photo'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: AppTheme.textPrimary,
+                side: const BorderSide(color: AppTheme.borderColor),
+                padding: const EdgeInsets.symmetric(vertical: 10),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+            )),
+            const SizedBox(width: 8),
+            Expanded(child: OutlinedButton.icon(
+              onPressed: _pickingPhoto ? null : () => _pickPhoto(ImageSource.gallery),
+              icon: const Icon(Icons.photo_library_outlined, size: 16),
+              label: const Text('Choose File'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: AppTheme.textPrimary,
+                side: const BorderSide(color: AppTheme.borderColor),
+                padding: const EdgeInsets.symmetric(vertical: 10),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+            )),
+          ]),
 
         if (_error != null) ...[
           const SizedBox(height: 10),

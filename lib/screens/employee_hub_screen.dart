@@ -1,10 +1,12 @@
 import 'dart:async';
+import 'dart:typed_data';
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:geolocator/geolocator.dart';
 import 'package:go_router/go_router.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:image_picker/image_picker.dart';
 import 'dart:convert';
 import '../theme/app_theme.dart';
 
@@ -45,6 +47,9 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
 
   bool _hasPendingSync = false;
   Timer? _pendingSyncRetryTimer;
+
+  bool _jobCostingEnabled = false;
+  List<Map<String, dynamic>> _expenseCategories = [];
 
   final _jobSearchCtrl = TextEditingController();
   bool _showJobResults = false;
@@ -106,6 +111,9 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
             List<Map<String, dynamic>>.from(data['route_stops'] ?? []);
         _pastJobForms =
             List<Map<String, dynamic>>.from(data['past_job_forms'] ?? []);
+        _jobCostingEnabled = data['job_costing_enabled'] as bool? ?? false;
+        _expenseCategories =
+            List<Map<String, dynamic>>.from(data['expense_categories'] ?? []);
         _loading = false;
       });
 
@@ -502,6 +510,8 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
         appt: appt,
         fnBase: _fnBase,
         onNoteSaved: _load,
+        jobCostingEnabled: _jobCostingEnabled,
+        expenseCategories: _expenseCategories,
       ),
     );
   }
@@ -1386,12 +1396,16 @@ class _EmployeeAppointmentDetailSheet extends StatefulWidget {
   final Map<String, dynamic> appt;
   final String fnBase;
   final VoidCallback onNoteSaved;
+  final bool jobCostingEnabled;
+  final List<Map<String, dynamic>> expenseCategories;
 
   const _EmployeeAppointmentDetailSheet({
     required this.token,
     required this.appt,
     required this.fnBase,
     required this.onNoteSaved,
+    this.jobCostingEnabled = false,
+    this.expenseCategories = const [],
   });
 
   @override
@@ -1404,16 +1418,103 @@ class _EmployeeAppointmentDetailSheetState extends State<_EmployeeAppointmentDet
   bool _sendingOnMyWay = false;
   String? _onMyWaySentAt;
 
+  // Expense logging
+  final _expenseAmountCtrl = TextEditingController();
+  final _expenseDescCtrl = TextEditingController();
+  int? _expenseCategoryId;
+  bool _expenseBillable = true;
+  bool _savingExpense = false;
+  String? _expenseError;
+  String? _expenseSuccess;
+  Uint8List? _receiptBytes;
+  String? _receiptName;
+  bool _pickingPhoto = false;
+
   @override
   void initState() {
     super.initState();
     _onMyWaySentAt = widget.appt['on_my_way_sent_at'] as String?;
+    if (widget.expenseCategories.isNotEmpty) {
+      _expenseCategoryId = widget.expenseCategories.first['id'] as int?;
+    }
   }
 
   @override
   void dispose() {
     _noteCtrl.dispose();
+    _expenseAmountCtrl.dispose();
+    _expenseDescCtrl.dispose();
     super.dispose();
+  }
+
+  Future<void> _pickReceiptPhoto(ImageSource source) async {
+    setState(() => _pickingPhoto = true);
+    try {
+      final picked = await ImagePicker().pickImage(source: source, imageQuality: 80);
+      if (picked == null) return;
+      final bytes = await picked.readAsBytes();
+      if (!mounted) return;
+      setState(() {
+        _receiptBytes = bytes;
+        _receiptName = picked.name;
+      });
+    } catch (e) {
+      debugPrint('Pick receipt photo error: $e');
+    } finally {
+      if (mounted) setState(() => _pickingPhoto = false);
+    }
+  }
+
+  Future<void> _logExpense() async {
+    if (_expenseCategoryId == null) {
+      setState(() => _expenseError = 'Select a category');
+      return;
+    }
+    final dollars = double.tryParse(_expenseAmountCtrl.text.trim().replaceAll(',', ''));
+    if (dollars == null || dollars <= 0) {
+      setState(() => _expenseError = 'Enter a valid amount');
+      return;
+    }
+    setState(() { _savingExpense = true; _expenseError = null; _expenseSuccess = null; });
+    try {
+      final res = await http.post(
+        Uri.parse('${widget.fnBase}/employee-hub-action'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'token': widget.token,
+          'action': 'log_expense',
+          'appointment_id': widget.appt['id'],
+          'category_id': _expenseCategoryId,
+          'amount_cents': (dollars * 100).round(),
+          'description': _expenseDescCtrl.text.trim().isEmpty ? null : _expenseDescCtrl.text.trim(),
+          'billable': _expenseBillable,
+          if (_receiptBytes != null) 'receipt_base64': base64Encode(_receiptBytes!),
+          if (_receiptName != null) 'receipt_filename': _receiptName,
+        }),
+      );
+      if (!mounted) return;
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      if (res.statusCode == 200 && data['success'] == true) {
+        setState(() {
+          _expenseSuccess = 'Expense logged.';
+          _expenseAmountCtrl.clear();
+          _expenseDescCtrl.clear();
+          _receiptBytes = null;
+          _receiptName = null;
+          _expenseBillable = true;
+        });
+        return;
+      }
+      if (res.statusCode == 403 && data['error'] == 'upgrade_required') {
+        setState(() => _expenseError = data['message'] as String? ?? 'Job Costing requires the Growth plan.');
+        return;
+      }
+      setState(() => _expenseError = data['message'] as String? ?? data['error'] as String? ?? 'Failed to log expense.');
+    } catch (e) {
+      if (mounted) setState(() => _expenseError = 'Error: $e');
+    } finally {
+      if (mounted) setState(() => _savingExpense = false);
+    }
   }
 
   String _formatDateTime(String? iso) {
@@ -1560,6 +1661,136 @@ class _EmployeeAppointmentDetailSheetState extends State<_EmployeeAppointmentDet
               ),
             ),
             const SizedBox(height: 20),
+
+            if (widget.jobCostingEnabled) ...[
+              const Text('Log an Expense', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 0.5)),
+              const SizedBox(height: 8),
+              if (widget.expenseCategories.isEmpty)
+                const Text('No expense categories set up for this business yet.',
+                    style: TextStyle(fontSize: 12, color: AppTheme.textSecondary))
+              else ...[
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  decoration: BoxDecoration(color: AppTheme.pageBg, borderRadius: BorderRadius.circular(8), border: Border.all(color: AppTheme.borderColor)),
+                  child: DropdownButtonHideUnderline(child: DropdownButton<int>(
+                    value: _expenseCategoryId,
+                    isExpanded: true,
+                    dropdownColor: AppTheme.cardBg,
+                    style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                    items: widget.expenseCategories.map((c) => DropdownMenuItem<int>(
+                      value: c['id'] as int,
+                      child: Text(c['name'] as String? ?? 'Unnamed'),
+                    )).toList(),
+                    onChanged: (v) => setState(() => _expenseCategoryId = v),
+                  )),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: _expenseAmountCtrl,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: AppTheme.textPrimary),
+                  decoration: InputDecoration(
+                    prefixText: '\$ ',
+                    prefixStyle: const TextStyle(fontSize: 15, color: AppTheme.textSecondary),
+                    hintText: '0.00',
+                    filled: true,
+                    fillColor: AppTheme.pageBg,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
+                    enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
+                    focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide(color: AppTheme.brand, width: 1.5)),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: _expenseDescCtrl,
+                  maxLines: 2,
+                  style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                  decoration: InputDecoration(
+                    hintText: 'e.g. 2 bundles shingles, fuel for the day...',
+                    hintStyle: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+                    filled: true,
+                    fillColor: AppTheme.pageBg,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
+                    enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
+                    focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide(color: AppTheme.brand, width: 1.5)),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Row(children: [
+                  Switch(value: _expenseBillable, onChanged: (v) => setState(() => _expenseBillable = v), activeColor: AppTheme.brand),
+                  const SizedBox(width: 8),
+                  const Text('Billable to customer', style: TextStyle(fontSize: 13, color: AppTheme.textPrimary)),
+                ]),
+                const SizedBox(height: 10),
+                if (_receiptBytes != null)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    decoration: BoxDecoration(color: AppTheme.pageBg, borderRadius: BorderRadius.circular(8), border: Border.all(color: AppTheme.borderColor)),
+                    child: Row(children: [
+                      const Icon(Icons.image_outlined, size: 16, color: AppTheme.brand),
+                      const SizedBox(width: 8),
+                      Expanded(child: Text(_receiptName ?? 'Photo attached',
+                          style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary), overflow: TextOverflow.ellipsis)),
+                      GestureDetector(
+                        onTap: () => setState(() { _receiptBytes = null; _receiptName = null; }),
+                        child: const Icon(Icons.close, size: 14, color: AppTheme.error),
+                      ),
+                    ]),
+                  )
+                else
+                  Row(children: [
+                    Expanded(child: OutlinedButton.icon(
+                      onPressed: _pickingPhoto ? null : () => _pickReceiptPhoto(ImageSource.camera),
+                      icon: const Icon(Icons.camera_alt_outlined, size: 16),
+                      label: const Text('Take Photo', style: TextStyle(fontSize: 12)),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: AppTheme.textPrimary,
+                        side: const BorderSide(color: AppTheme.borderColor),
+                        padding: const EdgeInsets.symmetric(vertical: 10),
+                      ),
+                    )),
+                    const SizedBox(width: 8),
+                    Expanded(child: OutlinedButton.icon(
+                      onPressed: _pickingPhoto ? null : () => _pickReceiptPhoto(ImageSource.gallery),
+                      icon: const Icon(Icons.photo_library_outlined, size: 16),
+                      label: const Text('Choose File', style: TextStyle(fontSize: 12)),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: AppTheme.textPrimary,
+                        side: const BorderSide(color: AppTheme.borderColor),
+                        padding: const EdgeInsets.symmetric(vertical: 10),
+                      ),
+                    )),
+                  ]),
+                if (_expenseError != null) ...[
+                  const SizedBox(height: 8),
+                  Text(_expenseError!, style: const TextStyle(fontSize: 12, color: AppTheme.error)),
+                ],
+                if (_expenseSuccess != null) ...[
+                  const SizedBox(height: 8),
+                  Text(_expenseSuccess!, style: const TextStyle(fontSize: 12, color: AppTheme.success)),
+                ],
+                const SizedBox(height: 10),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: _savingExpense ? null : _logExpense,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppTheme.brand,
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    ),
+                    child: _savingExpense
+                        ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                        : const Text('Log Expense'),
+                  ),
+                ),
+              ],
+              const SizedBox(height: 20),
+            ],
 
             if (notes.isNotEmpty) ...[
               const Text('Notes', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 0.5)),
