@@ -269,6 +269,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       case 'team':            return 6;
       case 'notifications':   return 7;
       case 'payments':        return 8;
+      case 'integrations':    return 8;
       case 'social':          return 9;
       case 'billing':         return 10;
       // Business Services
@@ -4547,6 +4548,11 @@ class _PaymentOptionsSectionState
   bool _stripeManaging = false;
   bool _testMode = false;
 
+  // QuickBooks Connect state
+  bool _qbLoading = true;
+  bool _qbConnected = false;
+  bool _qbConnecting = false;
+
   @override
   void initState() {
     super.initState();
@@ -4558,6 +4564,7 @@ class _PaymentOptionsSectionState
     _stripeOnboardingStarted =
         b['stripe_connect_onboarding_started_at'] != null;
     _loadStripeConnect();
+    _loadQuickBooksConnect();
   }
 
   @override
@@ -4567,6 +4574,71 @@ class _PaymentOptionsSectionState
     final stripeParam = uri.queryParameters['stripe'];
     if (stripeParam == 'success' || stripeParam == 'refresh') {
       _loadStripeConnect();
+    }
+    final qbParam = uri.queryParameters['qb'];
+    if (qbParam == 'connected' || qbParam == 'error') {
+      _loadQuickBooksConnect();
+    }
+  }
+
+  Future<void> _loadQuickBooksConnect() async {
+    setState(() => _qbLoading = true);
+    try {
+      final businessId = widget.business['id'] as int?;
+      if (businessId == null) return;
+      final conn = await Supabase.instance.client
+          .from('accounting_connections')
+          .select('connection_status')
+          .eq('business_id', businessId)
+          .eq('provider', 'quickbooks')
+          .filter('deleted_at', 'is', null)
+          .maybeSingle();
+      _qbConnected = conn != null && conn['connection_status'] == 'connected';
+    } catch (e) {
+      debugPrint('QuickBooks connect load error: $e');
+    } finally {
+      if (mounted) setState(() => _qbLoading = false);
+    }
+  }
+
+  Future<void> _connectQuickBooks() async {
+    setState(() => _qbConnecting = true);
+    try {
+      final session = Supabase.instance.client.auth.currentSession;
+      final res = await http.post(
+        Uri.parse(
+            'https://rllriopqojaraceytdno.supabase.co/functions/v1/quickbooks-oauth-connect'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ${session?.accessToken ?? ''}',
+        },
+        body: jsonEncode({'action': 'start', 'business_id': widget.business['id']}),
+      );
+      if (!mounted) return;
+      final body = jsonDecode(res.body) as Map<String, dynamic>;
+      if (res.statusCode == 200 && body['authorize_url'] != null) {
+        final uri = Uri.parse(body['authorize_url'] as String);
+        if (await canLaunchUrl(uri)) {
+          await launchUrl(uri, mode: LaunchMode.externalApplication);
+        }
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(body['error']?.toString() ??
+                'Failed to start QuickBooks connection.'),
+            behavior: SnackBarBehavior.floating,
+          ));
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Error: $e'),
+          behavior: SnackBarBehavior.floating,
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _qbConnecting = false);
     }
   }
 
@@ -4779,6 +4851,16 @@ class _PaymentOptionsSectionState
             onManage: _manageStripe,
             managing: _stripeManaging,
             onRefresh: _loadStripeConnect,
+          ),
+          const SizedBox(height: 16),
+
+          // QuickBooks
+          _QuickBooksCard(
+            loading: _qbLoading,
+            connecting: _qbConnecting,
+            connected: _qbConnected,
+            onConnect: _connectQuickBooks,
+            onRefresh: _loadQuickBooksConnect,
           ),
           const SizedBox(height: 16),
 
@@ -5113,6 +5195,132 @@ class _StripeConnectCard extends StatelessWidget {
                 ],
               ],
             ),
+    );
+  }
+}
+
+// ── QuickBooks Connect Card ───────────────────────────────────────────────────
+
+class _QuickBooksCard extends StatelessWidget {
+  final bool loading;
+  final bool connecting;
+  final bool connected;
+  final VoidCallback onConnect;
+  final VoidCallback onRefresh;
+
+  const _QuickBooksCard({
+    required this.loading,
+    required this.connecting,
+    required this.connected,
+    required this.onConnect,
+    required this.onRefresh,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    const qbColor = Color(0xFF2CA01C);
+
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 200),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: AppTheme.cardBg,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: connected ? qbColor.withValues(alpha: 0.4) : AppTheme.borderColor,
+          width: connected ? 1.5 : 1,
+        ),
+        boxShadow: connected
+            ? [BoxShadow(color: qbColor.withValues(alpha: 0.08), blurRadius: 12)]
+            : null,
+      ),
+      child: loading
+          ? const Center(
+              child: Padding(
+                padding: EdgeInsets.all(16),
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ))
+          : Row(children: [
+              Container(
+                width: 52, height: 52,
+                decoration: BoxDecoration(
+                  color: qbColor.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: qbColor.withValues(alpha: 0.15)),
+                ),
+                child: const Center(
+                  child: Text('QB',
+                      style: TextStyle(
+                          color: qbColor,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w900)),
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Row(children: [
+                    const Text('QuickBooks',
+                        style: TextStyle(fontSize: 15,
+                            fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+                    const SizedBox(width: 10),
+                    if (connected)
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF10B981).withValues(alpha: 0.1),
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                          Icon(Icons.check_circle, size: 11, color: Color(0xFF10B981)),
+                          SizedBox(width: 4),
+                          Text('Connected', style: TextStyle(
+                              fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFF10B981))),
+                        ]),
+                      ),
+                  ]),
+                  const SizedBox(height: 3),
+                  Text(
+                    connected
+                        ? 'Customers and invoices sync automatically with QuickBooks.'
+                        : 'Sync contacts, invoices, and payments with QuickBooks Online.',
+                    style: const TextStyle(
+                        fontSize: 12, color: AppTheme.textSecondary, height: 1.4),
+                  ),
+                ]),
+              ),
+              const SizedBox(width: 16),
+              if (!connected)
+                MouseRegion(
+                  cursor: SystemMouseCursors.click,
+                  child: GestureDetector(
+                    onTap: connecting ? null : onConnect,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: qbColor.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: qbColor.withValues(alpha: 0.3)),
+                      ),
+                      child: connecting
+                          ? SizedBox(
+                              width: 14, height: 14,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: qbColor))
+                          : Text('Connect QuickBooks',
+                              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: qbColor)),
+                    ),
+                  ),
+                ),
+              const SizedBox(width: 4),
+              MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: IconButton(
+                  onPressed: onRefresh,
+                  icon: const Icon(Icons.refresh_rounded, size: 18, color: AppTheme.textSecondary),
+                  tooltip: 'Refresh status',
+                ),
+              ),
+            ]),
     );
   }
 }
