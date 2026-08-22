@@ -81,11 +81,23 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
   List<Map<String, dynamic>> _expensesByMember = [];
   List<Map<String, dynamic>> _expensesByCategory = [];
 
+  // Tax summary report data
+  bool _loadingTaxSummary = false;
+  String? _taxSummaryError;
+  String? _taxJurisdictionName;
+  int _taxInvoiceCount = 0;
+  double _taxStateAmount = 0;
+  double _taxCountyAmount = 0;
+  double _taxCityAmount = 0;
+  double _taxSpecialAmount = 0;
+  double _taxTotalAmount = 0;
+
   @override
   void initState() {
     super.initState();
-    _reportTabController = TabController(length: 4, vsync: this, initialIndex: widget.initialTabIndex);
+    _reportTabController = TabController(length: 5, vsync: this, initialIndex: widget.initialTabIndex);
     _loadData().then((_) => _loadChecklistsReport());
+    _loadTaxSummary();
   }
 
   @override
@@ -321,6 +333,40 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
       debugPrint('Expense report error: $e');
     } finally {
       if (mounted) setState(() => _loadingExpenseReport = false);
+    }
+  }
+
+  Future<void> _loadTaxSummary() async {
+    if (_businessId == null) return;
+    setState(() { _loadingTaxSummary = true; _taxSummaryError = null; });
+    try {
+      final token = _supabase.auth.currentSession?.accessToken;
+      if (token == null) return;
+      final resp = await http.get(
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/get-tax-summary-report?date_range_days=$_range&business_id=$_businessId'),
+        headers: {'Authorization': 'Bearer $token'},
+      );
+      if (!mounted) return;
+      final data = jsonDecode(resp.body);
+      if (resp.statusCode == 200 && data['success'] == true) {
+        final totals = data['totals'] as Map<String, dynamic>? ?? {};
+        setState(() {
+          _taxJurisdictionName = data['jurisdiction_name'] as String?;
+          _taxInvoiceCount = totals['invoice_count'] as int? ?? 0;
+          _taxStateAmount = (totals['state_amount'] as num?)?.toDouble() ?? 0;
+          _taxCountyAmount = (totals['county_amount'] as num?)?.toDouble() ?? 0;
+          _taxCityAmount = (totals['city_amount'] as num?)?.toDouble() ?? 0;
+          _taxSpecialAmount = (totals['special_district_amount'] as num?)?.toDouble() ?? 0;
+          _taxTotalAmount = (totals['total_tax_amount'] as num?)?.toDouble() ?? 0;
+        });
+      } else {
+        setState(() => _taxSummaryError = data['error'] as String? ?? 'Could not load tax summary.');
+      }
+    } catch (e) {
+      debugPrint('Tax summary report error: $e');
+      if (mounted) setState(() => _taxSummaryError = 'Network error — please try again.');
+    } finally {
+      if (mounted) setState(() => _loadingTaxSummary = false);
     }
   }
 
@@ -756,6 +802,7 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
                 Tab(text: 'Job Costing'),
                 Tab(text: 'Expenses'),
                 Tab(text: 'Forms'),
+                Tab(text: 'Tax'),
               ],
             ),
           ),
@@ -771,6 +818,7 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
                           _buildJobCostingTab(),
                           _buildExpensesTab(),
                           _buildChecklistsTab(),
+                          _buildTaxTab(),
                         ],
                       ),
           ),
@@ -828,6 +876,7 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
         });
         _loadData();
         _loadChecklistsReport();
+        _loadTaxSummary();
       },
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 150),
@@ -931,6 +980,114 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
         const SizedBox(height: 24),
       ],
     );
+  }
+
+  Widget _buildTaxTab() {
+    return ListView(
+      padding: const EdgeInsets.all(24),
+      children: [
+        _sectionTitle('Tax Collected'),
+        const SizedBox(height: 4),
+        const Text('Sales tax actually collected on paid invoices, broken down by taxing entity — use this to know how much to remit and to whom.',
+            style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+        const SizedBox(height: 12),
+        _buildTaxSummarySection(),
+        const SizedBox(height: 24),
+      ],
+    );
+  }
+
+  Widget _buildTaxSummarySection() {
+    if (_loadingTaxSummary) {
+      return Container(
+        height: 120,
+        decoration: _cardDecoration(),
+        child: const Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    if (_taxSummaryError != null) {
+      return Container(
+        padding: const EdgeInsets.all(24),
+        decoration: _cardDecoration(),
+        child: Column(children: [
+          const Icon(Icons.error_outline, size: 32, color: AppTheme.error),
+          const SizedBox(height: 10),
+          Text(_taxSummaryError!, style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary)),
+        ]),
+      );
+    }
+
+    if (_taxInvoiceCount == 0) {
+      return Container(
+        padding: const EdgeInsets.all(24),
+        decoration: _cardDecoration(),
+        child: Column(children: [
+          const Icon(Icons.receipt_long_outlined, size: 40, color: AppTheme.textMuted),
+          const SizedBox(height: 12),
+          const Text('No tax collected on paid invoices in this period',
+              style: TextStyle(fontSize: 14, color: AppTheme.textSecondary)),
+        ]),
+      );
+    }
+
+    String fmtMoney(double v) => '\$${v.toStringAsFixed(2)}';
+
+    Widget jurisdictionCard(String label, double amount, Color color) {
+      return Expanded(child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: _cardDecoration(),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(label, style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+          const SizedBox(height: 6),
+          Text(fmtMoney(amount),
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: color)),
+        ]),
+      ));
+    }
+
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      if (_taxJurisdictionName != null) ...[
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          decoration: BoxDecoration(
+            color: AppTheme.brand.withValues(alpha: 0.06),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: AppTheme.brand.withValues(alpha: 0.2)),
+          ),
+          child: Row(children: [
+            const Icon(Icons.location_on_outlined, size: 15, color: AppTheme.brand),
+            const SizedBox(width: 8),
+            Text('Jurisdiction: $_taxJurisdictionName',
+                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+            const Spacer(),
+            Text('$_taxInvoiceCount paid invoice${_taxInvoiceCount == 1 ? '' : 's'}',
+                style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+          ]),
+        ),
+        const SizedBox(height: 16),
+      ],
+      Container(
+        padding: const EdgeInsets.all(16),
+        decoration: _cardDecoration(),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Text('Total Tax Collected', style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+          const SizedBox(height: 4),
+          Text(fmtMoney(_taxTotalAmount),
+              style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w800, color: AppTheme.textPrimary)),
+        ]),
+      ),
+      const SizedBox(height: 16),
+      Row(children: [
+        jurisdictionCard('State', _taxStateAmount, const Color(0xFF3B82F6)),
+        const SizedBox(width: 12),
+        jurisdictionCard('County', _taxCountyAmount, const Color(0xFF8B5CF6)),
+        const SizedBox(width: 12),
+        jurisdictionCard('City', _taxCityAmount, const Color(0xFF10B981)),
+        const SizedBox(width: 12),
+        jurisdictionCard('Special District', _taxSpecialAmount, const Color(0xFFF59E0B)),
+      ]),
+    ]);
   }
 
   Widget _buildChecklistsTab() {

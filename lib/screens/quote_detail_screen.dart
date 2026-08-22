@@ -984,6 +984,7 @@ class _QuoteDetailScreenState extends State<QuoteDetailScreen> {
         'unit_price':     e.value['unit_price'],
         'discount_type':  e.value['discount_type'],
         'discount_value': e.value['discount_value'],
+        'taxable':        e.value['taxable'],
         'total':          e.value['total'],
         'sort_order':     e.key,
         'updated_at':     now,

@@ -40,6 +40,11 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
   final _notesCtrl = TextEditingController();
   DateTime? _expiresAt;
   double _taxRate = 0.0;
+  double _bizCombinedRate = 0.0;
+  double _bizStateRate = 0.0;
+  double _bizCountyRate = 0.0;
+  double _bizCityRate = 0.0;
+  double _bizSpecialRate = 0.0;
 
   // Line items
   final List<_LineItemRow> _lineItems = [];
@@ -71,16 +76,23 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
     _businessId = await getActiveBusinessId();
     if (!mounted) return;
 
-    // Load business default tax rate
+    // Load business default tax rate + jurisdiction breakdown (state/
+    // county/city/special) so each quote can record how much of its
+    // collected tax belongs to each taxing entity.
     final biz = await _supabase
         .from('businesses')
-        .select('default_tax_rate')
+        .select('default_tax_rate, tax_state_rate, tax_county_rate, tax_city_rate, tax_special_district_rate')
         .eq('id', _businessId!)
         .maybeSingle();
     if (!mounted) return;
     final defaultTax = double.tryParse(
             biz?['default_tax_rate']?.toString() ?? '0') ??
         0.0;
+    _bizCombinedRate = defaultTax;
+    _bizStateRate = double.tryParse(biz?['tax_state_rate']?.toString() ?? '0') ?? 0.0;
+    _bizCountyRate = double.tryParse(biz?['tax_county_rate']?.toString() ?? '0') ?? 0.0;
+    _bizCityRate = double.tryParse(biz?['tax_city_rate']?.toString() ?? '0') ?? 0.0;
+    _bizSpecialRate = double.tryParse(biz?['tax_special_district_rate']?.toString() ?? '0') ?? 0.0;
 
     // Load service library
     final lib = await _supabase
@@ -118,6 +130,7 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
         row.unitPriceCtrl.text = (item['unit_price'] ?? 0).toString();
         row.discountValueCtrl.text = (item['discount_value'] ?? 0).toString();
         row.discountType = item['discount_type'] as String? ?? 'none';
+        row.taxable = item['taxable'] as bool? ?? true;
         row.serviceItemId = item['service_item_id'] as String?;
         return row;
       }).toList();
@@ -209,8 +222,29 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
     return _lineItems.fold(0.0, (sum, item) => sum + item.lineTotal);
   }
 
-  double get _taxAmount => _subtotal * _taxRate;
+  // Tax only applies to line items with taxable == true (default true).
+  // Non-taxable items (toggled off per line) are excluded from this base.
+  double get _taxableSubtotal {
+    return _lineItems
+        .where((item) => item.taxable)
+        .fold(0.0, (sum, item) => sum + item.lineTotal);
+  }
+
+  double get _taxAmount => _taxableSubtotal * _taxRate;
   double get _total => _subtotal + _taxAmount;
+
+  // Splits the actual tax collected across jurisdictions using the
+  // business's stored rate breakdown as ratios — this way the four
+  // amounts always sum exactly to _taxAmount even if _taxRate was
+  // manually overridden away from the business's combined rate.
+  double get _taxStateAmount =>
+      _bizCombinedRate > 0 ? _taxAmount * (_bizStateRate / _bizCombinedRate) : 0.0;
+  double get _taxCountyAmount =>
+      _bizCombinedRate > 0 ? _taxAmount * (_bizCountyRate / _bizCombinedRate) : 0.0;
+  double get _taxCityAmount =>
+      _bizCombinedRate > 0 ? _taxAmount * (_bizCityRate / _bizCombinedRate) : 0.0;
+  double get _taxSpecialAmount =>
+      _bizCombinedRate > 0 ? _taxAmount * (_bizSpecialRate / _bizCombinedRate) : 0.0;
 
   List<Widget> _discountRows() {
     final rows = <Widget>[];
@@ -278,6 +312,10 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
           'tax_rate': _taxRate,
           'subtotal': _subtotal,
           'tax_amount': _taxAmount,
+          'tax_state_amount': _taxStateAmount,
+          'tax_county_amount': _taxCountyAmount,
+          'tax_city_amount': _taxCityAmount,
+          'tax_special_district_amount': _taxSpecialAmount,
           'total': _total,
           'updated_at': now,
         }).eq('id', quoteId);
@@ -304,6 +342,10 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
           'tax_rate': _taxRate,
           'subtotal': _subtotal,
           'tax_amount': _taxAmount,
+          'tax_state_amount': _taxStateAmount,
+          'tax_county_amount': _taxCountyAmount,
+          'tax_city_amount': _taxCityAmount,
+          'tax_special_district_amount': _taxSpecialAmount,
           'total': _total,
           'sent_at': null,
           'updated_at': now,
@@ -326,6 +368,7 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
           'unit_price': item.unitPrice,
           'discount_type': item.discountType,
           'discount_value': item.discountValue,
+          'taxable': item.taxable,
           'total': item.lineTotal,
           'sort_order': i,
           'updated_at': now,
@@ -962,6 +1005,10 @@ class _NewQuoteScreenState extends State<NewQuoteScreen> {
                 SizedBox(width: 120, child: Text('DISCOUNT',
                     style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
                         color: AppTheme.textSecondary, letterSpacing: 0.8))),
+                SizedBox(width: 44, child: Text('TAX',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                        color: AppTheme.textSecondary, letterSpacing: 0.8))),
                 SizedBox(width: 90, child: Text('TOTAL',
                     style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
                         color: AppTheme.textSecondary, letterSpacing: 0.8))),
@@ -1174,6 +1221,7 @@ class _LineItemRow {
   final TextEditingController unitPriceCtrl = TextEditingController(text: '0.00');
   final TextEditingController discountValueCtrl = TextEditingController(text: '0');
   String discountType = 'none';
+  bool taxable = true;
   String? serviceItemId;
   String? unit;
 
@@ -1340,6 +1388,20 @@ class _LineItemRowWidgetState extends State<_LineItemRowWidget> {
                   ),
                 ),
               ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          // Taxable
+          SizedBox(
+            width: 44,
+            child: Checkbox(
+              value: item.taxable,
+              visualDensity: VisualDensity.compact,
+              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              onChanged: (v) {
+                setState(() => item.taxable = v ?? true);
+                widget.onChanged();
+              },
             ),
           ),
           const SizedBox(width: 8),
