@@ -43,7 +43,7 @@ const _kPlans = [
     priceId: 'price_1TJJoyGpSG6sxQ0SW1kd9uoW',
     paymentLink: 'https://buy.stripe.com/dRm7sLcnqdsrfTZ3eM8og08',
     features: [
-      '500 AI messages/mo',
+      '300 AI messages/mo',
       'SMS & Email conversations',
       'Contacts & Pipeline CRM',
       'Basic Reporting',
@@ -57,7 +57,7 @@ const _kPlans = [
     priceId: 'price_1TJJvYGpSG6sxQ0SlTuyLur8',
     paymentLink: 'https://buy.stripe.com/5kQ5kDdru4VVgY37v28og09',
     features: [
-      '2,000 AI messages/mo',
+      '1,000 AI messages/mo',
       'Everything in Starter',
       'Campaign automation',
       'Advanced Reporting',
@@ -68,11 +68,11 @@ const _kPlans = [
   ),
   _StripePlan(
     name: 'Pro',
-    price: '\$397',
+    price: '\$497',
     priceId: 'price_1TJJy9GpSG6sxQ0SDBgCgpgH',
     paymentLink: 'https://buy.stripe.com/8x214n4UY0FF6jp9Da8og0a',
     features: [
-      'Unlimited AI messages',
+      '2,500 AI messages/mo',
       'Everything in Growth',
       'White-label options',
       'Custom integrations',
@@ -3650,6 +3650,46 @@ class _BillingSection extends StatefulWidget {
 class _BillingSectionState extends State<_BillingSection> {
   bool _cancelling = false;
 
+  bool _usageLoading = true;
+  int _aiMessagesUsed = 0;
+  int _aiMessagesIncluded = 0;
+  bool _isOverage = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadUsage();
+  }
+
+  Future<void> _loadUsage() async {
+    setState(() => _usageLoading = true);
+    try {
+      final businessId = widget.business['id'] as int?;
+      if (businessId == null) return;
+      final res = await Supabase.instance.client
+          .rpc('get_business_usage_summary', params: {'p_business_id': businessId})
+          .maybeSingle();
+      if (res != null && mounted) {
+        setState(() {
+          _aiMessagesUsed = (res['ai_messages_used'] as num?)?.toInt() ?? 0;
+          _aiMessagesIncluded = (res['ai_messages_included'] as num?)?.toInt() ?? 0;
+          _isOverage = res['is_overage'] as bool? ?? false;
+          _usageLoading = false;
+        });
+      } else if (mounted) {
+        setState(() => _usageLoading = false);
+      }
+    } catch (e) {
+      debugPrint('Usage load error: $e');
+      if (mounted) setState(() => _usageLoading = false);
+    }
+  }
+
+  Future<void> _refreshAll() async {
+    await widget.onRefresh();
+    await _loadUsage();
+  }
+
   String get _currentPlan =>
     widget.business['plan'] as String? ?? '';
   bool get _isBeta =>
@@ -3702,7 +3742,7 @@ class _BillingSectionState extends State<_BillingSection> {
           action: SnackBarAction(
               label: 'Refresh',
               textColor: Colors.white,
-              onPressed: widget.onRefresh),
+              onPressed: _refreshAll),
         ));
       }
     }
@@ -3745,7 +3785,7 @@ class _BillingSectionState extends State<_BillingSection> {
             'action': 'cancel',
             'subscription_id': _subscriptionId
           });
-      await widget.onRefresh();
+      await _refreshAll();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
             content: Text('Subscription cancelled.'),
@@ -3767,10 +3807,6 @@ class _BillingSectionState extends State<_BillingSection> {
 
   @override
   Widget build(BuildContext context) {
-    final minutesUsed =
-        widget.business['minutes_used_this_month'] as int? ?? 0;
-    final includedMinutes =
-        widget.business['included_minutes'] as int? ?? 0;
     final clientId =
         widget.business['client_id'] as String? ?? '—';
     final subId =
@@ -3833,7 +3869,7 @@ class _BillingSectionState extends State<_BillingSection> {
                 MouseRegion(
                     cursor: SystemMouseCursors.click,
                     child: IconButton(
-                        onPressed: widget.onRefresh,
+                        onPressed: _refreshAll,
                         icon: const Icon(Icons.refresh_rounded,
                             size: 18,
                             color: AppTheme.textSecondary))),
@@ -3918,25 +3954,60 @@ class _BillingSectionState extends State<_BillingSection> {
               const SizedBox(height: 24),
             ],
             _SettingsGroup(
-                title: 'Usage This Month',
+                title: 'AI Usage This Month',
                 children: [
-                  _InfoRow(
-                      label: 'Minutes Used',
-                      value: '$minutesUsed'),
-                  _InfoRow(
-                      label: 'Included Minutes',
-                      value: '$includedMinutes'),
-                  if (includedMinutes > 0) ...[
+                  if (_usageLoading)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 8),
+                      child: Center(
+                          child: SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2))),
+                    )
+                  else if (_isBeta)
+                    const _InfoRow(
+                        label: 'AI Messages',
+                        value: 'Unlimited (Beta)')
+                  else ...[
+                    _InfoRow(
+                        label: 'AI Messages Used',
+                        value: '$_aiMessagesUsed'),
+                    _InfoRow(
+                        label: 'AI Messages Included',
+                        value: '$_aiMessagesIncluded'),
                     const SizedBox(height: 8),
                     ClipRRect(
                         borderRadius: BorderRadius.circular(4),
                         child: LinearProgressIndicator(
-                            value: (minutesUsed / includedMinutes)
-                                .clamp(0.0, 1.0),
+                            value: _aiMessagesIncluded > 0
+                                ? (_aiMessagesUsed / _aiMessagesIncluded).clamp(0.0, 1.0)
+                                : 0.0,
                             backgroundColor: AppTheme.borderColor,
                             valueColor: AlwaysStoppedAnimation(
-                                AppTheme.brand),
+                                _isOverage ? Colors.orange : AppTheme.brand),
                             minHeight: 8)),
+                    if (_isOverage) ...[
+                      const SizedBox(height: 10),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: Colors.orange.withValues(alpha: 0.08),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: Colors.orange.withValues(alpha: 0.3)),
+                        ),
+                        child: const Row(children: [
+                          Icon(Icons.info_outline, size: 14, color: Colors.orange),
+                          SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              "You're over your included AI messages this month. Extra messages are billed automatically at the overage rate — your AI keeps working without interruption.",
+                              style: TextStyle(fontSize: 12, color: Colors.orange, height: 1.4),
+                            ),
+                          ),
+                        ]),
+                      ),
+                    ],
                   ],
                 ]),
             const SizedBox(height: 20),

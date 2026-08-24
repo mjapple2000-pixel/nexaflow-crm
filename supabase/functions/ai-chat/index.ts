@@ -34,7 +34,7 @@ serve(async (req) => {
 
     // Fetch business
     const businessRes = await fetch(
-      `${supabaseUrl}/rest/v1/businesses?id=eq.${business_id}&select=business_name,business_phone,ai_persona,services_and_pricing,company_faqs,booking_link,primary_goal,forbidden_words`,
+      `${supabaseUrl}/rest/v1/businesses?id=eq.${business_id}&select=business_name,business_phone,ai_persona,services_and_pricing,company_faqs,booking_link,primary_goal,forbidden_words,is_beta,widget_ai_replies_today,widget_ai_replies_day`,
       {
         headers: {
           'apikey': supabaseKey,
@@ -44,6 +44,21 @@ serve(async (req) => {
     )
     const businesses = await businessRes.json()
     const business = (Array.isArray(businesses) && businesses.length > 0) ? businesses[0] : {}
+
+    // ── Abuse circuit breaker — max 100 AI-answered widget messages per business per day ──
+    // Public embed has no per-visitor identity, so this caps total daily
+    // widget volume per business as a backstop against a runaway script.
+    const todayStr = new Date().toISOString().slice(0, 10)
+    const isNewDay = business.widget_ai_replies_day !== todayStr
+    const widgetRepliesToday = isNewDay ? 0 : (business.widget_ai_replies_today ?? 0)
+    const isWidgetAbuseBlocked = !business.is_beta && widgetRepliesToday >= 100
+
+    if (isWidgetAbuseBlocked) {
+      return new Response(
+        JSON.stringify({ reply: "Thanks for reaching out — our team will follow up with you directly shortly." }),
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      )
+    }
 
     // Fetch knowledge base
     const kbRes = await fetch(
@@ -121,6 +136,31 @@ Rules: Under 160 chars when possible. Professional. No fluff. No emojis. Never r
 
     const aiData = JSON.parse(aiText)
     const reply = aiData?.choices?.[0]?.message?.content ?? 'Sorry, I could not respond right now.'
+
+    // ── Usage metering + abuse counter update ─────────────────
+    await fetch(`${supabaseUrl}/rest/v1/rpc/increment_ai_usage`, {
+      method: 'POST',
+      headers: {
+        'apikey': supabaseKey,
+        'Authorization': `Bearer ${supabaseKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ p_business_id: business_id }),
+    }).catch((e) => console.error('increment_ai_usage error:', e))
+
+    await fetch(`${supabaseUrl}/rest/v1/businesses?id=eq.${business_id}`, {
+      method: 'PATCH',
+      headers: {
+        'apikey': supabaseKey,
+        'Authorization': `Bearer ${supabaseKey}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=minimal',
+      },
+      body: JSON.stringify({
+        widget_ai_replies_today: widgetRepliesToday + 1,
+        widget_ai_replies_day: todayStr,
+      }),
+    }).catch((e) => console.error('widget usage update error:', e))
 
     return new Response(
       JSON.stringify({ reply }),

@@ -2,7 +2,7 @@ import { createClient } from 'npm:@supabase/supabase-js@2'
 import Stripe from 'npm:stripe@13.3.0'
 
 const stripe = new Stripe(Deno.env.get('STRIPE_SECRET_KEY') ?? '', {
-  apiVersion: '2023-10-16',
+  apiVersion: '2023-08-16',
   httpClient: Stripe.createFetchHttpClient(),
 })
 
@@ -19,6 +19,10 @@ const PRICE_TO_PLAN: Record<string, string> = {
   'price_1TJJvYGpSG6sxQ0SlTuyLur8': 'growth',
   'price_1TJJy9GpSG6sxQ0SDBgCgpgH': 'pro',
 }
+
+// Metered AI Message Overage price — attached as a second subscription item
+// alongside the flat plan price whenever a new subscription checks out.
+const AI_OVERAGE_PRICE_ID = Deno.env.get('STRIPE_AI_OVERAGE_PRICE_ID') ?? ''
 
 // Maps Stripe subscription.status to our subscription_status values
 const STRIPE_STATUS_MAP: Record<string, string> = {
@@ -129,6 +133,20 @@ Deno.serve(async (req: Request) => {
             subscription_id: subscriptionId,
           })
           .eq('id', business.id)
+
+        // Attach metered AI-overage price as a second subscription item —
+        // separate from the flat plan price. Never blocks checkout: if this
+        // fails, flat plan billing is unaffected, we just log it for follow-up.
+        if (AI_OVERAGE_PRICE_ID) {
+          try {
+            await stripe.subscriptionItems.create({
+              subscription: subscriptionId,
+              price: AI_OVERAGE_PRICE_ID,
+            })
+          } catch (overageErr) {
+            console.error('Failed to attach AI overage price:', overageErr)
+          }
+        }
 
         // Welcome email via Edge Function (Mailgun)
         await fetch('https://rllriopqojaraceytdno.supabase.co/functions/v1/welcome-email', {

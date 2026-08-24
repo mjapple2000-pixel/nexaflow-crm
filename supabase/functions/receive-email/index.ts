@@ -452,6 +452,21 @@ Deno.serve(async (req) => {
     const replySubj = replySubject(subject);
     let aiReply = "";
 
+    // ── Abuse circuit breaker — 45 AI replies per conversation per rolling 24h ──
+    const now = new Date();
+    const windowResetAt = conv!.ai_reply_window_reset_at ? new Date(conv!.ai_reply_window_reset_at) : null;
+    const windowExpired = !windowResetAt || (now.getTime() - windowResetAt.getTime()) > 24 * 60 * 60 * 1000;
+    const currentReplyCount = windowExpired ? 0 : (conv!.ai_reply_count_24h ?? 0);
+    const isAbuseBlocked = currentReplyCount >= 45;
+
+    if (isAbuseBlocked) {
+      aiReply = `I'll have someone from our team follow up with you directly to help from here.`;
+      await supabase.from("conversations").update({
+        ai_enabled: false,
+        flagged_for_abuse: true,
+      }).eq("id", conversationId);
+    }
+
     console.log(`ci.waiting_for="${ci.waiting_for}" | ci.name_collected=${ci.name_collected} | verifiedName="${verifiedName}" | name_verified=${conv!.name_verified}`);
 
     // ═══════════════════════════════════════════════════════════════════════════════
@@ -459,7 +474,7 @@ Deno.serve(async (req) => {
     // ═══════════════════════════════════════════════════════════════════════════════
 
     // ── WAITING FOR NAME ──────────────────────────────────────
-    if (ci.waiting_for === "name") {
+    if (!isAbuseBlocked && ci.waiting_for === "name") {
       // If we suggested a name, check for ANY affirmative first — don't use AI for this
       // because AI struggles to connect "Yes!" or "Yep!" back to the suggested name
       const suggested = ci.suggested_name as string | null;
@@ -498,7 +513,7 @@ Deno.serve(async (req) => {
       }
 
     // ── WAITING FOR LAST NAME ────────────────────────────────
-    } else if (ci.waiting_for === "last_name") {
+    } else if (!isAbuseBlocked && ci.waiting_for === "last_name") {
       const existingFirst = firstName(verifiedName ?? "");
       const firstLine     = userMessage.split(/\n/)[0].trim();
 
@@ -542,7 +557,7 @@ Deno.serve(async (req) => {
       }
 
     // ── WAITING FOR PHONE ───────────────────────────────────
-    } else if (ci.waiting_for === "phone") {
+    } else if (!isAbuseBlocked && ci.waiting_for === "phone") {
       if (looksLikePhone(userMessage)) {
         const phone = "+" + userMessage.split(/\n/)[0].replace(/\D/g, "");
         ci = { ...ci, waiting_for: null, phone_collected: true };
@@ -556,7 +571,7 @@ Deno.serve(async (req) => {
       // Fall through to normal flow
 
     // ── WAITING FOR ADDRESS ────────────────────────────────────
-    } else if (ci.waiting_for === "address") {
+    } else if (!isAbuseBlocked && ci.waiting_for === "address") {
       if (looksLikeAddress(userMessage)) {
         const addr = userMessage.split(/\n/).slice(0, 3).join(", ");
         ci = { ...ci, waiting_for: null, address_collected: true };
@@ -687,6 +702,15 @@ Deno.serve(async (req) => {
     }
 
     console.log(`Sending reply: "${aiReply.slice(0, 100)}"`);
+
+    // ── Usage metering (AI Message Overage tracking) ─────────────
+    await supabase.rpc("increment_ai_usage", { p_business_id: businessId });
+    if (!isAbuseBlocked) {
+      await supabase.from("conversations").update({
+        ai_reply_count_24h: currentReplyCount + 1,
+        ai_reply_window_reset_at: windowExpired ? now.toISOString() : (conv!.ai_reply_window_reset_at ?? now.toISOString()),
+      }).eq("id", conversationId);
+    }
 
     await sendEmail({ to: senderEmail, from: `${biz!.business_name ?? "Support"} <${replyFrom}>`, replyTo: replyFrom, subject: replySubj, text: aiReply });
     await supabase.from("messages").insert({

@@ -452,13 +452,31 @@ Deno.serve(async (req) => {
       content: m.body,
     }));
 
-    // ═══════════════════════════════════════════════════════════════════════════════
-    //  STEP A: If we were waiting for a specific piece of info, capture it
-    // ═══════════════════════════════════════════════════════════════════════════════
+    // ── 6.5 Abuse circuit breaker — 45 AI replies per conversation per rolling 24h ──
+    const now = new Date();
+    const windowResetAt = conversation!.ai_reply_window_reset_at
+      ? new Date(conversation!.ai_reply_window_reset_at)
+      : null;
+    const windowExpired = !windowResetAt || (now.getTime() - windowResetAt.getTime()) > 24 * 60 * 60 * 1000;
+    const currentReplyCount = windowExpired ? 0 : (conversation!.ai_reply_count_24h ?? 0);
+    const isAbuseBlocked = currentReplyCount >= 45;
+
     let aiReply = "";
     let skipNormalFlow = false;
 
-    if (collectingInfo.waiting_for === "name") {
+    if (isAbuseBlocked) {
+      aiReply = `I'll have someone from our team follow up with you directly to help from here.`;
+      await supabase.from("conversations").update({
+        ai_enabled: false,
+        flagged_for_abuse: true,
+      }).eq("id", conversationId);
+      skipNormalFlow = true;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════
+    //  STEP A: If we were waiting for a specific piece of info, capture it
+    // ═══════════════════════════════════════════════════════════════════════════════
+    if (!isAbuseBlocked && collectingInfo.waiting_for === "name") {
       // Their reply is their name
       if (looksLikeName(body)) {
         const capturedName = body.trim();
@@ -500,7 +518,7 @@ Deno.serve(async (req) => {
         skipNormalFlow = true;
       }
 
-    } else if (collectingInfo.waiting_for === "email") {
+    } else if (!isAbuseBlocked && collectingInfo.waiting_for === "email") {
       if (looksLikeEmail(body)) {
         const capturedEmail = body.trim().toLowerCase();
         await supabase.from("conversations").update({
@@ -566,7 +584,7 @@ Deno.serve(async (req) => {
         skipNormalFlow = true;
       }
     }
-      else if (collectingInfo.waiting_for === "address") {
+      else if (!isAbuseBlocked && collectingInfo.waiting_for === "address") {
       if (looksLikeAddress(body)) {
         const capturedAddress = body.trim();
         await supabase.from("conversations").update({
@@ -625,7 +643,7 @@ Deno.serve(async (req) => {
     //  STEP B: Normal flow (if not already handled above)
     // ═══════════════════════════════════════════════════════════════════════════════
 
-    if (!skipNormalFlow) {
+    if (!isAbuseBlocked && !skipNormalFlow) {
 
       // ── B1: If we don't know their name yet, ask for it first ────
       const currentName = collectingInfo.name_collected
@@ -820,6 +838,15 @@ Deno.serve(async (req) => {
     }
 
     console.log(`AI reply: "${aiReply}"`);
+
+    // ── Usage metering (AI Message Overage tracking) ─────────────
+    await supabase.rpc("increment_ai_usage", { p_business_id: businessId });
+    if (!isAbuseBlocked) {
+      await supabase.from("conversations").update({
+        ai_reply_count_24h: currentReplyCount + 1,
+        ai_reply_window_reset_at: windowExpired ? now.toISOString() : (conversation!.ai_reply_window_reset_at ?? now.toISOString()),
+      }).eq("id", conversationId);
+    }
 
     // ── Send SMS ───────────────────────────────────────────────────
     await sendSms(from, to, aiReply);
