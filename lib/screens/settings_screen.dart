@@ -733,6 +733,7 @@ class _BusinessProfileSectionState
   bool _gpsTrackingEnabled = false;
   Map<String, dynamic> _availabilityHours = {};
   bool _resettingCalendars = false;
+  bool _taxLookupLoading = false;
 
   bool _saving = false;
   String? _successMsg;
@@ -847,8 +848,58 @@ class _BusinessProfileSectionState
       });
       setState(
           () { _successMsg = 'Profile saved.'; _saving = false; });
+      if (_zipCtrl.text.trim().isNotEmpty) {
+        _lookupTaxRate(silent: true);
+      }
     } catch (e) {
       setState(() { _error = e.toString(); _saving = false; });
+    }
+  }
+
+  Future<void> _lookupTaxRate({bool silent = false}) async {
+    final businessId = widget.business['id'] as int?;
+    if (businessId == null) return;
+    if (!silent) setState(() => _taxLookupLoading = true);
+    try {
+      final session = Supabase.instance.client.auth.currentSession;
+      final res = await http.post(
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/lookup-tax-rate'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ${session?.accessToken ?? ''}',
+        },
+        body: jsonEncode({'business_id': businessId}),
+      );
+      if (!mounted) return;
+      final body = jsonDecode(res.body) as Map<String, dynamic>;
+      if (res.statusCode == 200 && body['success'] == true) {
+        // Refresh business row so the new rate/jurisdiction display updates.
+        await widget.onSave({'zip_code': _zipCtrl.text.trim()});
+        if (!silent && mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+                content: Text('Tax rate updated.'),
+                behavior: SnackBarBehavior.floating),
+          );
+        }
+      } else {
+        if (!silent && mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+                content: Text(
+                    'Tax lookup failed: ${body['error'] ?? 'Unknown error'}'),
+                behavior: SnackBarBehavior.floating),
+          );
+        }
+      }
+    } catch (e) {
+      if (!silent && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), behavior: SnackBarBehavior.floating),
+        );
+      }
+    } finally {
+      if (mounted && !silent) setState(() => _taxLookupLoading = false);
     }
   }
 
@@ -1048,6 +1099,86 @@ class _BusinessProfileSectionState
                 label: 'Country',
                 controller: _countryCtrl,
                 hint: 'United States'),
+          ),
+        ]),
+        const SizedBox(height: 24),
+
+        // ── Tax Rate ───────────────────────────────────────────────
+        _SettingsGroup(title: 'Sales Tax Rate', children: [
+          const Text(
+            'Automatically looked up from your business ZIP code above. You can also enter a rate manually in future updates — a manual entry is never overwritten by an automatic refresh.',
+            style: TextStyle(fontSize: 12, color: AppTheme.textSecondary, height: 1.4),
+          ),
+          const SizedBox(height: 14),
+          if ((widget.business['tax_jurisdiction_name'] as String?)?.isNotEmpty == true) ...[
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: AppTheme.pageBg,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: AppTheme.borderColor),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(children: [
+                    const Icon(Icons.location_on_outlined, size: 14, color: AppTheme.textSecondary),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(widget.business['tax_jurisdiction_name'] as String? ?? '',
+                          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: (widget.business['tax_rate_source'] == 'manual'
+                                ? Colors.orange
+                                : const Color(0xFF10B981))
+                            .withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Text(
+                        widget.business['tax_rate_source'] == 'manual' ? 'Manual' : 'Auto',
+                        style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700,
+                            color: widget.business['tax_rate_source'] == 'manual'
+                                ? Colors.orange
+                                : const Color(0xFF10B981)),
+                      ),
+                    ),
+                  ]),
+                  const SizedBox(height: 10),
+                  Wrap(spacing: 16, runSpacing: 6, children: [
+                    _TaxRateChip(label: 'State', value: widget.business['tax_state_rate']),
+                    _TaxRateChip(label: 'County', value: widget.business['tax_county_rate']),
+                    _TaxRateChip(label: 'City', value: widget.business['tax_city_rate']),
+                    _TaxRateChip(label: 'Special', value: widget.business['tax_special_district_rate']),
+                  ]),
+                ],
+              ),
+            ),
+            const SizedBox(height: 14),
+          ],
+          MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: OutlinedButton.icon(
+              onPressed: _taxLookupLoading ? null : () => _lookupTaxRate(),
+              icon: _taxLookupLoading
+                  ? const SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(strokeWidth: 2, color: AppTheme.brand))
+                  : const Icon(Icons.search_rounded, size: 16),
+              label: Text((widget.business['tax_jurisdiction_name'] as String?)?.isNotEmpty == true
+                  ? 'Look Up Tax Rate Again'
+                  : 'Look Up Tax Rate'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: AppTheme.brand,
+                side: BorderSide(color: AppTheme.brand),
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+              ),
+            ),
           ),
         ]),
         const SizedBox(height: 24),
@@ -1520,6 +1651,27 @@ class _TwoCol extends StatelessWidget {
         Expanded(child: left),
         const SizedBox(width: 16),
         Expanded(child: right),
+      ],
+    );
+  }
+}
+
+class _TaxRateChip extends StatelessWidget {
+  final String label;
+  final dynamic value;
+  const _TaxRateChip({required this.label, required this.value});
+
+  @override
+  Widget build(BuildContext context) {
+    final rate = double.tryParse(value?.toString() ?? '') ?? 0.0;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label,
+            style: const TextStyle(fontSize: 10, color: AppTheme.textSecondary)),
+        Text('${(rate * 100).toStringAsFixed(3)}%',
+            style: const TextStyle(
+                fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
       ],
     );
   }

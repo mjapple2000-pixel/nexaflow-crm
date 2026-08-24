@@ -91,13 +91,17 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
   double _taxCityAmount = 0;
   double _taxSpecialAmount = 0;
   double _taxTotalAmount = 0;
+  double _taxJurisdictionTotal = 0;
+  int _taxInvoicesWithoutBreakdown = 0;
 
   @override
   void initState() {
     super.initState();
     _reportTabController = TabController(length: 5, vsync: this, initialIndex: widget.initialTabIndex);
-    _loadData().then((_) => _loadChecklistsReport());
-    _loadTaxSummary();
+    _loadData().then((_) {
+      _loadChecklistsReport();
+      _loadTaxSummary();
+    });
   }
 
   @override
@@ -358,6 +362,8 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
           _taxCityAmount = (totals['city_amount'] as num?)?.toDouble() ?? 0;
           _taxSpecialAmount = (totals['special_district_amount'] as num?)?.toDouble() ?? 0;
           _taxTotalAmount = (totals['total_tax_amount'] as num?)?.toDouble() ?? 0;
+          _taxJurisdictionTotal = (totals['jurisdiction_total'] as num?)?.toDouble() ?? 0;
+          _taxInvoicesWithoutBreakdown = totals['invoices_without_breakdown'] as int? ?? 0;
         });
       } else {
         setState(() => _taxSummaryError = data['error'] as String? ?? 'Could not load tax summary.');
@@ -1075,9 +1081,47 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
           const SizedBox(height: 4),
           Text(fmtMoney(_taxTotalAmount),
               style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w800, color: AppTheme.textPrimary)),
+          const SizedBox(height: 2),
+          const Text('Sum of tax collected across every paid invoice in this period.',
+              style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
         ]),
       ),
       const SizedBox(height: 16),
+      Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          const Text('Jurisdiction Breakdown',
+              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+          const SizedBox(width: 8),
+          Text('(${fmtMoney(_taxJurisdictionTotal)} of $_taxInvoiceCount invoice${_taxInvoiceCount == 1 ? '' : 's'})',
+              style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+        ],
+      ),
+      const SizedBox(height: 8),
+      if (_taxInvoicesWithoutBreakdown > 0) ...[
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          decoration: BoxDecoration(
+            color: Colors.orange.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: Colors.orange.withValues(alpha: 0.3)),
+          ),
+          child: Row(children: [
+            const Icon(Icons.info_outline, size: 15, color: Colors.orange),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                '$_taxInvoicesWithoutBreakdown paid invoice${_taxInvoicesWithoutBreakdown == 1 ? '' : 's'} in this period '
+                '${_taxInvoicesWithoutBreakdown == 1 ? 'was' : 'were'} created before a tax rate lookup was on file, so '
+                '${_taxInvoicesWithoutBreakdown == 1 ? 'its' : 'their'} tax is counted in the total above but not split '
+                'into the breakdown below. Difference: ${fmtMoney(_taxTotalAmount - _taxJurisdictionTotal)}.',
+                style: const TextStyle(fontSize: 12, color: Colors.orange, height: 1.4),
+              ),
+            ),
+          ]),
+        ),
+        const SizedBox(height: 12),
+      ],
       Row(children: [
         jurisdictionCard('State', _taxStateAmount, const Color(0xFF3B82F6)),
         const SizedBox(width: 12),

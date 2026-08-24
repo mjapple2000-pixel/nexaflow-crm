@@ -90,8 +90,17 @@ Deno.serve(async (req) => {
     let cityAmount = 0;
     let specialAmount = 0;
     let totalTaxAmount = 0;
+    let invoicesWithoutBreakdown = 0;
 
     for (const row of rows) {
+      const hasBreakdown =
+        row.tax_state_amount !== null ||
+        row.tax_county_amount !== null ||
+        row.tax_city_amount !== null ||
+        row.tax_special_district_amount !== null;
+      if (!hasBreakdown && Number(row.tax_amount ?? 0) > 0) {
+        invoicesWithoutBreakdown += 1;
+      }
       stateAmount += Number(row.tax_state_amount ?? 0);
       countyAmount += Number(row.tax_county_amount ?? 0);
       cityAmount += Number(row.tax_city_amount ?? 0);
@@ -118,6 +127,8 @@ Deno.serve(async (req) => {
         city_amount: Math.round(cityAmount * 100) / 100,
         special_district_amount: Math.round(specialAmount * 100) / 100,
         total_tax_amount: Math.round(totalTaxAmount * 100) / 100,
+        jurisdiction_total: Math.round((stateAmount + countyAmount + cityAmount + specialAmount) * 100) / 100,
+        invoices_without_breakdown: invoicesWithoutBreakdown,
       },
       invoices: rows.map((r) => ({
         invoice_number: r.invoice_number,

@@ -226,6 +226,98 @@ async function getDefaultItemId(
   return { itemId };
 }
 
+// Sales tax collected on an invoice is not revenue — it's money owed to
+// the state, held on the business's behalf. Posting it through the same
+// "Services" Item (which maps to an Income account) would misstate the
+// business's income and understate what they actually owe when they
+// file. Instead, tax gets its own Item mapped to a Liability account,
+// so QuickBooks books it correctly as "Sales Tax Payable" rather than
+// unclassified income — same effect a real tax-code integration would
+// achieve, without touching QuickBooks' Automated Sales Tax engine or
+// requiring rate names to match between the two systems.
+async function getTaxLiabilityItemId(
+  businessId: number,
+  realmId: string,
+  headers: Record<string, string>,
+): Promise<{ itemId: string } | { error: string }> {
+  const { data: conn } = await supabase
+    .from("accounting_connections")
+    .select("qb_tax_item_id")
+    .eq("business_id", businessId)
+    .eq("provider", "quickbooks")
+    .maybeSingle();
+
+  if (conn?.qb_tax_item_id) return { itemId: conn.qb_tax_item_id };
+
+  const itemSearchQuery = encodeURIComponent(`select * from Item where Name = 'Sales Tax Collected'`);
+  const itemSearchResp = await fetch(`${QB_API_BASE}/v3/company/${realmId}/query?query=${itemSearchQuery}`, { headers });
+  if (itemSearchResp.ok) {
+    const body = await itemSearchResp.json();
+    const existing = body.QueryResponse?.Item?.[0];
+    if (existing?.Id) {
+      await supabase
+        .from("accounting_connections")
+        .update({ qb_tax_item_id: existing.Id })
+        .eq("business_id", businessId)
+        .eq("provider", "quickbooks");
+      return { itemId: existing.Id };
+    }
+  }
+
+  // Find an existing Liability account to post tax collections against —
+  // prefer one that already looks tax-related, since many QuickBooks
+  // companies (especially ones that previously had AST enabled) already
+  // have a "Sales Tax Payable" style account sitting unused.
+  const acctSearchQuery = encodeURIComponent(
+    `select * from Account where AccountType = 'Other Current Liability'`,
+  );
+  const acctSearchResp = await fetch(`${QB_API_BASE}/v3/company/${realmId}/query?query=${acctSearchQuery}`, { headers });
+  if (!acctSearchResp.ok) return { error: "Could not query Liability accounts in QuickBooks" };
+  const acctSearchBody = await acctSearchResp.json();
+  const liabilityAccounts: any[] = acctSearchBody.QueryResponse?.Account ?? [];
+  let taxAccount = liabilityAccounts.find((a) =>
+    (a.Name ?? "").toLowerCase().includes("tax"),
+  );
+
+  if (!taxAccount) {
+    const createAcctResp = await fetch(`${QB_API_BASE}/v3/company/${realmId}/account`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        Name: "Sales Tax Payable",
+        AccountType: "Other Current Liability",
+        AccountSubType: "SalesTaxPayable",
+      }),
+    });
+    if (!createAcctResp.ok) return { error: await createAcctResp.text() };
+    const createdAcct = await createAcctResp.json();
+    taxAccount = createdAcct.Account;
+    if (!taxAccount?.Id) return { error: "QuickBooks did not return a liability Account Id" };
+  }
+
+  const createItemResp = await fetch(`${QB_API_BASE}/v3/company/${realmId}/item`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      Name: "Sales Tax Collected",
+      Type: "Service",
+      IncomeAccountRef: { value: taxAccount.Id },
+    }),
+  });
+  if (!createItemResp.ok) return { error: await createItemResp.text() };
+  const createdItem = await createItemResp.json();
+  const itemId = createdItem.Item?.Id;
+  if (!itemId) return { error: "QuickBooks did not return a tax Item Id" };
+
+  await supabase
+    .from("accounting_connections")
+    .update({ qb_tax_item_id: itemId })
+    .eq("business_id", businessId)
+    .eq("provider", "quickbooks");
+
+  return { itemId };
+}
+
 async function logSync(params: {
   businessId: number;
   localId: string;
@@ -270,7 +362,7 @@ Deno.serve(async (req) => {
 
     const { data: invoice, error: invErr } = await supabase
       .from("invoices")
-      .select("id, business_id, contact_id, invoice_number, status, due_date, notes, deleted_at")
+      .select("id, business_id, contact_id, invoice_number, status, due_date, notes, deleted_at, tax_amount")
       .eq("id", invoice_id)
       .maybeSingle();
 
@@ -374,6 +466,18 @@ Deno.serve(async (req) => {
     }
     const { itemId } = itemResult;
 
+    // ── Resolve tax liability Item, only if this invoice actually has tax ──
+    const invoiceTaxAmount = Number(invoice.tax_amount ?? 0);
+    let taxItemId: string | null = null;
+    if (invoiceTaxAmount > 0) {
+      const taxItemResult = await getTaxLiabilityItemId(invoice.business_id, realmId, qbHeaders);
+      if ("error" in taxItemResult) {
+        await logSync({ businessId: invoice.business_id, localId: invoice.id, qbId: null, status: "failed", errorMessage: taxItemResult.error });
+        return new Response(JSON.stringify({ error: taxItemResult.error }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      taxItemId = taxItemResult.itemId;
+    }
+
     // ── Line items ──────────────────────────────────────────────────────
     const { data: lineItems } = await supabase
       .from("line_items")
@@ -388,7 +492,7 @@ Deno.serve(async (req) => {
       return new Response(JSON.stringify({ error: "No line items" }), { status: 200, headers: { "Content-Type": "application/json" } });
     }
 
-    const qbLines = lineItems.map((li) => {
+    const qbLines: Record<string, unknown>[] = lineItems.map((li) => {
       const qty = Number(li.quantity);
       const amount = Number(li.total);
       // NexaFlow's `total` already has any line-level discount applied, so it
@@ -410,6 +514,25 @@ Deno.serve(async (req) => {
         },
       };
     });
+
+    // Sales tax posted as its own non-taxable line against the liability
+    // item resolved above — guarantees the QuickBooks invoice total always
+    // equals what NexaFlow actually collected, and books it as a liability
+    // rather than income. "TaxCodeRef: NON" keeps QuickBooks' own AST engine
+    // (if enabled) from trying to add its own tax on top of this line.
+    if (invoiceTaxAmount > 0 && taxItemId) {
+      qbLines.push({
+        DetailType: "SalesItemLineDetail",
+        Amount: invoiceTaxAmount,
+        Description: "Sales Tax",
+        SalesItemLineDetail: {
+          ItemRef: { value: taxItemId },
+          Qty: 1,
+          UnitPrice: invoiceTaxAmount,
+          TaxCodeRef: { value: "NON" },
+        },
+      });
+    }
 
     const basePayload: Record<string, unknown> = {
       CustomerRef: { value: qbCustomerId },

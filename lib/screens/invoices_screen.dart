@@ -100,7 +100,7 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
       case 'unpaid':
         return _invoices.where((inv) {
           final status = inv['status'] as String? ?? 'draft';
-          return (status == 'draft' || status == 'approved') && inv['_isOverdue'] != true;
+          return (status == 'draft' || status == 'sent' || status == 'approved') && inv['_isOverdue'] != true;
         }).toList();
       case 'overdue':
         return _invoices.where((inv) => inv['_isOverdue'] == true).toList();
