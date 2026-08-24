@@ -35,6 +35,7 @@ import '../screens/beta_signup_screen.dart';
 import '../screens/snippets_screen.dart';
 import '../screens/reviews_screen.dart';
 import '../screens/public_booking_screen.dart';
+import '../screens/public_referral_screen.dart';
 import '../screens/jobs_screen.dart';
 import '../screens/jobs_overview_screen.dart';
 import '../screens/jobs_manage_forms_screen.dart';
@@ -105,6 +106,8 @@ class AppRouter {
       final realPath = Uri.base.path;
       debugPrint('DEBUG ROUTER loc=$loc realPath=$realPath');
       if (loc.startsWith('/book/') || realPath.startsWith('/book/')) return null;
+      if (loc.startsWith('/refer/') || realPath.startsWith('/refer/')) return null;
+      if (realPath.contains('/refer/')) return null;
       if (loc.startsWith('/client/') || realPath.startsWith('/client/')) return null;
       if (loc.startsWith('/client')) return null;
       if (realPath.contains('/client/')) return null;
@@ -257,6 +260,14 @@ class AppRouter {
             calendarId: state.pathParameters['calendarId']!,
           );
         },
+      ),
+      GoRoute(
+        path: '/refer/:code',
+        name: 'public-referral',
+        redirect: (context, state) => null,
+        builder: (context, state) => PublicReferralScreen(
+          referralCode: state.pathParameters['code']!,
+        ),
       ),
       GoRoute(
         path: '/client/:token',

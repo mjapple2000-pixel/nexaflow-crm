@@ -18,7 +18,8 @@ Future<void> main() async {
   debugPrint('DEBUG RAW PATH BEFORE INITLOC: ${Uri.base.path}');
   final initLoc = (Uri.base.path.startsWith('/book/') ||
           Uri.base.path.startsWith('/client/') ||
-          Uri.base.path.startsWith('/hub/'))
+          Uri.base.path.startsWith('/hub/') ||
+          Uri.base.path.startsWith('/refer/'))
       ? Uri.base.path
       : '/login';
   debugPrint('DEBUG setInitialLocation=$initLoc');
@@ -48,6 +49,7 @@ Future<void> main() async {
   final isPublicBooking = path.startsWith('/book/') || Uri.base.path.startsWith('/book/');
   final isClientPortal = Uri.base.path.startsWith('/client/');
   final isEmployeeHub = Uri.base.path.startsWith('/hub/');
+  final isPublicReferral = path.startsWith('/refer/') || Uri.base.path.startsWith('/refer/');
   debugPrint('DEBUG isPublicBooking=$isPublicBooking');
   // Only force a sign-out on a plain load of the bare /login (or root) URL —
   // this clears a stale local session so a fresh visit to /login always shows
@@ -56,7 +58,7 @@ Future<void> main() async {
   // every browser refresh, silently breaking the sidebar and every
   // business-scoped data load app-wide.
   final isLoginOrRootPath = Uri.base.path == '/login' || Uri.base.path == '/';
-  if (isLoginOrRootPath && !fragment.contains('access_token') && !isBetaSignup && !isPublicBooking && !isClientPortal && !isEmployeeHub) {
+  if (isLoginOrRootPath && !fragment.contains('access_token') && !isBetaSignup && !isPublicBooking && !isClientPortal && !isEmployeeHub && !isPublicReferral) {
     await Supabase.instance.client.auth.signOut();
   }
 
@@ -78,7 +80,8 @@ class _NexaFlowAppState extends State<NexaFlowApp> {
     super.initState();
     if (widget.initialPath.startsWith('/book/') ||
         widget.initialPath.startsWith('/client/') ||
-        widget.initialPath.startsWith('/hub/')) {
+        widget.initialPath.startsWith('/hub/') ||
+        widget.initialPath.startsWith('/refer/')) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         AppRouter.router.go(widget.initialPath);
       });

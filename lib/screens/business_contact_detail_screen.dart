@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme/app_theme.dart';
@@ -18,6 +19,7 @@ class _BusinessContactDetailScreenState extends State<BusinessContactDetailScree
   String? _error;
   Map<String, dynamic>? _contact;
   List<Map<String, dynamic>> _conversations = [];
+  List<Map<String, dynamic>> _referrals = [];
 
   int get _id => int.parse(widget.contactId);
 
@@ -32,7 +34,8 @@ class _BusinessContactDetailScreenState extends State<BusinessContactDetailScree
     try {
       final contact = await _db.from('contacts')
           .select('id, business_id, full_name, email, phone, address, city, state, zip, '
-              'source, status, tags, notes, assigned_to, last_contacted, do_not_contact, created_at')
+              'source, status, tags, notes, assigned_to, last_contacted, do_not_contact, created_at, '
+              'referral_code')
           .eq('id', _id)
           .filter('deleted_at', 'is', null)
           .maybeSingle();
@@ -48,10 +51,23 @@ class _BusinessContactDetailScreenState extends State<BusinessContactDetailScree
           .order('last_message_at', ascending: false)
           .limit(5);
 
+      List<Map<String, dynamic>> referrals = [];
+      try {
+        final referralData = await _db.from('referrals')
+            .select('id, status, created_at, leads(lead_name, lead_phone)')
+            .eq('referrer_contact_id', _id)
+            .filter('deleted_at', 'is', null)
+            .order('created_at', ascending: false);
+        referrals = List<Map<String, dynamic>>.from(referralData);
+      } catch (e) {
+        debugPrint('Referrals load: $e');
+      }
+
       if (!mounted) return;
       setState(() {
         _contact = contact;
         _conversations = List<Map<String, dynamic>>.from(convos);
+        _referrals = referrals;
         _loading = false;
       });
     } catch (e) {
@@ -201,6 +217,8 @@ class _BusinessContactDetailScreenState extends State<BusinessContactDetailScree
                     _card('Notes', [
                       Text(c['notes'] as String, style: const TextStyle(color: AppTheme.textSecondary, fontSize: 13, height: 1.6)),
                     ]),
+                  if ((c['notes'] as String?)?.isNotEmpty == true) const SizedBox(height: 16),
+                  _buildReferralCard(c),
                 ])),
                 const SizedBox(width: 20),
                 Expanded(flex: 1, child: Column(children: [
@@ -233,6 +251,83 @@ class _BusinessContactDetailScreenState extends State<BusinessContactDetailScree
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildReferralCard(Map<String, dynamic> c) {
+    final code = c['referral_code'] as String?;
+    final link = code != null ? 'https://nexaflow-crm.web.app/refer/$code' : null;
+
+    return _card('Referral Link', [
+      if (link == null)
+        const Text('No referral code on file.', style: TextStyle(color: AppTheme.textSecondary, fontSize: 13))
+      else ...[
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          decoration: BoxDecoration(
+            color: AppTheme.pageBg,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: AppTheme.borderColor)),
+          child: Row(children: [
+            Expanded(child: Text(link,
+              style: const TextStyle(color: AppTheme.textPrimary, fontSize: 12),
+              overflow: TextOverflow.ellipsis)),
+            const SizedBox(width: 8),
+            GestureDetector(
+              onTap: () {
+                Clipboard.setData(ClipboardData(text: link));
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Referral link copied!'), backgroundColor: AppTheme.brand,
+                      duration: Duration(seconds: 2)));
+              },
+              child: const Icon(Icons.copy_outlined, size: 15, color: AppTheme.brand),
+            ),
+          ]),
+        ),
+        const SizedBox(height: 14),
+      ],
+      const Text('Referred', style: TextStyle(color: AppTheme.textSecondary, fontSize: 10, fontWeight: FontWeight.w700, letterSpacing: 0.8)),
+      const SizedBox(height: 8),
+      if (_referrals.isEmpty)
+        const Text('No referrals yet.', style: TextStyle(color: AppTheme.textSecondary, fontSize: 13))
+      else
+        ..._referrals.map((r) {
+          final lead = r['leads'] as Map<String, dynamic>?;
+          final leadName = lead?['lead_name'] as String? ?? 'Unknown';
+          final status = r['status'] as String? ?? 'lead_created';
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(leadName, style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13)),
+                Text(_fmtDate(r['created_at'] as String?), style: const TextStyle(color: AppTheme.textSecondary, fontSize: 10)),
+              ])),
+              _referralStatusBadge(status),
+            ]),
+          );
+        }),
+    ]);
+  }
+
+  Widget _referralStatusBadge(String status) {
+    late String label;
+    late Color color;
+    switch (status) {
+      case 'lead_created':
+        label = 'Lead Created'; color = const Color(0xFF3B82F6); break;
+      case 'contacted':
+        label = 'Contacted'; color = const Color(0xFF8B5CF6); break;
+      case 'became_customer':
+        label = 'Became Customer'; color = const Color(0xFF10B981); break;
+      case 'thanked':
+        label = 'Thanked'; color = const Color(0xFF059669); break;
+      default:
+        label = status; color = AppTheme.brand;
+    }
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(color: color.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(4)),
+      child: Text(label, style: TextStyle(color: color, fontSize: 10, fontWeight: FontWeight.w600)),
     );
   }
 

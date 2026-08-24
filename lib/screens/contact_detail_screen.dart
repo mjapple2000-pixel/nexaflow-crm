@@ -309,7 +309,9 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
 
     try {
       final id = int.tryParse(widget.leadId) ?? 0;
-      await _db.from('leads').delete().eq('id', id);
+      await _db.from('leads').update({
+        'deleted_at': DateTime.now().toUtc().toIso8601String(),
+      }).eq('id', id);
       if (mounted) context.go('/contacts');
     } catch (e) {
       _snack('Error deleting: $e');
