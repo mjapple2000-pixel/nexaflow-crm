@@ -31,6 +31,7 @@ class _Lead {
   DateTime? lastActivity;
   String? businessName;
   String? address;
+  String docStatus;
 
   _Lead({
     required this.id,
@@ -46,6 +47,7 @@ class _Lead {
     this.lastActivity,
     this.businessName,
     this.address,
+    this.docStatus = 'New Lead',
   });
 
   factory _Lead.fromJson(Map<String, dynamic> j) {
@@ -108,6 +110,16 @@ class _Lead {
       default:               return AppTheme.brand;
     }
   }
+
+  Color get docStatusColor {
+    switch (docStatus) {
+      case 'Paid':    return const Color(0xFF059669);
+      case 'Overdue': return const Color(0xFFEF4444);
+      case 'Invoice': return const Color(0xFFF59E0B);
+      case 'Quote':   return const Color(0xFF3B82F6);
+      default:        return AppTheme.textSecondary; // New Lead
+    }
+  }
 }
 
 // ─────────────────────────────────────────────
@@ -143,27 +155,30 @@ class _ContactsScreenState extends State<ContactsScreen> {
   bool get _hasSelection => _selected.isNotEmpty;
 
   // Filters
-  String _statusFilter = 'All';
-  String _sourceFilter = 'All';
-  String _tagFilter    = 'All';
-  bool _showFilters    = false;
+  String _statusFilter    = 'All';
+  String _sourceFilter    = 'All';
+  String _tagFilter       = 'All';
+  String _docStatusFilter = 'All';
+  bool _showFilters       = false;
 
   // Columns
-  bool _colPhone    = true;
-  bool _colEmail    = true;
-  bool _colCreated  = true;
-  bool _colActivity = true;
-  bool _colTags     = true;
-  bool _colSource   = false;
-  bool _colValue    = false;
+  bool _colPhone      = true;
+  bool _colEmail      = true;
+  bool _colDocStatus  = true;
+  bool _colCreated    = true;
+  bool _colActivity   = true;
+  bool _colTags       = true;
+  bool _colSource     = false;
+  bool _colValue      = false;
 
   // Smart lists
   int _activeList = 0;
   List<String> _listNames = ['All', 'New Leads', 'Won', 'Lost'];
   List<Map<String, dynamic>> _smartLists = [];
 
-  final _statuses = ['All','New','In Conversation','Qualified','Won','Lost','Unqualified'];
-  final _sources  = ['All','SMS','Email','Web Form','Manual','Import'];
+  final _statuses    = ['All','New','In Conversation','Qualified','Won','Lost','Unqualified'];
+  final _sources     = ['All','SMS','Email','Web Form','Manual','Import'];
+  final _docStatuses = ['All','New Lead','Quote','Invoice','Paid','Overdue'];
 
   static const _supabaseUrl = 'https://rllriopqojaraceytdno.supabase.co';
 
@@ -195,14 +210,80 @@ class _ContactsScreenState extends State<ContactsScreen> {
         'id, lead_name, lead_email, lead_phone, lead_status, source, '
         'notes, estimated_value, tags, date_added, last_message_at, '
         'business_name, lead_address'
-      ).eq('business_id', _businessId!).order('date_added', ascending: false);
+      ).eq('business_id', _businessId!)
+       .filter('deleted_at', 'is', null)
+       .order('date_added', ascending: false);
 
       _all = (data as List).map((j) => _Lead.fromJson(j)).toList();
+      await _loadDocStatuses();
       _applyFilter();
     } catch (e) {
       setState(() => _error = e.toString());
     } finally {
       if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  // Derives a per-lead document-progress badge (New Lead / Quote / Invoice /
+  // Paid / Overdue) from the quotes and invoices tables. contact_id on both
+  // tables is a legacy column name that actually references leads.id (see
+  // JG-10 schema correction). Draft invoices/quotes are ignored since the
+  // customer hasn't seen them yet, and void ones are ignored as non-events.
+  // Priority: Overdue > Paid > Invoice > Quote — an overdue invoice outranks
+  // a paid one, since the lead still needs attention even if a different
+  // invoice on file was already paid.
+  Future<void> _loadDocStatuses() async {
+    if (_businessId == null || _all.isEmpty) return;
+    try {
+      final results = await Future.wait([
+        _db.from('invoices')
+            .select('contact_id, status')
+            .eq('business_id', _businessId!)
+            .filter('deleted_at', 'is', null),
+        _db.from('quotes')
+            .select('contact_id, status')
+            .eq('business_id', _businessId!)
+            .filter('deleted_at', 'is', null),
+      ]);
+      final invoices = List<Map<String, dynamic>>.from(results[0] as List);
+      final quotes = List<Map<String, dynamic>>.from(results[1] as List);
+
+      final hasPaid = <int>{};
+      final hasOverdue = <int>{};
+      final hasOpenInvoice = <int>{};
+      for (final inv in invoices) {
+        final leadId = (inv['contact_id'] as num?)?.toInt();
+        if (leadId == null) continue;
+        final status = inv['status'] as String?;
+        if (status == 'void' || status == 'draft') continue;
+        if (status == 'paid') hasPaid.add(leadId);
+        else if (status == 'overdue') hasOverdue.add(leadId);
+        else hasOpenInvoice.add(leadId); // sent / approved
+      }
+      final hasQuote = <int>{};
+      for (final q in quotes) {
+        final leadId = (q['contact_id'] as num?)?.toInt();
+        if (leadId == null) continue;
+        final status = q['status'] as String?;
+        if (status == 'draft') continue;
+        hasQuote.add(leadId);
+      }
+
+      for (final lead in _all) {
+        if (hasOverdue.contains(lead.id)) {
+          lead.docStatus = 'Overdue';
+        } else if (hasPaid.contains(lead.id)) {
+          lead.docStatus = 'Paid';
+        } else if (hasOpenInvoice.contains(lead.id)) {
+          lead.docStatus = 'Invoice';
+        } else if (hasQuote.contains(lead.id)) {
+          lead.docStatus = 'Quote';
+        } else {
+          lead.docStatus = 'New Lead';
+        }
+      }
+    } catch (e) {
+      debugPrint('Load doc statuses: $e');
     }
   }
 
@@ -241,6 +322,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
     if (_statusFilter != 'All') result = result.where((l) => l.status == _statusFilter).toList();
     if (_sourceFilter != 'All') result = result.where((l) => (l.source ?? '').toLowerCase() == _sourceFilter.toLowerCase()).toList();
     if (_tagFilter != 'All') result = result.where((l) => l.tags.contains(_tagFilter)).toList();
+    if (_docStatusFilter != 'All') result = result.where((l) => l.docStatus == _docStatusFilter).toList();
     final q = _searchCtrl.text.toLowerCase();
     if (q.isNotEmpty) {
       result = result.where((l) =>
@@ -366,9 +448,11 @@ class _ContactsScreenState extends State<ContactsScreen> {
     if (step2 != true) return;
 
     try {
-      await _db.from('leads').delete().inFilter('id', _selected.toList());
+      await _db.from('leads').update({
+        'deleted_at': DateTime.now().toUtc().toIso8601String(),
+      }).inFilter('id', _selected.toList());
       _clearSelection(); _loadLeads();
-      if (mounted) _snack('$count contacts permanently deleted.');
+      if (mounted) _snack('$count contacts deleted.');
     } catch (e) {
       if (mounted) _snack('Error: $e');
     }
@@ -625,7 +709,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
         _btn(Icons.add, 'Add Lead', primary: true, onTap: _showAdd),
         const SizedBox(width: 8),
         _iconBtn(Icons.filter_list_rounded, 'Filters',
-          active: _showFilters || _statusFilter != 'All' || _sourceFilter != 'All' || _tagFilter != 'All',
+          active: _showFilters || _statusFilter != 'All' || _sourceFilter != 'All' || _tagFilter != 'All' || _docStatusFilter != 'All',
           onTap: () => setState(() => _showFilters = !_showFilters)),
         const SizedBox(width: 6),
         _iconBtn(Icons.view_column_outlined, 'Columns', onTap: _showColumnPicker),
@@ -738,13 +822,15 @@ class _ContactsScreenState extends State<ContactsScreen> {
         const SizedBox(width: 12),
         _filterDrop('Status', _statusFilter, _statuses, (v) => setState(() { _statusFilter = v!; _applyFilter(); })),
         const SizedBox(width: 8),
+        _filterDrop('Doc Status', _docStatusFilter, _docStatuses, (v) => setState(() { _docStatusFilter = v!; _applyFilter(); })),
+        const SizedBox(width: 8),
         _filterDrop('Source', _sourceFilter, _sources, (v) => setState(() { _sourceFilter = v!; _applyFilter(); })),
         const SizedBox(width: 8),
         _filterDrop('Tag', _tagFilter, _allTags, (v) => setState(() { _tagFilter = v!; _applyFilter(); })),
         const SizedBox(width: 12),
-        if (_statusFilter != 'All' || _sourceFilter != 'All' || _tagFilter != 'All')
+        if (_statusFilter != 'All' || _sourceFilter != 'All' || _tagFilter != 'All' || _docStatusFilter != 'All')
           GestureDetector(
-            onTap: () => setState(() { _statusFilter = 'All'; _sourceFilter = 'All'; _tagFilter = 'All'; _applyFilter(); }),
+            onTap: () => setState(() { _statusFilter = 'All'; _sourceFilter = 'All'; _tagFilter = 'All'; _docStatusFilter = 'All'; _applyFilter(); }),
             child: MouseRegion(cursor: SystemMouseCursors.click,
               child: Row(children: const [
                 Icon(Icons.close, size: 13, color: AppTheme.textSecondary),
@@ -884,13 +970,14 @@ class _ContactsScreenState extends State<ContactsScreen> {
       child: Row(children: [
         _checkboxCell(_selected.length == _page.length && _page.isNotEmpty, _toggleAll, header: true),
         _hCell('Name', flex: 3),
-        if (_colPhone)    _hCell('Phone', flex: 2),
-        if (_colEmail)    _hCell('Email', flex: 3),
-        if (_colCreated)  _hCell('Created', flex: 2),
-        if (_colActivity) _hCell('Last Activity', flex: 2),
-        if (_colTags)     _hCell('Tags', flex: 2),
-        if (_colSource)   _hCell('Source', flex: 1),
-        if (_colValue)    _hCell('Value', flex: 1),
+        if (_colDocStatus) _hCell('Status', flex: 2),
+        if (_colPhone)     _hCell('Phone', flex: 2),
+        if (_colEmail)     _hCell('Email', flex: 3),
+        if (_colCreated)   _hCell('Created', flex: 2),
+        if (_colActivity)  _hCell('Last Activity', flex: 2),
+        if (_colTags)      _hCell('Tags', flex: 2),
+        if (_colSource)    _hCell('Source', flex: 1),
+        if (_colValue)     _hCell('Value', flex: 1),
         const SizedBox(width: 48),
       ]),
     );
@@ -969,6 +1056,11 @@ class _ContactsScreenState extends State<ContactsScreen> {
                   ],
                 )),
               ]),
+            )),
+            if (_colDocStatus) Expanded(flex: 2, child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: Align(alignment: Alignment.centerLeft,
+                child: _statusBadge(lead.docStatus, lead.docStatusColor)),
             )),
             if (_colPhone) Expanded(flex: 2, child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -1157,13 +1249,14 @@ class _ContactsScreenState extends State<ContactsScreen> {
 
   void _showColumnPicker() {
   // Capture current values
-  var phone    = _colPhone;
-  var email    = _colEmail;
-  var created  = _colCreated;
-  var activity = _colActivity;
-  var tags     = _colTags;
-  var source   = _colSource;
-  var value    = _colValue;
+  var phone     = _colPhone;
+  var email     = _colEmail;
+  var docStatus = _colDocStatus;
+  var created   = _colCreated;
+  var activity  = _colActivity;
+  var tags      = _colTags;
+  var source    = _colSource;
+  var value     = _colValue;
 
   showDialog(
     context: context,
@@ -1173,13 +1266,14 @@ class _ContactsScreenState extends State<ContactsScreen> {
       title: const Text('Customize Columns',
         style: TextStyle(color: AppTheme.textPrimary, fontWeight: FontWeight.w600, fontSize: 16)),
       content: StatefulBuilder(builder: (ctx, setS) => Column(mainAxisSize: MainAxisSize.min, children: [
-        _colTgl('Phone',         phone,    setS, (v) { phone    = v; }),
-        _colTgl('Email',         email,    setS, (v) { email    = v; }),
-        _colTgl('Created Date',  created,  setS, (v) { created  = v; }),
-        _colTgl('Last Activity', activity, setS, (v) { activity = v; }),
-        _colTgl('Tags',          tags,     setS, (v) { tags     = v; }),
-        _colTgl('Source',        source,   setS, (v) { source   = v; }),
-        _colTgl('Est. Value',    value,    setS, (v) { value    = v; }),
+        _colTgl('Phone',                  phone,     setS, (v) { phone     = v; }),
+        _colTgl('Email',                  email,     setS, (v) { email     = v; }),
+        _colTgl('Status (Quote/Invoice)', docStatus, setS, (v) { docStatus = v; }),
+        _colTgl('Created Date',           created,   setS, (v) { created   = v; }),
+        _colTgl('Last Activity',          activity,  setS, (v) { activity  = v; }),
+        _colTgl('Tags',                   tags,      setS, (v) { tags      = v; }),
+        _colTgl('Source',                 source,    setS, (v) { source    = v; }),
+        _colTgl('Est. Value',             value,     setS, (v) { value     = v; }),
       ])),
       actions: [TextButton(
         onPressed: () => context.pop(),
@@ -1188,13 +1282,14 @@ class _ContactsScreenState extends State<ContactsScreen> {
   ).then((_) {
     // Apply all changes AFTER dialog is fully closed
     if (mounted) setState(() {
-      _colPhone    = phone;
-      _colEmail    = email;
-      _colCreated  = created;
-      _colActivity = activity;
-      _colTags     = tags;
-      _colSource   = source;
-      _colValue    = value;
+      _colPhone     = phone;
+      _colEmail     = email;
+      _colDocStatus = docStatus;
+      _colCreated   = created;
+      _colActivity  = activity;
+      _colTags      = tags;
+      _colSource    = source;
+      _colValue     = value;
     });
   });
 }
@@ -1266,9 +1361,11 @@ class _ContactsScreenState extends State<ContactsScreen> {
     if (step2 != true) return;
 
     try {
-      await _db.from('leads').delete().eq('id', lead.id);
+      await _db.from('leads').update({
+        'deleted_at': DateTime.now().toUtc().toIso8601String(),
+      }).eq('id', lead.id);
       _loadLeads();
-      if (mounted) _snack('${lead.name} permanently deleted.');
+      if (mounted) _snack('${lead.name} deleted.');
     } catch (e) {
       if (mounted) _snack('Error: $e');
     }

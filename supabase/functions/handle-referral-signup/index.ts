@@ -145,6 +145,7 @@ Deno.serve(async (req) => {
           lead_phone: normalizedPhone,
           lead_status: 'new',
           source: 'referral',
+          date_added: new Date().toISOString(),
         })
         .select('id')
         .single()

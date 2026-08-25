@@ -157,6 +157,7 @@ Deno.serve(async (req) => {
           converted_to_appointment: true,
           appointment_scheduled_at: slot_start,
           source: 'public_booking',
+          date_added: new Date().toISOString(),
         })
         .select('id')
         .single()

@@ -47,6 +47,9 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
   String? _portalLastSent;
   int? _businessId;
 
+  // Referral program state
+  List<Map<String, dynamic>> _referrals = [];
+
   static const _suggestedTags = [
     'Hot Lead', 'Follow Up', 'VIP', 'Cold', 'Booked',
     'No Answer', 'Left Voicemail', 'Interested', 'Not Interested',
@@ -102,7 +105,8 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
         'id, lead_name, lead_email, lead_phone, lead_status, source, notes, '
         'estimated_value, tags, date_added, last_message_at, business_name, '
         'lead_address, priority, assigned_to, total_messages, follow_up_count, '
-        'converted_to_appointment, follow_up_sequence, last_ai_interaction_at'
+        'converted_to_appointment, follow_up_sequence, last_ai_interaction_at, '
+        'referral_code'
       ).eq('id', id).single();
 
       // Messages come through conversations → messages
@@ -139,10 +143,43 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
         debugPrint('Appointments load: $e');
       }
 
+      List<Map<String, dynamic>> referrals = [];
+      try {
+        final refData = await _db
+            .from('referrals')
+            .select('id, referred_lead_id, status, created_at')
+            .eq('referrer_type', 'lead')
+            .eq('referrer_id', id)
+            .filter('deleted_at', 'is', null)
+            .order('created_at', ascending: false);
+        referrals = List<Map<String, dynamic>>.from(refData);
+        if (referrals.isNotEmpty) {
+          final referredIds = referrals
+              .map((r) => (r['referred_lead_id'] as num?)?.toInt())
+              .whereType<int>()
+              .toList();
+          if (referredIds.isNotEmpty) {
+            final referredLeads = await _db
+                .from('leads')
+                .select('id, lead_name')
+                .inFilter('id', referredIds);
+            final nameById = { for (final l in (referredLeads as List))
+                (l['id'] as num).toInt(): l['lead_name'] as String? ?? 'Unknown' };
+            for (final r in referrals) {
+              final rid = (r['referred_lead_id'] as num?)?.toInt();
+              r['referred_lead_name'] = rid != null ? (nameById[rid] ?? 'Unknown') : 'Unknown';
+            }
+          }
+        }
+      } catch (e) {
+        debugPrint('Referrals load: $e');
+      }
+
       setState(() {
         _lead = lead;
         _messages = msgs;
         _appointments = appts;
+        _referrals = referrals;
         _portalLastSent = lead['client_portal_last_sent_at'] as String?;
         _populateEditors();
       });
@@ -848,6 +885,20 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
                     color: AppTheme.textSecondary, fontSize: 11),
               ),
             ],
+
+            const SizedBox(height: 16),
+            const Divider(color: AppTheme.borderColor, height: 1),
+            const SizedBox(height: 16),
+
+            // Referral Program
+            const Text('REFERRAL PROGRAM',
+                style: TextStyle(
+                    color: AppTheme.textSecondary,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.8)),
+            const SizedBox(height: 10),
+            _buildReferralSection(),
           ]),
         ),
       ),
@@ -937,6 +988,101 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
               fontWeight: FontWeight.w500))),
       ]),
     );
+  }
+
+  // ── REFERRAL PROGRAM ─────────────────────────────────────────────────────
+
+  String get _referralLink {
+    final code = _lead?['referral_code'] as String?;
+    if (code == null || code.isEmpty) return '';
+    return 'https://nexaflow-crm.web.app/refer/$code';
+  }
+
+  Color _referralStatusColor(String? status) {
+    switch (status) {
+      case 'became_customer': return AppTheme.success;
+      case 'lead_created':    return AppTheme.brand;
+      default:                return AppTheme.textSecondary;
+    }
+  }
+
+  String _referralStatusLabel(String? status) {
+    switch (status) {
+      case 'became_customer': return 'Became Customer';
+      case 'lead_created':    return 'Lead Created';
+      default:                return status ?? 'Unknown';
+    }
+  }
+
+  void _copyReferralLink() {
+    if (_referralLink.isEmpty) return;
+    Clipboard.setData(ClipboardData(text: _referralLink));
+    _snack('Referral link copied!');
+  }
+
+  Widget _buildReferralSection() {
+    final code = _lead?['referral_code'] as String?;
+    if (code == null || code.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: AppTheme.pageBg,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: AppTheme.borderColor)),
+        child: const Text(
+          'A referral link is generated automatically once this lead has a paid invoice on file.',
+          style: TextStyle(color: AppTheme.textSecondary, fontSize: 11, height: 1.4)),
+      );
+    }
+
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      SizedBox(
+        width: double.infinity,
+        child: ElevatedButton.icon(
+          onPressed: _copyReferralLink,
+          icon: const Icon(Icons.copy_outlined, size: 15),
+          label: const Text('Copy Referral Link'),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: AppTheme.pageBg,
+            foregroundColor: AppTheme.textPrimary,
+            elevation: 0,
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+                side: const BorderSide(color: AppTheme.borderColor)),
+            textStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+          ),
+        ),
+      ),
+      const SizedBox(height: 6),
+      SelectableText(_referralLink,
+        style: const TextStyle(color: AppTheme.textSecondary, fontSize: 10),
+        maxLines: 2),
+      if (_referrals.isNotEmpty) ...[
+        const SizedBox(height: 10),
+        Text('Referred (${_referrals.length})',
+          style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11, fontWeight: FontWeight.w600)),
+        const SizedBox(height: 6),
+        ..._referrals.map((r) => Padding(
+          padding: const EdgeInsets.only(bottom: 6),
+          child: Row(children: [
+            Expanded(child: Text(r['referred_lead_name'] as String? ?? 'Unknown',
+              style: const TextStyle(color: AppTheme.textPrimary, fontSize: 12),
+              overflow: TextOverflow.ellipsis)),
+            const SizedBox(width: 6),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: _referralStatusColor(r['status'] as String?).withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(4)),
+              child: Text(_referralStatusLabel(r['status'] as String?),
+                style: TextStyle(color: _referralStatusColor(r['status'] as String?),
+                    fontSize: 10, fontWeight: FontWeight.w600)),
+            ),
+          ]),
+        )),
+      ],
+    ]);
   }
 
   // ── OVERVIEW TAB ──────────────────────────────────────────────────────────
