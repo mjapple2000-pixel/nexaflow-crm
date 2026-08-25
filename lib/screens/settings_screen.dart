@@ -731,6 +731,21 @@ class _BusinessProfileSectionState
   bool _smsConsent = false;
   bool _requireLocationOnClock = false;
   bool _gpsTrackingEnabled = false;
+  bool _referralProgramEnabled = true;
+
+  // Referral reward config — separate tables (referral_reward_settings,
+  // referral_reward_recipients), not part of the businesses row, so these
+  // load/save independently of the main "Save Changes" button below.
+  final _rewardDb = Supabase.instance.client;
+  bool _loadingRewardConfig = true;
+  String _rewardMode = 'all';
+  final _rewardAmountCtrl = TextEditingController();
+  String _rewardType = 'cash';   // payout method: cash | credit
+  String _rewardBasis = 'flat';  // flat | percentage
+  bool _savingRewardDefault = false;
+  List<Map<String, dynamic>> _rewardRecipients = [];
+  final _minPayoutCtrl = TextEditingController();
+  bool _savingMinPayout = false;
   Map<String, dynamic> _availabilityHours = {};
   bool _resettingCalendars = false;
   bool _taxLookupLoading = false;
@@ -779,6 +794,7 @@ class _BusinessProfileSectionState
     _smsConsent = b['sms_consent'] as bool? ?? false;
     _requireLocationOnClock = b['require_location_on_clock'] as bool? ?? false;
     _gpsTrackingEnabled = b['gps_tracking_enabled'] as bool? ?? false;
+    _referralProgramEnabled = b['referral_program_enabled'] as bool? ?? true;
     final rawHours = b['availability_hours'];
     if (rawHours is Map) {
       _availabilityHours = Map<String, dynamic>.from(rawHours);
@@ -793,10 +809,13 @@ class _BusinessProfileSectionState
         'sunday':    {'enabled': false, 'start': '09:00', 'end': '17:00', 'blocks': []},
       };
     }
+    _loadRewardConfig();
   }
 
   @override
   void dispose() {
+    _rewardAmountCtrl.dispose();
+    _minPayoutCtrl.dispose();
     _nameCtrl.dispose();
     _phoneCtrl.dispose();
     _emailCtrl.dispose();
@@ -844,6 +863,7 @@ class _BusinessProfileSectionState
         'sms_consent':               _smsConsent,
         'require_location_on_clock': _requireLocationOnClock,
         'gps_tracking_enabled':      _gpsTrackingEnabled,
+        'referral_program_enabled':  _referralProgramEnabled,
         'availability_hours':        _availabilityHours,
       });
       setState(
@@ -1001,6 +1021,202 @@ class _BusinessProfileSectionState
     } finally {
       if (mounted) setState(() => _resettingCalendars = false);
     }
+  }
+
+  // ── REFERRAL REWARD CONFIG ────────────────────────────────────────────
+
+  Future<void> _loadRewardConfig() async {
+    final businessId = widget.business['id'] as int?;
+    if (businessId == null) {
+      if (mounted) setState(() => _loadingRewardConfig = false);
+      return;
+    }
+    try {
+      final settings = await _rewardDb
+          .from('referral_reward_settings')
+          .select('mode, default_amount, default_reward_type')
+          .eq('business_id', businessId)
+          .maybeSingle();
+      if (settings != null) {
+        _rewardMode = settings['mode'] as String? ?? 'all';
+        final amt = settings['default_amount'];
+        _rewardAmountCtrl.text = amt != null ? (amt as num).toString() : '';
+        _rewardType = settings['default_reward_type'] as String? ?? 'cash';
+        _rewardBasis = settings['default_reward_basis'] as String? ?? 'flat';
+        final minPayout = settings['minimum_payout_threshold'];
+        _minPayoutCtrl.text = minPayout != null ? (minPayout as num).toString() : '0';
+      }
+      await _loadRewardRecipients(businessId);
+    } catch (e) {
+      debugPrint('Load reward config: $e');
+    } finally {
+      if (mounted) setState(() => _loadingRewardConfig = false);
+    }
+  }
+
+  Future<void> _loadRewardRecipients(int businessId) async {
+    try {
+      final rows = await _rewardDb
+          .from('referral_reward_recipients')
+          .select('id, referrer_type, referrer_id, amount, reward_type, reward_basis')
+          .eq('business_id', businessId)
+          .filter('deleted_at', 'is', null)
+          .order('created_at');
+      final list = List<Map<String, dynamic>>.from(rows as List);
+
+      final leadIds = list.where((r) => r['referrer_type'] == 'lead')
+          .map((r) => (r['referrer_id'] as num).toInt()).toList();
+      final contactIds = list.where((r) => r['referrer_type'] == 'contact')
+          .map((r) => (r['referrer_id'] as num).toInt()).toList();
+
+      final leadNames = <int, String>{};
+      if (leadIds.isNotEmpty) {
+        final leads = await _rewardDb.from('leads').select('id, lead_name').inFilter('id', leadIds);
+        for (final l in (leads as List)) {
+          leadNames[(l['id'] as num).toInt()] = l['lead_name'] as String? ?? 'Unknown';
+        }
+      }
+      final contactNames = <int, String>{};
+      if (contactIds.isNotEmpty) {
+        final contacts = await _rewardDb.from('contacts').select('id, full_name').inFilter('id', contactIds);
+        for (final c in (contacts as List)) {
+          contactNames[(c['id'] as num).toInt()] = c['full_name'] as String? ?? 'Unknown';
+        }
+      }
+
+      for (final r in list) {
+        final rid = (r['referrer_id'] as num).toInt();
+        r['name'] = r['referrer_type'] == 'lead'
+            ? (leadNames[rid] ?? 'Unknown')
+            : (contactNames[rid] ?? 'Unknown');
+      }
+      if (mounted) setState(() => _rewardRecipients = list);
+    } catch (e) {
+      debugPrint('Load reward recipients: $e');
+    }
+  }
+
+  Future<void> _setRewardMode(String mode) async {
+    final businessId = widget.business['id'] as int?;
+    if (businessId == null) return;
+    setState(() => _rewardMode = mode);
+    try {
+      await _rewardDb.from('referral_reward_settings').upsert({
+        'business_id': businessId,
+        'mode': mode,
+        'default_amount': double.tryParse(_rewardAmountCtrl.text.trim()),
+        'default_reward_type': _rewardType,
+        'default_reward_basis': _rewardBasis,
+      }, onConflict: 'business_id');
+    } catch (e) {
+      debugPrint('Save reward mode: $e');
+    }
+  }
+
+  Future<void> _saveDefaultReward() async {
+    final businessId = widget.business['id'] as int?;
+    if (businessId == null) return;
+    final amount = double.tryParse(_rewardAmountCtrl.text.trim());
+    if (amount == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Enter a valid amount.'), behavior: SnackBarBehavior.floating));
+      return;
+    }
+    setState(() => _savingRewardDefault = true);
+    try {
+      await _rewardDb.from('referral_reward_settings').upsert({
+        'business_id': businessId,
+        'mode': _rewardMode,
+        'default_amount': amount,
+        'default_reward_type': _rewardType,
+        'default_reward_basis': _rewardBasis,
+      }, onConflict: 'business_id');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Default reward saved.'), behavior: SnackBarBehavior.floating));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Error: $e'), behavior: SnackBarBehavior.floating));
+      }
+    } finally {
+      if (mounted) setState(() => _savingRewardDefault = false);
+    }
+  }
+
+  Future<void> _saveMinPayout() async {
+    final businessId = widget.business['id'] as int?;
+    if (businessId == null) return;
+    final threshold = double.tryParse(_minPayoutCtrl.text.trim());
+    if (threshold == null || threshold < 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Enter a valid amount (0 or higher).'), behavior: SnackBarBehavior.floating));
+      return;
+    }
+    setState(() => _savingMinPayout = true);
+    try {
+      await _rewardDb.from('referral_reward_settings').upsert({
+        'business_id': businessId,
+        'mode': _rewardMode,
+        'default_amount': double.tryParse(_rewardAmountCtrl.text.trim()),
+        'default_reward_type': _rewardType,
+        'default_reward_basis': _rewardBasis,
+        'minimum_payout_threshold': threshold,
+      }, onConflict: 'business_id');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Minimum payout threshold saved.'), behavior: SnackBarBehavior.floating));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Error: $e'), behavior: SnackBarBehavior.floating));
+      }
+    } finally {
+      if (mounted) setState(() => _savingMinPayout = false);
+    }
+  }
+
+  Future<void> _removeRewardRecipient(int id) async {
+    try {
+      await _rewardDb
+          .from('referral_reward_recipients')
+          .update({'deleted_at': DateTime.now().toUtc().toIso8601String()})
+          .eq('id', id);
+      final businessId = widget.business['id'] as int?;
+      if (businessId != null) await _loadRewardRecipients(businessId);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Error: $e'), behavior: SnackBarBehavior.floating));
+      }
+    }
+  }
+
+  void _showAddRewardRecipientDialog() {
+    final businessId = widget.business['id'] as int?;
+    if (businessId == null) return;
+    showDialog(
+      context: context,
+      builder: (_) => _AddRewardRecipientDialog(
+        businessId: businessId,
+        onSaved: () => _loadRewardRecipients(businessId),
+      ),
+    );
+  }
+
+  void _showEditRewardRecipientDialog(Map<String, dynamic> recipient) {
+    final businessId = widget.business['id'] as int?;
+    if (businessId == null) return;
+    showDialog(
+      context: context,
+      builder: (_) => _AddRewardRecipientDialog(
+        businessId: businessId,
+        existing: recipient,
+        onSaved: () => _loadRewardRecipients(businessId),
+      ),
+    );
   }
 
   @override
@@ -1272,6 +1488,240 @@ class _BusinessProfileSectionState
             value: _gpsTrackingEnabled,
             onChanged: (v) => setState(() => _gpsTrackingEnabled = v),
           ),
+        ]),
+        const SizedBox(height: 24),
+
+        // ── Referral Program ────────────────────────────────────────
+        _SettingsGroup(title: 'Referral Program', children: [
+          _ToggleRow(
+            label: 'Enable Referral Program',
+            subtitle: 'Lets existing customers get a shareable referral link once they\'ve paid an invoice. Turning this off stops new referral links from working and stops issuing new links to newly-paid customers — links already shared before this is turned off will show as inactive rather than erroring.',
+            value: _referralProgramEnabled,
+            onChanged: (v) => setState(() => _referralProgramEnabled = v),
+          ),
+          if (_referralProgramEnabled) ...[
+            const SizedBox(height: 16),
+            const Divider(color: AppTheme.borderColor, height: 1),
+            const SizedBox(height: 16),
+            const Text('Referral Rewards',
+                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+            const SizedBox(height: 4),
+            const Text(
+              'Not automatic — this just tracks what to give and to whom. You still decide how to actually pay it out.',
+              style: TextStyle(fontSize: 12, color: AppTheme.textSecondary, height: 1.4),
+            ),
+            const SizedBox(height: 14),
+            if (_loadingRewardConfig)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 8),
+                child: Center(child: SizedBox(width: 18, height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2))),
+              )
+            else ...[
+              Row(children: [
+                Expanded(child: Clickable(
+                  onTap: () => _setRewardMode('all'),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                    decoration: BoxDecoration(
+                      color: _rewardMode == 'all' ? AppTheme.brand : AppTheme.pageBg,
+                      borderRadius: const BorderRadius.horizontal(left: Radius.circular(8)),
+                      border: Border.all(color: _rewardMode == 'all' ? AppTheme.brand : AppTheme.borderColor),
+                    ),
+                    child: Center(child: Text('Reward All Referrers',
+                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600,
+                            color: _rewardMode == 'all' ? Colors.white : AppTheme.textSecondary))),
+                  ),
+                )),
+                Expanded(child: Clickable(
+                  onTap: () => _setRewardMode('specific'),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                    decoration: BoxDecoration(
+                      color: _rewardMode == 'specific' ? AppTheme.brand : AppTheme.pageBg,
+                      borderRadius: const BorderRadius.horizontal(right: Radius.circular(8)),
+                      border: Border.all(color: _rewardMode == 'specific' ? AppTheme.brand : AppTheme.borderColor),
+                    ),
+                    child: Center(child: Text('Reward Specific People',
+                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600,
+                            color: _rewardMode == 'specific' ? Colors.white : AppTheme.textSecondary))),
+                  ),
+                )),
+              ]),
+              const SizedBox(height: 16),
+              if (_rewardMode == 'all') ...[
+                Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  SizedBox(
+                    width: 170,
+                    height: 44,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      decoration: BoxDecoration(color: AppTheme.pageBg, borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: AppTheme.borderColor)),
+                      child: DropdownButtonHideUnderline(child: DropdownButton<String>(
+                        value: _rewardBasis,
+                        isExpanded: true,
+                        dropdownColor: AppTheme.cardBg,
+                        style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                        items: const [
+                          DropdownMenuItem(value: 'flat', child: Text('Default Amount')),
+                          DropdownMenuItem(value: 'percentage', child: Text('Percentage')),
+                        ],
+                        onChanged: (v) => setState(() => _rewardBasis = v ?? 'flat'),
+                      )),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(child: TextField(
+                    controller: _rewardAmountCtrl,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                    decoration: InputDecoration(
+                      labelText: _rewardBasis == 'percentage' ? 'Rate (%)' : 'Amount',
+                      hintText: _rewardBasis == 'percentage' ? 'e.g. 10' : 'e.g. 25',
+                      filled: true, fillColor: AppTheme.pageBg,
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                          borderSide: const BorderSide(color: AppTheme.borderColor)),
+                      enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                          borderSide: const BorderSide(color: AppTheme.borderColor)),
+                      focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                          borderSide: BorderSide(color: AppTheme.brand, width: 1.5)),
+                    ),
+                  )),
+                  const SizedBox(width: 10),
+                  Container(
+                    height: 44, padding: const EdgeInsets.symmetric(horizontal: 12),
+                    decoration: BoxDecoration(color: AppTheme.pageBg, borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: AppTheme.borderColor)),
+                    child: DropdownButtonHideUnderline(child: DropdownButton<String>(
+                      value: _rewardType,
+                      dropdownColor: AppTheme.cardBg,
+                      style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                      items: const [
+                        DropdownMenuItem(value: 'cash', child: Text('Cash')),
+                        DropdownMenuItem(value: 'credit', child: Text('Credit')),
+                      ],
+                      onChanged: (v) => setState(() => _rewardType = v ?? 'cash'),
+                    )),
+                  ),
+                  const SizedBox(width: 10),
+                  SizedBox(height: 44, child: ElevatedButton(
+                    onPressed: _savingRewardDefault ? null : _saveDefaultReward,
+                    style: ElevatedButton.styleFrom(backgroundColor: AppTheme.brand, foregroundColor: Colors.white,
+                        elevation: 0, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+                    child: _savingRewardDefault
+                        ? const SizedBox(width: 14, height: 14,
+                            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                        : const Text('Save'),
+                  )),
+                ]),
+                if (_rewardBasis == 'percentage') ...[
+                  const SizedBox(height: 6),
+                  const Text(
+                    'Percentage of the amount actually paid on the invoice that triggered the referral\'s conversion.',
+                    style: TextStyle(fontSize: 11, color: AppTheme.textSecondary),
+                  ),
+                ],
+              ] else ...[
+                if (_rewardRecipients.isEmpty)
+                  Container(
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(color: AppTheme.pageBg, borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: AppTheme.borderColor)),
+                    child: const Text('No specific people added yet.',
+                        style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+                  )
+                else
+                  ..._rewardRecipients.map((r) {
+                    final basis = r['reward_basis'] as String? ?? 'flat';
+                    final method = r['reward_type'] as String? ?? 'cash';
+                    final methodLabel = method == 'cash' ? 'Cash' : 'Credit';
+                    final amountLabel = basis == 'percentage'
+                        ? '${(r['amount'] as num).toStringAsFixed(1)}% ($methodLabel)'
+                        : '\$${(r['amount'] as num).toStringAsFixed(2)} $methodLabel';
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      decoration: BoxDecoration(color: AppTheme.pageBg, borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: AppTheme.borderColor)),
+                      child: Row(children: [
+                        _Badge(label: r['referrer_type'] == 'lead' ? 'Lead' : 'Business Contact',
+                            color: r['referrer_type'] == 'lead' ? AppTheme.brand : const Color(0xFF6366F1)),
+                        const SizedBox(width: 10),
+                        Expanded(child: Text(r['name'] as String,
+                            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary))),
+                        Text(amountLabel, style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+                        const SizedBox(width: 10),
+                        Clickable(
+                          onTap: () => _showEditRewardRecipientDialog(r),
+                          child: const Icon(Icons.edit_outlined, size: 16, color: AppTheme.textSecondary),
+                        ),
+                        const SizedBox(width: 8),
+                        Clickable(
+                          onTap: () => _removeRewardRecipient(r['id'] as int),
+                          child: const Icon(Icons.delete_outline, size: 16, color: AppTheme.error),
+                        ),
+                      ]),
+                    );
+                  }),
+                const SizedBox(height: 8),
+                OutlinedButton.icon(
+                  onPressed: _showAddRewardRecipientDialog,
+                  icon: const Icon(Icons.add, size: 15),
+                  label: const Text('Add Recipient'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppTheme.brand,
+                    side: BorderSide(color: AppTheme.brand),
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+                  ),
+                ),
+              ],
+              const SizedBox(height: 16),
+              const Divider(color: AppTheme.borderColor, height: 1),
+              const SizedBox(height: 16),
+              const Text('Minimum Payout Threshold',
+                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+              const SizedBox(height: 4),
+              const Text(
+                'The referred customer\'s paid invoice must be at least this amount for the referrer to earn anything on that referral — a referral from a job below this size earns no reward at all, so you never pay out more than the job was worth. Set to 0 for no minimum.',
+                style: TextStyle(fontSize: 12, color: AppTheme.textSecondary, height: 1.4),
+              ),
+              const SizedBox(height: 12),
+              Row(children: [
+                SizedBox(
+                  width: 180,
+                  child: TextField(
+                    controller: _minPayoutCtrl,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                    decoration: InputDecoration(
+                      labelText: 'Minimum (\$)',
+                      hintText: 'e.g. 20',
+                      filled: true, fillColor: AppTheme.pageBg,
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                          borderSide: const BorderSide(color: AppTheme.borderColor)),
+                      enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                          borderSide: const BorderSide(color: AppTheme.borderColor)),
+                      focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                          borderSide: BorderSide(color: AppTheme.brand, width: 1.5)),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                SizedBox(height: 44, child: ElevatedButton(
+                  onPressed: _savingMinPayout ? null : _saveMinPayout,
+                  style: ElevatedButton.styleFrom(backgroundColor: AppTheme.brand, foregroundColor: Colors.white,
+                      elevation: 0, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+                  child: _savingMinPayout
+                      ? const SizedBox(width: 14, height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                      : const Text('Save'),
+                )),
+              ]),
+            ],
+          ],
         ]),
         const SizedBox(height: 24),
 
@@ -10939,6 +11389,295 @@ class _PhoneNumberSearchDialogState extends State<_PhoneNumberSearchDialog> {
                   ),
                 ),
               ),
+          ]),
+        ),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+//  ADD REWARD RECIPIENT DIALOG
+// ─────────────────────────────────────────────
+
+class _AddRewardRecipientDialog extends StatefulWidget {
+  final int businessId;
+  final Map<String, dynamic>? existing; // pre-fills and locks the person when editing
+  final VoidCallback onSaved;
+  const _AddRewardRecipientDialog({required this.businessId, this.existing, required this.onSaved});
+
+  @override
+  State<_AddRewardRecipientDialog> createState() => _AddRewardRecipientDialogState();
+}
+
+class _AddRewardRecipientDialogState extends State<_AddRewardRecipientDialog> {
+  final _db = Supabase.instance.client;
+  final _searchCtrl = TextEditingController();
+  final _amountCtrl = TextEditingController();
+  String _rewardType = 'cash';   // method: cash | credit
+  String _rewardBasis = 'flat';  // flat | percentage
+  bool _searching = false;
+  List<Map<String, dynamic>> _results = [];
+  Map<String, dynamic>? _selected; // {type, id, name}
+  bool _saving = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    final existing = widget.existing;
+    if (existing != null) {
+      _selected = {
+        'type': existing['referrer_type'],
+        'id': existing['referrer_id'],
+        'name': existing['name'],
+      };
+      _amountCtrl.text = (existing['amount'] as num).toString();
+      _rewardType = existing['reward_type'] as String? ?? 'cash';
+      _rewardBasis = existing['reward_basis'] as String? ?? 'flat';
+    }
+  }
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    _amountCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _search(String query) async {
+    if (query.trim().length < 2) {
+      setState(() => _results = []);
+      return;
+    }
+    setState(() => _searching = true);
+    try {
+      final leads = await _db.from('leads')
+          .select('id, lead_name')
+          .eq('business_id', widget.businessId)
+          .ilike('lead_name', '%${query.trim()}%')
+          .filter('deleted_at', 'is', null)
+          .limit(8);
+      final contacts = await _db.from('contacts')
+          .select('id, full_name')
+          .eq('business_id', widget.businessId)
+          .ilike('full_name', '%${query.trim()}%')
+          .filter('deleted_at', 'is', null)
+          .limit(8);
+
+      final combined = <Map<String, dynamic>>[
+        ...List<Map<String, dynamic>>.from(leads as List).map((l) => {
+              'type': 'lead', 'id': (l['id'] as num).toInt(), 'name': l['lead_name'] as String? ?? 'Unknown',
+            }),
+        ...List<Map<String, dynamic>>.from(contacts as List).map((c) => {
+              'type': 'contact', 'id': (c['id'] as num).toInt(), 'name': c['full_name'] as String? ?? 'Unknown',
+            }),
+      ];
+      if (mounted) setState(() { _results = combined; _searching = false; });
+    } catch (e) {
+      debugPrint('Recipient search: $e');
+      if (mounted) setState(() => _searching = false);
+    }
+  }
+
+  Future<void> _save() async {
+    if (_selected == null) {
+      setState(() => _error = 'Pick a lead or business contact first.');
+      return;
+    }
+    final amount = double.tryParse(_amountCtrl.text.trim());
+    if (amount == null) {
+      setState(() => _error = 'Enter a valid amount.');
+      return;
+    }
+    setState(() { _saving = true; _error = null; });
+    try {
+      final type = _selected!['type'] as String;
+      final id = _selected!['id'] as int;
+
+      final existing = await _db.from('referral_reward_recipients')
+          .select('id')
+          .eq('business_id', widget.businessId)
+          .eq('referrer_type', type)
+          .eq('referrer_id', id)
+          .filter('deleted_at', 'is', null)
+          .maybeSingle();
+
+      if (existing != null) {
+        await _db.from('referral_reward_recipients')
+            .update({'amount': amount, 'reward_type': _rewardType, 'reward_basis': _rewardBasis})
+            .eq('id', existing['id']);
+      } else {
+        await _db.from('referral_reward_recipients').insert({
+          'business_id': widget.businessId,
+          'referrer_type': type,
+          'referrer_id': id,
+          'amount': amount,
+          'reward_type': _rewardType,
+          'reward_basis': _rewardBasis,
+        });
+      }
+      widget.onSaved();
+      if (mounted) Navigator.of(context, rootNavigator: true).pop();
+    } catch (e) {
+      setState(() { _error = e.toString(); _saving = false; });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: AppTheme.cardBg,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: SizedBox(
+        width: 480,
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(widget.existing != null ? 'Edit Reward Recipient' : 'Add Reward Recipient',
+                style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+            const SizedBox(height: 16),
+            if (_selected == null) ...[
+              TextField(
+                controller: _searchCtrl,
+                onChanged: _search,
+                style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                decoration: InputDecoration(
+                  hintText: 'Search leads or business contacts...',
+                  filled: true, fillColor: AppTheme.pageBg,
+                  prefixIcon: const Icon(Icons.search, size: 16, color: AppTheme.textSecondary),
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                      borderSide: const BorderSide(color: AppTheme.borderColor)),
+                  enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                      borderSide: const BorderSide(color: AppTheme.borderColor)),
+                  focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                      borderSide: BorderSide(color: AppTheme.brand, width: 1.5)),
+                ),
+              ),
+              const SizedBox(height: 10),
+              if (_searching)
+                const Padding(padding: EdgeInsets.symmetric(vertical: 12),
+                    child: Center(child: SizedBox(width: 18, height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2))))
+              else if (_results.isNotEmpty)
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 220),
+                  child: SingleChildScrollView(
+                    child: Column(children: _results.map((r) => Clickable(
+                      onTap: () => setState(() => _selected = r),
+                      child: Container(
+                        margin: const EdgeInsets.only(bottom: 6),
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                        decoration: BoxDecoration(color: AppTheme.pageBg, borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: AppTheme.borderColor)),
+                        child: Row(children: [
+                          _Badge(label: r['type'] == 'lead' ? 'Lead' : 'Business Contact',
+                              color: r['type'] == 'lead' ? AppTheme.brand : const Color(0xFF6366F1)),
+                          const SizedBox(width: 10),
+                          Expanded(child: Text(r['name'] as String,
+                              style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary))),
+                        ]),
+                      ),
+                    )).toList()),
+                  ),
+                ),
+            ] else ...[
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                decoration: BoxDecoration(color: AppTheme.pageBg, borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: AppTheme.brand)),
+                child: Row(children: [
+                  _Badge(label: _selected!['type'] == 'lead' ? 'Lead' : 'Business Contact',
+                      color: _selected!['type'] == 'lead' ? AppTheme.brand : const Color(0xFF6366F1)),
+                  const SizedBox(width: 10),
+                  Expanded(child: Text(_selected!['name'] as String,
+                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary))),
+                  Clickable(
+                    onTap: () => setState(() => _selected = null),
+                    child: const Icon(Icons.close, size: 16, color: AppTheme.textSecondary),
+                  ),
+                ]),
+              ),
+              const SizedBox(height: 16),
+              Container(
+                height: 44, padding: const EdgeInsets.symmetric(horizontal: 12),
+                decoration: BoxDecoration(color: AppTheme.pageBg, borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: AppTheme.borderColor)),
+                child: DropdownButtonHideUnderline(child: DropdownButton<String>(
+                  value: _rewardBasis,
+                  isExpanded: true,
+                  dropdownColor: AppTheme.cardBg,
+                  style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                  items: const [
+                    DropdownMenuItem(value: 'flat', child: Text('Amount')),
+                    DropdownMenuItem(value: 'percentage', child: Text('Percentage')),
+                  ],
+                  onChanged: (v) => setState(() => _rewardBasis = v ?? 'flat'),
+                )),
+              ),
+              const SizedBox(height: 12),
+              Row(children: [
+                Expanded(child: TextField(
+                  controller: _amountCtrl,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                  decoration: InputDecoration(
+                    labelText: _rewardBasis == 'percentage' ? 'Rate (%)' : 'Amount',
+                    hintText: _rewardBasis == 'percentage' ? 'e.g. 10' : 'e.g. 25',
+                    filled: true, fillColor: AppTheme.pageBg,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                        borderSide: const BorderSide(color: AppTheme.borderColor)),
+                    enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                        borderSide: const BorderSide(color: AppTheme.borderColor)),
+                    focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                        borderSide: BorderSide(color: AppTheme.brand, width: 1.5)),
+                  ),
+                )),
+                const SizedBox(width: 10),
+                Container(
+                  height: 44, padding: const EdgeInsets.symmetric(horizontal: 12),
+                  decoration: BoxDecoration(color: AppTheme.pageBg, borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: AppTheme.borderColor)),
+                  child: DropdownButtonHideUnderline(child: DropdownButton<String>(
+                    value: _rewardType,
+                    dropdownColor: AppTheme.cardBg,
+                    style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                    items: const [
+                      DropdownMenuItem(value: 'cash', child: Text('Cash')),
+                      DropdownMenuItem(value: 'credit', child: Text('Credit')),
+                    ],
+                    onChanged: (v) => setState(() => _rewardType = v ?? 'cash'),
+                  )),
+                ),
+              ]),
+            ],
+            if (_error != null) ...[
+              const SizedBox(height: 12),
+              Text(_error!, style: const TextStyle(color: Colors.red, fontSize: 13)),
+            ],
+            const SizedBox(height: 20),
+            Row(children: [
+              Expanded(child: OutlinedButton(
+                onPressed: () => Navigator.of(context, rootNavigator: true).pop(),
+                style: OutlinedButton.styleFrom(foregroundColor: AppTheme.textSecondary,
+                    side: const BorderSide(color: AppTheme.borderColor),
+                    padding: const EdgeInsets.symmetric(vertical: 12)),
+                child: const Text('Cancel'),
+              )),
+              const SizedBox(width: 12),
+              Expanded(flex: 2, child: ElevatedButton(
+                onPressed: (_saving || _selected == null) ? null : _save,
+                style: ElevatedButton.styleFrom(backgroundColor: AppTheme.brand, foregroundColor: Colors.white,
+                    elevation: 0, padding: const EdgeInsets.symmetric(vertical: 12),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+                child: _saving
+                    ? const SizedBox(width: 18, height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                    : Text(widget.existing != null ? 'Save Changes' : 'Add Recipient'),
+              )),
+            ]),
           ]),
         ),
       ),

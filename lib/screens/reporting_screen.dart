@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
@@ -81,6 +82,11 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
   List<Map<String, dynamic>> _expensesByMember = [];
   List<Map<String, dynamic>> _expensesByCategory = [];
 
+  // Referrals leaderboard data
+  bool _loadingReferrals = false;
+  String? _referralsError;
+  List<Map<String, dynamic>> _referralLeaderboard = [];
+
   // Tax summary report data
   bool _loadingTaxSummary = false;
   String? _taxSummaryError;
@@ -97,10 +103,11 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
   @override
   void initState() {
     super.initState();
-    _reportTabController = TabController(length: 5, vsync: this, initialIndex: widget.initialTabIndex);
+    _reportTabController = TabController(length: 6, vsync: this, initialIndex: widget.initialTabIndex);
     _loadData().then((_) {
       _loadChecklistsReport();
       _loadTaxSummary();
+      _loadReferralsLeaderboard();
     });
   }
 
@@ -373,6 +380,95 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
       if (mounted) setState(() => _taxSummaryError = 'Network error — please try again.');
     } finally {
       if (mounted) setState(() => _loadingTaxSummary = false);
+    }
+  }
+
+  // JG-10: aggregates the referrals table (built earlier this project) by
+  // referrer_id, ranking existing customers by how many people they've
+  // referred and how many of those referrals actually became paying
+  // customers. referrer_type is always 'lead' today — the polymorphic
+  // 'contact' type isn't in use yet (see referrals table design notes).
+  Future<void> _loadReferralsLeaderboard() async {
+    if (_businessId == null) return;
+    setState(() { _loadingReferrals = true; _referralsError = null; });
+    try {
+      final since = DateTime.now()
+          .subtract(Duration(days: int.parse(_range)))
+          .toUtc()
+          .toIso8601String();
+      final referrals = await _supabase
+          .from('referrals')
+          .select('referrer_id, status, reward_amount, reward_type')
+          .eq('business_id', _businessId!)
+          .eq('referrer_type', 'lead')
+          .filter('deleted_at', 'is', null)
+          .gte('created_at', since);
+      final rows = List<Map<String, dynamic>>.from(referrals as List);
+
+      if (rows.isEmpty) {
+        setState(() { _referralLeaderboard = []; _loadingReferrals = false; });
+        return;
+      }
+
+      final counts = <int, Map<String, int>>{};
+      // reward_amount is stamped permanently at conversion time (see
+      // mark_referral_converted_on_paid_invoice) — summing it here is
+      // inherently historical and unaffected by later changes to
+      // referral_reward_settings, including rewards being turned off.
+      final rewardTotals = <int, Map<String, double>>{}; // referrer_id -> {reward_type: sum}
+      for (final r in rows) {
+        final id = (r['referrer_id'] as num).toInt();
+        final entry = counts.putIfAbsent(id, () => {'total': 0, 'converted': 0});
+        entry['total'] = entry['total']! + 1;
+        if (r['status'] == 'became_customer') {
+          entry['converted'] = entry['converted']! + 1;
+          final amt = (r['reward_amount'] as num?)?.toDouble();
+          if (amt != null && amt > 0) {
+            final type = r['reward_type'] as String? ?? 'cash';
+            final byType = rewardTotals.putIfAbsent(id, () => {});
+            byType[type] = (byType[type] ?? 0) + amt;
+          }
+        }
+      }
+
+      final referrerIds = counts.keys.toList();
+      final leadRows = await _supabase
+          .from('leads')
+          .select('id, lead_name, lead_phone')
+          .inFilter('id', referrerIds);
+      final leadById = {
+        for (final l in List<Map<String, dynamic>>.from(leadRows as List))
+          (l['id'] as num).toInt(): l
+      };
+
+      final leaderboard = counts.entries.map((e) {
+        final lead = leadById[e.key];
+        return {
+          'referrer_id': e.key,
+          'referrer_name': lead?['lead_name'] as String? ?? 'Unknown',
+          'referrer_phone': lead?['lead_phone'] as String?,
+          'total_referred': e.value['total']!,
+          'became_customer_count': e.value['converted']!,
+          'reward_by_type': rewardTotals[e.key] ?? <String, double>{},
+        };
+      }).toList();
+
+      leaderboard.sort((a, b) {
+        final byConverted = (b['became_customer_count'] as int)
+            .compareTo(a['became_customer_count'] as int);
+        if (byConverted != 0) return byConverted;
+        return (b['total_referred'] as int).compareTo(a['total_referred'] as int);
+      });
+
+      setState(() { _referralLeaderboard = leaderboard; _loadingReferrals = false; });
+    } catch (e) {
+      debugPrint('Referrals leaderboard error: $e');
+      if (mounted) {
+        setState(() {
+          _referralsError = 'Could not load the referrals leaderboard.';
+          _loadingReferrals = false;
+        });
+      }
     }
   }
 
@@ -809,6 +905,7 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
                 Tab(text: 'Expenses'),
                 Tab(text: 'Forms'),
                 Tab(text: 'Tax'),
+                Tab(text: 'Referrals'),
               ],
             ),
           ),
@@ -825,6 +922,7 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
                           _buildExpensesTab(),
                           _buildChecklistsTab(),
                           _buildTaxTab(),
+                          _buildReferralsTab(),
                         ],
                       ),
           ),
@@ -883,6 +981,7 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
         _loadData();
         _loadChecklistsReport();
         _loadTaxSummary();
+        _loadReferralsLeaderboard();
       },
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 150),
@@ -1000,6 +1099,264 @@ class _ReportingScreenState extends State<ReportingScreen> with SingleTickerProv
         _buildTaxSummarySection(),
         const SizedBox(height: 24),
       ],
+    );
+  }
+
+  Widget _buildReferralsTab() {
+    return ListView(
+      padding: const EdgeInsets.all(24),
+      children: [
+        _sectionTitle('Referrals Leaderboard'),
+        const SizedBox(height: 4),
+        const Text('Your top referrers, ranked by how many of their referrals became paying customers.',
+            style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+        const SizedBox(height: 12),
+        _buildReferralsLeaderboardSection(),
+        const SizedBox(height: 24),
+      ],
+    );
+  }
+
+  Widget _buildReferralsLeaderboardSection() {
+    if (_loadingReferrals) {
+      return Container(
+        height: 120,
+        decoration: _cardDecoration(),
+        child: const Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    if (_referralsError != null) {
+      return Container(
+        padding: const EdgeInsets.all(24),
+        decoration: _cardDecoration(),
+        child: Column(children: [
+          const Icon(Icons.error_outline, size: 32, color: AppTheme.error),
+          const SizedBox(height: 10),
+          Text(_referralsError!, style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary)),
+        ]),
+      );
+    }
+
+    if (_referralLeaderboard.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.all(24),
+        decoration: _cardDecoration(),
+        child: Column(children: [
+          const Icon(Icons.card_giftcard_outlined, size: 40, color: AppTheme.textMuted),
+          const SizedBox(height: 12),
+          const Text('No referrals in this period',
+              style: TextStyle(fontSize: 14, color: AppTheme.textSecondary)),
+        ]),
+      );
+    }
+
+    return Container(
+      decoration: _cardDecoration(),
+      child: Column(children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+          decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: AppTheme.borderColor))),
+          child: const Row(children: [
+            SizedBox(width: 32, child: Text('#',
+                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppTheme.textSecondary))),
+            Expanded(flex: 3, child: Text('REFERRER',
+                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 0.5))),
+            Expanded(child: Text('REFERRED', textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 0.5))),
+            Expanded(child: Text('BECAME CUSTOMER', textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 0.5))),
+            Expanded(child: Text('CONVERSION', textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 0.5))),
+            Expanded(flex: 2, child: Text('REFERRAL REWARD', textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppTheme.textSecondary, letterSpacing: 0.5))),
+          ]),
+        ),
+        ..._referralLeaderboard.asMap().entries.map((entry) {
+          final rank = entry.key + 1;
+          final row = entry.value;
+          final total = row['total_referred'] as int;
+          final converted = row['became_customer_count'] as int;
+          final pct = total > 0 ? (converted / total * 100) : 0.0;
+          return Container(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+            decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: AppTheme.borderColor))),
+            child: Row(children: [
+              SizedBox(
+                width: 32,
+                child: Text('$rank',
+                    style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                        color: rank <= 3 ? AppTheme.brand : AppTheme.textSecondary)),
+              ),
+              Expanded(
+                flex: 3,
+                child: Clickable(
+                  onTap: () => _openReferrerContact(row['referrer_id'] as int),
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text(row['referrer_name'] as String,
+                        style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.brand)),
+                    if ((row['referrer_phone'] as String?)?.isNotEmpty == true)
+                      Text(row['referrer_phone'] as String,
+                          style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                  ]),
+                ),
+              ),
+              Expanded(child: Text('$total', textAlign: TextAlign.center,
+                  style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary))),
+              Expanded(child: converted > 0
+                  ? Clickable(
+                      onTap: () => _showConvertedCustomersDialog(
+                          row['referrer_id'] as int, row['referrer_name'] as String),
+                      child: Text('$converted', textAlign: TextAlign.center,
+                          style: const TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700,
+                              decoration: TextDecoration.underline,
+                              color: Color(0xFF10B981))),
+                    )
+                  : Text('$converted', textAlign: TextAlign.center,
+                      style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                          color: AppTheme.textSecondary)),
+              ),
+              Expanded(child: Text('${pct.toStringAsFixed(0)}%', textAlign: TextAlign.center,
+                  style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary))),
+              Expanded(flex: 2, child: Text(
+                  _fmtRewardTotal(row['reward_by_type'] as Map<String, double>),
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                      color: (row['reward_by_type'] as Map<String, double>).isEmpty
+                          ? AppTheme.textSecondary
+                          : const Color(0xFF10B981)))),
+            ]),
+          );
+        }),
+      ]),
+    );
+  }
+
+  // Formats a referrer's accumulated reward as, e.g., "$70.00" if a single
+  // type, or "$50 Cash + $20 Credit" if the reward type changed between
+  // conversions (config was edited between two of this person's
+  // conversions). Empty map (no reward ever stamped) shows "$0.00".
+  String _fmtRewardTotal(Map<String, double> byType) {
+    if (byType.isEmpty) return '\$0.00';
+    if (byType.length == 1) {
+      final entry = byType.entries.first;
+      final label = entry.key == 'cash' ? 'Cash' : 'Credit';
+      return '\$${entry.value.toStringAsFixed(2)} $label';
+    }
+    return byType.entries
+        .map((e) => '\$${e.value.toStringAsFixed(2)} ${e.key == 'cash' ? 'Cash' : 'Credit'}')
+        .join(' + ');
+  }
+
+  // Referrer names are always leads today (referrer_type is 'lead' —
+  // see referrals table design notes); if a B2B 'contact' referrer type
+  // is ever added, this needs to branch on referrer_type before routing.
+  void _openReferrerContact(int referrerId) {
+    context.push('/contacts/$referrerId');
+  }
+
+  Future<List<Map<String, dynamic>>> _fetchConvertedCustomers(int referrerId) async {
+    if (_businessId == null) return [];
+    try {
+      final refs = await _supabase
+          .from('referrals')
+          .select('referred_lead_id')
+          .eq('business_id', _businessId!)
+          .eq('referrer_type', 'lead')
+          .eq('referrer_id', referrerId)
+          .eq('status', 'became_customer')
+          .filter('deleted_at', 'is', null);
+      final ids = List<Map<String, dynamic>>.from(refs as List)
+          .map((r) => (r['referred_lead_id'] as num?)?.toInt())
+          .whereType<int>()
+          .toList();
+      if (ids.isEmpty) return [];
+      final leads = await _supabase
+          .from('leads')
+          .select('id, lead_name, lead_phone, lead_email')
+          .inFilter('id', ids);
+      return List<Map<String, dynamic>>.from(leads as List);
+    } catch (e) {
+      debugPrint('Fetch converted customers error: $e');
+      return [];
+    }
+  }
+
+  void _showConvertedCustomersDialog(int referrerId, String referrerName) {
+    showDialog(
+      context: context,
+      builder: (ctx) => FutureBuilder<List<Map<String, dynamic>>>(
+        future: _fetchConvertedCustomers(referrerId),
+        builder: (ctx, snapshot) {
+          return AlertDialog(
+            backgroundColor: AppTheme.cardBg,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            title: Text('Referred by $referrerName',
+                style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+            content: SizedBox(
+              width: 360,
+              child: !snapshot.hasData
+                  ? const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 24),
+                      child: Center(child: CircularProgressIndicator()),
+                    )
+                  : snapshot.data!.isEmpty
+                      ? const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 12),
+                          child: Text('No converted customers found.',
+                              style: TextStyle(fontSize: 13, color: AppTheme.textSecondary)),
+                        )
+                      : Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: snapshot.data!.map((c) {
+                            final name = c['lead_name'] as String? ?? 'Unknown';
+                            return Padding(
+                              padding: const EdgeInsets.only(bottom: 10),
+                              child: Row(children: [
+                                Container(
+                                  width: 32, height: 32,
+                                  decoration: BoxDecoration(
+                                      color: AppTheme.brand.withValues(alpha: 0.12), shape: BoxShape.circle),
+                                  child: Center(child: Text(
+                                    name.isNotEmpty ? name.substring(0, 1).toUpperCase() : '?',
+                                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.brand))),
+                                ),
+                                const SizedBox(width: 10),
+                                Expanded(child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(name,
+                                        style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+                                    if ((c['lead_phone'] as String?)?.isNotEmpty == true)
+                                      Text(c['lead_phone'] as String,
+                                          style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                                    if ((c['lead_email'] as String?)?.isNotEmpty == true)
+                                      Text(c['lead_email'] as String,
+                                          style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                                  ],
+                                )),
+                              ]),
+                            );
+                          }).toList(),
+                        ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(),
+                child: const Text('Close', style: TextStyle(color: AppTheme.textSecondary)),
+              ),
+            ],
+          );
+        },
+      ),
     );
   }
 

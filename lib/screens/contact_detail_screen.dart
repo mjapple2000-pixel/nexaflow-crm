@@ -548,7 +548,13 @@ class _ContactDetailScreenState extends State<ContactDetailScreen>
         // Back
         MouseRegion(cursor: SystemMouseCursors.click,
           child: GestureDetector(
-            onTap: () => context.go('/contacts'),
+            onTap: () {
+              if (Navigator.of(context).canPop()) {
+                context.pop();
+              } else {
+                context.go('/contacts');
+              }
+            },
             child: Container(
               width: 34, height: 34,
               decoration: BoxDecoration(

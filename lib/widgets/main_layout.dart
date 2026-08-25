@@ -8,6 +8,7 @@ import '../widgets/nexaflow_support_bubble.dart';
 import '../navigation/app_router.dart';
 import '../screens/business_picker_screen.dart';
 import '../screens/tickets_screen.dart';
+import '../utils/business_utils.dart';
 
 // Below this width, show the "please use desktop" screen
 const double _kMinDesktopWidth = 800;
@@ -916,10 +917,7 @@ class _SidebarSearchState extends State<_SidebarSearch> {
   int? _cachedBizId;
   Future<int?> _loadBizId() async {
     if (_cachedBizId != null) return _cachedBizId;
-    final userId = _db.auth.currentUser?.id;
-    if (userId == null) return null;
-    final profile = await _db.from('profiles').select('business_id').eq('user_id', userId).maybeSingle();
-    _cachedBizId = profile?['business_id'] as int?;
+    _cachedBizId = await getActiveBusinessId();
     return _cachedBizId;
   }
 
