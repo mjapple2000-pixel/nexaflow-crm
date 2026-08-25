@@ -269,6 +269,7 @@ class _AutomationCard extends StatelessWidget {
       case 'status_changed': return 'Status Changed';
       case 'appointment_completed': return 'Appointment Completed';
       case 'job_form_completed': return 'Job Form Completed';
+      case 'referral_converted': return 'Referral Converted';
       default: return type;
     }
   }
@@ -281,6 +282,7 @@ class _AutomationCard extends StatelessWidget {
       case 'status_changed': return Icons.swap_horiz_outlined;
       case 'appointment_completed': return Icons.task_alt_outlined;
       case 'job_form_completed': return Icons.assignment_turned_in_outlined;
+      case 'referral_converted': return Icons.card_giftcard_outlined;
       default: return Icons.bolt_outlined;
     }
   }
@@ -644,6 +646,7 @@ class _AutomationBuilderViewState extends State<_AutomationBuilderView> {
                   width: 260,
                   color: Colors.white,
                   padding: const EdgeInsets.all(20),
+                  child: SingleChildScrollView(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -666,6 +669,8 @@ class _AutomationBuilderViewState extends State<_AutomationBuilderView> {
                         ('new_lead', Icons.person_add_outlined, 'New Lead'),
                         ('status_changed', Icons.swap_horiz_outlined,
                             'Status Changed'),
+                        ('referral_converted', Icons.card_giftcard_outlined,
+                            'Referral Converted'),
                       ].map((t) => _TriggerOption(
                             icon: t.$2,
                             label: t.$3,
@@ -703,6 +708,7 @@ class _AutomationBuilderViewState extends State<_AutomationBuilderView> {
                             onTap: () => _addAction(a.$1),
                           )),
                     ],
+                  ),
                   ),
                 ),
                 // Right canvas
@@ -901,6 +907,7 @@ class _TriggerNode extends StatelessWidget {
       case 'status_changed': return 'Lead Status Changed';
       case 'appointment_completed': return 'Appointment Marked Completed';
       case 'job_form_completed': return 'Job Form Completed';
+      case 'referral_converted': return 'Referral Converted to Customer';
       default: return type;
     }
   }
@@ -913,6 +920,7 @@ class _TriggerNode extends StatelessWidget {
       case 'status_changed': return Icons.swap_horiz_outlined;
       case 'appointment_completed': return Icons.task_alt_outlined;
       case 'job_form_completed': return Icons.assignment_turned_in_outlined;
+      case 'referral_converted': return Icons.card_giftcard_outlined;
       default: return Icons.bolt_outlined;
     }
   }

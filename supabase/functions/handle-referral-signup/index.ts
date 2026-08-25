@@ -19,16 +19,20 @@ Deno.serve(async (req) => {
 
   // Resolves a referral code against leads today. Kept as a lookup helper
   // so a later 'contact' referrer_type (B2B) is a one-line addition here,
-  // not a rewrite.
+  // not a rewrite. Also checks businesses.referral_program_enabled so a
+  // business that has turned the program off stops honoring old links,
+  // shown identically to an invalid code so nothing looks broken.
   async function findReferrer(code: string) {
     const { data } = await supabase
       .from('leads')
-      .select('id, lead_name, business_id, businesses(business_name)')
+      .select('id, lead_name, business_id, businesses(business_name, referral_program_enabled)')
       .eq('referral_code', code)
       .is('deleted_at', null)
       .maybeSingle()
-    if (data) return { type: 'lead' as const, row: data }
-    return null
+    if (!data) return null
+    const businessEnabled = (data as any).businesses?.referral_program_enabled
+    if (businessEnabled === false) return null
+    return { type: 'lead' as const, row: data }
   }
 
   try {
