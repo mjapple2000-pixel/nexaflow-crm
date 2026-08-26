@@ -30,6 +30,11 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
   bool _sendingPaymentLink = false;
   bool _sendingToClient = false;
 
+  // JG-12: progress-billing milestones for this invoice, if any.
+  // Empty for non-progress-billed invoices — the section just doesn't render.
+  List<Map<String, dynamic>> _milestones = [];
+  int? _markingReadyId;
+
   @override
   void initState() {
     super.initState();
@@ -51,6 +56,22 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
           .eq('parent_id', widget.invoiceId)
           .isFilter('deleted_at', null)
           .order('sort_order');
+
+      // JG-12: only progress-billed invoices have milestones. Sorted
+      // client-side rather than trusting .order() alone over the wire —
+      // same defensive pattern proven necessary in new_invoice_screen.dart.
+      List<Map<String, dynamic>> milestones = [];
+      if (invoiceRes['is_progress_billed'] == true) {
+        final milestoneRes = await _db
+            .from('invoice_milestones')
+            .select('*')
+            .eq('invoice_id', widget.invoiceId)
+            .isFilter('deleted_at', null)
+            .order('sort_order');
+        milestones = List<Map<String, dynamic>>.from(milestoneRes as List)
+          ..sort((a, b) => ((a['sort_order'] as int?) ?? 0)
+              .compareTo((b['sort_order'] as int?) ?? 0));
+      }
 
       // Load Stripe Connect status
       final businessId = invoiceRes['business_id'] as int?;
@@ -82,6 +103,7 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
         _invoice = invoiceRes;
         _lead = invoiceRes['leads'] as Map<String, dynamic>?;
         _lineItems = List<Map<String, dynamic>>.from(itemsRes);
+        _milestones = milestones;
         _chargesEnabled = chargesEnabled;
         _paymentLink = paymentLink;
         _loading = false;
@@ -168,6 +190,10 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
                 _clientCard(),
                 const SizedBox(height: 20),
                 _lineItemsTable(),
+                if (_milestones.isNotEmpty) ...[
+                  const SizedBox(height: 20),
+                  _milestonesCard(),
+                ],
                 const SizedBox(height: 20),
                 _notesCard(),
               ],
@@ -365,6 +391,146 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
         const Divider(height: 1, color: AppTheme.borderColor),
       ],
     );
+  }
+
+  // ── Billing milestones (JG-12) ───────────────────────────────────────────
+
+  Widget _milestonesCard() {
+    return Container(
+      decoration: BoxDecoration(
+        color: AppTheme.cardBg,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppTheme.borderColor),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Padding(
+            padding: EdgeInsets.fromLTRB(16, 14, 16, 10),
+            child: Text('BILLING MILESTONES', style: TextStyle(
+                fontSize: 10, fontWeight: FontWeight.w700,
+                color: AppTheme.textSecondary, letterSpacing: 0.8)),
+          ),
+          const Divider(height: 1, color: AppTheme.borderColor),
+          ..._milestones.asMap().entries.map((e) => _milestoneRow(e.key + 1, e.value)),
+        ],
+      ),
+    );
+  }
+
+  Map<String, dynamic> _milestoneStatusConfig(String status) {
+    switch (status) {
+      case 'ready_to_bill':
+        return {'label': 'Ready to Bill', 'color': const Color(0xFFf59e0b),
+            'bg': const Color(0xFFf59e0b).withValues(alpha: 0.1)};
+      case 'sent':
+        return {'label': 'Sent', 'color': const Color(0xFF3B82F6),
+            'bg': const Color(0xFF3B82F6).withValues(alpha: 0.1)};
+      case 'paid':
+        return {'label': 'Paid', 'color': const Color(0xFF10B981),
+            'bg': const Color(0xFF10B981).withValues(alpha: 0.1)};
+      default:
+        return {'label': 'Not Yet Ready', 'color': AppTheme.textSecondary,
+            'bg': AppTheme.textSecondary.withValues(alpha: 0.1)};
+    }
+  }
+
+  Widget _milestoneRow(int stageNumber, Map<String, dynamic> m) {
+    final id = m['id'] as int;
+    final label = m['label'] as String? ?? '—';
+    final status = m['status'] as String? ?? 'pending';
+    final amountDue = (m['amount_due'] as num?)?.toDouble() ?? 0;
+    final cfg = _milestoneStatusConfig(status);
+    final isMarking = _markingReadyId == id;
+
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          child: Row(
+            children: [
+              Container(
+                width: 20,
+                height: 20,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: AppTheme.brand.withValues(alpha: 0.1),
+                  shape: BoxShape.circle,
+                ),
+                child: Text('$stageNumber',
+                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700,
+                        color: AppTheme.brand)),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(label, style: const TextStyle(fontSize: 13,
+                    fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+              ),
+              Text('\$${amountDue.toStringAsFixed(2)}',
+                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
+                      color: AppTheme.textPrimary)),
+              const SizedBox(width: 12),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: cfg['bg'] as Color,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(cfg['label'] as String,
+                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600,
+                        color: cfg['color'] as Color)),
+              ),
+              if (status == 'pending') ...[
+                const SizedBox(width: 8),
+                SizedBox(
+                  height: 28,
+                  child: TextButton(
+                    onPressed: isMarking ? null : () => _onMarkMilestoneReady(id),
+                    style: TextButton.styleFrom(
+                      backgroundColor: AppTheme.brand.withValues(alpha: 0.08),
+                      padding: const EdgeInsets.symmetric(horizontal: 10),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                    ),
+                    child: isMarking
+                        ? const SizedBox(width: 12, height: 12,
+                            child: CircularProgressIndicator(strokeWidth: 2, color: AppTheme.brand))
+                        : const Text('Mark Ready to Bill',
+                            style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600,
+                                color: AppTheme.brand)),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+        const Divider(height: 1, color: AppTheme.borderColor),
+      ],
+    );
+  }
+
+  Future<void> _onMarkMilestoneReady(int milestoneId) async {
+    setState(() => _markingReadyId = milestoneId);
+    try {
+      final now = DateTime.now().toUtc().toIso8601String();
+      await _db.from('invoice_milestones').update({
+        'status': 'ready_to_bill',
+        'updated_at': now,
+      }).eq('id', milestoneId);
+      if (!mounted) return;
+      await _load();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Milestone marked ready to bill.'),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: Color(0xFF10B981),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
+    } finally {
+      if (mounted) setState(() => _markingReadyId = null);
+    }
   }
 
   // ── Notes card ────────────────────────────────────────────────────────────
@@ -958,9 +1124,14 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
     try {
       final now = DateTime.now().toUtc().toIso8601String();
       await _db.from('line_items').update({'deleted_at': now}).eq('parent_id', widget.invoiceId);
+      // JG-12: invoice_milestones use invoice_id directly, not the
+      // parent_id/parent_type pattern line_items uses — must be cleared
+      // separately or a deleted progress-billed invoice leaves orphaned
+      // milestone rows behind (same fix already applied to invoices_screen.dart).
+      await _db.from('invoice_milestones').update({'deleted_at': now}).eq('invoice_id', widget.invoiceId);
       await _db.from('invoices').update({'deleted_at': now}).eq('id', widget.invoiceId);
       if (!mounted) return;
-      context.go('/jobs');
+      context.go('/jobs?tab=1');
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));

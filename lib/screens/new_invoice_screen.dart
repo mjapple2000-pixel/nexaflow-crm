@@ -45,6 +45,15 @@ class _NewInvoiceScreenState extends State<NewInvoiceScreen> {
   final List<_LineItemRow> _lineItems = [];
   List<Map<String, dynamic>> _serviceLibrary = [];
 
+  // Progress invoicing (JG-12): when true, this invoice is billed in
+  // stages via _milestones rather than as a single lump-sum invoice.
+  // The invoice's own amount_due/subtotal/total (computed from line
+  // items above) still represents the FULL job value — milestones are
+  // just how that total gets split into billable slices.
+  bool _isProgressBilled = false;
+  final List<_MilestoneRow> _milestones = [];
+  List<int> _originalMilestoneIds = [];
+
   bool get _isEditing => widget.invoiceId != null;
 
   @override
@@ -60,6 +69,9 @@ class _NewInvoiceScreenState extends State<NewInvoiceScreen> {
     _notesCtrl.dispose();
     for (final item in _lineItems) {
       item.dispose();
+    }
+    for (final m in _milestones) {
+      m.dispose();
     }
     super.dispose();
   }
@@ -128,6 +140,37 @@ class _NewInvoiceScreenState extends State<NewInvoiceScreen> {
         due = DateTime.tryParse(invoice['due_date'] as String);
       }
 
+      // JG-12: load any existing milestones for this invoice. Loaded
+      // separately from line items since milestones carry their own
+      // payment state (status/paid_at) that must survive edits.
+      final milestoneRows = await _supabase
+          .from('invoice_milestones')
+          .select('*')
+          .eq('invoice_id', widget.invoiceId!)
+          .isFilter('deleted_at', null)
+          .order('sort_order');
+      if (!mounted) return;
+
+      // Defensive: force correct order client-side rather than trusting
+      // the query's .order() clause alone — guarantees stage order
+      // always matches sort_order regardless of what happens over the wire.
+      final sortedMilestoneRows = List<Map<String, dynamic>>.from(milestoneRows as List)
+        ..sort((a, b) => ((a['sort_order'] as int?) ?? 0)
+            .compareTo((b['sort_order'] as int?) ?? 0));
+
+      final existingMilestones = sortedMilestoneRows.map((m) {
+        final row = _MilestoneRow();
+        row.id = m['id'] as int?;
+        row.labelCtrl.text = m['label'] as String? ?? '';
+        row.amountType = m['amount_type'] as String? ?? 'percentage';
+        row.amountValueCtrl.text = (m['amount_value'] ?? 0).toString();
+        if (m['due_date'] != null) {
+          row.dueDate = DateTime.tryParse(m['due_date'] as String);
+        }
+        row.status = m['status'] as String? ?? 'pending';
+        return row;
+      }).toList();
+
       setState(() {
         _serviceLibrary = List<Map<String, dynamic>>.from(lib as List);
         _selectedLead = lead;
@@ -136,6 +179,12 @@ class _NewInvoiceScreenState extends State<NewInvoiceScreen> {
         _dueDate = due;
         _taxRate = (invoice['tax_rate'] as num?)?.toDouble() ?? defaultTax;
         _lineItems.addAll(existingItems.isEmpty ? [_LineItemRow()] : existingItems);
+        _isProgressBilled = invoice['is_progress_billed'] as bool? ?? false;
+        _milestones.addAll(existingMilestones);
+        _originalMilestoneIds = existingMilestones
+            .where((m) => m.id != null)
+            .map((m) => m.id!)
+            .toList();
       });
 
       if (lead != null && lead['id'] != null) {
@@ -225,6 +274,29 @@ class _NewInvoiceScreenState extends State<NewInvoiceScreen> {
   double get _taxAmount => _taxableSubtotal * _taxRate;
   double get _total => _subtotal + _taxAmount;
 
+  // JG-12: milestones split the SAME total computed above into billable
+  // stages — there is no separate "job total" field. A flat-amount
+  // milestone counts as itself; a percentage milestone is resolved
+  // against this total at save time.
+  double get _milestonesTotalValue => _total;
+
+  double _milestoneAmount(_MilestoneRow m) {
+    if (m.amountType == 'flat') return m.amountValue;
+    final raw = _milestonesTotalValue * (m.amountValue / 100);
+    // Round to cents right here — this single method feeds the on-screen
+    // balance check, the per-row dollar display, AND the amount_due
+    // written to the database, so fixing it here closes the floating-
+    // point artifact (7524.999999999999) everywhere at once.
+    return double.parse(raw.toStringAsFixed(2));
+  }
+
+  double get _milestonesAllocated =>
+      _milestones.fold(0.0, (sum, m) => sum + _milestoneAmount(m));
+
+  double get _milestonesRemaining => _milestonesTotalValue - _milestonesAllocated;
+
+  bool get _milestonesBalanced => _milestonesRemaining.abs() < 0.01;
+
   // Splits the actual tax collected across jurisdictions using the
   // business's stored rate breakdown as ratios — this way the four
   // amounts always sum exactly to _taxAmount even if _taxRate was
@@ -268,6 +340,18 @@ class _NewInvoiceScreenState extends State<NewInvoiceScreen> {
       setState(() => _error = 'Please add at least one line item.');
       return;
     }
+    if (_isProgressBilled) {
+      if (_milestones.isEmpty || _milestones.any((m) => m.label.trim().isEmpty)) {
+        setState(() => _error = 'Please label every billing milestone.');
+        return;
+      }
+      if (!_milestonesBalanced) {
+        setState(() => _error = _milestonesRemaining > 0
+            ? 'Milestones must add up to the full job total — \$${_milestonesRemaining.toStringAsFixed(2)} still unallocated.'
+            : 'Milestones exceed the job total by \$${(-_milestonesRemaining).toStringAsFixed(2)}.');
+        return;
+      }
+    }
     setState(() { _saving = true; _error = null; });
     try {
       final now = DateTime.now().toUtc().toIso8601String();
@@ -289,6 +373,7 @@ class _NewInvoiceScreenState extends State<NewInvoiceScreen> {
           'tax_special_district_amount': _taxSpecialAmount,
           'subtotal':       _subtotal,
           'amount_due':     _total,
+          'is_progress_billed': _isProgressBilled,
           'updated_at':     now,
         }).eq('id', invoiceId);
 
@@ -316,6 +401,7 @@ class _NewInvoiceScreenState extends State<NewInvoiceScreen> {
           'tax_rate':       _taxRate,
           'notes':          _notesCtrl.text.trim(),
           'due_date':       _dueDate?.toUtc().toIso8601String(),
+          'is_progress_billed': _isProgressBilled,
           'updated_at':     now,
         }).select().single();
         if (!mounted) return;
@@ -344,6 +430,56 @@ class _NewInvoiceScreenState extends State<NewInvoiceScreen> {
       }
       if (lineItemPayloads.isNotEmpty) {
         await _supabase.from('line_items').insert(lineItemPayloads);
+      }
+      if (!mounted) return;
+
+      // Milestones (JG-12): existing rows (have an `id`) are UPDATED in
+      // place so payment state (status/paid_at/stripe_checkout_session_id)
+      // is never touched here; new rows are inserted fresh as 'pending';
+      // rows removed from the builder since load, or the whole set when
+      // progress billing is toggled off, are soft-deleted only — a
+      // removed milestone may already have a payment attached to it.
+      final currentMilestoneIds =
+          _milestones.where((m) => m.id != null).map((m) => m.id!).toSet();
+      final removedMilestoneIds = _originalMilestoneIds
+          .where((id) => !currentMilestoneIds.contains(id))
+          .toList();
+      if (removedMilestoneIds.isNotEmpty) {
+        await _supabase.from('invoice_milestones')
+            .update({'deleted_at': now})
+            .inFilter('id', removedMilestoneIds);
+      }
+
+      if (_isProgressBilled) {
+        for (int i = 0; i < _milestones.length; i++) {
+          final m = _milestones[i];
+          final payload = {
+            'business_id':  _businessId,
+            'invoice_id':   invoiceId,
+            'label':        m.label.trim(),
+            'sort_order':   i,
+            'amount_type':  m.amountType,
+            'amount_value': m.amountValue,
+            'amount_due':   _milestoneAmount(m),
+            'due_date':     m.dueDate?.toUtc().toIso8601String(),
+            'updated_at':   now,
+          };
+          if (m.id != null) {
+            await _supabase.from('invoice_milestones')
+                .update(payload)
+                .eq('id', m.id!);
+          } else {
+            await _supabase.from('invoice_milestones').insert({
+              ...payload,
+              'status': 'pending',
+            });
+          }
+        }
+      } else if (_originalMilestoneIds.isNotEmpty) {
+        await _supabase.from('invoice_milestones')
+            .update({'deleted_at': now})
+            .inFilter('id', _originalMilestoneIds)
+            .isFilter('deleted_at', null);
       }
       if (!mounted) return;
 
@@ -547,6 +683,10 @@ class _NewInvoiceScreenState extends State<NewInvoiceScreen> {
                         _buildJobTitleSection(),
                         const SizedBox(height: 24),
                         _buildLineItemsSection(),
+                        if (_isProgressBilled) ...[
+                          const SizedBox(height: 24),
+                          _buildMilestonesSection(),
+                        ],
                         const SizedBox(height: 24),
                         _buildNotesSection(),
                       ],
@@ -968,6 +1108,111 @@ class _NewInvoiceScreenState extends State<NewInvoiceScreen> {
     );
   }
 
+  // JG-12: only rendered when _isProgressBilled is on. Splits _total
+  // (from line items above) into billable stages instead of replacing
+  // it — the job's total value is always the sum of line items.
+  Widget _buildMilestonesSection() {
+    return _SectionCard(
+      title: 'Billing Milestones',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          ...List.generate(_milestones.length, (i) => _MilestoneRowWidget(
+            key: ValueKey(_milestones[i].id ?? 'new_$i'),
+            item: _milestones[i],
+            stageNumber: i + 1,
+            resolvedAmount: _milestoneAmount(_milestones[i]),
+            onChanged: () => setState(() {}),
+            onRemove: _milestones.length > 1 ? () => _removeMilestone(i) : null,
+            onMoveUp: i > 0 ? () => _moveMilestone(i, -1) : null,
+            onMoveDown: i < _milestones.length - 1 ? () => _moveMilestone(i, 1) : null,
+          )),
+          const SizedBox(height: 8),
+          Clickable(
+            onTap: _addMilestone,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: AppTheme.pageBg,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: AppTheme.borderColor),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.add, size: 14, color: AppTheme.brand),
+                  const SizedBox(width: 6),
+                  Text('Add Milestone',
+                      style: TextStyle(fontSize: 12, color: AppTheme.brand,
+                          fontWeight: FontWeight.w500)),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: _milestonesBalanced
+                  ? const Color(0xFF10B981).withValues(alpha: 0.08)
+                  : AppTheme.error.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                color: _milestonesBalanced
+                    ? const Color(0xFF10B981).withValues(alpha: 0.3)
+                    : AppTheme.error.withValues(alpha: 0.3),
+              ),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  _milestonesBalanced ? Icons.check_circle_outline : Icons.error_outline,
+                  size: 16,
+                  color: _milestonesBalanced ? const Color(0xFF10B981) : AppTheme.error,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    _milestonesBalanced
+                        ? 'Milestones add up to the full job total (\$${_milestonesTotalValue.toStringAsFixed(2)}).'
+                        : _milestonesRemaining > 0
+                            ? '\$${_milestonesRemaining.toStringAsFixed(2)} still unallocated of \$${_milestonesTotalValue.toStringAsFixed(2)}.'
+                            : '\$${(-_milestonesRemaining).toStringAsFixed(2)} over the job total of \$${_milestonesTotalValue.toStringAsFixed(2)}.',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: _milestonesBalanced ? const Color(0xFF10B981) : AppTheme.error,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _addMilestone() {
+    setState(() => _milestones.add(_MilestoneRow()));
+  }
+
+  void _removeMilestone(int index) {
+    setState(() {
+      _milestones[index].dispose();
+      _milestones.removeAt(index);
+    });
+  }
+
+  void _moveMilestone(int index, int delta) {
+    final target = index + delta;
+    if (target < 0 || target >= _milestones.length) return;
+    setState(() {
+      final item = _milestones.removeAt(index);
+      _milestones.insert(target, item);
+    });
+  }
+
   Widget _buildNotesSection() {
     return _SectionCard(
       title: 'Notes',
@@ -1081,7 +1326,36 @@ class _NewInvoiceScreenState extends State<NewInvoiceScreen> {
                         color: AppTheme.brand)),
               ],
             ),
-            const SizedBox(height: 24),
+            const SizedBox(height: 20),
+            const Divider(color: AppTheme.borderColor),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                const Expanded(
+                  child: Text('Bill this job in stages',
+                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
+                          color: AppTheme.textPrimary)),
+                ),
+                Switch(
+                  value: _isProgressBilled,
+                  activeColor: AppTheme.brand,
+                  onChanged: (v) {
+                    setState(() {
+                      _isProgressBilled = v;
+                      if (v && _milestones.isEmpty) _milestones.add(_MilestoneRow());
+                    });
+                  },
+                ),
+              ],
+            ),
+            if (_isProgressBilled) ...[
+              const SizedBox(height: 4),
+              const Text(
+                'Splits the total above into billable stages instead of one lump sum.',
+                style: TextStyle(fontSize: 11, color: AppTheme.textMuted),
+              ),
+            ],
+            const SizedBox(height: 16),
             const Divider(color: AppTheme.borderColor),
             const SizedBox(height: 16),
             SizedBox(
@@ -1315,6 +1589,315 @@ class _LineItemRowWidgetState extends State<_LineItemRowWidget> {
                       child: Container(
                         width: 40,
                         height: 40,
+                        alignment: Alignment.center,
+                        child: const Icon(Icons.delete_outline, size: 16, color: Colors.red),
+                      ),
+                    ),
+                  )
+                : const SizedBox.shrink(),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+//  MILESTONE DATA MODEL (JG-12)
+// ─────────────────────────────────────────────
+class _MilestoneRow {
+  int? id; // null = not yet saved to invoice_milestones
+  final TextEditingController labelCtrl = TextEditingController();
+  final TextEditingController amountValueCtrl = TextEditingController(text: '0');
+  String amountType = 'percentage'; // 'percentage' | 'flat'
+  DateTime? dueDate;
+  String status = 'pending'; // read-only here; set by billing automation elsewhere
+
+  String get label => labelCtrl.text;
+  double get amountValue => double.tryParse(amountValueCtrl.text) ?? 0;
+
+  void dispose() {
+    labelCtrl.dispose();
+    amountValueCtrl.dispose();
+  }
+}
+
+// ─────────────────────────────────────────────
+//  MILESTONE ROW WIDGET (JG-12)
+// ─────────────────────────────────────────────
+class _MilestoneRowWidget extends StatefulWidget {
+  final _MilestoneRow item;
+  final int stageNumber;
+  final double resolvedAmount;
+  final VoidCallback onChanged;
+  final VoidCallback? onRemove;
+  final VoidCallback? onMoveUp;
+  final VoidCallback? onMoveDown;
+
+  const _MilestoneRowWidget({
+    super.key,
+    required this.item,
+    required this.stageNumber,
+    required this.resolvedAmount,
+    required this.onChanged,
+    this.onRemove,
+    this.onMoveUp,
+    this.onMoveDown,
+  });
+
+  @override
+  State<_MilestoneRowWidget> createState() => _MilestoneRowWidgetState();
+}
+
+class _MilestoneRowWidgetState extends State<_MilestoneRowWidget> {
+  @override
+  void initState() {
+    super.initState();
+    widget.item.labelCtrl.addListener(_notify);
+    widget.item.amountValueCtrl.addListener(_notify);
+  }
+
+  void _notify() {
+    setState(() {});
+    widget.onChanged();
+  }
+
+  @override
+  void dispose() {
+    widget.item.labelCtrl.removeListener(_notify);
+    widget.item.amountValueCtrl.removeListener(_notify);
+    super.dispose();
+  }
+
+  InputDecoration _fieldDeco({String? hint, String? suffix}) => InputDecoration(
+    hintText: hint,
+    suffixText: suffix,
+    hintStyle: const TextStyle(fontSize: 12, color: AppTheme.textMuted),
+    filled: true,
+    fillColor: AppTheme.pageBg,
+    isDense: true,
+    contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+    border: OutlineInputBorder(borderRadius: BorderRadius.circular(6),
+        borderSide: const BorderSide(color: AppTheme.borderColor)),
+    enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(6),
+        borderSide: const BorderSide(color: AppTheme.borderColor)),
+    focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(6),
+        borderSide: BorderSide(color: AppTheme.brand, width: 1.5)),
+  );
+
+  // 4-state model per the JG-12 status decision: pending and
+  // ready_to_bill are kept visually distinct, not collapsed — conflating
+  // "not due yet" with "should have been sent" hides a real operational
+  // problem behind one vague badge.
+  Widget _statusBadge() {
+    final Color color;
+    final String label;
+    switch (widget.item.status) {
+      case 'ready_to_bill':
+        color = const Color(0xFFf59e0b);
+        label = 'Ready to Bill';
+        break;
+      case 'sent':
+        color = const Color(0xFF3B82F6);
+        label = 'Sent';
+        break;
+      case 'paid':
+        color = const Color(0xFF10B981);
+        label = 'Paid';
+        break;
+      default:
+        color = AppTheme.textSecondary;
+        label = 'Not Yet Ready';
+    }
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Text(label,
+          style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: color)),
+    );
+  }
+
+  Future<void> _pickDueDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: widget.item.dueDate ?? DateTime.now(),
+      firstDate: DateTime.now().subtract(const Duration(days: 365)),
+      lastDate: DateTime.now().add(const Duration(days: 365 * 2)),
+    );
+    if (picked != null) {
+      setState(() => widget.item.dueDate = picked);
+      widget.onChanged();
+    }
+  }
+
+  Widget _arrowButton(IconData icon, VoidCallback? onTap) {
+    final enabled = onTap != null;
+    return MouseRegion(
+      cursor: enabled ? SystemMouseCursors.click : SystemMouseCursors.basic,
+      child: GestureDetector(
+        onTap: onTap,
+        child: SizedBox(
+          width: 18,
+          height: 15,
+          child: Icon(icon, size: 14,
+              color: enabled ? AppTheme.textSecondary : AppTheme.textMuted.withValues(alpha: 0.3)),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final item = widget.item;
+    const months = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    final dueLabel = item.dueDate != null
+        ? '${months[item.dueDate!.month]} ${item.dueDate!.day}'
+        : 'No due date';
+
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
+      decoration: const BoxDecoration(
+        border: Border(bottom: BorderSide(color: AppTheme.borderColor)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 50,
+            height: 34,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    _arrowButton(Icons.keyboard_arrow_up, widget.onMoveUp),
+                    _arrowButton(Icons.keyboard_arrow_down, widget.onMoveDown),
+                  ],
+                ),
+                const SizedBox(width: 4),
+                Container(
+                  width: 18,
+                  height: 18,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: AppTheme.brand.withValues(alpha: 0.1),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Text('${widget.stageNumber}',
+                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700,
+                          color: AppTheme.brand)),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: TextField(
+              controller: item.labelCtrl,
+              style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+              decoration: _fieldDeco(hint: 'e.g. Deposit'),
+            ),
+          ),
+          const SizedBox(width: 8),
+          SizedBox(
+            width: 76,
+            child: TextField(
+              controller: item.amountValueCtrl,
+              keyboardType: TextInputType.number,
+              style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+              decoration: _fieldDeco(
+                  hint: '0',
+                  suffix: item.amountType == 'percentage' ? '%' : null),
+            ),
+          ),
+          const SizedBox(width: 8),
+          SizedBox(
+            width: 56,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              decoration: BoxDecoration(
+                color: AppTheme.pageBg,
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: AppTheme.borderColor),
+              ),
+              child: DropdownButtonHideUnderline(
+                child: DropdownButton<String>(
+                  value: item.amountType,
+                  isDense: true,
+                  isExpanded: true,
+                  dropdownColor: AppTheme.cardBg,
+                  style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary),
+                  items: const [
+                    DropdownMenuItem(value: 'percentage', child: Text('%')),
+                    DropdownMenuItem(value: 'flat', child: Text('\$')),
+                  ],
+                  onChanged: (v) {
+                    setState(() => item.amountType = v ?? 'percentage');
+                    widget.onChanged();
+                  },
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          SizedBox(
+            width: 112,
+            child: Clickable(
+              onTap: _pickDueDate,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 9),
+                decoration: BoxDecoration(
+                  color: AppTheme.pageBg,
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: AppTheme.borderColor),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.calendar_today_outlined, size: 12, color: AppTheme.textSecondary),
+                    const SizedBox(width: 6),
+                    Flexible(
+                      child: Text(dueLabel,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          SizedBox(
+            width: 76,
+            child: Padding(
+              padding: const EdgeInsets.only(top: 9),
+              child: Text(
+                '\$${widget.resolvedAmount.toStringAsFixed(2)}',
+                textAlign: TextAlign.right,
+                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
+                    color: AppTheme.textPrimary),
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          if (item.id != null) ...[
+            _statusBadge(),
+            const SizedBox(width: 8),
+          ],
+          SizedBox(
+            width: 32,
+            child: widget.onRemove != null
+                ? MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    child: GestureDetector(
+                      onTap: widget.onRemove,
+                      child: Container(
+                        width: 32,
+                        height: 32,
                         alignment: Alignment.center,
                         child: const Icon(Icons.delete_outline, size: 16, color: Colors.red),
                       ),

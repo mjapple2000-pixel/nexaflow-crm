@@ -28,16 +28,13 @@ Deno.serve(async (req) => {
   }
 
   try {
-    // ── Accept only invoice_id ── never business_id/amount_cents/description ──
-    // Previously this endpoint trusted business_id, amount_cents, and
-    // description directly from the client with no auth check and no tie
-    // to a real invoice at all — anyone could POST any business_id plus a
-    // made-up amount and create a real Stripe Checkout Session against
-    // that business's connected account, with the platform fee attached.
-    // Callers here are external leads paying a bill, so there's no Supabase
-    // session to check — the invoice_id itself, resolved server-side
-    // against a real unpaid invoice, is what makes this safe.
-    const { invoice_id } = await req.json()
+    // JG-12: optional milestone_id. When present, this checkout session
+    // is for ONE billing stage, not the whole invoice — amount, status
+    // check, and session-id storage all resolve against the milestone
+    // row instead of the invoice row. invoice_id is still required so we
+    // can verify the milestone actually belongs to it (never trust a
+    // bare milestone_id with no ownership check).
+    const { invoice_id, milestone_id } = await req.json()
 
     if (!invoice_id) {
       return new Response(
@@ -48,7 +45,7 @@ Deno.serve(async (req) => {
 
     const { data: invoice, error: invError } = await supabase
       .from('invoices')
-      .select('id, business_id, contact_id, amount_due, job_title, status')
+      .select('id, business_id, contact_id, amount_due, job_title, status, is_progress_billed')
       .eq('id', invoice_id)
       .is('deleted_at', null)
       .single()
@@ -60,11 +57,53 @@ Deno.serve(async (req) => {
       )
     }
 
-    if (!['approved', 'sent'].includes(invoice.status)) {
-      return new Response(
-        JSON.stringify({ error: 'This invoice is not payable in its current status.' }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
-      )
+    let payAmountDue = invoice.amount_due
+    let payDescription = invoice.job_title?.trim() ? invoice.job_title : 'Invoice payment'
+    let milestone: { id: number; label: string; status: string } | null = null
+
+    if (milestone_id) {
+      const { data: m, error: mErr } = await supabase
+        .from('invoice_milestones')
+        .select('id, invoice_id, label, status, amount_due')
+        .eq('id', milestone_id)
+        .eq('invoice_id', invoice_id)
+        .is('deleted_at', null)
+        .single()
+
+      if (mErr || !m) {
+        return new Response(
+          JSON.stringify({ error: 'Milestone not found.' }),
+          { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        )
+      }
+
+      if (!['ready_to_bill', 'sent'].includes(m.status)) {
+        return new Response(
+          JSON.stringify({ error: 'This milestone is not payable in its current status.' }),
+          { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        )
+      }
+
+      milestone = { id: m.id, label: m.label, status: m.status }
+      payAmountDue = m.amount_due
+      payDescription = `${payDescription} — ${m.label}`
+    } else {
+      // Whole-invoice path — unchanged from before. Progress-billed
+      // invoices should always be paid milestone-by-milestone, never as
+      // one lump sum, so block that combination explicitly rather than
+      // silently charging the full amount for a staged job.
+      if (invoice.is_progress_billed) {
+        return new Response(
+          JSON.stringify({ error: 'This invoice is billed in stages — pay individual milestones instead.' }),
+          { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        )
+      }
+      if (!['approved', 'sent'].includes(invoice.status)) {
+        return new Response(
+          JSON.stringify({ error: 'This invoice is not payable in its current status.' }),
+          { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        )
+      }
     }
 
     // Look up stripe_connect_id and verify ready
@@ -102,15 +141,14 @@ Deno.serve(async (req) => {
     }
 
     // amount_due is stored in dollars (numeric) — Stripe wants integer cents
-    const amount_cents = Math.round(Number(invoice.amount_due) * 100)
-    const description = invoice.job_title?.trim() ? invoice.job_title : 'Invoice payment'
+    const amount_cents = Math.round(Number(payAmountDue) * 100)
 
     // Calculate platform fee
     const feePct = parseFloat(Deno.env.get('PLATFORM_FEE_PERCENT') ?? '1.0')
     const applicationFeeAmount = Math.round(amount_cents * (feePct / 100))
 
     const sessionParams = {
-      payment_method_types: ['card'],
+      payment_method_types: ['card'] as Stripe.Checkout.SessionCreateParams.PaymentMethodType[],
       mode: 'payment' as const,
       customer_email,
       line_items: [
@@ -120,7 +158,7 @@ Deno.serve(async (req) => {
             currency: 'usd',
             unit_amount: amount_cents,
             product_data: {
-              name: description,
+              name: payDescription,
               description: `Payment to ${business.business_name ?? 'your service provider'}`,
             },
           },
@@ -157,11 +195,21 @@ Deno.serve(async (req) => {
       })
     }
 
-    // Track the session on the invoice for later reconciliation
-    await supabase
-      .from('invoices')
-      .update({ stripe_checkout_session_id: session.id })
-      .eq('id', invoice.id)
+    // Track the session for later reconciliation — on the MILESTONE when
+    // this is a staged payment, on the invoice otherwise. Keeping these
+    // separate means stripe-connect-webhook can tell which kind of
+    // payment just completed purely from which row the session id matches.
+    if (milestone) {
+      await supabase
+        .from('invoice_milestones')
+        .update({ stripe_checkout_session_id: session.id })
+        .eq('id', milestone.id)
+    } else {
+      await supabase
+        .from('invoices')
+        .update({ stripe_checkout_session_id: session.id })
+        .eq('id', invoice.id)
+    }
 
     return new Response(
       JSON.stringify({ url: session.url, session_id: session.id }),

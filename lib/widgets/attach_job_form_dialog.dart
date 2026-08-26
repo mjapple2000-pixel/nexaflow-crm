@@ -224,6 +224,7 @@ class _AttachJobFormDialogState extends State<AttachJobFormDialog> {
                 'lead_email': email.isEmpty ? null : email,
                 'lead_status': 'new',
                 'source': 'job_form_attach',
+                'date_added': DateTime.now().toUtc().toIso8601String(),
               })
               .select()
               .maybeSingle();

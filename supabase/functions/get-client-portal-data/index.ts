@@ -84,7 +84,7 @@ Deno.serve(async (req) => {
     // Invoices with line items
     const { data: invoices } = await adminClient
       .from('invoices')
-      .select('id, invoice_number, job_title, amount_due, subtotal, tax_rate, tax_amount, status, created_at, due_date, paid_at, notes')
+      .select('id, invoice_number, job_title, amount_due, subtotal, tax_rate, tax_amount, status, created_at, due_date, paid_at, notes, is_progress_billed')
       .eq('contact_id', leadId)
       .eq('business_id', businessId)
       .is('deleted_at', null)
@@ -104,10 +104,30 @@ Deno.serve(async (req) => {
       invoiceLineItems = ili ?? []
     }
 
-    // Attach line items to each invoice
+    // JG-12: milestones for any progress-billed invoice among this lead's
+    // invoices. Only status/label/amount/due_date are exposed — no
+    // internal fields like stripe_checkout_session_id or trigger_condition,
+    // since this response goes straight to an unauthenticated public
+    // portal page.
+    let invoiceMilestones: any[] = []
+    const progressBilledIds = (invoices ?? [])
+      .filter((i: any) => i.is_progress_billed)
+      .map((i: any) => i.id)
+    if (progressBilledIds.length > 0) {
+      const { data: ms } = await adminClient
+        .from('invoice_milestones')
+        .select('id, invoice_id, label, sort_order, status, amount_due, due_date')
+        .in('invoice_id', progressBilledIds)
+        .is('deleted_at', null)
+        .order('sort_order')
+      invoiceMilestones = (ms ?? []).sort((a: any, b: any) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+    }
+
+    // Attach line items + milestones to each invoice
     const invoicesWithItems = (invoices ?? []).map((i: any) => ({
       ...i,
       line_items: invoiceLineItems.filter((li: any) => li.parent_id === i.id),
+      milestones: invoiceMilestones.filter((m: any) => m.invoice_id === i.id),
     }))
 
     // Service requests

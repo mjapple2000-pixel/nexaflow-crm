@@ -1,5 +1,7 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme/app_theme.dart';
 import '../widgets/clickable.dart';
@@ -76,6 +78,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
   bool    _hasInsightAccess        = false;
   String? _weeklyInsightSummary;
   String? _weeklyInsightGeneratedAt;
+  String? _weeklyInsightStatus;
+  bool    _insightRefreshing       = false;
+  String? _insightRefreshError;
 
   @override
   void initState() {
@@ -230,17 +235,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Future<void> _loadWeeklyInsight() async {
     if (_businessId == null) return;
+    final hasAccess = await _db.rpc('check_plan_feature', params: {
+      'p_business_id': _businessId,
+      'p_feature': 'ai_dashboard_insights',
+    });
+    _hasInsightAccess = hasAccess as bool? ?? false;
     final biz = await _db
         .from('businesses')
-        .select('is_beta, plan, subscription_status, weekly_insight, weekly_insight_generated_at')
+        .select('weekly_insight, weekly_insight_generated_at, weekly_insight_status')
         .eq('id', _businessId!)
         .maybeSingle();
     if (biz == null) return;
-    final isBeta = biz['is_beta'] as bool? ?? false;
-    final plan   = (biz['plan'] as String?)?.toLowerCase();
-    final status = (biz['subscription_status'] as String?)?.toLowerCase();
-    final isActiveSubscription = status == 'active' || status == 'trialing';
-    _hasInsightAccess = isBeta || (isActiveSubscription && (plan == 'growth' || plan == 'pro'));
     final insight = biz['weekly_insight'];
     if (insight is Map) {
       _weeklyInsightSummary = insight['summary'] as String?;
@@ -248,6 +253,56 @@ class _DashboardScreenState extends State<DashboardScreen> {
       _weeklyInsightSummary = null;
     }
     _weeklyInsightGeneratedAt = biz['weekly_insight_generated_at'] as String?;
+    _weeklyInsightStatus = biz['weekly_insight_status'] as String?;
+  }
+
+  Future<void> _refreshWeeklyInsight() async {
+    if (_businessId == null) return;
+    setState(() {
+      _insightRefreshing = true;
+      _insightRefreshError = null;
+    });
+    try {
+      final token = _db.auth.currentSession?.accessToken;
+      if (token == null) {
+        if (mounted) setState(() => _insightRefreshError = 'Not signed in.');
+        return;
+      }
+      final isImpersonating = SuperuserState.impersonatedBusinessId != null;
+      final response = await http.post(
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/generate-weekly-insight'),
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode(isImpersonating ? {'business_id': _businessId} : {}),
+      );
+      if (!mounted) return;
+      if (response.statusCode == 200) {
+        await _loadWeeklyInsight();
+        if (mounted) setState(() {});
+      } else if (response.statusCode == 429) {
+        final body = jsonDecode(response.body) as Map<String, dynamic>;
+        final hours = body['hours_until_next_refresh'];
+        setState(() => _insightRefreshError =
+            'Insight was already refreshed recently${hours != null ? " — try again in about $hours hour${hours == 1 ? '' : 's'}" : ''}.');
+      } else if (response.statusCode == 403) {
+        setState(() => _insightRefreshError = 'This feature is not available on your current plan.');
+      } else {
+        String detail = 'Unexpected error (status ${response.statusCode}).';
+        try {
+          final body = jsonDecode(response.body) as Map<String, dynamic>;
+          if (body['error'] != null) detail = body['error'].toString();
+        } catch (_) {}
+        setState(() => _insightRefreshError = 'Could not refresh insight: $detail');
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _insightRefreshError = 'Could not reach the server to refresh insight. Check your connection and try again.');
+      debugPrint('Weekly insight refresh error: $e');
+    } finally {
+      if (mounted) setState(() => _insightRefreshing = false);
+    }
   }
 
   Future<void> _loadConversations() async {
@@ -571,11 +626,54 @@ Future<void> _loadTaskStats() async {
           const SizedBox(width: 10),
           const Text('AI Weekly Insight', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
           const Spacer(),
-          if (_hasInsightAccess && _weeklyInsightGeneratedAt != null)
+          if (_hasInsightAccess && _weeklyInsightGeneratedAt != null && !_insightRefreshing)
             Text('Updated ${_timeAgo(_weeklyInsightGeneratedAt)}', style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+          if (_hasInsightAccess) ...[
+            const SizedBox(width: 8),
+            MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: IconButton(
+                icon: _insightRefreshing
+                    ? const SizedBox(
+                        width: 14, height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: AppTheme.brand))
+                    : const Icon(Icons.refresh, size: 16, color: AppTheme.brand),
+                onPressed: _insightRefreshing ? null : _refreshWeeklyInsight,
+                tooltip: 'Refresh insight',
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+              ),
+            ),
+          ],
         ]),
         const SizedBox(height: 14),
-        if (!_hasInsightAccess) ...[
+        if (_insightRefreshError != null) ...[
+          Container(
+            padding: const EdgeInsets.all(10),
+            margin: const EdgeInsets.only(bottom: 12),
+            decoration: BoxDecoration(color: AppTheme.error.withValues(alpha: 0.08), borderRadius: BorderRadius.circular(8)),
+            child: Row(children: [
+              const Icon(Icons.info_outline, size: 14, color: AppTheme.error),
+              const SizedBox(width: 8),
+              Expanded(child: Text(_insightRefreshError!,
+                  style: const TextStyle(fontSize: 12, color: AppTheme.error))),
+              MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: GestureDetector(
+                  onTap: () => setState(() => _insightRefreshError = null),
+                  child: const Icon(Icons.close, size: 14, color: AppTheme.error),
+                ),
+              ),
+            ]),
+          ),
+        ],
+        if (_insightRefreshing) ...[
+          _insightSkeletonLine(width: double.infinity),
+          const SizedBox(height: 8),
+          _insightSkeletonLine(width: double.infinity),
+          const SizedBox(height: 8),
+          _insightSkeletonLine(width: 180),
+        ] else if (!_hasInsightAccess) ...[
           Stack(children: [
             Opacity(opacity: 0.4, child: IgnorePointer(child: Text(
               'Leads up 20% this week, 3 appointments still need confirmation, and your response time improved by 12 minutes on average.',
@@ -594,6 +692,9 @@ Future<void> _loadTaskStats() async {
               TextButton(onPressed: () => context.go('/settings?section=billing'), child: const Text('Upgrade', style: TextStyle(fontSize: 12))),
             ]),
           ),
+        ] else if (_weeklyInsightSummary == null && _weeklyInsightStatus == 'failed') ...[
+          const Text('Insights unavailable right now — check back later.',
+              style: TextStyle(fontSize: 13, color: AppTheme.textSecondary)),
         ] else if (_weeklyInsightSummary == null) ...[
           const Text('Your first weekly insight will appear here soon.',
               style: TextStyle(fontSize: 13, color: AppTheme.textSecondary)),
@@ -601,6 +702,17 @@ Future<void> _loadTaskStats() async {
           Text(_weeklyInsightSummary!, style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary, height: 1.5)),
         ],
       ]),
+    );
+  }
+
+  Widget _insightSkeletonLine({required double width}) {
+    return Container(
+      width: width,
+      height: 12,
+      decoration: BoxDecoration(
+        color: AppTheme.brand.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(4),
+      ),
     );
   }
 

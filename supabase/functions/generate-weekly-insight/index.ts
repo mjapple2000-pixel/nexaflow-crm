@@ -11,38 +11,151 @@ const supabase = createClient(
 const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY")!;
 const CRON_SECRET = Deno.env.get("CRON_SECRET") ?? "";
 
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+};
+
 Deno.serve(async (req) => {
-  // Shared-secret check — see process-scheduled-automations for full
-  // rationale. Previously verify_jwt was false and this function never
-  // checked the Authorization header at all, despite the cron job
-  // embedding the live service-role key in plaintext for no functional
-  // reason — that key was never actually read.
+  // Preflight — this function is now called directly from Flutter Web
+  // (the on-demand refresh button), not just cron/server-to-server, so it
+  // needs to handle the browser's CORS preflight like every other
+  // browser-callable function in this codebase (see submit-booking).
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
+  }
+
+  // Two request modes: cron (bulk, shared-secret auth — see
+  // process-scheduled-automations for the original rationale) or
+  // on-demand (single business, real user JWT auth).
   const providedSecret = req.headers.get("x-cron-secret") ?? "";
-  if (!CRON_SECRET || providedSecret !== CRON_SECRET) {
-    return new Response(JSON.stringify({ error: "Unauthorized" }), {
-      status: 401,
-      headers: { "Content-Type": "application/json" },
-    });
+  const isCronRequest = !!CRON_SECRET && providedSecret === CRON_SECRET;
+
+  let singleBusinessId: number | null = null;
+
+  if (!isCronRequest) {
+    const authHeader = req.headers.get("Authorization") ?? "";
+    const token = authHeader.replace(/^Bearer\s+/i, "");
+    if (!token) {
+      return new Response(JSON.stringify({ error: "Unauthorized" }), {
+        status: 401,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    const { data: userData, error: userErr } = await supabase.auth.getUser(token);
+    if (userErr || !userData?.user) {
+      return new Response(JSON.stringify({ error: "Unauthorized" }), {
+        status: 401,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    // business_id is resolved server-side from the caller's own profile —
+    // never trusted from the client — except for a confirmed superuser
+    // impersonating a business, matching the bypass pattern used
+    // throughout this codebase's RLS policies.
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("business_id")
+      .eq("user_id", userData.user.id)
+      .maybeSingle();
+
+    if (profile?.business_id) {
+      singleBusinessId = profile.business_id as number;
+    } else {
+      const { data: superuserRow } = await supabase
+        .from("superusers")
+        .select("user_id")
+        .eq("user_id", userData.user.id)
+        .maybeSingle();
+
+      if (!superuserRow) {
+        return new Response(JSON.stringify({ error: "Unauthorized" }), {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const body = await req.json().catch(() => ({} as any));
+      if (!body.business_id) {
+        return new Response(
+          JSON.stringify({ error: "business_id required for superuser refresh" }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+      singleBusinessId = Number(body.business_id);
+    }
   }
 
   try {
-    // ── 1. Fetch all eligible businesses (Growth, Pro, or beta) ───────────
-    const { data: businesses, error: bizErr } = await supabase
-      .from("businesses")
-      .select("id, business_name, timezone, plan, subscription_status, is_beta");
+    // ── 1. Determine which business(es) to process — cron processes
+    // every business (eligibility checked below via check_plan_feature),
+    // on-demand processes exactly one, already resolved above.
+    let candidateBusinesses: any[];
 
-    if (bizErr) throw new Error(`Fetch businesses: ${bizErr.message}`);
+    if (isCronRequest) {
+      const { data: allBusinesses, error: bizErr } = await supabase
+        .from("businesses")
+        .select("id, business_name, timezone");
+      if (bizErr) throw new Error(`Fetch businesses: ${bizErr.message}`);
+      candidateBusinesses = allBusinesses ?? [];
+    } else {
+      const { data: singleBusiness, error: bizErr } = await supabase
+        .from("businesses")
+        .select("id, business_name, timezone, weekly_insight_generated_at")
+        .eq("id", singleBusinessId)
+        .maybeSingle();
+      if (bizErr) throw new Error(`Fetch business: ${bizErr.message}`);
+      if (!singleBusiness) {
+        return new Response(JSON.stringify({ error: "Business not found" }), {
+          status: 404,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
 
-    console.log(`generate-weekly-insight: fetched ${businesses?.length ?? 0} total businesses`);
-    console.log(`generate-weekly-insight: sample row: ${JSON.stringify(businesses?.[0] ?? null)}`);
+      // 24h on-demand rate limit — cron-generated insights count too,
+      // since weekly_insight_generated_at is updated by either path.
+      if (singleBusiness.weekly_insight_generated_at) {
+        const lastGenerated = new Date(singleBusiness.weekly_insight_generated_at);
+        const hoursAgo = (Date.now() - lastGenerated.getTime()) / (1000 * 60 * 60);
+        if (hoursAgo < 24) {
+          return new Response(
+            JSON.stringify({
+              error: "Insight was already refreshed recently. Try again later.",
+              hours_until_next_refresh: Math.ceil(24 - hoursAgo),
+            }),
+            { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+      }
 
-    const eligible = (businesses ?? []).filter((b: any) =>
-      b.is_beta === true ||
-      ((b.subscription_status === "active" || b.subscription_status === "trialing") &&
-        (b.plan === "growth" || b.plan === "pro"))
-    );
+      candidateBusinesses = [singleBusiness];
+    }
+
+    console.log(`generate-weekly-insight: fetched ${candidateBusinesses.length} candidate business(es)`);
+
+    const eligible: any[] = [];
+    for (const b of candidateBusinesses) {
+      const { data: hasAccess, error: featureErr } = await supabase.rpc("check_plan_feature", {
+        p_business_id: b.id,
+        p_feature: "ai_dashboard_insights",
+      });
+      if (featureErr) {
+        console.error(`check_plan_feature failed for business ${b.id}: ${featureErr.message}`);
+        continue;
+      }
+      if (hasAccess) eligible.push(b);
+    }
 
     console.log(`generate-weekly-insight: ${eligible.length} eligible businesses`);
+
+    if (!isCronRequest && eligible.length === 0) {
+      return new Response(JSON.stringify({ error: "This feature is not available on your current plan" }), {
+        status: 403,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
 
     const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
     const results: Array<{ business_id: number; status: string; error?: string }> = [];
@@ -53,7 +166,7 @@ Deno.serve(async (req) => {
 
         // ── 2. Pull 7-day data scoped to this business ─────────
 
-        const [leadsRes, apptsRes, convosRes] = await Promise.all([
+        const [leadsRes, apptsRes, convosRes, dealsRes, tasksRes] = await Promise.all([
           supabase
             .from("leads")
             .select("id, lead_name, lead_status, source, created_at, converted_to_appointment")
@@ -74,11 +187,28 @@ Deno.serve(async (req) => {
             .eq("business_id", businessId)
             .gte("created_at", weekAgo)
             .is("deleted_at", null),
+
+          // Deals and tasks are current-state snapshots, not "created this
+          // week" activity — pipeline value and overdue tasks matter as of
+          // right now, same as how dashboard_screen.dart reads them. No
+          // date-range filter on these two, matching that pattern.
+          supabase
+            .from("deals")
+            .select("id, value, status, stage_id")
+            .eq("business_id", businessId)
+            .eq("status", "open"),
+
+          supabase
+            .from("tasks")
+            .select("id, status, due_date")
+            .eq("business_id", businessId),
         ]);
 
         const leads = leadsRes.data ?? [];
         const appts = apptsRes.data ?? [];
         const convos = convosRes.data ?? [];
+        const deals = dealsRes.data ?? [];
+        const tasks = tasksRes.data ?? [];
 
         // ── 3. Build summary stats for the prompt ─────────────
         const totalLeads = leads.length;
@@ -105,6 +235,17 @@ Deno.serve(async (req) => {
         const openConvos = convos.filter((c: any) => c.status === "open").length;
         const smsConvos = convos.filter((c: any) => c.channel === "sms").length;
 
+        const openDealsCount = deals.length;
+        const pipelineValue = deals.reduce((sum: number, d: any) => sum + (Number(d.value) || 0), 0);
+
+        const now = new Date();
+        const openTasksCount = tasks.filter((t: any) => t.status !== "done").length;
+        const overdueTasksCount = tasks.filter((t: any) => {
+          if (t.status === "done") return false;
+          if (!t.due_date) return false;
+          return new Date(t.due_date) < now;
+        }).length;
+
         // ── 4. Call GPT-4o-mini ─────────────────────
         const prompt = `You are a business analyst writing a brief weekly performance summary for a home service business owner.
 
@@ -120,8 +261,10 @@ DATA:
 - Total appointments this week: ${totalAppts}
 - Appointment statuses: ${JSON.stringify(apptsByStatus)}
 - New conversations: ${totalConvos} (${openConvos} still open, ${smsConvos} via SMS)
+- Open pipeline: ${openDealsCount} open deals worth $${pipelineValue.toFixed(0)} total
+- Tasks: ${openTasksCount} open, ${overdueTasksCount} currently overdue
 
-Write a 3–4 sentence plain-text weekly insight summary. Be specific, use the actual numbers. Highlight what went well, flag anything that needs attention (e.g. low conversion, many open conversations), and end with one actionable suggestion. No markdown, no bullet points, no headers. Write as if speaking directly to the business owner.`;
+Write a 3–4 sentence plain-text weekly insight summary. Be specific, use the actual numbers. Highlight what went well, flag anything that needs attention (e.g. low conversion, many open conversations, overdue tasks, or stalled pipeline value), and end with one actionable suggestion. No markdown, no bullet points, no headers. Write as if speaking directly to the business owner.`;
 
         const aiRes = await fetch("https://api.openai.com/v1/chat/completions", {
           method: "POST",
@@ -158,13 +301,57 @@ Write a 3–4 sentence plain-text weekly insight summary. Be specific, use the a
                 converted_leads: convertedLeads,
                 total_appointments: totalAppts,
                 new_conversations: totalConvos,
+                open_deals: openDealsCount,
+                pipeline_value: pipelineValue,
+                overdue_tasks: overdueTasksCount,
               },
             },
             weekly_insight_generated_at: new Date().toISOString(),
+            weekly_insight_status: "ok",
+            weekly_insight_last_error: null,
           })
           .eq("id", businessId);
 
         if (updateErr) throw new Error(`Update businesses: ${updateErr.message}`);
+
+        // ── 5b. Insert full audit-history row ──────────
+        // businesses.weekly_insight above only keeps a trimmed stats object
+        // for the dashboard card's fast read. This row keeps everything
+        // that was actually fed to the prompt, for history/debugging.
+        const { error: insightRowErr } = await supabase
+          .from("dashboard_insights")
+          .insert({
+            business_id: businessId,
+            summary,
+            source_kpi_snapshot: {
+              new_leads: totalLeads,
+              converted_leads: convertedLeads,
+              leads_by_status: leadsByStatus,
+              leads_by_source: leadsBySource,
+              total_appointments: totalAppts,
+              appointments_by_status: apptsByStatus,
+              new_conversations: totalConvos,
+              open_conversations: openConvos,
+              sms_conversations: smsConvos,
+              open_deals: openDealsCount,
+              pipeline_value: pipelineValue,
+              open_tasks: openTasksCount,
+              overdue_tasks: overdueTasksCount,
+              prompt_tokens: promptTokens,
+              completion_tokens: completionTokens,
+              total_tokens: totalTokens,
+              model: "gpt-4o-mini",
+            },
+            generated_at: new Date().toISOString(),
+          });
+
+        if (insightRowErr) {
+          // Non-fatal — the dashboard card already reads from
+          // businesses.weekly_insight above, which already succeeded.
+          // Losing audit history shouldn't fail the whole run for this
+          // business.
+          console.error(`dashboard_insights insert failed for business ${businessId}: ${insightRowErr.message}`);
+        }
 
         // ── 6. Log AI usage ───────────────────
         await supabase.from("ai_usage_logs").insert({
@@ -185,18 +372,33 @@ Write a 3–4 sentence plain-text weekly insight summary. Be specific, use the a
       } catch (err: any) {
         console.error(`✗ Business ${business.id}: ${err.message}`);
         results.push({ business_id: business.id, status: "error", error: err.message });
+
+        // Record the failure so the dashboard card can tell "never
+        // generated yet" apart from "just tried and failed" — but
+        // deliberately don't touch weekly_insight (keep showing the last
+        // good summary) or weekly_insight_generated_at (don't cost the
+        // business owner their next on-demand retry window over a
+        // transient failure, e.g. an OpenAI hiccup).
+        await supabase
+          .from("businesses")
+          .update({
+            weekly_insight_status: "failed",
+            weekly_insight_last_error: err.message,
+            weekly_insight_failed_at: new Date().toISOString(),
+          })
+          .eq("id", business.id);
       }
     }
 
     return new Response(JSON.stringify({ processed: results.length, results }), {
-      headers: { "Content-Type": "application/json" },
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
 
   } catch (err: any) {
     console.error("generate-weekly-insight fatal:", err);
     return new Response(JSON.stringify({ error: err.message }), {
       status: 500,
-      headers: { "Content-Type": "application/json" },
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 });

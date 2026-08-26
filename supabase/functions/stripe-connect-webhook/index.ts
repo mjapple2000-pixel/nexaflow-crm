@@ -68,19 +68,93 @@ Deno.serve(async (req) => {
 
   // ── checkout.session.completed ──
   // Fires on the connected account when a customer completes payment.
+  //
+  // JG-12: a session can now belong to ONE MILESTONE (progress-billed
+  // invoices) instead of the whole invoice. Milestone match is checked
+  // FIRST, since create-invoice-payment stores the session id on
+  // invoice_milestones.stripe_checkout_session_id for milestone payments
+  // and never touches invoices.stripe_checkout_session_id in that case —
+  // so there's no ambiguity about which row a given session id belongs to.
+  // When a milestone is paid, the parent invoice only flips to 'paid'
+  // once every one of its milestones is paid — never before.
+  //
   // create-invoice-payment always writes stripe_checkout_session_id onto
-  // the invoice at session-creation time — matching on that exact id is
-  // reliable and can't fail. The old amount+email heuristic below is kept
-  // ONLY as a fallback for any invoice that somehow has no session id
-  // recorded (e.g. an older/other flow), since Stripe test checkouts often
-  // don't collect a customer email at all, which made that heuristic
-  // silently match nothing — the invoice just never flipped to paid, with
-  // no error anywhere.
+  // the invoice (whole-invoice path) at session-creation time — matching
+  // on that exact id is reliable and can't fail. The old amount+email
+  // heuristic below is kept ONLY as a fallback for any invoice that
+  // somehow has no session id recorded (e.g. an older/other flow), since
+  // Stripe test checkouts often don't collect a customer email at all,
+  // which made that heuristic silently match nothing — the invoice just
+  // never flipped to paid, with no error anywhere.
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object as Stripe.Checkout.Session
     const amountTotal = session.amount_total ?? 0
+    const now = new Date().toISOString()
 
-    // Primary path: exact match on the session id we stored ourselves.
+    // ── Milestone path: check this FIRST ──
+    const { data: milestone } = await supabase
+      .from('invoice_milestones')
+      .select('id, invoice_id, business_id, amount_due')
+      .eq('stripe_checkout_session_id', session.id)
+      .in('status', ['ready_to_bill', 'sent'])
+      .is('deleted_at', null)
+      .maybeSingle()
+
+    if (milestone) {
+      await supabase
+        .from('invoice_milestones')
+        .update({
+          status: 'paid',
+          amount_paid: amountTotal / 100,
+          paid_at: now,
+          updated_at: now,
+        })
+        .eq('id', milestone.id)
+
+      console.log(`checkout.session.completed: milestone ${milestone.id} marked paid via session id match (${session.id})`)
+
+      // Check whether every milestone on this invoice is now paid —
+      // only then does the parent invoice flip to fully paid.
+      const { data: siblingMilestones } = await supabase
+        .from('invoice_milestones')
+        .select('status')
+        .eq('invoice_id', milestone.invoice_id)
+        .is('deleted_at', null)
+
+      const allPaid = (siblingMilestones ?? []).length > 0 &&
+        (siblingMilestones ?? []).every((m: any) => m.status === 'paid')
+
+      if (allPaid) {
+        const { data: invoiceRow } = await supabase
+          .from('invoices')
+          .select('amount_due')
+          .eq('id', milestone.invoice_id)
+          .maybeSingle()
+
+        await supabase
+          .from('invoices')
+          .update({
+            status: 'paid',
+            paid_at: now,
+            updated_at: now,
+            amount_paid: invoiceRow?.amount_due ?? amountTotal / 100,
+          })
+          .eq('id', milestone.invoice_id)
+
+        console.log(`checkout.session.completed: all milestones paid — invoice ${milestone.invoice_id} marked fully paid`)
+      }
+
+      await supabase
+        .from('businesses')
+        .update({ stripe_connect_ready: true })
+        .eq('id', milestone.business_id)
+
+      return new Response(JSON.stringify({ received: true }), {
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+
+    // ── Whole-invoice path (unchanged) ──
     const { data: invoiceBySession } = await supabase
       .from('invoices')
       .select('id, business_id')
@@ -90,7 +164,6 @@ Deno.serve(async (req) => {
       .maybeSingle()
 
     if (invoiceBySession) {
-      const now = new Date().toISOString()
       await supabase
         .from('invoices')
         .update({
@@ -141,7 +214,6 @@ Deno.serve(async (req) => {
               .maybeSingle()
 
             if (invoice) {
-              const now = new Date().toISOString()
               await supabase
                 .from('invoices')
                 .update({

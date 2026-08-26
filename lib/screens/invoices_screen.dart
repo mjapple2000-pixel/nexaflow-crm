@@ -465,6 +465,12 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
       final now = DateTime.now().toUtc().toIso8601String();
       await _supabase.from('line_items')
           .update({'deleted_at': now}).eq('parent_id', id);
+      // JG-12: invoice_milestones aren't linked via parent_id/parent_type
+      // like line_items — they use invoice_id directly. Must be cleared
+      // separately or a deleted progress-billed invoice leaves orphaned
+      // milestone rows behind.
+      await _supabase.from('invoice_milestones')
+          .update({'deleted_at': now}).eq('invoice_id', id);
       await _supabase.from('invoices')
           .update({'deleted_at': now}).eq('id', id);
       if (!mounted) return;

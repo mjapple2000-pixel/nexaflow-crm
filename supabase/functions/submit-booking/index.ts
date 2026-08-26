@@ -39,6 +39,16 @@ Deno.serve(async (req) => {
       )
     }
 
+    // Normalize to E.164 for storage — matches normalizeUsPhone's output
+    // format used everywhere else in the codebase. Public bookings
+    // previously stored the raw string exactly as submitted by the form.
+    function normalizePhoneE164(raw: string): string {
+      const digits = raw.replace(/\D/g, '')
+      const tenDigit = digits.length === 11 && digits.startsWith('1') ? digits.slice(1) : digits
+      return `+1${tenDigit}`
+    }
+    const normalizedPhone = normalizePhoneE164(phone)
+
     const secretKeys = JSON.parse(Deno.env.get('SUPABASE_SECRET_KEYS') ?? '{}')
 
     const supabase = createClient(
@@ -114,7 +124,7 @@ Deno.serve(async (req) => {
       .from('leads')
       .select('id')
       .eq('business_id', businessId)
-      .eq('lead_phone', phone)
+      .eq('lead_phone', normalizedPhone)
       .is('deleted_at', null)
       .maybeSingle()
 
@@ -152,7 +162,7 @@ Deno.serve(async (req) => {
           business_id: businessId,
           lead_name: name,
           lead_email: email,
-          lead_phone: phone,
+          lead_phone: normalizedPhone,
           lead_status: 'booked',
           converted_to_appointment: true,
           appointment_scheduled_at: slot_start,
@@ -185,7 +195,7 @@ Deno.serve(async (req) => {
         appointment_type: resolvedAppointmentType,
         lead_name: name,
         lead_email: email,
-        lead_phone: phone,
+        lead_phone: normalizedPhone,
         booking_source: 'public_booking',
         confirmation_sent: false,
       })

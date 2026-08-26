@@ -43,7 +43,6 @@ Deno.serve(async (req) => {
       case 'approve_quote': {
         if (!target_id) return new Response(JSON.stringify({ error: 'target_id required' }), { status: 400, headers: corsHeaders })
 
-        // Verify quote belongs to this lead + business
         const { data: quote } = await adminClient
           .from('quotes')
           .select('id, status')
@@ -124,9 +123,6 @@ Deno.serve(async (req) => {
         if (!invoice) return new Response(JSON.stringify({ error: 'Invoice not found' }), { status: 404, headers: corsHeaders })
         if (!['approved', 'sent'].includes(invoice.status)) return new Response(JSON.stringify({ error: 'Invoice is not payable' }), { status: 400, headers: corsHeaders })
 
-        // create-invoice-payment now resolves business/amount/customer email
-        // itself from invoice_id server-side — never pass amount/business/email
-        // from here, since those are exactly what made the old endpoint unsafe.
         const supabaseUrl = Deno.env.get('SUPABASE_URL')!
 
         const payRes = await fetch(`${supabaseUrl}/functions/v1/create-invoice-payment`, {
@@ -137,6 +133,64 @@ Deno.serve(async (req) => {
           },
           body: JSON.stringify({
             invoice_id: target_id,
+          }),
+        })
+
+        const payData = await payRes.json()
+        if (!payRes.ok || !payData.url) {
+          return new Response(JSON.stringify({ error: payData.error ?? 'Failed to create payment session' }), { status: 500, headers: corsHeaders })
+        }
+
+        return new Response(JSON.stringify({ success: true, url: payData.url }), { status: 200, headers: corsHeaders })
+      }
+
+      // JG-12: pays ONE milestone rather than the whole invoice.
+      // target_id here is the milestone id (invoice_milestones.id), not
+      // the invoice id — the parent invoice_id comes from payload so we
+      // can verify the milestone actually belongs to this lead's invoice
+      // before ever calling create-invoice-payment.
+      case 'pay_milestone': {
+        if (!target_id) return new Response(JSON.stringify({ error: 'target_id required' }), { status: 400, headers: corsHeaders })
+        const invoiceId = payload?.invoice_id
+        if (!invoiceId) return new Response(JSON.stringify({ error: 'payload.invoice_id required' }), { status: 400, headers: corsHeaders })
+
+        // Verify the invoice belongs to this lead/business first
+        const { data: invoice } = await adminClient
+          .from('invoices')
+          .select('id')
+          .eq('id', invoiceId)
+          .eq('contact_id', leadId)
+          .eq('business_id', businessId)
+          .is('deleted_at', null)
+          .single()
+
+        if (!invoice) return new Response(JSON.stringify({ error: 'Invoice not found' }), { status: 404, headers: corsHeaders })
+
+        // Verify the milestone belongs to that invoice and is payable
+        const { data: milestone } = await adminClient
+          .from('invoice_milestones')
+          .select('id, status')
+          .eq('id', target_id)
+          .eq('invoice_id', invoiceId)
+          .is('deleted_at', null)
+          .single()
+
+        if (!milestone) return new Response(JSON.stringify({ error: 'Milestone not found' }), { status: 404, headers: corsHeaders })
+        if (!['ready_to_bill', 'sent'].includes(milestone.status)) {
+          return new Response(JSON.stringify({ error: 'This milestone is not payable yet' }), { status: 400, headers: corsHeaders })
+        }
+
+        const supabaseUrl = Deno.env.get('SUPABASE_URL')!
+
+        const payRes = await fetch(`${supabaseUrl}/functions/v1/create-invoice-payment`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${serviceRoleKey}`,
+          },
+          body: JSON.stringify({
+            invoice_id: invoiceId,
+            milestone_id: target_id,
           }),
         })
 
