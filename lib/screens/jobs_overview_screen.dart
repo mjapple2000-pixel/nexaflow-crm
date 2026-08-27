@@ -50,6 +50,9 @@ class _JobsOverviewScreenState extends State<JobsOverviewScreen> {
   int? _stripePendingCents;
   bool _stripeTestMode = false;
 
+  // JG-12: progress-billed invoices for the Billing Progress panel
+  List<_BillingProgressItem> _billingProgress = [];
+
   StreamSubscription<AuthState>? _authSub;
 
   @override
@@ -171,6 +174,19 @@ class _JobsOverviewScreenState extends State<JobsOverviewScreen> {
         _db.from('team_locations')
             .select('user_id, current_appointment_id, updated_at')
             .eq('business_id', businessId),
+        // 11: progress-billed invoices, for the Billing Progress panel
+        _db.from('invoices')
+            .select('id, invoice_number, job_title, created_at, leads(lead_name)')
+            .eq('business_id', businessId)
+            .eq('is_progress_billed', true)
+            .filter('deleted_at', 'is', null)
+            .order('created_at', ascending: false),
+        // 12: milestones for those invoices — business_id is on this table
+        // directly, so no need to filter by the invoice id list first
+        _db.from('invoice_milestones')
+            .select('invoice_id, status, amount_due, amount_paid')
+            .eq('business_id', businessId)
+            .filter('deleted_at', 'is', null),
       ]);
 
       final newRequests = List<Map<String, dynamic>>.from(results[0] as List);
@@ -186,6 +202,8 @@ class _JobsOverviewScreenState extends State<JobsOverviewScreen> {
       final lateAppts = List<Map<String, dynamic>>.from(results[8] as List);
       final activeTimeEntries = List<Map<String, dynamic>>.from(results[9] as List);
       final teamLocations = List<Map<String, dynamic>>.from(results[10] as List);
+      final progressInvoices = List<Map<String, dynamic>>.from(results[11] as List);
+      final progressMilestones = List<Map<String, dynamic>>.from(results[12] as List);
 
       List<Map<String, dynamic>> crewProfiles = [];
       if (activeTimeEntries.isNotEmpty) {
@@ -230,6 +248,27 @@ class _JobsOverviewScreenState extends State<JobsOverviewScreen> {
       }).toList();
 
       final overdueInvoices = invoices.where((i) => i['status'] == 'overdue').toList();
+
+      // JG-12: merge each progress-billed invoice with its own milestones
+      // to get a stage count and dollar total — same computation the
+      // invoice detail screen's Billing Milestones card does, just rolled
+      // up per invoice instead of shown per stage.
+      final billingProgress = progressInvoices.map((inv) {
+        final invId = inv['id'] as String;
+        final msForInvoice = progressMilestones.where((m) => m['invoice_id'] == invId).toList();
+        final amountTotal = msForInvoice.fold(0.0, (s, m) => s + ((m['amount_due'] as num?)?.toDouble() ?? 0));
+        final amountPaid = msForInvoice.fold(0.0, (s, m) => s + ((m['amount_paid'] as num?)?.toDouble() ?? 0));
+        return _BillingProgressItem(
+          invoiceId: invId,
+          invoiceNumber: inv['invoice_number'] as String? ?? '',
+          jobTitle: inv['job_title'] as String?,
+          leadName: (inv['leads'] as Map<String, dynamic>?)?['lead_name'] as String?,
+          stagesPaid: msForInvoice.where((m) => m['status'] == 'paid').length,
+          stagesTotal: msForInvoice.length,
+          amountPaid: amountPaid,
+          amountTotal: amountTotal,
+        );
+      }).toList();
 
       // Build recommended actions
       final actions = <_ActionItem>[];
@@ -327,6 +366,7 @@ class _JobsOverviewScreenState extends State<JobsOverviewScreen> {
         _submissionsThisWeekCount = submissionsThisWeek.length;
         _collectedThisWeek = paidThisWeek.fold(0.0, (s, p) => s + ((p['amount_paid'] as num?)?.toDouble() ?? 0));
         _crewStatus = crewStatus;
+        _billingProgress = billingProgress;
       });
 
       // Stripe payouts — separate try/catch since the business may not be
@@ -489,6 +529,8 @@ class _JobsOverviewScreenState extends State<JobsOverviewScreen> {
                             pendingCents: _stripePendingCents,
                             moneyFormatter: _money,
                           ),
+                          const SizedBox(height: 16),
+                          _BillingProgressPanel(items: _billingProgress, moneyFormatter: _money),
                           const SizedBox(height: 16),
                           Clickable(
                             onTap: () => context.go('/jobs/manage-forms'),
@@ -961,6 +1003,161 @@ class _PayoutsPanel extends StatelessWidget {
               child: const Text('Connect', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
             ),
         ],
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+//  BILLING PROGRESS PANEL (JG-12)
+// ─────────────────────────────────────────────
+class _BillingProgressItem {
+  final String invoiceId;
+  final String invoiceNumber;
+  final String? jobTitle;
+  final String? leadName;
+  final int stagesPaid;
+  final int stagesTotal;
+  final double amountPaid;
+  final double amountTotal;
+
+  const _BillingProgressItem({
+    required this.invoiceId,
+    required this.invoiceNumber,
+    this.jobTitle,
+    this.leadName,
+    required this.stagesPaid,
+    required this.stagesTotal,
+    required this.amountPaid,
+    required this.amountTotal,
+  });
+}
+
+class _BillingProgressPanel extends StatefulWidget {
+  final List<_BillingProgressItem> items;
+  final String Function(double) moneyFormatter;
+  const _BillingProgressPanel({required this.items, required this.moneyFormatter});
+
+  @override
+  State<_BillingProgressPanel> createState() => _BillingProgressPanelState();
+}
+
+class _BillingProgressPanelState extends State<_BillingProgressPanel> {
+  // Collapsed by default once there's more than 4 — most recent 4 shown,
+  // full list available behind the toggle. Never collapsed for 4 or fewer.
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final items = widget.items;
+    final canCollapse = items.length > 4;
+    final visible = (_expanded || !canCollapse) ? items : items.take(4).toList();
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppTheme.cardBg,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppTheme.borderColor),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Text('Billing Progress',
+                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+              const Spacer(),
+              if (canCollapse)
+                Clickable(
+                  onTap: () => setState(() => _expanded = !_expanded),
+                  child: Row(
+                    children: [
+                      Text(_expanded ? 'Show less' : 'Show all (${items.length})',
+                          style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, color: AppTheme.brand)),
+                      Icon(_expanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
+                          size: 16, color: AppTheme.brand),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          if (items.isEmpty)
+            const Text('No progress-billed jobs yet.',
+                style: TextStyle(fontSize: 12.5, color: AppTheme.textSecondary))
+          else
+            ...visible.map((i) => _BillingProgressRow(item: i, moneyFormatter: widget.moneyFormatter)),
+        ],
+      ),
+    );
+  }
+}
+
+class _BillingProgressRow extends StatelessWidget {
+  final _BillingProgressItem item;
+  final String Function(double) moneyFormatter;
+  const _BillingProgressRow({required this.item, required this.moneyFormatter});
+
+  @override
+  Widget build(BuildContext context) {
+    final progress = item.amountTotal > 0 ? (item.amountPaid / item.amountTotal).clamp(0.0, 1.0) : 0.0;
+    final title = item.jobTitle?.isNotEmpty == true ? item.jobTitle! : item.invoiceNumber;
+    final subtitle = item.leadName != null ? '${item.leadName} · ${item.invoiceNumber}' : item.invoiceNumber;
+
+    return Clickable(
+      // ?from=overview lets the invoice detail screen's back button return
+      // here instead of its default Job Board destination.
+      onTap: () => context.go('/jobs/invoices/${item.invoiceId}?from=overview'),
+      child: Padding(
+        padding: const EdgeInsets.only(bottom: 14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(title,
+                          style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: AppTheme.textPrimary),
+                          overflow: TextOverflow.ellipsis),
+                      Text(subtitle,
+                          style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
+                          overflow: TextOverflow.ellipsis),
+                    ],
+                  ),
+                ),
+                Text('${item.stagesPaid} of ${item.stagesTotal} stages',
+                    style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
+                const SizedBox(width: 8),
+                const Icon(Icons.chevron_right, size: 15, color: AppTheme.textSecondary),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                Expanded(
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(99),
+                    child: LinearProgressIndicator(
+                      value: progress,
+                      minHeight: 6,
+                      backgroundColor: const Color(0xFFF0F0F5),
+                      valueColor: AlwaysStoppedAnimation<Color>(
+                        progress >= 1.0 ? const Color(0xFF10B981) : AppTheme.brand,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Text('${moneyFormatter(item.amountPaid)} of ${moneyFormatter(item.amountTotal)}',
+                    style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }

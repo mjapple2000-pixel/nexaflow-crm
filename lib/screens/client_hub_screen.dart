@@ -102,6 +102,45 @@ class _ClientHubScreenState extends State<ClientHubScreen> {
     }
   }
 
+  Future<void> _milestoneAction(dynamic milestoneId, String invoiceId) async {
+    try {
+      final res = await http.post(
+        Uri.parse('$_fnBase/client-portal-action'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'token': widget.token,
+          'action_type': 'pay_milestone',
+          'target_id': milestoneId,
+          'payload': {'invoice_id': invoiceId},
+        }),
+      );
+      if (!mounted) return;
+
+      final body = jsonDecode(res.body) as Map<String, dynamic>;
+      if (res.statusCode == 200 && body['url'] != null) {
+        final uri = Uri.parse(body['url'] as String);
+        if (await canLaunchUrl(uri)) {
+          await launchUrl(uri, mode: LaunchMode.externalApplication);
+        }
+      } else {
+        final errMsg = body['error'] as String? ?? 'Something went wrong.';
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Error: $errMsg'),
+          backgroundColor: AppTheme.error,
+          duration: const Duration(seconds: 6),
+        ));
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Network error: $e'),
+        backgroundColor: AppTheme.error,
+        duration: const Duration(seconds: 6),
+      ));
+    }
+  }
+
   Future<void> _quoteAction(String quoteId, String actionType) async {
     try {
       final res = await http.post(
@@ -276,6 +315,8 @@ class _ClientHubScreenState extends State<ClientHubScreen> {
                                     businessName: (_data!['business'] as Map<String, dynamic>)['name'] as String? ?? '',
                                     businessPhone: (_data!['business'] as Map<String, dynamic>)['phone'] as String? ?? '',
                                     onPay: () => _invoiceAction(i['id'] as String),
+                                    onPayMilestone: (milestoneId) =>
+                                        _milestoneAction(milestoneId, i['id'] as String),
                                   ))
                               .toList(),
                         ),
@@ -659,7 +700,8 @@ class _InvoiceRow extends StatefulWidget {
   final String businessName;
   final String businessPhone;
   final VoidCallback onPay;
-  const _InvoiceRow({required this.invoice, required this.stripeReady, required this.businessName, required this.businessPhone, required this.onPay});
+  final void Function(dynamic milestoneId) onPayMilestone;
+  const _InvoiceRow({required this.invoice, required this.stripeReady, required this.businessName, required this.businessPhone, required this.onPay, required this.onPayMilestone});
 
   @override
   State<_InvoiceRow> createState() => _InvoiceRowState();
@@ -682,6 +724,12 @@ class _InvoiceRowState extends State<_InvoiceRow> {
     final lineItems = List<Map<String, dynamic>>.from(invoice['line_items'] ?? []);
     final taxRate = double.tryParse(invoice['tax_rate']?.toString() ?? '0') ?? 0.0;
     final taxAmount = double.tryParse(invoice['tax_amount']?.toString() ?? '0') ?? 0.0;
+
+    // JG-12: progress-billed invoices carry a milestones array from
+    // get-client-portal-data — a non-empty list here doubles as the flag
+    // for "this invoice is billed in stages."
+    final milestones = List<Map<String, dynamic>>.from(invoice['milestones'] ?? []);
+    final isProgressBilled = milestones.isNotEmpty;
 
     final isOverdue = (status == 'approved' || status == 'sent') &&
         dueDate != null &&
@@ -729,6 +777,54 @@ class _InvoiceRowState extends State<_InvoiceRow> {
               ),
             ]),
           ),
+
+          // JG-12: for progress-billed invoices, the milestone breakdown
+          // is the thing the customer actually needs to act on — showing
+          // it only after they tap to expand (same as line items) hides
+          // the payable stage behind an extra step. Always visible here;
+          // line items/notes stay behind the tap since those are just
+          // informational.
+          if (isProgressBilled) ...[
+            const SizedBox(height: 12),
+            if (!widget.stripeReady)
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFFF4D6),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: const Color(0xFFC68400).withValues(alpha: 0.3)),
+                ),
+                child: Text(
+                  widget.businessPhone.isNotEmpty
+                      ? 'Contact ${widget.businessName} at ${widget.businessPhone} to make a payment.'
+                      : 'Contact ${widget.businessName} to make a payment.',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(fontSize: 13, color: Color(0xFFC68400),
+                      fontWeight: FontWeight.w500),
+                ),
+              )
+            else
+              Container(
+                decoration: BoxDecoration(
+                  color: AppTheme.pageBg,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppTheme.borderColor),
+                ),
+                child: Column(
+                  children: milestones.asMap().entries.map((e) {
+                    final idx = e.key + 1;
+                    final ms = e.value;
+                    return _MilestoneRow(
+                      stageNumber: idx,
+                      milestone: ms,
+                      isLast: idx == milestones.length,
+                      onPay: () => widget.onPayMilestone(ms['id']),
+                    );
+                  }).toList(),
+                ),
+              ),
+          ],
 
           // Expanded detail
           if (_expanded) ...[
@@ -853,8 +949,10 @@ class _InvoiceRowState extends State<_InvoiceRow> {
 
             const SizedBox(height: 12),
 
-            // Pay button or contact message
-            if (canPay && status != 'paid') ...[
+            // JG-12: milestone breakdown now renders above, outside the
+            // expand toggle — this branch only handles the plain
+            // whole-invoice case now.
+            if (!isProgressBilled && canPay && status != 'paid') ...[
               if (widget.stripeReady)
                 SizedBox(
                   width: double.infinity,
@@ -905,6 +1003,103 @@ class _InvoiceRowState extends State<_InvoiceRow> {
         'Jan','Feb','Mar','Apr','May','Jun',
         'Jul','Aug','Sep','Oct','Nov','Dec'
       ][m - 1];
+}
+
+// ── Milestone row (JG-12) ───────────────────────────────────────────────────
+
+class _MilestoneRow extends StatelessWidget {
+  final int stageNumber;
+  final Map<String, dynamic> milestone;
+  final bool isLast;
+  final VoidCallback onPay;
+  const _MilestoneRow({
+    required this.stageNumber,
+    required this.milestone,
+    required this.isLast,
+    required this.onPay,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final label = milestone['label'] as String? ?? '—';
+    final status = milestone['status'] as String? ?? 'pending';
+    final amountDue = double.tryParse(milestone['amount_due']?.toString() ?? '0') ?? 0.0;
+    final canPay = status == 'ready_to_bill' || status == 'sent';
+
+    final (badgeLabel, badgeColor) = switch (status) {
+      'ready_to_bill' => ('Ready to Bill', const Color(0xFFC68400)),
+      'sent' => ('Awaiting Payment', const Color(0xFF1D4ED8)),
+      'paid' => ('Paid', Colors.green[700]!),
+      _ => ('Not Yet Ready', const Color(0xFF6B7280)),
+    };
+
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 18,
+                    height: 18,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: AppTheme.brand.withValues(alpha: 0.1),
+                      shape: BoxShape.circle,
+                    ),
+                    child: Text('$stageNumber',
+                        style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                            color: AppTheme.brand)),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(label, style: const TextStyle(fontSize: 13,
+                        fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+                  ),
+                  Text('\$${amountDue.toStringAsFixed(2)}',
+                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
+                          color: AppTheme.textPrimary)),
+                  const SizedBox(width: 10),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: badgeColor.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text(badgeLabel,
+                        style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600,
+                            color: badgeColor)),
+                  ),
+                ],
+              ),
+              if (canPay) ...[
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: onPay,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppTheme.brand,
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                    ),
+                    child: const Text('Pay Now',
+                        style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+        if (!isLast) const Divider(height: 1, color: AppTheme.borderColor),
+      ],
+    );
+  }
 }
 
 // ── Request form ──────────────────────────────────────────────────────────────

@@ -579,6 +579,7 @@ class AppRouter {
             name: 'invoice-detail',
             builder: (context, state) => InvoiceDetailScreen(
               invoiceId: state.pathParameters['id']!,
+              fromOverview: state.uri.queryParameters['from'] == 'overview',
             ),
           ),
           GoRoute(

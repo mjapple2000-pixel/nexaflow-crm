@@ -9,7 +9,8 @@ import '../widgets/clickable.dart';
 
 class InvoiceDetailScreen extends StatefulWidget {
   final String invoiceId;
-  const InvoiceDetailScreen({super.key, required this.invoiceId});
+  final bool fromOverview;
+  const InvoiceDetailScreen({super.key, required this.invoiceId, this.fromOverview = false});
 
   @override
   State<InvoiceDetailScreen> createState() => _InvoiceDetailScreenState();
@@ -34,6 +35,8 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
   // Empty for non-progress-billed invoices — the section just doesn't render.
   List<Map<String, dynamic>> _milestones = [];
   int? _markingReadyId;
+  int? _sendingMilestoneId;
+  String? _sendingMilestoneChannel;
 
   @override
   void initState() {
@@ -155,7 +158,7 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
       child: Row(
         children: [
           Clickable(
-            onTap: () => context.go('/jobs/board?tab=1'),
+            onTap: () => context.go(widget.fromOverview ? '/jobs' : '/jobs/board?tab=1'),
             child: const Row(
               children: [
                 Icon(Icons.arrow_back_rounded, size: 16, color: AppTheme.textSecondary),
@@ -503,6 +506,57 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
             ],
           ),
         ),
+        if (status == 'ready_to_bill') ...[
+          Padding(
+            padding: const EdgeInsets.fromLTRB(48, 0, 16, 10),
+            child: Row(
+              children: [
+                const Text('Send to client:',
+                    style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                const SizedBox(width: 8),
+                SizedBox(
+                  height: 26,
+                  child: TextButton(
+                    onPressed: (_sendingMilestoneId == id)
+                        ? null
+                        : () => _onSendMilestone(id, 'sms'),
+                    style: TextButton.styleFrom(
+                      backgroundColor: AppTheme.brand.withValues(alpha: 0.08),
+                      padding: const EdgeInsets.symmetric(horizontal: 10),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                    ),
+                    child: (_sendingMilestoneId == id && _sendingMilestoneChannel == 'sms')
+                        ? const SizedBox(width: 12, height: 12,
+                            child: CircularProgressIndicator(strokeWidth: 2, color: AppTheme.brand))
+                        : const Text('via SMS',
+                            style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600,
+                                color: AppTheme.brand)),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                SizedBox(
+                  height: 26,
+                  child: TextButton(
+                    onPressed: (_sendingMilestoneId == id)
+                        ? null
+                        : () => _onSendMilestone(id, 'email'),
+                    style: TextButton.styleFrom(
+                      backgroundColor: AppTheme.brand.withValues(alpha: 0.08),
+                      padding: const EdgeInsets.symmetric(horizontal: 10),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                    ),
+                    child: (_sendingMilestoneId == id && _sendingMilestoneChannel == 'email')
+                        ? const SizedBox(width: 12, height: 12,
+                            child: CircularProgressIndicator(strokeWidth: 2, color: AppTheme.brand))
+                        : const Text('via Email',
+                            style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600,
+                                color: AppTheme.brand)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
         const Divider(height: 1, color: AppTheme.borderColor),
       ],
     );
@@ -530,6 +584,84 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
     } finally {
       if (mounted) setState(() => _markingReadyId = null);
+    }
+  }
+
+  Future<void> _onSendMilestone(int milestoneId, String channel) async {
+    final businessId = _invoice?['business_id'] as int?;
+    if (businessId == null) return;
+
+    final leadPhone = _lead?['lead_phone'] as String? ?? '';
+    final leadEmail = _lead?['lead_email'] as String? ?? '';
+
+    if (channel == 'sms' && leadPhone.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Customer has no phone number on file.'),
+        behavior: SnackBarBehavior.floating,
+      ));
+      return;
+    }
+    if (channel == 'email' && leadEmail.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Customer has no email address on file.'),
+        behavior: SnackBarBehavior.floating,
+      ));
+      return;
+    }
+
+    setState(() {
+      _sendingMilestoneId = milestoneId;
+      _sendingMilestoneChannel = channel;
+    });
+    try {
+      final token = Supabase.instance.client.auth.currentSession?.accessToken ?? '';
+
+      final res = await http.post(
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/send-milestone-invoice'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $token',
+        },
+        body: jsonEncode({
+          'milestone_id': milestoneId,
+          'invoice_id':   widget.invoiceId,
+          'business_id':  businessId,
+          'channel':      channel,
+        }),
+      );
+
+      if (!mounted) return;
+
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      if (res.statusCode == 200) {
+        await _load();
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(channel == 'sms'
+              ? 'Milestone sent via SMS.'
+              : 'Milestone sent via email.'),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: const Color(0xFF10B981),
+        ));
+      } else {
+        final err = data['error'] as String? ?? 'Unknown error';
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Error: $err'),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: AppTheme.error,
+        ));
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Error: $e'),
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: AppTheme.error,
+      ));
+    } finally {
+      if (mounted) setState(() {
+        _sendingMilestoneId = null;
+        _sendingMilestoneChannel = null;
+      });
     }
   }
 

@@ -63,7 +63,23 @@ Deno.serve(async (req) => {
       return new Response(JSON.stringify({ error: error.message }), { status: 500 })
     }
 
-    console.log(`account.updated: ${account.id} charges=${chargesEnabled} payouts=${payoutsEnabled}`)
+    // The actual fix: businesses.stripe_connect_ready is what
+    // create-invoice-payment checks before allowing any payment — until
+    // now, nothing ever set it to true except a side effect inside
+    // checkout.session.completed below, meaning a business could never
+    // take its FIRST payment (the flag only flipped after a payment
+    // already happened). This is the real, non-circular signal: Stripe
+    // itself confirming onboarding is genuinely complete.
+    const { error: bizErr } = await supabase
+      .from('businesses')
+      .update({ stripe_connect_ready: onboardingComplete })
+      .eq('stripe_connect_id', account.id)
+
+    if (bizErr) {
+      console.error('Failed to update businesses.stripe_connect_ready:', bizErr)
+    }
+
+    console.log(`account.updated: ${account.id} charges=${chargesEnabled} payouts=${payoutsEnabled} stripe_connect_ready=${onboardingComplete}`)
   }
 
   // ── checkout.session.completed ──

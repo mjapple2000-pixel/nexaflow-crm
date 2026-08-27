@@ -54,6 +54,13 @@ class _NewInvoiceScreenState extends State<NewInvoiceScreen> {
   final List<_MilestoneRow> _milestones = [];
   List<int> _originalMilestoneIds = [];
 
+  // JG-12 gating: progress billing is Pro/beta only. is_beta bypasses
+  // automatically inside check_plan_feature itself — nothing special
+  // needed here for that case. Defaults to false (locked) until the RPC
+  // resolves, so the toggle never flashes unlocked before the real check
+  // lands.
+  bool _progressBillingAllowed = false;
+
   bool get _isEditing => widget.invoiceId != null;
 
   @override
@@ -79,6 +86,20 @@ class _NewInvoiceScreenState extends State<NewInvoiceScreen> {
   Future<void> _init() async {
     _businessId = await getActiveBusinessId();
     if (!mounted) return;
+
+    // JG-12: gated to Pro plan / beta accounts. Checked here rather than
+    // trusted from any cached value, since plan can change between visits.
+    try {
+      final progressBillingRes = await _supabase.rpc('check_plan_feature', params: {
+        'p_business_id': _businessId,
+        'p_feature': 'progress_billing',
+      });
+      if (!mounted) return;
+      setState(() => _progressBillingAllowed = progressBillingRes == true);
+    } catch (e) {
+      debugPrint('check_plan_feature(progress_billing) error: $e');
+      // Fail closed — locked is the safe default if the check itself errors.
+    }
 
     // Load business default tax rate + jurisdiction breakdown (state/
     // county/city/special) so each invoice can record how much of its
@@ -1329,31 +1350,75 @@ class _NewInvoiceScreenState extends State<NewInvoiceScreen> {
             const SizedBox(height: 20),
             const Divider(color: AppTheme.borderColor),
             const SizedBox(height: 16),
-            Row(
-              children: [
-                const Expanded(
-                  child: Text('Bill this job in stages',
-                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
-                          color: AppTheme.textPrimary)),
+            // JG-12: locked entirely means the switch is uninteractive and
+            // an upgrade CTA shows instead — never hidden outright. The
+            // one exception: an invoice that's ALREADY progress-billed
+            // (e.g. business downgraded after creating it) keeps full,
+            // normal toggle behavior — per Mike's call, existing
+            // progress-billed jobs keep working; only NEW ones are gated.
+            if (!_progressBillingAllowed && !_isProgressBilled) ...[
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: AppTheme.brand.withValues(alpha: 0.06),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppTheme.brand.withValues(alpha: 0.2)),
                 ),
-                Switch(
-                  value: _isProgressBilled,
-                  activeColor: AppTheme.brand,
-                  onChanged: (v) {
-                    setState(() {
-                      _isProgressBilled = v;
-                      if (v && _milestones.isEmpty) _milestones.add(_MilestoneRow());
-                    });
-                  },
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(Icons.lock_outline, size: 15, color: AppTheme.brand),
+                        const SizedBox(width: 8),
+                        const Expanded(
+                          child: Text('Bill this job in stages',
+                              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
+                                  color: AppTheme.textPrimary)),
+                        ),
+                        Switch(value: false, onChanged: null),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    Text('Progress billing is a Pro plan feature.',
+                        style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                    const SizedBox(height: 8),
+                    Clickable(
+                      onTap: () => context.go('/settings?section=billing'),
+                      child: Text('Upgrade to Pro →',
+                          style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700,
+                              color: AppTheme.brand)),
+                    ),
+                  ],
+                ),
+              ),
+            ] else ...[
+              Row(
+                children: [
+                  const Expanded(
+                    child: Text('Bill this job in stages',
+                        style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
+                            color: AppTheme.textPrimary)),
+                  ),
+                  Switch(
+                    value: _isProgressBilled,
+                    activeColor: AppTheme.brand,
+                    onChanged: (v) {
+                      setState(() {
+                        _isProgressBilled = v;
+                        if (v && _milestones.isEmpty) _milestones.add(_MilestoneRow());
+                      });
+                    },
+                  ),
+                ],
+              ),
+              if (_isProgressBilled) ...[
+                const SizedBox(height: 4),
+                const Text(
+                  'Splits the total above into billable stages instead of one lump sum.',
+                  style: TextStyle(fontSize: 11, color: AppTheme.textMuted),
                 ),
               ],
-            ),
-            if (_isProgressBilled) ...[
-              const SizedBox(height: 4),
-              const Text(
-                'Splits the total above into billable stages instead of one lump sum.',
-                style: TextStyle(fontSize: 11, color: AppTheme.textMuted),
-              ),
             ],
             const SizedBox(height: 16),
             const Divider(color: AppTheme.borderColor),
