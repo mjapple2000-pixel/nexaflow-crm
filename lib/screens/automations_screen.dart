@@ -91,6 +91,20 @@ class _AutomationsScreenState extends State<AutomationsScreen> {
                   ),
                 ),
                 const SizedBox(width: 10),
+                OutlinedButton.icon(
+                  onPressed: () => _createQuoteFollowUpTemplate(),
+                  icon: const Icon(Icons.request_quote_outlined, size: 16),
+                  label: const Text('Quote Follow-Up'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: const Color(0xFF6C63FF),
+                    side: const BorderSide(color: Color(0xFF6C63FF)),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 14),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10)),
+                  ),
+                ),
+                const SizedBox(width: 10),
                 ElevatedButton.icon(
                   onPressed: () => setState(() {
                     _editingAutomation = null;
@@ -215,6 +229,47 @@ class _AutomationsScreenState extends State<AutomationsScreen> {
     _loadData();
   }
 
+  Future<void> _createQuoteFollowUpTemplate() async {
+    if (_businessId == null) return;
+    final existing = await _db
+        .from('automations')
+        .select('id')
+        .eq('business_id', _businessId!)
+        .eq('name', 'Quote Follow-Up — 3 Days')
+        .maybeSingle();
+    if (existing != null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Quote Follow-Up — 3 Days automation already exists — edit it in the list.')),
+        );
+      }
+      return;
+    }
+    await _db.from('automations').insert({
+      'business_id': _businessId,
+      'name': 'Quote Follow-Up — 3 Days',
+      'trigger_type': 'quote_not_responded',
+      'is_active': true,
+      'actions': [
+        {
+          'type': 'wait_until',
+          'delay_minutes': 4320,
+          'delay_unit': 'days',
+          'delay_value': 3,
+        },
+        {
+          'type': 'send_sms',
+          'message': 'Hi {{name}}, just following up on the estimate we sent over from {{business}}. Let us know if you have any questions or would like to move forward!',
+        },
+      ],
+    });
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Quote Follow-Up — 3 Days template created — tap to edit.')),
+    );
+    _loadData();
+  }
+
   Future<void> _deleteAutomation(int id) async {
     bool confirmed = false;
     await showDialog<void>(
@@ -270,6 +325,7 @@ class _AutomationCard extends StatelessWidget {
       case 'appointment_completed': return 'Appointment Completed';
       case 'job_form_completed': return 'Job Form Completed';
       case 'referral_converted': return 'Referral Converted';
+      case 'quote_not_responded': return 'Quote Not Responded';
       default: return type;
     }
   }
@@ -283,6 +339,7 @@ class _AutomationCard extends StatelessWidget {
       case 'appointment_completed': return Icons.task_alt_outlined;
       case 'job_form_completed': return Icons.assignment_turned_in_outlined;
       case 'referral_converted': return Icons.card_giftcard_outlined;
+      case 'quote_not_responded': return Icons.request_quote_outlined;
       default: return Icons.bolt_outlined;
     }
   }
@@ -671,6 +728,8 @@ class _AutomationBuilderViewState extends State<_AutomationBuilderView> {
                             'Status Changed'),
                         ('referral_converted', Icons.card_giftcard_outlined,
                             'Referral Converted'),
+                        ('quote_not_responded', Icons.request_quote_outlined,
+                            'Quote Not Responded'),
                       ].map((t) => _TriggerOption(
                             icon: t.$2,
                             label: t.$3,
@@ -908,6 +967,7 @@ class _TriggerNode extends StatelessWidget {
       case 'appointment_completed': return 'Appointment Marked Completed';
       case 'job_form_completed': return 'Job Form Completed';
       case 'referral_converted': return 'Referral Converted to Customer';
+      case 'quote_not_responded': return 'Quote Not Responded';
       default: return type;
     }
   }
@@ -921,6 +981,7 @@ class _TriggerNode extends StatelessWidget {
       case 'appointment_completed': return Icons.task_alt_outlined;
       case 'job_form_completed': return Icons.assignment_turned_in_outlined;
       case 'referral_converted': return Icons.card_giftcard_outlined;
+      case 'quote_not_responded': return Icons.request_quote_outlined;
       default: return Icons.bolt_outlined;
     }
   }

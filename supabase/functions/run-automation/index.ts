@@ -329,6 +329,7 @@ Deno.serve(async (req) => {
                 automation_id: automation.id,
                 lead_id: payload.lead_id || null,
                 appointment_id: payload.appointment_id || null,
+                quote_id: payload.quote_id || null,
                 next_action_index: i,
                 next_run_at: nextRunAt,
                 status: "active",

@@ -222,12 +222,45 @@ Do not use corporate jargon. Sign off naturally with the business name.`,
     }
 
     // Flip quote to sent
+    const wasAlreadySent = quote.status === 'sent';
     const now = new Date().toISOString();
     await db.from('quotes').update({
       status:     'sent',
       sent_at:    now,
       updated_at: now,
     }).eq('id', quote_id);
+
+    // JG-13: enroll in the "Quote Not Responded" follow-up automation, but
+    // only on the actual first send — never on a resend (e.g. customer says
+    // they didn't get it), so we don't stack duplicate follow-up timers on
+    // the same quote. This never blocks or fails the send itself; the
+    // SMS/email above has already gone out regardless of what happens here.
+    if (!wasAlreadySent) {
+      try {
+        await fetch(`${supabaseUrl}/functions/v1/run-automation`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${serviceKey}`,
+          },
+          body: JSON.stringify({
+            trigger_type: 'quote_not_responded',
+            business_id,
+            payload: {
+              lead_id:    quote.contact_id,
+              quote_id:   quote.id,
+              lead_name:  leadName,
+              phone:      leadPhone,
+              lead_phone: leadPhone,
+              email:      leadEmail,
+              lead_email: leadEmail,
+            },
+          }),
+        });
+      } catch (automationErr) {
+        console.error('run-automation call failed for quote_not_responded:', automationErr);
+      }
+    }
 
     return new Response(JSON.stringify({ success: true }), {
       status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' },

@@ -1,0 +1,18 @@
+[33mcommit 614e5eb17651b3157a17a071584502e26875f617[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmaster[m[33m, [m[1;31morigin/master[m[33m)[m
+Author: Michael Apple <vantagecaretech@gmail.com>
+Date:   Thu Aug 27 14:16:35 2026 -0400
+
+    JG-12: milestone payments, auto-send cron, Overview Billing Progress panel, stripe_connect_ready fix, progress_billing plan gating
+
+ .firebase/hosting.YnVpbGRcd2Vi.cache               |  26 [32m+[m[31m--[m
+ lib/navigation/app_router.dart                     |   1 [32m+[m
+ lib/screens/client_hub_screen.dart                 | 201 [32m+++++++++++++++++[m[31m-[m
+ lib/screens/invoice_detail_screen.dart             | 136 [32m+++++++++++[m[31m-[m
+ lib/screens/jobs_overview_screen.dart              | 197 [32m+++++++++++++++++[m
+ lib/screens/new_invoice_screen.dart                | 109 [32m++++++++[m[31m--[m
+ payload.json                                       |   1 [32m+[m
+ supabase/.temp/cli-latest                          |   2 [32m+[m[31m-[m
+ supabase/functions/process-due-milestones/index.ts | 121 [32m+++++++++++[m
+ supabase/functions/send-milestone-invoice/index.ts | 235 [32m+++++++++++++++++++++[m
+ supabase/functions/stripe-connect-webhook/index.ts |  18 [32m+[m[31m-[m
+ 11 files changed, 1005 insertions(+), 42 deletions(-)
