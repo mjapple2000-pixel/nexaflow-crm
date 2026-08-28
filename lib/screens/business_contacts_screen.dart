@@ -9,6 +9,7 @@ import 'dart:js_interop';
 import 'package:web/web.dart' as web;
 import '../theme/app_theme.dart';
 import '../utils/business_utils.dart';
+import '../utils/csv_utils.dart';
 import 'package:nexaflow/config/supabase_config.dart';
 
 // ─────────────────────────────────────────────
@@ -416,9 +417,10 @@ class _BusinessContactsScreenState extends State<BusinessContactsScreen> {
           ctx.pop();
           _snack('Sending SMS to $withPhone contacts…');
           try {
+            final token = _db.auth.currentSession?.accessToken ?? _anonKey;
             final res = await http.post(
               Uri.parse('$_supabaseUrl/functions/v1/bulk-sms'),
-              headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer $_anonKey'},
+              headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer $token'},
               body: jsonEncode({
                 'lead_ids': _selected.toList(),
                 'message': message,
@@ -428,6 +430,10 @@ class _BusinessContactsScreenState extends State<BusinessContactsScreen> {
             );
             if (!mounted) return;
             final data = jsonDecode(res.body);
+            if (data['error'] != null) {
+              _snack('SMS failed: ${data['error']}');
+              return;
+            }
             final sent = data['sent'] ?? 0;
             final skipped = data['skipped'] ?? 0;
             _clearSelection(); _loadContacts();
@@ -455,9 +461,10 @@ class _BusinessContactsScreenState extends State<BusinessContactsScreen> {
           ctx.pop();
           _snack('Sending email to $withEmail contacts…');
           try {
+            final token = _db.auth.currentSession?.accessToken ?? _anonKey;
             final res = await http.post(
               Uri.parse('$_supabaseUrl/functions/v1/bulk-email'),
-              headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer $_anonKey'},
+              headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer $token'},
               body: jsonEncode({
                 'lead_ids': _selected.toList(),
                 'subject': subject,
@@ -468,6 +475,10 @@ class _BusinessContactsScreenState extends State<BusinessContactsScreen> {
             );
             if (!mounted) return;
             final data = jsonDecode(res.body);
+            if (data['error'] != null) {
+              _snack('Email failed: ${data['error']}');
+              return;
+            }
             final sent = data['sent'] ?? 0;
             final skipped = data['skipped'] ?? 0;
             _clearSelection(); _loadContacts();
@@ -489,8 +500,8 @@ class _BusinessContactsScreenState extends State<BusinessContactsScreen> {
         ['Name', 'Email', 'Phone', 'Status', 'Source', 'Address', 'Created', 'Tags'],
       ];
       for (final c in _filtered) {
-        rows.add([c.name, c.email ?? '', c.phone ?? '', c.status,
-          c.source ?? '', c.address ?? '', c.createdAt?.toIso8601String() ?? '', c.tags.join('; ')]);
+        rows.add([csvSafe(c.name), csvSafe(c.email ?? ''), csvSafe(c.phone ?? ''), csvSafe(c.status),
+          csvSafe(c.source ?? ''), csvSafe(c.address ?? ''), c.createdAt?.toIso8601String() ?? '', csvSafe(c.tags.join('; '))]);
       }
       final csv = const ListToCsvConverter().convert(rows);
       final bytes = utf8.encode(csv);

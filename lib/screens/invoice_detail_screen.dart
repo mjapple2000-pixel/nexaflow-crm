@@ -1,7 +1,6 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
-import 'package:url_launcher/url_launcher.dart';
 import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme/app_theme.dart';
@@ -28,7 +27,6 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
 
   bool _chargesEnabled = false;
   Map<String, dynamic>? _paymentLink;
-  bool _sendingPaymentLink = false;
   bool _sendingToClient = false;
 
   // JG-12: progress-billing milestones for this invoice, if any.
@@ -872,10 +870,6 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
     if (_isOverdue || status == 'approved') {
       buttons.add(_sendToClientButton());
       buttons.add(const SizedBox(height: 8));
-      if (_chargesEnabled && _paymentLink == null) {
-        buttons.add(_sendPaymentLinkButton());
-        buttons.add(const SizedBox(height: 8));
-      }
       buttons.add(_btn('Mark as Paid Manually', AppTheme.success, _onMarkPaid));
       buttons.add(const SizedBox(height: 8));
       buttons.add(_btn('Edit Invoice', null, () =>
@@ -909,59 +903,6 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: buttons,
-    );
-  }
-
-  Widget _sendPaymentLinkButton() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        const Text('Send Payment Link',
-            style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600,
-                color: AppTheme.textSecondary)),
-        const SizedBox(height: 6),
-        Row(
-          children: [
-            Expanded(
-              child: SizedBox(
-                height: 38,
-                child: TextButton(
-                  onPressed: _sendingPaymentLink ? null : () => _onSendPaymentLink('sms'),
-                  style: TextButton.styleFrom(
-                    backgroundColor: const Color(0xFF6366F1),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                  ),
-                  child: _sendingPaymentLink
-                      ? const SizedBox(width: 16, height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                      : const Text('via SMS',
-                          style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
-                              color: Colors.white)),
-                ),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: SizedBox(
-                height: 38,
-                child: TextButton(
-                  onPressed: _sendingPaymentLink ? null : () => _onSendPaymentLink('email'),
-                  style: TextButton.styleFrom(
-                    backgroundColor: const Color(0xFF6366F1),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                  ),
-                  child: _sendingPaymentLink
-                      ? const SizedBox(width: 16, height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                      : const Text('via Email',
-                          style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
-                              color: Colors.white)),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ],
     );
   }
 
@@ -1086,79 +1027,6 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
       ));
     } finally {
       if (mounted) setState(() => _sendingToClient = false);
-    }
-  }
-
-  Future<void> _onSendPaymentLink(String channel) async {
-    final businessId = _invoice?['business_id'] as int?;
-    if (businessId == null) return;
-
-    final amountDue = ((_invoice?['amount_due'] as num?) ?? 0).toDouble();
-    final amountCents = (amountDue * 100).round();
-    final invoiceNum = _invoice?['invoice_number'] as String? ?? 'Invoice';
-    final customerEmail = _lead?['lead_email'] as String? ?? '';
-
-    if (amountCents <= 0) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Invoice amount must be greater than zero.'),
-        behavior: SnackBarBehavior.floating,
-      ));
-      return;
-    }
-
-    if (customerEmail.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Customer email is required to send a payment link.'),
-        behavior: SnackBarBehavior.floating,
-      ));
-      return;
-    }
-
-    setState(() => _sendingPaymentLink = true);
-    try {
-      final anonKey = Supabase.instance.client.auth.currentSession?.accessToken ?? '';
-
-      final res = await http.post(
-        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/create-invoice-payment'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $anonKey',
-        },
-        body: jsonEncode({
-          'invoice_id': widget.invoiceId,
-        }),
-      );
-
-      if (!mounted) return;
-
-      final data = jsonDecode(res.body) as Map<String, dynamic>;
-      if (res.statusCode == 200 && data['url'] != null) {
-        final uri = Uri.parse(data['url'] as String);
-        if (await canLaunchUrl(uri)) {
-          await launchUrl(uri, mode: LaunchMode.externalApplication);
-        }
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('Stripe Checkout opened — share the link with your customer.'),
-          behavior: SnackBarBehavior.floating,
-          backgroundColor: Color(0xFF10B981),
-        ));
-      } else {
-        final err = data['error'] as String? ?? 'Unknown error';
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Error: $err'),
-          behavior: SnackBarBehavior.floating,
-          backgroundColor: AppTheme.error,
-        ));
-      }
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('Error: $e'),
-        behavior: SnackBarBehavior.floating,
-        backgroundColor: AppTheme.error,
-      ));
-    } finally {
-      if (mounted) setState(() => _sendingPaymentLink = false);
     }
   }
 

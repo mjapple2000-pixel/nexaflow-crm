@@ -706,7 +706,10 @@ class _QuoteDetailScreenState extends State<QuoteDetailScreen> {
         final invoices = _quote?['invoices'] as List?;
         final isConverted = invoices != null && invoices.isNotEmpty;
         if (isConverted) {
-          buttons.add(_btn('Converted to Invoice', const Color(0xFF10B981), () {}));
+          final linkedInvoiceId = invoices!.first['id'] as String?;
+          buttons.add(_btn('Converted to Invoice', const Color(0xFF10B981), () {
+            if (linkedInvoiceId != null) context.go('/jobs/invoices/$linkedInvoiceId');
+          }));
         } else {
           buttons.add(_btn('Convert to Invoice', AppTheme.brand, _onConvert));
         }

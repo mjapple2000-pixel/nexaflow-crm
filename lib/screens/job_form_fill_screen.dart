@@ -1211,6 +1211,7 @@ Widget _buildExtraPageInitialsCell(int pageNumber, Map<String, dynamic> section)
           });
         }
       } else {
+        debugPrint('Photo upload failed, mounted=$mounted, status=${res.statusCode}');
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
             content: Text('Photo upload failed — please try again.'),
@@ -2877,16 +2878,32 @@ Widget _buildExtraPageInitialsCell(int pageNumber, Map<String, dynamic> section)
             }
             request.files.add(http.MultipartFile.fromBytes('file', bytes,
                 filename: picked.name.isNotEmpty ? picked.name : 'photo.jpg', contentType: MediaType('image', 'jpeg')));
-            final streamedRes = await request.send();
-            final res = await http.Response.fromStream(streamedRes);
-            if (res.statusCode == 200) {
-              final data = jsonDecode(res.body) as Map<String, dynamic>;
-              setState(() {
-                final list = List<Map<String, dynamic>>.from((_markerPhotos[markerId] as List? ?? []));
-                list.add({'id': data['id'], 'signed_url': null, '_localBytes': bytes});
-                _markerPhotos[markerId] = list;
-              });
-              setSheetState(() {});
+            try {
+              final streamedRes = await request.send();
+              final res = await http.Response.fromStream(streamedRes);
+              if (res.statusCode == 200) {
+                final data = jsonDecode(res.body) as Map<String, dynamic>;
+                setState(() {
+                  final list = List<Map<String, dynamic>>.from((_markerPhotos[markerId] as List? ?? []));
+                  list.add({'id': data['id'], 'signed_url': null, '_localBytes': bytes});
+                  _markerPhotos[markerId] = list;
+                });
+                setSheetState(() {});
+              } else {
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                    content: Text('Photo upload failed — please try again.'),
+                    backgroundColor: AppTheme.error,
+                  ));
+                }
+              }
+            } catch (e) {
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                  content: Text('Network error uploading photo — please try again.'),
+                  backgroundColor: AppTheme.error,
+                ));
+              }
             }
           }
           Future<void> deletePhoto(int photoId) async {

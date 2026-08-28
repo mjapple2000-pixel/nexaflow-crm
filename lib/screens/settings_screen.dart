@@ -44,6 +44,7 @@ const _kPlans = [
     paymentLink: 'https://buy.stripe.com/dRm7sLcnqdsrfTZ3eM8og08',
     features: [
       '300 AI messages/mo',
+      '3 team seats included',
       'SMS & Email conversations',
       'Contacts & Pipeline CRM',
       'Basic Reporting',
@@ -58,6 +59,7 @@ const _kPlans = [
     paymentLink: 'https://buy.stripe.com/5kQ5kDdru4VVgY37v28og09',
     features: [
       '1,000 AI messages/mo',
+      '8 team seats included',
       'Everything in Starter',
       'Campaign automation',
       'Advanced Reporting',
@@ -73,6 +75,7 @@ const _kPlans = [
     paymentLink: 'https://buy.stripe.com/8x214n4UY0FF6jp9Da8og0a',
     features: [
       '2,500 AI messages/mo',
+      '15 team seats included',
       'Everything in Growth',
       'White-label options',
       'Custom integrations',
@@ -4257,10 +4260,16 @@ class _BillingSectionState extends State<_BillingSection> {
   int _aiMessagesIncluded = 0;
   bool _isOverage = false;
 
+  bool _seatsLoading = true;
+  int _seatsUsed = 0;
+  int _seatsIncluded = 0;
+  bool _isSeatOverage = false;
+
   @override
   void initState() {
     super.initState();
     _loadUsage();
+    _loadSeats();
   }
 
   Future<void> _loadUsage() async {
@@ -4287,9 +4296,34 @@ class _BillingSectionState extends State<_BillingSection> {
     }
   }
 
+  Future<void> _loadSeats() async {
+    setState(() => _seatsLoading = true);
+    try {
+      final businessId = widget.business['id'] as int?;
+      if (businessId == null) return;
+      final res = await Supabase.instance.client
+          .rpc('get_business_seats_summary', params: {'p_business_id': businessId})
+          .maybeSingle();
+      if (res != null && mounted) {
+        setState(() {
+          _seatsUsed = (res['seats_used'] as num?)?.toInt() ?? 0;
+          _seatsIncluded = (res['seats_included'] as num?)?.toInt() ?? 0;
+          _isSeatOverage = res['is_overage'] as bool? ?? false;
+          _seatsLoading = false;
+        });
+      } else if (mounted) {
+        setState(() => _seatsLoading = false);
+      }
+    } catch (e) {
+      debugPrint('Seats load error: $e');
+      if (mounted) setState(() => _seatsLoading = false);
+    }
+  }
+
   Future<void> _refreshAll() async {
     await widget.onRefresh();
     await _loadUsage();
+    await _loadSeats();
   }
 
   String get _currentPlan =>
@@ -4483,6 +4517,10 @@ class _BillingSectionState extends State<_BillingSection> {
                     fontSize: 13,
                     fontWeight: FontWeight.w700,
                     color: AppTheme.textSecondary)),
+            const SizedBox(height: 4),
+            const Text(
+                'Additional team seats beyond what\'s included are billed at \$29/mo per seat, automatically.',
+                style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
             const SizedBox(height: 12),
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -4604,6 +4642,64 @@ class _BillingSectionState extends State<_BillingSection> {
                           Expanded(
                             child: Text(
                               "You're over your included AI messages this month. Extra messages are billed automatically at the overage rate — your AI keeps working without interruption.",
+                              style: TextStyle(fontSize: 12, color: Colors.orange, height: 1.4),
+                            ),
+                          ),
+                        ]),
+                      ),
+                    ],
+                  ],
+                ]),
+            const SizedBox(height: 20),
+            _SettingsGroup(
+                title: 'Team Seats',
+                children: [
+                  if (_seatsLoading)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 8),
+                      child: Center(
+                          child: SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2))),
+                    )
+                  else if (_isBeta)
+                    const _InfoRow(
+                        label: 'Team Seats',
+                        value: 'Unlimited (Beta)')
+                  else ...[
+                    _InfoRow(
+                        label: 'Seats Used',
+                        value: '$_seatsUsed'),
+                    _InfoRow(
+                        label: 'Seats Included',
+                        value: '$_seatsIncluded'),
+                    const SizedBox(height: 8),
+                    ClipRRect(
+                        borderRadius: BorderRadius.circular(4),
+                        child: LinearProgressIndicator(
+                            value: _seatsIncluded > 0
+                                ? (_seatsUsed / _seatsIncluded).clamp(0.0, 1.0)
+                                : 0.0,
+                            backgroundColor: AppTheme.borderColor,
+                            valueColor: AlwaysStoppedAnimation(
+                                _isSeatOverage ? Colors.orange : AppTheme.brand),
+                            minHeight: 8)),
+                    if (_isSeatOverage) ...[
+                      const SizedBox(height: 10),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: Colors.orange.withValues(alpha: 0.08),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: Colors.orange.withValues(alpha: 0.3)),
+                        ),
+                        child: const Row(children: [
+                          Icon(Icons.info_outline, size: 14, color: Colors.orange),
+                          SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              "You're over your included team seats this month. Extra seats are billed automatically at \$29/mo each — your team keeps working without interruption.",
                               style: TextStyle(fontSize: 12, color: Colors.orange, height: 1.4),
                             ),
                           ),

@@ -68,7 +68,29 @@ Deno.serve(async (req) => {
     let attachment_path: string | null = null
 
     if (attachment && attachment.size > 0) {
-      const ext       = attachment.name.split('.').pop() ?? 'bin'
+      // Server-side allowlist — never trust the client-declared attachment.type
+      // or filename extension as-is. Without this, someone could upload HTML
+      // or a script-bearing SVG labeled as a screenshot, which Supabase
+      // Storage would later serve back with that same attacker-chosen
+      // content-type — a stored-XSS-via-file-upload risk for whoever
+      // reviews this ticket's attachment later.
+      const ALLOWED_ATTACHMENT_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf']
+      const ALLOWED_ATTACHMENT_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'pdf']
+
+      if (!ALLOWED_ATTACHMENT_TYPES.includes(attachment.type)) {
+        return new Response(JSON.stringify({ error: `Unsupported file type: ${attachment.type || 'unknown'}. Only images and PDFs are allowed.` }), {
+          status: 400,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        })
+      }
+      const ext = (attachment.name.split('.').pop() ?? '').toLowerCase()
+      if (!ALLOWED_ATTACHMENT_EXTENSIONS.includes(ext)) {
+        return new Response(JSON.stringify({ error: `Unsupported file extension: .${ext}` }), {
+          status: 400,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        })
+      }
+
       const fileName  = `${user.id}/${Date.now()}.${ext}`
       const arrayBuf  = await attachment.arrayBuffer()
 

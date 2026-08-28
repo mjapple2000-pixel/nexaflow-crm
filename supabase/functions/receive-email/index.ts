@@ -8,10 +8,26 @@ const supabase = createClient(
   secretKeys.nexaflow_service_role_2026_08 ?? ""
 );
 
-const OPENAI_API_KEY       = Deno.env.get("OPENAI_API_KEY")!;
-const MAILGUN_API_KEY      = Deno.env.get("MAILGUN_API_KEY")!;
-const MAILGUN_DOMAIN       = Deno.env.get("MAILGUN_DOMAIN")!;
-const NOTIFY_OWNER_WEBHOOK = Deno.env.get("NOTIFY_OWNER_WEBHOOK") ?? "";
+const OPENAI_API_KEY            = Deno.env.get("OPENAI_API_KEY")!;
+const MAILGUN_API_KEY           = Deno.env.get("MAILGUN_API_KEY")!;
+const MAILGUN_DOMAIN            = Deno.env.get("MAILGUN_DOMAIN")!;
+const NOTIFY_OWNER_WEBHOOK      = Deno.env.get("NOTIFY_OWNER_WEBHOOK") ?? "";
+const MAILGUN_WEBHOOK_SIGNING_KEY = Deno.env.get("MAILGUN_WEBHOOK_SIGNING_KEY") ?? "";
+
+// ── Verify Mailgun webhook signature (HMAC-SHA256 of timestamp+token, keyed
+// with the Mailgun API key). Without this, anyone who finds this URL can POST
+// a forged inbound-email-shaped payload and walk the AI through a fake
+// conversation or booking, at real OpenAI cost.
+async function validateMailgunSignature(timestamp: string, token: string, signature: string): Promise<boolean> {
+  if (!timestamp || !token || !signature) return false;
+  const encoder = new TextEncoder();
+  const cryptoKey = await crypto.subtle.importKey(
+    "raw", encoder.encode(MAILGUN_WEBHOOK_SIGNING_KEY), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
+  );
+  const sigBytes = await crypto.subtle.sign("HMAC", cryptoKey, encoder.encode(timestamp + token));
+  const hex = Array.from(new Uint8Array(sigBytes)).map((b) => b.toString(16).padStart(2, "0")).join("");
+  return hex === signature;
+}
 
 // ── Send email via Mailgun ───────────────────────────────────────────────────
 async function sendEmail(opts: { to: string; from: string; replyTo: string; subject: string; text: string }) {
@@ -311,6 +327,19 @@ Deno.serve(async (req) => {
     if (!rawFrom || (!strippedText && !bodyRaw)) {
       console.log("Missing from or body — skipping");
       return new Response("ok", { status: 200 });
+    }
+
+    // ── PHASE 1: log-only signature check — does NOT block yet. Deploy this,
+    // send a few real test emails, and grep the logs for "Mailgun signature"
+    // to confirm every real inbound message logs MATCH before we flip this
+    // to actually reject on mismatch.
+    const mgTimestamp = fields["timestamp"] ?? "";
+    const mgToken      = fields["token"]     ?? "";
+    const mgSignature  = fields["signature"] ?? "";
+    const isValidMgSignature = await validateMailgunSignature(mgTimestamp, mgToken, mgSignature);
+    if (!isValidMgSignature) {
+      console.error(`Mailgun signature MISMATCH — rejecting forged/invalid request | hasTimestamp:${!!mgTimestamp} hasToken:${!!mgToken} hasSignature:${!!mgSignature}`);
+      return new Response("Forbidden", { status: 403 });
     }
 
     const { name: senderName, email: senderEmail } = parseSender(rawFrom);

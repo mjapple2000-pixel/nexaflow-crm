@@ -9,6 +9,12 @@ Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
 
   try {
+    const authHeader = req.headers.get('Authorization')
+    if (!authHeader) {
+      return new Response(JSON.stringify({ error: 'Missing authorization header' }),
+        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+    }
+
     const { lead_ids, message, business_id, source } = await req.json()
     const targetSource = source === 'contacts' ? 'contacts' : 'leads'
 
@@ -23,6 +29,37 @@ Deno.serve(async (req) => {
       Deno.env.get('SUPABASE_URL')!,
       secretKeys.nexaflow_service_role_2026_08 ?? ''
     )
+
+    // ── Verify caller is a real logged-in user who actually belongs to
+    // business_id (or is a verified superuser) — previously this function
+    // trusted business_id straight from the request body with zero auth
+    // check, meaning anyone with the URL could send SMS as any business to
+    // any of that business's leads.
+    const { data: { user }, error: userErr } = await supabase.auth.getUser(authHeader.replace('Bearer ', ''))
+    if (userErr || !user) {
+      return new Response(JSON.stringify({ error: 'Invalid or expired session' }),
+        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+    }
+
+    const { data: suRow } = await supabase
+      .from('superusers')
+      .select('user_id')
+      .eq('user_id', user.id)
+      .maybeSingle()
+    const isSuperuser = !!suRow
+
+    if (!isSuperuser) {
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('business_id')
+        .eq('user_id', user.id)
+        .maybeSingle()
+
+      if (!profile || profile.business_id !== business_id) {
+        return new Response(JSON.stringify({ error: 'Forbidden' }),
+          { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+      }
+    }
 
     const accountSid = Deno.env.get('TWILIO_ACCOUNT_SID')!
     const authToken  = Deno.env.get('TWILIO_AUTH_TOKEN')!

@@ -28,6 +28,34 @@ Deno.serve(async (req) => {
   }
 
   try {
+    // ── Auth: two legitimate callers only ──────────────────────────────
+    // 1. client-portal-action, server-to-server, using the service role key —
+    //    it has ALREADY verified the customer's private portal token owns
+    //    this exact invoice before ever reaching here. Leads never call
+    //    this function directly.
+    // 2. A real staff member's own session, generating a link to send
+    //    manually — must belong to the invoice's own business_id, checked
+    //    below once the invoice is fetched.
+    // Previously this endpoint accepted invoice_id with NO auth check at
+    // all — a bare, unauthenticated request got back a live Stripe
+    // Checkout URL plus the business name/job title/amount for any
+    // invoice_id guessed.
+    const authHeader = req.headers.get('Authorization') ?? ''
+    const callerToken = authHeader.replace('Bearer ', '')
+    const isInternalServiceCall = !!secretKeys.nexaflow_service_role_2026_08 && callerToken === secretKeys.nexaflow_service_role_2026_08
+
+    let callerUserId: string | null = null
+    if (!isInternalServiceCall) {
+      const { data: { user }, error: authError } = await supabase.auth.getUser(callerToken)
+      if (authError || !user) {
+        return new Response(
+          JSON.stringify({ error: 'Unauthorized' }),
+          { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        )
+      }
+      callerUserId = user.id
+    }
+
     // JG-12: optional milestone_id. When present, this checkout session
     // is for ONE billing stage, not the whole invoice — amount, status
     // check, and session-id storage all resolve against the milestone
@@ -55,6 +83,31 @@ Deno.serve(async (req) => {
         JSON.stringify({ error: 'Invoice not found.' }),
         { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       )
+    }
+
+    // Real staff callers must belong to this invoice's business (or be superuser)
+    if (!isInternalServiceCall) {
+      const { data: suRow } = await supabase
+        .from('superusers')
+        .select('user_id')
+        .eq('user_id', callerUserId)
+        .maybeSingle()
+      const isSuperuser = !!suRow
+
+      if (!isSuperuser) {
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('business_id')
+          .eq('user_id', callerUserId)
+          .maybeSingle()
+
+        if (!profile || profile.business_id !== invoice.business_id) {
+          return new Response(
+            JSON.stringify({ error: 'Forbidden' }),
+            { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+          )
+        }
+      }
     }
 
     let payAmountDue = invoice.amount_due

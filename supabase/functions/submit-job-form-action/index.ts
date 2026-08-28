@@ -13,6 +13,26 @@ const supabase = createClient(
 
 const BUCKET = "job-form-media";
 
+// Server-side allowlist — never trust the client-declared file.type or
+// filename extension as-is. Both are attacker-controlled input; without
+// this check, someone could upload HTML or a script-bearing SVG labeled
+// as a photo, which Supabase Storage would later serve back with that
+// same attacker-chosen content-type — a stored-XSS-via-file-upload risk
+// for whoever later views it.
+const ALLOWED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif", "image/heic", "image/heif"];
+const ALLOWED_IMAGE_EXTENSIONS = ["jpg", "jpeg", "png", "webp", "gif", "heic", "heif"];
+
+function validateImageFile(file: File): string | null {
+  if (!ALLOWED_IMAGE_TYPES.includes(file.type)) {
+    return `Unsupported file type: ${file.type || "unknown"}. Only image files are allowed.`;
+  }
+  const ext = (file.name.split(".").pop() || "").toLowerCase();
+  if (!ALLOWED_IMAGE_EXTENSIONS.includes(ext)) {
+    return `Unsupported file extension: .${ext}`;
+  }
+  return null;
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -251,6 +271,13 @@ Deno.serve(async (req) => {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
+      const photoValidationError = validateImageFile(file);
+      if (photoValidationError) {
+        return new Response(JSON.stringify({ error: photoValidationError }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
       const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
       const path = `${hubToken.business_id}/${submissionId}/${fieldId}-${Date.now()}.${ext}`;
 
@@ -340,6 +367,13 @@ Deno.serve(async (req) => {
     if (action === "upload_marker_photo") {
       if (!file || !markerId) {
         return new Response(JSON.stringify({ error: "file and marker_id are required" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      const markerPhotoValidationError = validateImageFile(file);
+      if (markerPhotoValidationError) {
+        return new Response(JSON.stringify({ error: markerPhotoValidationError }), {
           status: 400,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
@@ -451,6 +485,13 @@ Deno.serve(async (req) => {
     if (action === "upload_rendered_page") {
       if (!file || !pageNumber || pageNumber < 1) {
         return new Response(JSON.stringify({ error: "file and a valid page_number are required" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      const renderedPageValidationError = validateImageFile(file);
+      if (renderedPageValidationError) {
+        return new Response(JSON.stringify({ error: renderedPageValidationError }), {
           status: 400,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
@@ -729,6 +770,13 @@ Deno.serve(async (req) => {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
+      const extraInitialsValidationError = validateImageFile(file);
+      if (extraInitialsValidationError) {
+        return new Response(JSON.stringify({ error: extraInitialsValidationError }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
       const path = `${hubToken.business_id}/${submissionId}/extra-initials-${pageNumber}-${sectionId}-${Date.now()}.png`;
 
       const { error: uploadError } = await supabase.storage
@@ -884,6 +932,13 @@ Deno.serve(async (req) => {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
+      const signatureValidationError = validateImageFile(file);
+      if (signatureValidationError) {
+        return new Response(JSON.stringify({ error: signatureValidationError }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
       const path = `${hubToken.business_id}/${submissionId}/signature-${Date.now()}.png`;
 
       const { error: uploadError } = await supabase.storage
@@ -934,6 +989,13 @@ Deno.serve(async (req) => {
     if (action === "upload_initials") {
       if (!file || !fieldId) {
         return new Response(JSON.stringify({ error: "file and field_id are required" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      const initialsValidationError = validateImageFile(file);
+      if (initialsValidationError) {
+        return new Response(JSON.stringify({ error: initialsValidationError }), {
           status: 400,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });

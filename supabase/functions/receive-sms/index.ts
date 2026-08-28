@@ -13,12 +13,38 @@ const TWILIO_AUTH_TOKEN    = Deno.env.get("TWILIO_AUTH_TOKEN")!;
 const OPENAI_API_KEY       = Deno.env.get("OPENAI_API_KEY")!;
 const NOTIFY_OWNER_WEBHOOK = Deno.env.get("NOTIFY_OWNER_WEBHOOK") ?? "";
 
+// Twilio signs against the actual public webhook URL configured on the
+// phone number (see provision-phone-number's SmsUrl) — NOT req.url, which
+// behind Supabase's internal gateway reports the wrong scheme (http, not
+// https) and drops the /functions/v1/ prefix entirely.
+const RECEIVE_SMS_PUBLIC_URL = "https://rllriopqojaraceytdno.supabase.co/functions/v1/receive-sms";
+
 // ── Always return empty TwiML ───────────────────────────────────────────────────
 function twimlEmpty() {
   return new Response(
     `<?xml version='1.0' encoding='UTF-8'?><Response></Response>`,
     { headers: { "Content-Type": "text/xml" } }
   );
+}
+
+// ── Verify Twilio webhook signature (HMAC-SHA1 of URL + sorted POST params,
+// keyed with the account's auth token). Without this, anyone who finds this
+// URL can POST a forged Twilio-shaped payload and walk the AI receptionist
+// through a fake conversation or booking, at real Twilio/OpenAI cost.
+async function validateTwilioSignature(url: string, rawBody: string, signature: string): Promise<boolean> {
+  if (!signature) return false;
+  const params = new URLSearchParams(rawBody);
+  const sortedKeys = Array.from(params.keys()).sort();
+  let data = url;
+  for (const key of sortedKeys) {
+    data += key + params.get(key);
+  }
+  const encoder = new TextEncoder();
+  const cryptoKey = await crypto.subtle.importKey(
+    "raw", encoder.encode(TWILIO_AUTH_TOKEN), { name: "HMAC", hash: "SHA-1" }, false, ["sign"]
+  );
+  const signatureBytes = await crypto.subtle.sign("HMAC", cryptoKey, encoder.encode(data));
+  return btoa(String.fromCharCode(...new Uint8Array(signatureBytes))) === signature;
 }
 
 // ── Send SMS via Twilio REST ─────────────────────────────────────────────
@@ -305,7 +331,20 @@ No explanation. JSON only.`,
 // ── Main handler ───────────────────────────────────────────────────
 Deno.serve(async (req) => {
   try {
-    const params     = new URLSearchParams(await req.text());
+    const rawBody = await req.text();
+
+    // ── PHASE 1: log-only signature check — does NOT block yet. Deploy this,
+    // send a few real texts, and grep the logs for "Twilio signature" to
+    // confirm every real inbound message logs MATCH before we flip this to
+    // actually reject on mismatch.
+    const twilioSignature = req.headers.get("X-Twilio-Signature") ?? "";
+    const isValidSignature = await validateTwilioSignature(RECEIVE_SMS_PUBLIC_URL, rawBody, twilioSignature);
+    if (!isValidSignature) {
+      console.error(`Twilio signature MISMATCH — rejecting forged/invalid request | url:${RECEIVE_SMS_PUBLIC_URL}`);
+      return new Response("Forbidden", { status: 403 });
+    }
+
+    const params     = new URLSearchParams(rawBody);
     const from       = params.get("From")       ?? "";
     const to         = params.get("To")         ?? "";
     const body       = params.get("Body")       ?? "";
