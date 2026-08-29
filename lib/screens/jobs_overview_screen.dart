@@ -7,6 +7,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme/app_theme.dart';
 import '../widgets/clickable.dart';
 import '../utils/business_utils.dart';
+import '../navigation/app_router.dart';
 
 class JobsOverviewScreen extends StatefulWidget {
   const JobsOverviewScreen({super.key});
@@ -58,7 +59,7 @@ class _JobsOverviewScreenState extends State<JobsOverviewScreen> {
   @override
   void initState() {
     super.initState();
-    _load();
+    _checkAccess();
     // Same root cause as the sidebar bug: on a hard reload, getActiveBusinessId()
     // can resolve null before Supabase's session restore finishes, leaving this
     // whole dashboard silently stuck at zero. Re-run _load() once a real session
@@ -66,6 +67,47 @@ class _JobsOverviewScreenState extends State<JobsOverviewScreen> {
     _authSub = _db.auth.onAuthStateChange.listen((state) {
       if (state.session != null) _load();
     });
+  }
+
+  // Mirrors AppNavBar's _can('jobs_overview') logic. The sidebar already
+  // hides the "Overview" nav item from anyone without that permission, but
+  // hiding a nav link doesn't stop someone from hitting /jobs directly by
+  // URL — this is the actual gate. Anyone who can't see Overview is sent
+  // to the first Jobs sub-page they DO have, same priority order the Jobs
+  // sub-nav itself uses.
+  Future<void> _checkAccess() async {
+    try {
+      final userId = _db.auth.currentUser?.id;
+      bool canView = AppRouter.cachedIsSuperuser == true;
+      if (!canView && userId != null) {
+        final profile = await _db
+            .from('profiles')
+            .select('role, permissions')
+            .eq('user_id', userId)
+            .maybeSingle();
+        final role = profile?['role'] as String? ?? 'member';
+        final perms = Map<String, dynamic>.from((profile?['permissions'] as Map?) ?? {});
+        canView = role == 'owner' || role == 'admin' || perms['jobs_overview'] == true;
+        if (!canView) {
+          if (!mounted) return;
+          String fallback = '/jobs';
+          if (perms['job_board'] == true) {
+            fallback = '/jobs/board';
+          } else if (perms['timesheets'] == true) {
+            fallback = '/timesheets';
+          } else if (perms['routes'] == true) {
+            fallback = '/routes';
+          } else if (perms['manage_job_forms'] == true) {
+            fallback = '/jobs/manage-forms';
+          }
+          context.go(fallback);
+          return;
+        }
+      }
+    } catch (e) {
+      debugPrint('Jobs overview access check error: $e');
+    }
+    await _load();
   }
 
   @override

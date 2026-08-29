@@ -39,16 +39,152 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
   DateTime? _filterStart;
   DateTime? _filterEnd;
 
+  // Week / Day toggle — Week is the default landing view for owners.
+  // Non-owners have nothing to summarize across teammates, so they skip
+  // straight to Day view and never see the toggle at all.
+  String _viewMode = 'week';
+  String _weekStartDay = 'monday';
+  late DateTime _weekStart;
+  bool _weekLoading = true;
+  String? _weekError;
+  List<Map<String, dynamic>> _weekTotals = [];
+
+  static const _dayOrder = [
+    'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
+  ];
+
   @override
   void initState() {
     super.initState();
-    _load();
+    _weekStart = _startOfWeekContaining(DateTime.now(), _weekStartDay);
+    _initLoad();
   }
 
   @override
   void dispose() {
     _clockTimer?.cancel();
     super.dispose();
+  }
+
+  DateTime _startOfWeekContaining(DateTime date, String startDayName) {
+    final startIdx = _dayOrder.indexOf(startDayName);
+    final safeStartIdx = startIdx == -1 ? 0 : startIdx;
+    final dateIdx = date.weekday - 1; // Monday=0 .. Sunday=6
+    final diff = (dateIdx - safeStartIdx + 7) % 7;
+    final d = DateTime(date.year, date.month, date.day);
+    return d.subtract(Duration(days: diff));
+  }
+
+  Future<void> _initLoad() async {
+    await _loadWeekStartDay();
+    await _loadWeekTotals();
+  }
+
+  Future<void> _loadWeekStartDay() async {
+    try {
+      final activeBusinessId = await getActiveBusinessId();
+      if (activeBusinessId == null) return;
+      final biz = await _db
+          .from('businesses')
+          .select('week_start_day')
+          .eq('id', activeBusinessId)
+          .maybeSingle();
+      final day = biz?['week_start_day'] as String?;
+      if (day != null && _dayOrder.contains(day)) {
+        if (!mounted) return;
+        setState(() {
+          _weekStartDay = day;
+          _weekStart = _startOfWeekContaining(_weekStart, day);
+        });
+      }
+    } catch (e) {
+      debugPrint('Week start day load error: $e');
+    }
+  }
+
+  Future<void> _loadWeekTotals() async {
+    if (!mounted) return;
+    setState(() { _weekLoading = true; _weekError = null; });
+    try {
+      await _db.auth.refreshSession();
+      final token = _db.auth.currentSession?.accessToken;
+      if (token == null) throw Exception('Not authenticated');
+
+      final startStr = _weekStart.toIso8601String().substring(0, 10);
+      final endStr = _weekStart.add(const Duration(days: 6)).toIso8601String().substring(0, 10);
+      final body = <String, dynamic>{'start_date': startStr, 'end_date': endStr};
+
+      final activeBusinessId = await getActiveBusinessId();
+      if (activeBusinessId != null) body['business_id'] = activeBusinessId;
+
+      final resp = await http.post(
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/get-timesheets'),
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode(body),
+      );
+      if (!mounted) return;
+
+      final data = jsonDecode(resp.body);
+      if (resp.statusCode != 200 || data['success'] != true) {
+        throw Exception(data['error'] ?? 'Failed to load timesheets');
+      }
+
+      setState(() {
+        _isOwner       = data['is_owner'] as bool? ?? false;
+        _myActiveEntry = data['my_active_entry'] as Map<String, dynamic>?;
+        _weekTotals    = List<Map<String, dynamic>>.from(data['totals'] as List? ?? []);
+        _teamProfiles  = List<Map<String, dynamic>>.from(data['team_profiles'] as List? ?? []);
+      });
+      _startOrStopTicker();
+
+      // Non-owners have no team to summarize — land them on Day view
+      // (their own entries only) instead of an empty Week screen.
+      if (!_isOwner) {
+        _viewMode = 'day';
+        await _load();
+      }
+    } catch (e) {
+      if (mounted) setState(() => _weekError = e.toString());
+    } finally {
+      if (mounted) setState(() => _weekLoading = false);
+    }
+  }
+
+  void _prevWeek() {
+    setState(() => _weekStart = _weekStart.subtract(const Duration(days: 7)));
+    _loadWeekTotals();
+  }
+
+  void _nextWeek() {
+    setState(() => _weekStart = _weekStart.add(const Duration(days: 7)));
+    _loadWeekTotals();
+  }
+
+  String _weekRangeLabel() {
+    final end = _weekStart.add(const Duration(days: 6));
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    if (_weekStart.month == end.month) {
+      return '${months[_weekStart.month - 1]} ${_weekStart.day} – ${end.day}, ${end.year}';
+    }
+    return '${months[_weekStart.month - 1]} ${_weekStart.day} – ${months[end.month - 1]} ${end.day}, ${end.year}';
+  }
+
+  void _switchToWeekView() {
+    setState(() => _viewMode = 'week');
+    _loadWeekTotals();
+  }
+
+  void _switchToDayView({String? userId, DateTime? start, DateTime? end}) {
+    setState(() {
+      _viewMode = 'day';
+      _filterUserId = userId;
+      _filterStart = start;
+      _filterEnd = end;
+    });
+    _load();
   }
 
   Future<void> _load() async {
@@ -267,27 +403,35 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final isWeekView = _viewMode == 'week';
+    final showLoading = isWeekView ? _weekLoading : _loading;
+    final showError = isWeekView ? _weekError : _error;
+
     return Scaffold(
       backgroundColor: AppTheme.pageBg,
       body: Column(children: [
         _buildTopBar(),
         Expanded(
-          child: _loading
+          child: showLoading
               ? const Center(child: CircularProgressIndicator())
-              : _error != null
-                  ? Center(child: Text(_error!, style: const TextStyle(color: AppTheme.error)))
+              : showError != null
+                  ? Center(child: Text(showError, style: const TextStyle(color: AppTheme.error)))
                   : SingleChildScrollView(
                       padding: const EdgeInsets.all(24),
                       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                         _buildClockCard(),
                         const SizedBox(height: 24),
-                        if (_isOwner && _totals.isNotEmpty) ...[
-                          _buildTotalsSection(),
-                          const SizedBox(height: 24),
+                        if (isWeekView)
+                          _buildWeekView()
+                        else ...[
+                          if (_isOwner && _totals.isNotEmpty) ...[
+                            _buildTotalsSection(),
+                            const SizedBox(height: 24),
+                          ],
+                          if (_isOwner) _buildOwnerFilters(),
+                          if (_isOwner) const SizedBox(height: 16),
+                          _buildEntriesTable(),
                         ],
-                        if (_isOwner) _buildOwnerFilters(),
-                        if (_isOwner) const SizedBox(height: 16),
-                        _buildEntriesTable(),
                       ]),
                     ),
         ),
@@ -306,13 +450,46 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
       child: Row(children: [
         const Text('Timesheets',
             style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+        const SizedBox(width: 20),
+        if (_isOwner) _buildViewToggle(),
         const Spacer(),
         IconButton(
-          onPressed: _load,
+          onPressed: () => _viewMode == 'week' ? _loadWeekTotals() : _load(),
           icon: const Icon(Icons.refresh, size: 18, color: AppTheme.textSecondary),
           tooltip: 'Refresh',
         ),
       ]),
+    );
+  }
+
+  Widget _buildViewToggle() {
+    return Container(
+      decoration: BoxDecoration(
+        color: AppTheme.pageBg,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: AppTheme.borderColor),
+      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        _viewToggleBtn('Week', 'week'),
+        _viewToggleBtn('Day', 'day'),
+      ]),
+    );
+  }
+
+  Widget _viewToggleBtn(String label, String mode) {
+    final sel = _viewMode == mode;
+    return Clickable(
+      onTap: () => mode == 'week' ? _switchToWeekView() : _switchToDayView(),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+        decoration: BoxDecoration(
+          color: sel ? AppTheme.brand : Colors.transparent,
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Text(label,
+            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500,
+                color: sel ? Colors.white : AppTheme.textSecondary)),
+      ),
     );
   }
 
@@ -430,6 +607,131 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
           );
         }).toList(),
       ),
+    ]);
+  }
+
+  Widget _buildWeekView() {
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(children: [
+        Text(_weekRangeLabel(),
+            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+        const SizedBox(width: 8),
+        IconButton(
+          onPressed: _prevWeek,
+          icon: const Icon(Icons.chevron_left, size: 18, color: AppTheme.textSecondary),
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+        ),
+        IconButton(
+          onPressed: _nextWeek,
+          icon: const Icon(Icons.chevron_right, size: 18, color: AppTheme.textSecondary),
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+        ),
+        Clickable(
+          onTap: () {
+            setState(() => _weekStart = _startOfWeekContaining(DateTime.now(), _weekStartDay));
+            _loadWeekTotals();
+          },
+          child: Container(
+            margin: const EdgeInsets.only(left: 4),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+            decoration: BoxDecoration(border: Border.all(color: AppTheme.borderColor), borderRadius: BorderRadius.circular(6)),
+            child: const Text('This Week', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+          ),
+        ),
+      ]),
+      const SizedBox(height: 16),
+      if (_weekTotals.isEmpty)
+        Container(
+          padding: const EdgeInsets.all(48),
+          decoration: BoxDecoration(
+            color: AppTheme.cardBg,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: AppTheme.borderColor),
+          ),
+          child: const Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Icon(Icons.calendar_view_week_outlined, size: 48, color: AppTheme.textMuted),
+            SizedBox(height: 12),
+            Text('No time entries this week', style: TextStyle(fontSize: 15, color: AppTheme.textSecondary)),
+          ])),
+        )
+      else
+        Container(
+          decoration: BoxDecoration(
+            color: AppTheme.cardBg,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: AppTheme.borderColor),
+          ),
+          child: Column(children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: const BoxDecoration(
+                border: Border(bottom: BorderSide(color: AppTheme.borderColor)),
+              ),
+              child: const Row(children: [
+                Expanded(flex: 4, child: Text('EMPLOYEE',
+                    style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                        color: AppTheme.textSecondary, letterSpacing: 1))),
+                Expanded(flex: 2, child: Text('TOTAL HOURS',
+                    style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                        color: AppTheme.textSecondary, letterSpacing: 1))),
+                Expanded(flex: 2, child: Text('ENTRIES',
+                    style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                        color: AppTheme.textSecondary, letterSpacing: 1))),
+                SizedBox(width: 24),
+              ]),
+            ),
+            ListView.separated(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: _weekTotals.length,
+              separatorBuilder: (_, __) => const Divider(height: 1, color: AppTheme.borderColor),
+              itemBuilder: (_, i) {
+                final t = _weekTotals[i];
+                final userId  = t['user_id'] as String?;
+                final name    = t['full_name'] as String? ?? 'Unknown';
+                final minutes = (t['total_minutes'] as num?)?.toInt() ?? 0;
+                final count   = (t['entry_count'] as num?)?.toInt() ?? 0;
+                final initials = name.trim().split(' ')
+                    .map((p) => p.isNotEmpty ? p[0] : '').take(2).join().toUpperCase();
+                return Clickable(
+                  onTap: () {
+                    if (userId == null) return;
+                    _switchToDayView(
+                      userId: userId,
+                      start: _weekStart,
+                      end: _weekStart.add(const Duration(days: 6)),
+                    );
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                    child: Row(children: [
+                      Expanded(flex: 4, child: Row(children: [
+                        Container(
+                          width: 28, height: 28,
+                          decoration: BoxDecoration(color: AppTheme.brand, shape: BoxShape.circle),
+                          alignment: Alignment.center,
+                          child: Text(initials,
+                              style: const TextStyle(fontSize: 10, color: Colors.white, fontWeight: FontWeight.w700)),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(child: Text(name,
+                            style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                            overflow: TextOverflow.ellipsis)),
+                      ])),
+                      Expanded(flex: 2, child: Text(_formatDuration(minutes),
+                          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.brand))),
+                      Expanded(flex: 2, child: Text('$count',
+                          style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary))),
+                      const Icon(Icons.chevron_right, size: 16, color: AppTheme.textMuted),
+                    ]),
+                  ),
+                );
+              },
+            ),
+          ]),
+        ),
     ]);
   }
 

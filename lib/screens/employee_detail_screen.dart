@@ -35,10 +35,54 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
 
   int get _id => int.parse(widget.employeeId);
 
+  // Whether the CURRENTLY LOGGED IN user can view/edit pay rates — checked
+  // against their own role/permissions, independent of every Settings
+  // permission. Owner/admin always can; anyone else needs manage_pay_rates
+  // explicitly granted.
+  bool _canManagePayRates = false;
+  bool _loadingCapability = true;
+
   @override
   void initState() {
     super.initState();
     _load();
+    _checkPayRateCapability();
+  }
+
+  Future<void> _checkPayRateCapability() async {
+    try {
+      final userId = _db.auth.currentUser?.id;
+      if (userId == null) {
+        if (mounted) setState(() => _loadingCapability = false);
+        return;
+      }
+      final me = await _db
+          .from('profiles')
+          .select('role, permissions')
+          .eq('user_id', userId)
+          .maybeSingle();
+      final role = me?['role'] as String? ?? 'member';
+      final perms = Map<String, dynamic>.from((me?['permissions'] as Map?) ?? {});
+      if (mounted) {
+        setState(() {
+          _canManagePayRates = role == 'owner' || role == 'admin' || perms['manage_pay_rates'] == true;
+          _loadingCapability = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) setState(() => _loadingCapability = false);
+    }
+  }
+
+  void _editPayRate() {
+    if (_profile == null || _isSelf) return;
+    showModalBottomSheet(
+      context: context, isScrollControlled: true, backgroundColor: Colors.transparent,
+      builder: (_) => _EditPayRateSheet(
+        profile: _profile!,
+        onSaved: () { context.pop(); _load(); },
+      ),
+    );
   }
 
   Future<void> _load() async {
@@ -46,7 +90,8 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     try {
       final data = await _db.from('profiles')
           .select('id, user_id, full_name, email, phone, role, status, job_title, '
-              'created_at, invited_at, timezone, permissions')
+              'created_at, invited_at, timezone, permissions, '
+              'pay_type, hourly_rate, annual_salary')
           .eq('id', _id)
           .maybeSingle();
       if (data == null) {
@@ -62,6 +107,11 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
 
   bool get _isOwner => (_profile?['role'] as String?) == 'owner';
   bool get _isInactive => (_profile?['status'] as String?) == 'inactive';
+
+  // Nobody edits their own pay rate — not even the owner viewing their
+  // own employee record. Prevents a self-modification path regardless
+  // of role or permissions.
+  bool get _isSelf => _profile?['user_id'] != null && _profile!['user_id'] == _db.auth.currentUser?.id;
 
   void _edit() {
     if (_profile == null) return;
@@ -215,12 +265,57 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                     _infoRow(Icons.mail_outline, 'Invited', _fmtDate(p['invited_at'] as String?)),
                     _infoRow(Icons.public, 'Timezone', p['timezone'] as String?),
                   ]),
+                  if (!_loadingCapability && _canManagePayRates) ...[
+                    const SizedBox(height: 16),
+                    _buildPayRateCard(p),
+                  ],
                 ])),
               ],
             ),
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildPayRateCard(Map<String, dynamic> p) {
+    final payType = p['pay_type'] as String? ?? 'hourly';
+    final hourlyRate = (p['hourly_rate'] as num?)?.toDouble();
+    final annualSalary = (p['annual_salary'] as num?)?.toDouble();
+    final hasRate = payType == 'hourly' ? hourlyRate != null : annualSalary != null;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(color: AppTheme.cardBg, borderRadius: BorderRadius.circular(12), border: Border.all(color: AppTheme.borderColor)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          const Expanded(child: Text('PAY RATE',
+              style: TextStyle(color: AppTheme.textSecondary, fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 0.8))),
+          if (!_isSelf)
+            GestureDetector(
+              onTap: _editPayRate,
+              child: const Icon(Icons.edit_outlined, size: 15, color: AppTheme.textSecondary),
+            ),
+        ]),
+        const SizedBox(height: 12),
+        if (_isSelf) ...[
+          const Text('You can\'t edit your own pay rate.', style: TextStyle(color: AppTheme.textSecondary, fontSize: 12, height: 1.4)),
+          const SizedBox(height: 8),
+        ],
+        if (!hasRate)
+          const Text('No pay rate set.', style: TextStyle(color: AppTheme.textSecondary, fontSize: 13))
+        else ...[
+          Text(payType == 'hourly' ? 'Hourly' : 'Salary',
+              style: const TextStyle(color: AppTheme.textSecondary, fontSize: 10)),
+          Text(
+            payType == 'hourly'
+                ? '\$${hourlyRate!.toStringAsFixed(2)}/hr'
+                : '\$${annualSalary!.toStringAsFixed(0)}/yr',
+            style: const TextStyle(color: AppTheme.textPrimary, fontSize: 15, fontWeight: FontWeight.w700),
+          ),
+        ],
+      ]),
     );
   }
 
@@ -376,6 +471,156 @@ class _EditEmployeeSheetState extends State<_EditEmployeeSheet> {
             // Add any future general-info fields here, following the same
             // TextFormField pattern above — this sheet stays intentionally
             // scoped to non-access-critical fields (see note at top).
+          ])),
+          Container(
+            padding: const EdgeInsets.all(20),
+            decoration: const BoxDecoration(border: Border(top: BorderSide(color: AppTheme.borderColor))),
+            child: Row(children: [
+              Expanded(child: GestureDetector(onTap: () => context.pop(),
+                child: Container(height: 44,
+                  decoration: BoxDecoration(color: AppTheme.pageBg, borderRadius: BorderRadius.circular(8), border: Border.all(color: AppTheme.borderColor)),
+                  child: const Center(child: Text('Cancel', style: TextStyle(color: AppTheme.textSecondary, fontWeight: FontWeight.w500)))))),
+              const SizedBox(width: 12),
+              Expanded(flex: 2, child: GestureDetector(onTap: _saving ? null : _save,
+                child: Container(height: 44,
+                  decoration: BoxDecoration(color: AppTheme.brand, borderRadius: BorderRadius.circular(8)),
+                  child: Center(child: _saving
+                    ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                    : const Text('Save Changes', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 14)))))),
+            ])),
+        ]),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+//  EDIT PAY RATE SHEET — standalone, gated purely by manage_pay_rates
+//  for the viewer. Deliberately not part of the general Edit Employee
+//  sheet above, and reachable without any Settings permission.
+// ─────────────────────────────────────────────
+
+class _EditPayRateSheet extends StatefulWidget {
+  final Map<String, dynamic> profile;
+  final VoidCallback onSaved;
+  const _EditPayRateSheet({required this.profile, required this.onSaved});
+  @override
+  State<_EditPayRateSheet> createState() => _EditPayRateSheetState();
+}
+
+class _EditPayRateSheetState extends State<_EditPayRateSheet> {
+  final _db = Supabase.instance.client;
+  late String _payType = widget.profile['pay_type'] as String? ?? 'hourly';
+  late final _hourlyRateCtrl = TextEditingController(text: widget.profile['hourly_rate']?.toString() ?? '');
+  late final _annualSalaryCtrl = TextEditingController(text: widget.profile['annual_salary']?.toString() ?? '');
+  bool _saving = false;
+
+  @override
+  void dispose() {
+    _hourlyRateCtrl.dispose();
+    _annualSalaryCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    setState(() => _saving = true);
+    try {
+      await _db.from('profiles').update({
+        'pay_type': _payType,
+        'hourly_rate': _payType == 'hourly' ? double.tryParse(_hourlyRateCtrl.text.trim()) : null,
+        'annual_salary': _payType == 'salary' ? double.tryParse(_annualSalaryCtrl.text.trim()) : null,
+      }).eq('id', widget.profile['id']);
+      widget.onSaved();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e'), backgroundColor: AppTheme.error));
+        setState(() => _saving = false);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return DraggableScrollableSheet(
+      initialChildSize: 0.45, maxChildSize: 0.6, minChildSize: 0.3,
+      builder: (_, sc) => Container(
+        decoration: const BoxDecoration(color: AppTheme.cardBg, borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+        child: Column(children: [
+          Container(margin: const EdgeInsets.only(top: 12), width: 40, height: 4,
+            decoration: BoxDecoration(color: AppTheme.borderColor, borderRadius: BorderRadius.circular(2))),
+          Padding(padding: const EdgeInsets.fromLTRB(24, 16, 24, 16),
+            child: Row(children: [
+              const Text('Edit Pay Rate', style: TextStyle(color: AppTheme.textPrimary, fontSize: 18, fontWeight: FontWeight.w700)),
+              const Spacer(),
+              GestureDetector(onTap: () => context.pop(),
+                child: Container(width: 32, height: 32,
+                  decoration: BoxDecoration(color: AppTheme.pageBg, borderRadius: BorderRadius.circular(8)),
+                  child: const Icon(Icons.close, color: AppTheme.textSecondary, size: 16))),
+            ])),
+          const Divider(height: 1, color: AppTheme.borderColor),
+          Expanded(child: ListView(controller: sc, padding: const EdgeInsets.all(24), children: [
+            Row(children: [
+              Expanded(child: GestureDetector(
+                onTap: () => setState(() => _payType = 'hourly'),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                  decoration: BoxDecoration(
+                    color: _payType == 'hourly' ? AppTheme.brand : AppTheme.pageBg,
+                    borderRadius: const BorderRadius.horizontal(left: Radius.circular(8)),
+                    border: Border.all(color: _payType == 'hourly' ? AppTheme.brand : AppTheme.borderColor),
+                  ),
+                  child: Center(child: Text('Hourly',
+                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
+                          color: _payType == 'hourly' ? Colors.white : AppTheme.textSecondary))),
+                ),
+              )),
+              Expanded(child: GestureDetector(
+                onTap: () => setState(() => _payType = 'salary'),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                  decoration: BoxDecoration(
+                    color: _payType == 'salary' ? AppTheme.brand : AppTheme.pageBg,
+                    borderRadius: const BorderRadius.horizontal(right: Radius.circular(8)),
+                    border: Border.all(color: _payType == 'salary' ? AppTheme.brand : AppTheme.borderColor),
+                  ),
+                  child: Center(child: Text('Salary',
+                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
+                          color: _payType == 'salary' ? Colors.white : AppTheme.textSecondary))),
+                ),
+              )),
+            ]),
+            const SizedBox(height: 20),
+            if (_payType == 'hourly')
+              TextFormField(
+                controller: _hourlyRateCtrl,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13),
+                decoration: const InputDecoration(
+                  labelText: 'Hourly Rate',
+                  prefixText: '\$ ',
+                  hintText: 'e.g. 22.50',
+                  labelStyle: TextStyle(color: AppTheme.textSecondary, fontSize: 13),
+                ),
+              )
+            else
+              TextFormField(
+                controller: _annualSalaryCtrl,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13),
+                decoration: const InputDecoration(
+                  labelText: 'Annual Salary',
+                  prefixText: '\$ ',
+                  hintText: 'e.g. 52000',
+                  labelStyle: TextStyle(color: AppTheme.textSecondary, fontSize: 13),
+                ),
+              ),
+            const SizedBox(height: 10),
+            Text(
+              _payType == 'salary'
+                  ? 'Pay shown on Timesheets is this salary divided across the business\'s pay periods — hours are still tracked normally.'
+                  : 'Used to calculate pay totals on Timesheets Week and Pay Period views.',
+              style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11, height: 1.4),
+            ),
           ])),
           Container(
             padding: const EdgeInsets.all(20),

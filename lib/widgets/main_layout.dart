@@ -165,6 +165,7 @@ class _AppNavBarState extends State<AppNavBar> {
     ('/settings?section=service_library', Icons.inventory_2_outlined,       'Service Library'),
     ('/settings?section=job_types',        Icons.category_outlined,         'Job Types'),
     ('/settings?section=expense_categories', Icons.receipt_long_outlined,   'Expense Categories'),
+    ('/settings?section=payroll',          Icons.calendar_view_week_outlined, 'Payroll'),
     // DOCUMENTS
     ('/settings?section=documents',        Icons.picture_as_pdf_outlined,   'Client Document Settings'),
   ];
@@ -287,6 +288,87 @@ class _AppNavBarState extends State<AppNavBar> {
     return _permissions[key] == true;
   }
 
+  // Parallel to _settingsSections, same order, one entry per section.
+  // null = always visible (My Profile — everyone manages their own
+  // account regardless of role or permissions).
+  static const List<String?> _settingsPermissionKeys = [
+    'settings_business_profile',
+    null, // My Profile
+    'settings_ai',
+    'settings_knowledge',
+    'settings_phone',
+    'settings_email',
+    'settings_team',
+    'settings_notifications',
+    'settings_payments',
+    'settings_social',
+    'settings_billing',
+    'settings_pipelines',
+    'settings_automation',
+    'settings_calendars',
+    'settings_conversation_ai',
+    'settings_voice_ai',
+    'settings_email_services',
+    'settings_phone_numbers',
+    'settings_whatsapp',
+    'settings_objects',
+    'settings_custom_fields',
+    'settings_custom_values',
+    'settings_scoring',
+    'settings_domains',
+    'settings_url_redirects',
+    'settings_service_library',
+    'settings_job_types',
+    'settings_expense_categories', // position 27 in _settingsSections
+    'settings_payroll',            // position 28 in _settingsSections
+    'settings_documents',          // position 29 in _settingsSections
+  ];
+
+  // A single granted page's worth of access. Honors a legacy blanket
+  // 'settings' grant too, so nobody who was already given full access
+  // loses it silently — going forward, new grants should be per-page.
+  bool _hasSettingsPageAccess(String? key) {
+    if (key == null) return true; // My Profile
+    if (AppRouter.cachedIsSuperuser == true) return true;
+    if (_role == 'owner' || _role == 'admin') return true;
+    if (_permissions['settings'] == true) return true;
+    return _permissions[key] == true;
+  }
+
+  // Whether the main "Settings" nav item itself should show at all —
+  // true if they can reach at least one page inside it.
+  bool _hasAnySettingsAccess() {
+    if (AppRouter.cachedIsSuperuser == true) return true;
+    if (_role == 'owner' || _role == 'admin') return true;
+    if (_permissions['settings'] == true) return true;
+    return _settingsPermissionKeys.any((k) => k != null && _permissions[k] == true);
+  }
+
+  // Returns only the entries in _settingsSections[start, start+count)
+  // that this user can actually reach.
+  List<(String, IconData, String)> _visibleSettingsSlice(int start, int count) {
+    final slice = <(String, IconData, String)>[];
+    for (int i = start; i < start + count && i < _settingsSections.length; i++) {
+      if (_hasSettingsPageAccess(_settingsPermissionKeys[i])) {
+        slice.add(_settingsSections[i]);
+      }
+    }
+    return slice;
+  }
+
+  // Someone with only Timesheets access has no reason to land on the Jobs
+  // Overview page — they'd see a dashboard for a section they can't use.
+  // Send them straight to whichever Jobs sub-page they actually have,
+  // in the same priority order the Jobs sub-nav itself displays them.
+  String _jobsLandingRoute() {
+    if (_can('jobs_overview')) return '/jobs';
+    if (_can('job_board')) return '/jobs/board';
+    if (_can('timesheets')) return '/timesheets';
+    if (_can('routes')) return '/routes';
+    if (_can('manage_job_forms')) return '/jobs/manage-forms';
+    return '/jobs';
+  }
+
   Widget _buildJobsNav(BuildContext context, String location) {
     return ListView(
       padding: const EdgeInsets.symmetric(vertical: 8),
@@ -380,7 +462,7 @@ class _AppNavBarState extends State<AppNavBar> {
           ),
         ),
         _SectionLabel('My Business'),
-        ..._settingsSections.take(11).map((s) {
+        ..._visibleSettingsSlice(0, 11).map((s) {
           final isActive = location == s.$1 ||
               (s.$1 == '/settings' && location == '/settings');
           return Clickable(
@@ -415,7 +497,7 @@ class _AppNavBarState extends State<AppNavBar> {
           );
         }),
         _SectionLabel('Business Services'),
-        ..._settingsSections.skip(11).take(8).map((s) {
+        ..._visibleSettingsSlice(11, 8).map((s) {
           final isActive = location == s.$1;
           return Clickable(
             onTap: () => context.go(s.$1),
@@ -449,7 +531,7 @@ class _AppNavBarState extends State<AppNavBar> {
           );
         }),
                 _SectionLabel('Other Settings'),
-        ..._settingsSections.skip(19).take(6).map((s) {
+        ..._visibleSettingsSlice(19, 6).map((s) {
           final isActive = location == s.$1 ||
               (s.$1 == '/settings' && location == '/settings');
           return Clickable(
@@ -486,7 +568,7 @@ class _AppNavBarState extends State<AppNavBar> {
 
         // JOBS SECTION
         _SectionLabel('JOBS'),
-        ..._settingsSections.skip(25).take(3).map((s) {
+        ..._visibleSettingsSlice(25, 4).map((s) {
           final isActive = location == s.$1;
           return Clickable(
             onTap: () => context.go(s.$1),
@@ -522,7 +604,7 @@ class _AppNavBarState extends State<AppNavBar> {
 
         // DOCUMENTS SECTION
         _SectionLabel('DOCUMENTS'),
-        ..._settingsSections.skip(28).map((s) {
+        ..._visibleSettingsSlice(29, 1).map((s) {
           final isActive = location == s.$1;
           return Clickable(
             onTap: () => context.go(s.$1),
@@ -664,8 +746,8 @@ class _AppNavBarState extends State<AppNavBar> {
                     _NavItem(
                       icon: Icons.work_outline_rounded,
                       label: 'Jobs',
-                      route: '/jobs',
-                      active: location.startsWith('/jobs'),
+                      route: _jobsLandingRoute(),
+                      active: location.startsWith('/jobs') || location.startsWith('/timesheets') || location.startsWith('/routes'),
                     ),
                   if (_can('tasks'))
                     _NavItem(
@@ -733,7 +815,7 @@ class _AppNavBarState extends State<AppNavBar> {
                       route: '/ai-chat',
                       active: location.startsWith('/ai-chat'),
                     ),
-                  if (_can('settings'))
+                  if (_hasAnySettingsAccess())
                     _NavItem(
                       icon: Icons.settings_outlined,
                       label: 'Settings',

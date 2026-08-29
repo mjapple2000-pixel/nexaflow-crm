@@ -48,7 +48,7 @@ Deno.serve(async (req) => {
 
     const { data: profile, error: profileError } = await supabase
       .from("profiles")
-      .select("business_id, role, full_name")
+      .select("business_id, role, full_name, permissions")
       .eq("user_id", callerUserId)
       .maybeSingle();
 
@@ -57,7 +57,8 @@ Deno.serve(async (req) => {
 
     if (profile?.business_id) {
       businessId = profile.business_id;
-      isOwner = profile.role === "owner" || profile.role === "admin";
+      const perms = (profile.permissions ?? {}) as Record<string, unknown>;
+      isOwner = profile.role === "owner" || profile.role === "admin" || perms.timesheets_full_view === true;
     } else {
       // No profile row — check if caller is a verified superuser before
       // trusting any business_id from the request body.
@@ -204,11 +205,12 @@ Deno.serve(async (req) => {
     });
 
     // ── Compute per-member totals (owner view) ────────────────
-    const totals: Record<string, { full_name: string; total_minutes: number; entry_count: number }> = {};
+    const totals: Record<string, { user_id: string; full_name: string; total_minutes: number; entry_count: number }> = {};
     if (isOwner) {
       for (const e of enriched) {
         if (!totals[e.user_id]) {
           totals[e.user_id] = {
+            user_id: e.user_id,
             full_name: e.full_name,
             total_minutes: 0,
             entry_count: 0,

@@ -96,7 +96,9 @@ const _kPermissions = [
   ('appointments',     'Appointments',     Icons.calendar_today_outlined),
   ('jobs_overview',    'Jobs Overview',    Icons.space_dashboard_outlined),
   ('job_board',        'Job Board',        Icons.work_outline_rounded),
-  ('timesheets',       'Timesheets',       Icons.access_time_outlined),
+  ('timesheets',            'Timesheets',                 Icons.access_time_outlined),
+  ('timesheets_full_view',  'Timesheets - Full Team View', Icons.groups_outlined),
+  ('manage_pay_rates',      'Manage Pay Rates',            Icons.attach_money_rounded),
   ('routes',           'Routes',           Icons.route_outlined),
   ('manage_job_forms', 'Manage Job Forms', Icons.checklist_rtl_rounded),
   ('tasks',            'Tasks',            Icons.task_alt_outlined),
@@ -109,6 +111,42 @@ const _kPermissions = [
   ('settings',      'Settings',       Icons.settings_outlined),
 ];
 
+// Per-page Settings access — kept as a separate list so the Permissions
+// dialog can render it as its own collapsible group instead of burying
+// it among the 18 main-app permissions above. 'My Profile' is
+// intentionally absent — everyone can always manage their own account.
+const _kSettingsPermissions = [
+  ('settings_business_profile',  'Business Profile',      Icons.business_outlined),
+  ('settings_ai',                'AI Settings',            Icons.smart_toy_outlined),
+  ('settings_knowledge',         'Knowledge Base',         Icons.menu_book_outlined),
+  ('settings_phone',             'AI Phone Number',        Icons.phone_in_talk_outlined),
+  ('settings_email',             'Email Config',           Icons.alternate_email),
+  ('settings_team',              'My Staff',               Icons.groups_2_outlined),
+  ('settings_notifications',     'Notifications',          Icons.notifications_outlined),
+  ('settings_payments',          'Payment Options',        Icons.payment_outlined),
+  ('settings_social',            'Social Media',           Icons.share_outlined),
+  ('settings_billing',           'Billing',                Icons.credit_card_outlined),
+  ('settings_pipelines',         'Pipelines',               Icons.bar_chart_rounded),
+  ('settings_automation',        'Automation',              Icons.bolt_outlined),
+  ('settings_calendars',         'Calendars',               Icons.calendar_month_outlined),
+  ('settings_conversation_ai',   'Conversation AI',         Icons.forum_outlined),
+  ('settings_voice_ai',          'Voice AI Agents',         Icons.mic_outlined),
+  ('settings_email_services',    'Email Services',          Icons.mail_outline),
+  ('settings_phone_numbers',     'Phone Numbers',           Icons.dialpad_outlined),
+  ('settings_whatsapp',          'WhatsApp',                Icons.chat_outlined),
+  ('settings_objects',           'Objects',                 Icons.hub_outlined),
+  ('settings_custom_fields',     'Custom Fields',            Icons.tune_outlined),
+  ('settings_custom_values',     'Custom Values',            Icons.data_object_outlined),
+  ('settings_scoring',           'Manage Scoring',           Icons.leaderboard_outlined),
+  ('settings_domains',           'Domains',                  Icons.public),
+  ('settings_url_redirects',     'URL Redirects',            Icons.alt_route_outlined),
+  ('settings_service_library',   'Service Library',          Icons.inventory_2_outlined),
+  ('settings_job_types',         'Job Types',                Icons.category_outlined),
+  ('settings_expense_categories','Expense Categories',       Icons.receipt_long_outlined),
+  ('settings_payroll',           'Payroll',                  Icons.calendar_view_week_outlined),
+  ('settings_documents',         'Client Document Settings', Icons.picture_as_pdf_outlined),
+];
+
 Map<String, bool> _defaultPermissions() => {
   'launchpad':        false,
   'contacts':         true,
@@ -117,6 +155,8 @@ Map<String, bool> _defaultPermissions() => {
   'jobs_overview':    true,
   'job_board':        true,
   'timesheets':       false,
+  'timesheets_full_view': false,
+  'manage_pay_rates': false,
   'routes':           false,
   'manage_job_forms': false,
   'tasks':            true,
@@ -127,6 +167,7 @@ Map<String, bool> _defaultPermissions() => {
   'ai_chat':       false,
   'automations':   false,
   'settings':      false,
+  for (final p in _kSettingsPermissions) p.$1: false,
 };
 
 // ─────────────────────────────────────────────
@@ -250,6 +291,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void initState() {
     super.initState();
     _loadBusiness();
+    _loadMyAccess();
   }
 
   @override
@@ -260,6 +302,123 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (idx != _selectedSection) {
       setState(() => _selectedSection = idx);
     }
+    _enforceSectionAccess();
+  }
+
+  // Same key-per-section mapping AppNavBar uses to filter the sidebar
+  // (main_layout.dart's _settingsPermissionKeys), keyed by index instead
+  // of position since that's what _sectionIndexFromName already gives us.
+  // null = always allowed (Business Profile's index 0 is intentionally
+  // NOT here — it needs settings_business_profile like every other page).
+  static const Map<int, String?> _sectionPermissionKeys = {
+    0: 'settings_business_profile',
+    1: null, // My Profile
+    2: 'settings_ai',
+    3: 'settings_knowledge',
+    4: 'settings_phone',
+    5: 'settings_email',
+    6: 'settings_team',
+    7: 'settings_notifications',
+    8: 'settings_payments',
+    9: 'settings_social',
+    10: 'settings_billing',
+    11: 'settings_pipelines',
+    12: 'settings_automation',
+    13: 'settings_calendars',
+    14: 'settings_conversation_ai',
+    15: 'settings_voice_ai',
+    16: 'settings_email_services',
+    17: 'settings_phone_numbers',
+    18: 'settings_whatsapp',
+    19: 'settings_objects',
+    20: 'settings_custom_fields',
+    21: 'settings_custom_values',
+    22: 'settings_scoring',
+    23: 'settings_domains',
+    24: 'settings_url_redirects',
+    25: 'settings_service_library',
+    26: 'settings_job_types',
+    27: 'settings_documents',
+    28: 'settings_expense_categories',
+    29: 'settings_payroll',
+  };
+
+  bool _accessLoaded = false;
+  String _myRole = 'member';
+  Map<String, dynamic> _myPermissions = {};
+
+  Future<void> _loadMyAccess() async {
+    try {
+      if (AppRouter.cachedIsSuperuser == true) {
+        if (mounted) setState(() { _myRole = 'owner'; _accessLoaded = true; });
+        _enforceSectionAccess();
+        return;
+      }
+      final userId = Supabase.instance.client.auth.currentUser?.id;
+      if (userId == null) {
+        if (mounted) setState(() => _accessLoaded = true);
+        return;
+      }
+      final me = await Supabase.instance.client
+          .from('profiles')
+          .select('role, permissions')
+          .eq('user_id', userId)
+          .maybeSingle();
+      if (mounted) {
+        setState(() {
+          _myRole = me?['role'] as String? ?? 'member';
+          _myPermissions = Map<String, dynamic>.from((me?['permissions'] as Map?) ?? {});
+          _accessLoaded = true;
+        });
+      }
+    } catch (e) {
+      debugPrint('Settings access check error: $e');
+      if (mounted) setState(() => _accessLoaded = true);
+    }
+    _enforceSectionAccess();
+  }
+
+  bool _hasAccessToIndex(int idx) {
+    final key = _sectionPermissionKeys[idx];
+    if (key == null) return true; // My Profile, or an unmapped/unknown index
+    if (_myRole == 'owner' || _myRole == 'admin') return true;
+    if (_myPermissions['settings'] == true) return true; // legacy blanket grant
+    return _myPermissions[key] == true;
+  }
+
+  // Real gate, not just a hidden sidebar link — someone with only
+  // settings_payroll granted can't reach any other section even by
+  // typing the URL directly. Mirrors the Jobs Overview access guard.
+  void _enforceSectionAccess() {
+    if (!_accessLoaded) return;
+    if (_hasAccessToIndex(_selectedSection)) return;
+    // Land them on the first page they're actually allowed, or My
+    // Profile (always allowed) if they have no granted pages at all.
+    for (int i = 0; i < 30; i++) {
+      if (_hasAccessToIndex(i)) {
+        if (i == _selectedSection) return;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          final route = i == 1 ? '/settings?section=profile' : (i == 0 ? '/settings' : '/settings?section=${_sectionNameFromIndex(i)}');
+          context.go(route);
+        });
+        return;
+      }
+    }
+  }
+
+  // Inverse of _sectionIndexFromName, needed to build a redirect URL.
+  String _sectionNameFromIndex(int idx) {
+    const names = {
+      2: 'ai', 3: 'knowledge', 4: 'phone', 5: 'email', 6: 'team',
+      7: 'notifications', 8: 'payments', 9: 'social', 10: 'billing',
+      11: 'pipelines', 12: 'automation', 13: 'calendars', 14: 'conversation_ai',
+      15: 'voice_ai', 16: 'email_services', 17: 'phone_numbers', 18: 'whatsapp',
+      19: 'objects', 20: 'custom_fields', 21: 'custom_values', 22: 'scoring',
+      23: 'domains', 24: 'url_redirects', 25: 'service_library', 26: 'job_types',
+      27: 'documents', 28: 'expense_categories', 29: 'payroll',
+    };
+    return names[idx] ?? '';
   }
 
   int _sectionIndexFromName(String? name) {
@@ -295,6 +454,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       case 'job_types':          return 26;
       case 'documents':          return 27;
       case 'expense_categories': return 28;
+      case 'payroll':            return 29;
       default:                   return 0;
     }
   }
@@ -532,6 +692,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
             (26, Icons.category_outlined,         'Job Types'),
             (28, Icons.receipt_long_outlined,     'Expense Categories'),
           ]),
+          const SizedBox(height: 8),
+          const Divider(height: 1, color: AppTheme.borderColor),
+          const SizedBox(height: 8),
+          ..._buildSidebarGroup('PAYROLL', [
+            (29, Icons.calendar_view_week_outlined, 'Payroll'),
+          ]),
         ],
               ),
             ),
@@ -665,6 +831,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             business: _business, onSave: _updateBusiness);
       case 28:
         return _ExpenseCategoriesSection(businessId: _businessId!);
+      case 29:
+        return _PayrollSettingsSection(business: _business, onSave: _updateBusiness);
       default:
         return const SizedBox();
     }
@@ -2260,7 +2428,6 @@ class _MyStaffSectionState extends State<_MyStaffSection> {
       builder: (_) => _PermissionsDialog(
         member: member,
         onSaved: () {
-          Navigator.pop(context);
           _loadMembers();
         },
       ),
@@ -3105,6 +3272,7 @@ class _PermissionsDialogState extends State<_PermissionsDialog> {
   final _supabase = Supabase.instance.client;
   late Map<String, bool> _permissions;
   bool _saving = false;
+  bool _settingsAccessExpanded = false;
 
   @override
   void initState() {
@@ -3121,6 +3289,8 @@ class _PermissionsDialogState extends State<_PermissionsDialog> {
           .from('profiles')
           .update({'permissions': _permissions})
           .eq('id', widget.member['id']);
+      if (!mounted) return;
+      Navigator.of(context, rootNavigator: true).pop();
       widget.onSaved();
     } catch (e) {
       debugPrint('Permissions save error: $e');
@@ -3171,7 +3341,7 @@ class _PermissionsDialogState extends State<_PermissionsDialog> {
               MouseRegion(
                   cursor: SystemMouseCursors.click,
                   child: TextButton(
-                      onPressed: () => Navigator.pop(context),
+                      onPressed: () => Navigator.of(context, rootNavigator: true).pop(),
                       child: const Text('Cancel'))),
               const SizedBox(width: 8),
               MouseRegion(
@@ -3224,12 +3394,14 @@ class _PermissionsDialogState extends State<_PermissionsDialog> {
           Flexible(
             child: SingleChildScrollView(
               padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
-              child: Container(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
                     decoration: BoxDecoration(
                       color: AppTheme.pageBg,
                       borderRadius: BorderRadius.circular(10),
-                      border:
-                          Border.all(color: AppTheme.borderColor),
+                      border: Border.all(color: AppTheme.borderColor),
                     ),
                     child: Column(
                         children:
@@ -3272,6 +3444,74 @@ class _PermissionsDialogState extends State<_PermissionsDialog> {
                         ]),
                       );
                     }).toList()),
+                  ),
+                  const SizedBox(height: 16),
+                  Clickable(
+                    onTap: () => setState(() => _settingsAccessExpanded = !_settingsAccessExpanded),
+                    child: Row(children: [
+                      const Text('SETTINGS ACCESS',
+                          style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                              color: AppTheme.textSecondary, letterSpacing: 1)),
+                      const SizedBox(width: 6),
+                      Text('(${_kSettingsPermissions.where((p) => _permissions[p.$1] == true).length}/${_kSettingsPermissions.length})',
+                          style: const TextStyle(fontSize: 10, color: AppTheme.textMuted)),
+                      const Spacer(),
+                      Icon(_settingsAccessExpanded ? Icons.expand_less : Icons.expand_more,
+                          size: 18, color: AppTheme.textSecondary),
+                    ]),
+                  ),
+                  if (_settingsAccessExpanded) ...[
+                    const SizedBox(height: 10),
+                    Container(
+                      decoration: BoxDecoration(
+                        color: AppTheme.pageBg,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: AppTheme.borderColor),
+                      ),
+                      child: Column(
+                          children:
+                              _kSettingsPermissions.asMap().entries.map((e) {
+                        final i = e.key;
+                        final p = e.value;
+                        final isLast = i == _kSettingsPermissions.length - 1;
+                        return Container(
+                          decoration: BoxDecoration(
+                            border: isLast
+                                ? null
+                                : const Border(
+                                    bottom: BorderSide(
+                                        color: AppTheme.borderColor)),
+                          ),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 16, vertical: 10),
+                          child: Row(children: [
+                            Icon(p.$3,
+                                size: 16,
+                                color: _permissions[p.$1] == true
+                                    ? AppTheme.brand
+                                    : AppTheme.textMuted),
+                            const SizedBox(width: 12),
+                            Expanded(
+                                child: Text(p.$2,
+                                    style: TextStyle(
+                                        fontSize: 13,
+                                        color: _permissions[p.$1] == true
+                                            ? AppTheme.textPrimary
+                                            : AppTheme.textSecondary))),
+                            Switch(
+                              value: _permissions[p.$1] ?? false,
+                              onChanged: (v) => setState(
+                                  () => _permissions[p.$1] = v),
+                              activeColor: AppTheme.brand,
+                              materialTapTargetSize:
+                                  MaterialTapTargetSize.shrinkWrap,
+                            ),
+                          ]),
+                        );
+                      }).toList()),
+                    ),
+                  ],
+                ],
               ),
             ),
           ),
@@ -10436,6 +10676,254 @@ class _ExpenseCategoryItemDialogState extends State<_ExpenseCategoryItemDialog> 
   }
 }
 
+
+// ─────────────────────────────────────────────
+//  PAYROLL SETTINGS SECTION
+// ─────────────────────────────────────────────
+
+class _PayrollSettingsSection extends StatefulWidget {
+  final Map<String, dynamic> business;
+  final Future<void> Function(Map<String, dynamic>) onSave;
+  const _PayrollSettingsSection({required this.business, required this.onSave});
+
+  @override
+  State<_PayrollSettingsSection> createState() => _PayrollSettingsSectionState();
+}
+
+class _PayrollSettingsSectionState extends State<_PayrollSettingsSection> {
+  String _weekStartDay = 'monday';
+  String _payPeriodType = 'weekly';
+  DateTime? _biweeklyAnchor;
+  int _semiDayOne = 1;
+  int _semiDayTwo = 16;
+  bool _saving = false;
+  String? _successMsg;
+  String? _error;
+
+  static const _weekDays = [
+    ('monday', 'Monday'),
+    ('tuesday', 'Tuesday'),
+    ('wednesday', 'Wednesday'),
+    ('thursday', 'Thursday'),
+    ('friday', 'Friday'),
+    ('saturday', 'Saturday'),
+    ('sunday', 'Sunday'),
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    final b = widget.business;
+    _weekStartDay = b['week_start_day'] as String? ?? 'monday';
+    if (!_weekDays.any((d) => d.$1 == _weekStartDay)) _weekStartDay = 'monday';
+    _payPeriodType = b['pay_period_type'] as String? ?? 'weekly';
+    if (!['weekly', 'biweekly', 'semimonthly'].contains(_payPeriodType)) {
+      _payPeriodType = 'weekly';
+    }
+    final rawConfig = b['pay_period_config'];
+    final config = rawConfig is Map ? Map<String, dynamic>.from(rawConfig) : <String, dynamic>{};
+    final anchorStr = config['anchor_date'] as String?;
+    if (anchorStr != null) _biweeklyAnchor = DateTime.tryParse(anchorStr);
+    _semiDayOne = (config['day_one'] as num?)?.toInt() ?? 1;
+    _semiDayTwo = (config['day_two'] as num?)?.toInt() ?? 16;
+  }
+
+  Future<void> _pickAnchorDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _biweeklyAnchor ?? DateTime.now(),
+      firstDate: DateTime(2020),
+      lastDate: DateTime.now().add(const Duration(days: 3650)),
+    );
+    if (!mounted || picked == null) return;
+    setState(() => _biweeklyAnchor = picked);
+  }
+
+  Future<void> _save() async {
+    if (_payPeriodType == 'biweekly' && _biweeklyAnchor == null) {
+      setState(() => _error = 'Pick an anchor date for biweekly pay periods.');
+      return;
+    }
+    setState(() { _saving = true; _error = null; _successMsg = null; });
+    try {
+      Map<String, dynamic> config = {};
+      if (_payPeriodType == 'biweekly') {
+        config = {'anchor_date': _biweeklyAnchor!.toIso8601String().substring(0, 10)};
+      } else if (_payPeriodType == 'semimonthly') {
+        config = {'day_one': _semiDayOne, 'day_two': _semiDayTwo};
+      }
+      await widget.onSave({
+        'week_start_day': _weekStartDay,
+        'pay_period_type': _payPeriodType,
+        'pay_period_config': config,
+      });
+      setState(() { _successMsg = 'Payroll settings saved.'; _saving = false; });
+    } catch (e) {
+      setState(() { _error = e.toString(); _saving = false; });
+    }
+  }
+
+  Widget _choicePills(List<(String, String)> options, String selected, ValueChanged<String> onChanged) {
+    return Wrap(spacing: 8, runSpacing: 8, children: options.map((opt) {
+      final isSelected = selected == opt.$1;
+      return Clickable(
+        onTap: () => onChanged(opt.$1),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          decoration: BoxDecoration(
+            color: isSelected ? AppTheme.brand : AppTheme.pageBg,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: isSelected ? AppTheme.brand : AppTheme.borderColor),
+          ),
+          child: Text(opt.$2,
+              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500,
+                  color: isSelected ? Colors.white : AppTheme.textSecondary)),
+        ),
+      );
+    }).toList());
+  }
+
+  Widget _dayOfMonthDropdown(int value, ValueChanged<int> onChanged) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      decoration: BoxDecoration(
+        color: AppTheme.pageBg,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: AppTheme.borderColor),
+      ),
+      child: DropdownButtonHideUnderline(child: DropdownButton<int>(
+        value: value,
+        isExpanded: true,
+        dropdownColor: AppTheme.cardBg,
+        style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+        items: [
+          for (int i = 1; i <= 30; i++) DropdownMenuItem(value: i, child: Text('$i${_ordinalSuffix(i)}')),
+          const DropdownMenuItem(value: 31, child: Text('Last day of month')),
+        ],
+        onChanged: (v) { if (v != null) onChanged(v); },
+      )),
+    );
+  }
+
+  String _ordinalSuffix(int n) {
+    if (n >= 11 && n <= 13) return 'th';
+    switch (n % 10) {
+      case 1: return 'st';
+      case 2: return 'nd';
+      case 3: return 'rd';
+      default: return 'th';
+    }
+  }
+
+  String _formatAnchorDate(DateTime dt) {
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    return '${months[dt.month - 1]} ${dt.day}, ${dt.year}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return _SectionShell(
+      title: 'Payroll',
+      subtitle: 'Controls how the Timesheets Week, Month, and Pay Period views calculate hours for this business.',
+      onSave: _save,
+      saving: _saving,
+      successMsg: _successMsg,
+      error: _error,
+      child: Column(children: [
+        _SettingsGroup(title: 'Work Week', children: [
+          const Text('Week Start Day',
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
+          const SizedBox(height: 4),
+          const Text(
+            'Which day the Timesheets Week view treats as the start of the work week.',
+            style: TextStyle(fontSize: 11, color: AppTheme.textSecondary),
+          ),
+          const SizedBox(height: 10),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            decoration: BoxDecoration(
+              color: AppTheme.pageBg,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: AppTheme.borderColor),
+            ),
+            child: DropdownButtonHideUnderline(child: DropdownButton<String>(
+              value: _weekStartDay,
+              isExpanded: true,
+              dropdownColor: AppTheme.cardBg,
+              style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+              items: _weekDays.map((d) => DropdownMenuItem(value: d.$1, child: Text(d.$2))).toList(),
+              onChanged: (v) { if (v != null) setState(() => _weekStartDay = v); },
+            )),
+          ),
+        ]),
+        const SizedBox(height: 24),
+        _SettingsGroup(title: 'Pay Period', children: [
+          const Text('Pay Period Type',
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
+          const SizedBox(height: 4),
+          const Text(
+            'Weekly needs no extra setup. Choosing Biweekly or Semimonthly adds a Pay Period tab to Timesheets for team members with full Timesheets access.',
+            style: TextStyle(fontSize: 11, color: AppTheme.textSecondary, height: 1.4),
+          ),
+          const SizedBox(height: 10),
+          _choicePills(const [
+            ('weekly', 'Weekly'),
+            ('biweekly', 'Biweekly'),
+            ('semimonthly', 'Semimonthly'),
+          ], _payPeriodType, (v) => setState(() => _payPeriodType = v)),
+
+          if (_payPeriodType == 'biweekly') ...[
+            const SizedBox(height: 20),
+            const Text('Anchor Date',
+                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
+            const SizedBox(height: 4),
+            const Text(
+              'The start date of any known pay period. Every period, before and after, repeats every 14 days from this date.',
+              style: TextStyle(fontSize: 11, color: AppTheme.textSecondary, height: 1.4),
+            ),
+            const SizedBox(height: 10),
+            Clickable(
+              onTap: _pickAnchorDate,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+                decoration: BoxDecoration(
+                  color: AppTheme.pageBg,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppTheme.borderColor),
+                ),
+                child: Row(children: [
+                  const Icon(Icons.calendar_today_outlined, size: 14, color: AppTheme.textSecondary),
+                  const SizedBox(width: 8),
+                  Text(
+                    _biweeklyAnchor == null ? 'Select a date' : _formatAnchorDate(_biweeklyAnchor!),
+                    style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                  ),
+                ]),
+              ),
+            ),
+          ],
+
+          if (_payPeriodType == 'semimonthly') ...[
+            const SizedBox(height: 20),
+            const Text('Pay Period Days',
+                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
+            const SizedBox(height: 4),
+            const Text(
+              'The two days of each month a new pay period starts, e.g. the 1st and 16th, or the 15th and last day.',
+              style: TextStyle(fontSize: 11, color: AppTheme.textSecondary, height: 1.4),
+            ),
+            const SizedBox(height: 10),
+            Row(children: [
+              Expanded(child: _dayOfMonthDropdown(_semiDayOne, (v) => setState(() => _semiDayOne = v))),
+              const SizedBox(width: 12),
+              Expanded(child: _dayOfMonthDropdown(_semiDayTwo, (v) => setState(() => _semiDayTwo = v))),
+            ]),
+          ],
+        ]),
+      ]),
+    );
+  }
+}
 
 // ─────────────────────────────────────────────
 //  SHARED WIDGETS
