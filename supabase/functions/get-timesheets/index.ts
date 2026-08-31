@@ -44,7 +44,7 @@ Deno.serve(async (req) => {
       // no body is fine
     }
 
-    const { start_date, end_date, user_id_filter, business_id: requestedBusinessId } = body;
+    const { start_date, end_date, user_id_filter, business_id: requestedBusinessId, group_by } = body;
 
     const { data: profile, error: profileError } = await supabase
       .from("profiles")
@@ -54,11 +54,13 @@ Deno.serve(async (req) => {
 
     let businessId: number;
     let isOwner: boolean;
+    let canManagePayRates: boolean;
 
     if (profile?.business_id) {
       businessId = profile.business_id;
       const perms = (profile.permissions ?? {}) as Record<string, unknown>;
       isOwner = profile.role === "owner" || profile.role === "admin" || perms.timesheets_full_view === true;
+      canManagePayRates = profile.role === "owner" || profile.role === "admin" || perms.manage_pay_rates === true;
     } else {
       // No profile row — check if caller is a verified superuser before
       // trusting any business_id from the request body.
@@ -77,6 +79,7 @@ Deno.serve(async (req) => {
 
       businessId = Number(requestedBusinessId);
       isOwner = true; // superuser sees the full team view
+      canManagePayRates = true; // superuser can see pay rates too
     }
 
     // ── Fetch active entry for the caller ──────────────────────
@@ -91,14 +94,20 @@ Deno.serve(async (req) => {
     // ── Fetch all profiles for this business (for name lookup) ────────
     const { data: teamProfiles } = await supabase
       .from("profiles")
-      .select("id, user_id, full_name, role")
+      .select("id, user_id, full_name, role, pay_type, hourly_rate, annual_salary")
       .eq("business_id", businessId);
 
     const profileMap: Record<string, string> = {};
     const profileIdByUserId: Record<string, number> = {};
+    const payRateByUserId: Record<string, { pay_type: string; hourly_rate: number | null; annual_salary: number | null }> = {};
     for (const p of (teamProfiles ?? [])) {
       profileMap[p.user_id] = p.full_name ?? "Unknown";
       if (typeof p.id === "number") profileIdByUserId[p.user_id] = p.id;
+      payRateByUserId[p.user_id] = {
+        pay_type: p.pay_type ?? "hourly",
+        hourly_rate: p.hourly_rate ?? null,
+        annual_salary: p.annual_salary ?? null,
+      };
     }
 
     // ── Build time_entries query ────────────────────────────
@@ -205,7 +214,15 @@ Deno.serve(async (req) => {
     });
 
     // ── Compute per-member totals (owner view) ────────────────
-    const totals: Record<string, { user_id: string; full_name: string; total_minutes: number; entry_count: number }> = {};
+    const totals: Record<string, {
+      user_id: string;
+      full_name: string;
+      total_minutes: number;
+      entry_count: number;
+      pay_type?: string;
+      hourly_rate?: number | null;
+      annual_salary?: number | null;
+    }> = {};
     if (isOwner) {
       for (const e of enriched) {
         if (!totals[e.user_id]) {
@@ -215,6 +232,12 @@ Deno.serve(async (req) => {
             total_minutes: 0,
             entry_count: 0,
           };
+          if (canManagePayRates) {
+            const payInfo = payRateByUserId[e.user_id];
+            totals[e.user_id].pay_type = payInfo?.pay_type ?? "hourly";
+            totals[e.user_id].hourly_rate = payInfo?.hourly_rate ?? null;
+            totals[e.user_id].annual_salary = payInfo?.annual_salary ?? null;
+          }
         }
         totals[e.user_id].total_minutes += (e.duration_minutes ?? 0);
         totals[e.user_id].entry_count += 1;
@@ -230,14 +253,35 @@ Deno.serve(async (req) => {
       return { ...e, is_stale_display: hoursElapsed >= 14 };
     });
 
+    // ── Optional per-day aggregation for the Month Calendar sub-view ──
+    let dailyTotals: Array<{ date: string; total_minutes: number; entry_count: number }> = [];
+    if (group_by === "day") {
+      const dayMap: Record<string, { total_minutes: number; entry_count: number }> = {};
+      for (const e of (entries ?? [])) {
+        const dateKey = String(e.clocked_in_at).substring(0, 10);
+        if (!dayMap[dateKey]) dayMap[dateKey] = { total_minutes: 0, entry_count: 0 };
+        dayMap[dateKey].total_minutes += (e.duration_minutes ?? 0);
+        dayMap[dateKey].entry_count += 1;
+      }
+      dailyTotals = Object.entries(dayMap).map(([date, v]) => ({ date, ...v }));
+    }
+
+    const teamProfilesForResponse = (teamProfiles ?? []).map((p) => {
+      if (canManagePayRates) return p;
+      const { pay_type: _pt, hourly_rate: _hr, annual_salary: _as, ...rest } = p;
+      return rest;
+    });
+
     return new Response(
       JSON.stringify({
         success: true,
         is_owner: isOwner,
+        can_view_pay_rates: isOwner ? canManagePayRates : false,
         my_active_entry: myActiveEntry ?? null,
         entries: enrichedWithStale,
         totals: isOwner ? Object.values(totals) : [],
-        team_profiles: isOwner ? (teamProfiles ?? []) : [],
+        daily_totals: dailyTotals,
+        team_profiles: isOwner ? teamProfilesForResponse : [],
       }),
       {
         status: 200,

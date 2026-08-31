@@ -1,6 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:js_interop';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
+import 'package:web/web.dart' as web;
 import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:geolocator/geolocator.dart';
@@ -44,20 +48,138 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
   // straight to Day view and never see the toggle at all.
   String _viewMode = 'week';
   String _weekStartDay = 'monday';
+  String _payPeriodType = 'weekly';
+  bool _canViewPayRates = false;
   late DateTime _weekStart;
   bool _weekLoading = true;
   String? _weekError;
   List<Map<String, dynamic>> _weekTotals = [];
 
+  // Month view — Summary (per-employee totals) and Calendar (per-day grid)
+  // sub-views, both scoped to the currently loaded month.
+  String _monthSubView = 'summary';
+  late DateTime _monthCursor;
+  bool _monthLoading = true;
+  String? _monthError;
+  List<Map<String, dynamic>> _monthTotals = [];
+  List<Map<String, dynamic>> _dailyTotals = [];
+
+  // Pay Period view — only shown when the business's pay_period_type is
+  // biweekly or semimonthly (never weekly, since Week view already covers
+  // that). Boundaries are computed client-side from pay_period_config.
+  Map<String, dynamic> _payPeriodConfig = {};
+  late DateTime _periodCursor;
+  bool _periodLoading = true;
+  String? _periodError;
+  List<Map<String, dynamic>> _periodTotals = [];
+  bool _exportingPdf = false;
+
   static const _dayOrder = [
     'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
   ];
+
+  bool _initialLoadDone = false;
+  late final Future<void> _weekStartDayFuture;
 
   @override
   void initState() {
     super.initState();
     _weekStart = _startOfWeekContaining(DateTime.now(), _weekStartDay);
-    _initLoad();
+    _monthCursor = DateTime(DateTime.now().year, DateTime.now().month, 1);
+    final now = DateTime.now();
+    _periodCursor = DateTime(now.year, now.month, now.day);
+    _weekStartDayFuture = _loadWeekStartDay();
+  }
+
+  // The Week→Day and Month drill-ins are URL-driven (?view=...&user=...
+  // &start=...&end=...&sub=...&month=...) via context.go(), rather than
+  // pure setState, so the browser back button has a real GoRouter history
+  // entry to return to instead of leaving the page entirely. GoRouter
+  // reuses this widget on the same route when only query params change,
+  // so the params must be read here in didChangeDependencies — not
+  // initState, which only runs once.
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _syncFromUrl();
+  }
+
+  Future<void> _syncFromUrl() async {
+    // On the very first sync, wait for the business's real week_start_day
+    // (and pay_period_type) to come back before triggering the default
+    // Week load — otherwise the initial load can race ahead using the
+    // 'monday' fallback and compute the wrong week boundary.
+    if (!_initialLoadDone) {
+      await _weekStartDayFuture;
+      if (!mounted) return;
+    }
+
+    final params = GoRouterState.of(context).uri.queryParameters;
+    final view = params['view'];
+    final userId = params['user'];
+    final startStr = params['start'];
+    final endStr = params['end'];
+    final sub = params['sub'];
+    final monthStr = params['month'];
+    final pcursorStr = params['pcursor'];
+
+    final newViewMode = view == 'day'
+        ? 'day'
+        : view == 'month'
+            ? 'month'
+            : view == 'period'
+                ? 'period'
+                : 'week';
+    final newStart = startStr != null ? DateTime.tryParse(startStr) : null;
+    final newEnd = endStr != null ? DateTime.tryParse(endStr) : null;
+    final newMonthSub = sub == 'calendar' ? 'calendar' : 'summary';
+    DateTime newMonthCursor = _monthCursor;
+    if (monthStr != null) {
+      final parts = monthStr.split('-');
+      if (parts.length == 2) {
+        final y = int.tryParse(parts[0]);
+        final m = int.tryParse(parts[1]);
+        if (y != null && m != null) newMonthCursor = DateTime(y, m, 1);
+      }
+    }
+    final newPeriodCursor = pcursorStr != null
+        ? (DateTime.tryParse(pcursorStr) ?? _periodCursor)
+        : _periodCursor;
+
+    final unchanged = _initialLoadDone &&
+        newViewMode == _viewMode &&
+        userId == _filterUserId &&
+        newStart == _filterStart &&
+        newEnd == _filterEnd &&
+        (newViewMode != 'month' ||
+            (newMonthSub == _monthSubView && newMonthCursor == _monthCursor)) &&
+        (newViewMode != 'period' || newPeriodCursor == _periodCursor);
+    if (unchanged) return;
+
+    _initialLoadDone = true;
+    setState(() {
+      _viewMode = newViewMode;
+      _filterUserId = userId;
+      _filterStart = newStart;
+      _filterEnd = newEnd;
+      if (newViewMode == 'month') {
+        _monthSubView = newMonthSub;
+        _monthCursor = newMonthCursor;
+      }
+      if (newViewMode == 'period') {
+        _periodCursor = newPeriodCursor;
+      }
+    });
+
+    if (_viewMode == 'day') {
+      _load();
+    } else if (_viewMode == 'month') {
+      _loadMonthTotals();
+    } else if (_viewMode == 'period') {
+      _loadPeriodTotals();
+    } else {
+      _loadWeekTotals();
+    }
   }
 
   @override
@@ -75,28 +197,29 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
     return d.subtract(Duration(days: diff));
   }
 
-  Future<void> _initLoad() async {
-    await _loadWeekStartDay();
-    await _loadWeekTotals();
-  }
-
+  // ignore: unused_element -- retained as an async function so initState
+  // can capture and await its Future (see _weekStartDayFuture).
   Future<void> _loadWeekStartDay() async {
     try {
       final activeBusinessId = await getActiveBusinessId();
       if (activeBusinessId == null) return;
       final biz = await _db
           .from('businesses')
-          .select('week_start_day')
+          .select('week_start_day, pay_period_type, pay_period_config')
           .eq('id', activeBusinessId)
           .maybeSingle();
       final day = biz?['week_start_day'] as String?;
-      if (day != null && _dayOrder.contains(day)) {
-        if (!mounted) return;
-        setState(() {
+      final periodType = biz?['pay_period_type'] as String?;
+      final periodConfig = biz?['pay_period_config'] as Map<String, dynamic>?;
+      if (!mounted) return;
+      setState(() {
+        if (day != null && _dayOrder.contains(day)) {
           _weekStartDay = day;
           _weekStart = _startOfWeekContaining(_weekStart, day);
-        });
-      }
+        }
+        if (periodType != null) _payPeriodType = periodType;
+        if (periodConfig != null) _payPeriodConfig = periodConfig;
+      });
     } catch (e) {
       debugPrint('Week start day load error: $e');
     }
@@ -133,10 +256,11 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
       }
 
       setState(() {
-        _isOwner       = data['is_owner'] as bool? ?? false;
-        _myActiveEntry = data['my_active_entry'] as Map<String, dynamic>?;
-        _weekTotals    = List<Map<String, dynamic>>.from(data['totals'] as List? ?? []);
-        _teamProfiles  = List<Map<String, dynamic>>.from(data['team_profiles'] as List? ?? []);
+        _isOwner         = data['is_owner'] as bool? ?? false;
+        _canViewPayRates = data['can_view_pay_rates'] as bool? ?? false;
+        _myActiveEntry   = data['my_active_entry'] as Map<String, dynamic>?;
+        _weekTotals      = List<Map<String, dynamic>>.from(data['totals'] as List? ?? []);
+        _teamProfiles    = List<Map<String, dynamic>>.from(data['team_profiles'] as List? ?? []);
       });
       _startOrStopTicker();
 
@@ -150,6 +274,164 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
       if (mounted) setState(() => _weekError = e.toString());
     } finally {
       if (mounted) setState(() => _weekLoading = false);
+    }
+  }
+
+  Future<void> _loadMonthTotals() async {
+    if (!mounted) return;
+    setState(() { _monthLoading = true; _monthError = null; });
+    try {
+      await _db.auth.refreshSession();
+      final token = _db.auth.currentSession?.accessToken;
+      if (token == null) throw Exception('Not authenticated');
+
+      final monthEnd = DateTime(_monthCursor.year, _monthCursor.month + 1, 0);
+      final startStr = _monthCursor.toIso8601String().substring(0, 10);
+      final endStr = monthEnd.toIso8601String().substring(0, 10);
+      final body = <String, dynamic>{
+        'start_date': startStr,
+        'end_date': endStr,
+        'group_by': 'day',
+      };
+
+      final activeBusinessId = await getActiveBusinessId();
+      if (activeBusinessId != null) body['business_id'] = activeBusinessId;
+
+      final resp = await http.post(
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/get-timesheets'),
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode(body),
+      );
+      if (!mounted) return;
+
+      final data = jsonDecode(resp.body);
+      if (resp.statusCode != 200 || data['success'] != true) {
+        throw Exception(data['error'] ?? 'Failed to load timesheets');
+      }
+
+      setState(() {
+        _isOwner         = data['is_owner'] as bool? ?? false;
+        _canViewPayRates = data['can_view_pay_rates'] as bool? ?? false;
+        _myActiveEntry   = data['my_active_entry'] as Map<String, dynamic>?;
+        _monthTotals     = List<Map<String, dynamic>>.from(data['totals'] as List? ?? []);
+        _dailyTotals     = List<Map<String, dynamic>>.from(data['daily_totals'] as List? ?? []);
+        _teamProfiles    = List<Map<String, dynamic>>.from(data['team_profiles'] as List? ?? []);
+      });
+      _startOrStopTicker();
+    } catch (e) {
+      if (mounted) setState(() => _monthError = e.toString());
+    } finally {
+      if (mounted) setState(() => _monthLoading = false);
+    }
+  }
+
+  int _daysInMonth(int year, int month) => DateTime(year, month + 1, 0).day;
+
+  // Returns [periodStart, periodEnd] for the pay period containing `date`.
+  // Confirmed semimonthly rule: [day_one, day_two-1] and
+  // [day_two, last day of month] — the standard 1st–15th / 16th–end split.
+  List<DateTime> _currentPayPeriod(DateTime date) {
+    if (_payPeriodType == 'biweekly') {
+      final anchorStr = _payPeriodConfig['anchor_date'] as String?;
+      final anchor = anchorStr != null ? DateTime.tryParse(anchorStr) : null;
+      if (anchor == null) {
+        // No anchor configured yet — fall back to a 14-day window starting
+        // at the reference date rather than crashing.
+        return [date, date.add(const Duration(days: 13))];
+      }
+      final anchorDate = DateTime(anchor.year, anchor.month, anchor.day);
+      final dateOnly = DateTime(date.year, date.month, date.day);
+      final daysSince = dateOnly.difference(anchorDate).inDays;
+      final periodIndex = daysSince >= 0
+          ? daysSince ~/ 14
+          : -(((-daysSince) + 13) ~/ 14);
+      final start = anchorDate.add(Duration(days: periodIndex * 14));
+      return [start, start.add(const Duration(days: 13))];
+    }
+
+    // semimonthly
+    final dayOneRaw = (_payPeriodConfig['day_one'] as num?)?.toInt() ?? 1;
+    final dayTwoRaw = (_payPeriodConfig['day_two'] as num?)?.toInt() ?? 16;
+    final maxDay = _daysInMonth(date.year, date.month);
+    final dayOne = dayOneRaw > maxDay ? maxDay : dayOneRaw;
+    final dayTwo = dayTwoRaw > maxDay ? maxDay : dayTwoRaw;
+
+    if (date.day < dayOne) {
+      final prevMonth = DateTime(date.year, date.month - 1, 1);
+      final prevMax = _daysInMonth(prevMonth.year, prevMonth.month);
+      final prevDayTwoRaw = (_payPeriodConfig['day_two'] as num?)?.toInt() ?? 16;
+      final prevDayTwo = prevDayTwoRaw > prevMax ? prevMax : prevDayTwoRaw;
+      return [
+        DateTime(prevMonth.year, prevMonth.month, prevDayTwo),
+        DateTime(date.year, date.month, dayOne).subtract(const Duration(days: 1)),
+      ];
+    } else if (date.day < dayTwo) {
+      return [
+        DateTime(date.year, date.month, dayOne),
+        DateTime(date.year, date.month, dayTwo).subtract(const Duration(days: 1)),
+      ];
+    } else {
+      return [
+        DateTime(date.year, date.month, dayTwo),
+        DateTime(date.year, date.month, maxDay),
+      ];
+    }
+  }
+
+  String _periodRangeLabel(DateTime start, DateTime end) {
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    if (start.month == end.month && start.year == end.year) {
+      return '${months[start.month - 1]} ${start.day} – ${end.day}, ${end.year}';
+    }
+    return '${months[start.month - 1]} ${start.day} – ${months[end.month - 1]} ${end.day}, ${end.year}';
+  }
+
+  Future<void> _loadPeriodTotals() async {
+    if (!mounted) return;
+    setState(() { _periodLoading = true; _periodError = null; });
+    try {
+      await _db.auth.refreshSession();
+      final token = _db.auth.currentSession?.accessToken;
+      if (token == null) throw Exception('Not authenticated');
+
+      final bounds = _currentPayPeriod(_periodCursor);
+      final startStr = bounds[0].toIso8601String().substring(0, 10);
+      final endStr = bounds[1].toIso8601String().substring(0, 10);
+      final body = <String, dynamic>{'start_date': startStr, 'end_date': endStr};
+
+      final activeBusinessId = await getActiveBusinessId();
+      if (activeBusinessId != null) body['business_id'] = activeBusinessId;
+
+      final resp = await http.post(
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/get-timesheets'),
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode(body),
+      );
+      if (!mounted) return;
+
+      final data = jsonDecode(resp.body);
+      if (resp.statusCode != 200 || data['success'] != true) {
+        throw Exception(data['error'] ?? 'Failed to load timesheets');
+      }
+
+      setState(() {
+        _isOwner         = data['is_owner'] as bool? ?? false;
+        _canViewPayRates = data['can_view_pay_rates'] as bool? ?? false;
+        _myActiveEntry   = data['my_active_entry'] as Map<String, dynamic>?;
+        _periodTotals    = List<Map<String, dynamic>>.from(data['totals'] as List? ?? []);
+        _teamProfiles    = List<Map<String, dynamic>>.from(data['team_profiles'] as List? ?? []);
+      });
+      _startOrStopTicker();
+    } catch (e) {
+      if (mounted) setState(() => _periodError = e.toString());
+    } finally {
+      if (mounted) setState(() => _periodLoading = false);
     }
   }
 
@@ -173,18 +455,55 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
   }
 
   void _switchToWeekView() {
-    setState(() => _viewMode = 'week');
-    _loadWeekTotals();
+    context.go('/timesheets');
   }
 
   void _switchToDayView({String? userId, DateTime? start, DateTime? end}) {
-    setState(() {
-      _viewMode = 'day';
-      _filterUserId = userId;
-      _filterStart = start;
-      _filterEnd = end;
-    });
-    _load();
+    final params = <String, String>{'view': 'day'};
+    if (userId != null) params['user'] = userId;
+    if (start != null) params['start'] = start.toIso8601String().substring(0, 10);
+    if (end != null) params['end'] = end.toIso8601String().substring(0, 10);
+    context.go(Uri(path: '/timesheets', queryParameters: params).toString());
+  }
+
+  String _monthParam(DateTime cursor) =>
+      '${cursor.year}-${cursor.month.toString().padLeft(2, '0')}';
+
+  void _goToMonth(DateTime cursor, String sub) {
+    context.go(Uri(path: '/timesheets', queryParameters: {
+      'view': 'month',
+      'sub': sub,
+      'month': _monthParam(cursor),
+    }).toString());
+  }
+
+  void _switchToMonthView() => _goToMonth(_monthCursor, _monthSubView);
+
+  void _switchToMonthSub(String sub) => _goToMonth(_monthCursor, sub);
+
+  void _prevMonth() =>
+      _goToMonth(DateTime(_monthCursor.year, _monthCursor.month - 1, 1), _monthSubView);
+
+  void _nextMonth() =>
+      _goToMonth(DateTime(_monthCursor.year, _monthCursor.month + 1, 1), _monthSubView);
+
+  void _goToPeriod(DateTime cursor) {
+    context.go(Uri(path: '/timesheets', queryParameters: {
+      'view': 'period',
+      'pcursor': cursor.toIso8601String().substring(0, 10),
+    }).toString());
+  }
+
+  void _switchToPeriodView() => _goToPeriod(_periodCursor);
+
+  void _prevPeriod() {
+    final bounds = _currentPayPeriod(_periodCursor);
+    _goToPeriod(bounds[0].subtract(const Duration(days: 1)));
+  }
+
+  void _nextPeriod() {
+    final bounds = _currentPayPeriod(_periodCursor);
+    _goToPeriod(bounds[1].add(const Duration(days: 1)));
   }
 
   Future<void> _load() async {
@@ -327,6 +646,181 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
     return '${h}h ${m}m';
   }
 
+  double? _computePay(Map<String, dynamic> t) {
+    if (!_canViewPayRates) return null;
+    final payType = t['pay_type'] as String? ?? 'hourly';
+    final minutes = (t['total_minutes'] as num?)?.toInt() ?? 0;
+    if (payType == 'salary') {
+      final salary = (t['annual_salary'] as num?)?.toDouble();
+      if (salary == null) return null;
+      final periodsPerYear = _payPeriodType == 'biweekly'
+          ? 26
+          : _payPeriodType == 'semimonthly'
+              ? 24
+              : 52;
+      return salary / periodsPerYear;
+    }
+    final rate = (t['hourly_rate'] as num?)?.toDouble();
+    if (rate == null) return null;
+    return (minutes / 60.0) * rate;
+  }
+
+  String _formatCurrency(double? amount) {
+    if (amount == null) return '—';
+    return '\$${amount.toStringAsFixed(2)}';
+  }
+
+  // Export is only meaningful for the per-employee summary shapes (Week,
+  // Month → Summary, Pay Period) — not Day (raw entries) or Month →
+  // Calendar (a different, per-day shape).
+  List<Map<String, dynamic>> _currentTotalsForExport() {
+    if (_viewMode == 'week') return _weekTotals;
+    if (_viewMode == 'month' && _monthSubView == 'summary') return _monthTotals;
+    if (_viewMode == 'period') return _periodTotals;
+    return [];
+  }
+
+  (DateTime, DateTime, String) _currentExportRange() {
+    if (_viewMode == 'week') {
+      return (_weekStart, _weekStart.add(const Duration(days: 6)), 'Week of ${_weekRangeLabel()}');
+    }
+    if (_viewMode == 'month') {
+      final end = DateTime(_monthCursor.year, _monthCursor.month + 1, 0);
+      const monthNames = ['January','February','March','April','May','June',
+          'July','August','September','October','November','December'];
+      return (_monthCursor, end, '${monthNames[_monthCursor.month - 1]} ${_monthCursor.year}');
+    }
+    final bounds = _currentPayPeriod(_periodCursor);
+    return (bounds[0], bounds[1], 'Pay Period: ${_periodRangeLabel(bounds[0], bounds[1])}');
+  }
+
+  String _currentExportFilenamePrefix() {
+    final range = _currentExportRange();
+    final startStr = range.$1.toIso8601String().substring(0, 10);
+    final endStr = range.$2.toIso8601String().substring(0, 10);
+    return 'timesheets_${startStr}_to_$endStr';
+  }
+
+  bool get _canExport =>
+      _isOwner &&
+      ((_viewMode == 'week' && _weekTotals.isNotEmpty) ||
+          (_viewMode == 'month' && _monthSubView == 'summary' && _monthTotals.isNotEmpty) ||
+          (_viewMode == 'period' && _periodTotals.isNotEmpty));
+
+  String _csvEscape(String v) {
+    if (v.contains(',') || v.contains('"') || v.contains('\n')) {
+      return '"${v.replaceAll('"', '""')}"';
+    }
+    return v;
+  }
+
+  String _buildCsv(List<Map<String, dynamic>> totals) {
+    final buffer = StringBuffer();
+    final headers = ['Employee', 'Total Hours', 'Entries'];
+    if (_canViewPayRates) headers.addAll(['Pay Type', 'Rate', 'Total Pay']);
+    buffer.writeln(headers.map(_csvEscape).join(','));
+
+    int grandMinutes = 0;
+    int grandEntries = 0;
+    double grandPay = 0;
+
+    for (final t in totals) {
+      final name = t['full_name'] as String? ?? 'Unknown';
+      final minutes = (t['total_minutes'] as num?)?.toInt() ?? 0;
+      final count = (t['entry_count'] as num?)?.toInt() ?? 0;
+      grandMinutes += minutes;
+      grandEntries += count;
+
+      final row = <String>[name, (minutes / 60.0).toStringAsFixed(2), '$count'];
+      if (_canViewPayRates) {
+        final payType = t['pay_type'] as String? ?? 'hourly';
+        final rateVal = payType == 'salary'
+            ? (t['annual_salary'] as num?)?.toDouble()
+            : (t['hourly_rate'] as num?)?.toDouble();
+        final pay = _computePay(t);
+        grandPay += pay ?? 0;
+        row.addAll([
+          payType,
+          rateVal != null ? rateVal.toStringAsFixed(2) : '',
+          pay != null ? pay.toStringAsFixed(2) : '',
+        ]);
+      }
+      buffer.writeln(row.map(_csvEscape).join(','));
+    }
+
+    final totalRow = <String>['TOTAL', (grandMinutes / 60.0).toStringAsFixed(2), '$grandEntries'];
+    if (_canViewPayRates) totalRow.addAll(['', '', grandPay.toStringAsFixed(2)]);
+    buffer.writeln(totalRow.map(_csvEscape).join(','));
+
+    return buffer.toString();
+  }
+
+  void _downloadBytes(List<int> bytes, String filename, String mimeType) {
+    final blob = web.Blob(
+      [Uint8List.fromList(bytes).toJS].toJS,
+      web.BlobPropertyBag(type: mimeType),
+    );
+    final url = web.URL.createObjectURL(blob);
+    web.HTMLAnchorElement()
+      ..href = url
+      ..style.display = 'none'
+      ..download = filename
+      ..click();
+    web.URL.revokeObjectURL(url);
+  }
+
+  void _exportCsv() {
+    final totals = _currentTotalsForExport();
+    if (totals.isEmpty) return;
+    final csv = _buildCsv(totals);
+    _downloadBytes(utf8.encode(csv), '${_currentExportFilenamePrefix()}.csv', 'text/csv');
+  }
+
+  Future<void> _exportPdf() async {
+    final totals = _currentTotalsForExport();
+    if (totals.isEmpty) return;
+    setState(() => _exportingPdf = true);
+    try {
+      await _db.auth.refreshSession();
+      final token = _db.auth.currentSession?.accessToken;
+      if (token == null) throw Exception('Not authenticated');
+
+      final range = _currentExportRange();
+      final body = <String, dynamic>{
+        'start_date': range.$1.toIso8601String().substring(0, 10),
+        'end_date': range.$2.toIso8601String().substring(0, 10),
+        'label': range.$3,
+      };
+      final activeBusinessId = await getActiveBusinessId();
+      if (activeBusinessId != null) body['business_id'] = activeBusinessId;
+
+      final resp = await http.post(
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/export-timesheets-pdf'),
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode(body),
+      );
+      if (!mounted) return;
+
+      final data = jsonDecode(resp.body);
+      if (resp.statusCode != 200 || data['success'] != true) {
+        throw Exception(data['error'] ?? 'Failed to generate PDF');
+      }
+      final bytes = base64Decode(data['pdf_base64'] as String);
+      _downloadBytes(bytes, '${_currentExportFilenamePrefix()}.pdf', 'application/pdf');
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _exportingPdf = false);
+    }
+  }
+
   String _formatDateTime(String? raw) {
     if (raw == null) return '—';
     final dt = DateTime.tryParse(raw)?.toLocal();
@@ -404,8 +898,22 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
   @override
   Widget build(BuildContext context) {
     final isWeekView = _viewMode == 'week';
-    final showLoading = isWeekView ? _weekLoading : _loading;
-    final showError = isWeekView ? _weekError : _error;
+    final isMonthView = _viewMode == 'month';
+    final isPeriodView = _viewMode == 'period';
+    final showLoading = isWeekView
+        ? _weekLoading
+        : isMonthView
+            ? _monthLoading
+            : isPeriodView
+                ? _periodLoading
+                : _loading;
+    final showError = isWeekView
+        ? _weekError
+        : isMonthView
+            ? _monthError
+            : isPeriodView
+                ? _periodError
+                : _error;
 
     return Scaffold(
       backgroundColor: AppTheme.pageBg,
@@ -423,6 +931,10 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
                         const SizedBox(height: 24),
                         if (isWeekView)
                           _buildWeekView()
+                        else if (isMonthView)
+                          _buildMonthView()
+                        else if (isPeriodView)
+                          _buildPeriodView()
                         else ...[
                           if (_isOwner && _totals.isNotEmpty) ...[
                             _buildTotalsSection(),
@@ -453,12 +965,56 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
         const SizedBox(width: 20),
         if (_isOwner) _buildViewToggle(),
         const Spacer(),
+        if (_canExport) ...[
+          _buildExportButton(),
+          const SizedBox(width: 8),
+        ],
         IconButton(
-          onPressed: () => _viewMode == 'week' ? _loadWeekTotals() : _load(),
+          onPressed: () {
+            if (_viewMode == 'week') {
+              _loadWeekTotals();
+            } else if (_viewMode == 'month') {
+              _loadMonthTotals();
+            } else if (_viewMode == 'period') {
+              _loadPeriodTotals();
+            } else {
+              _load();
+            }
+          },
           icon: const Icon(Icons.refresh, size: 18, color: AppTheme.textSecondary),
           tooltip: 'Refresh',
         ),
       ]),
+    );
+  }
+
+  Widget _buildExportButton() {
+    return PopupMenuButton<String>(
+      enabled: !_exportingPdf,
+      onSelected: (v) {
+        if (v == 'csv') _exportCsv();
+        if (v == 'pdf') _exportPdf();
+      },
+      itemBuilder: (_) => const [
+        PopupMenuItem(value: 'csv', child: Text('Download CSV')),
+        PopupMenuItem(value: 'pdf', child: Text('Download PDF')),
+      ],
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: AppTheme.pageBg,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: AppTheme.borderColor),
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          _exportingPdf
+              ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+              : const Icon(Icons.download_outlined, size: 16, color: AppTheme.textSecondary),
+          const SizedBox(width: 6),
+          const Text('Export', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
+          const Icon(Icons.arrow_drop_down, size: 16, color: AppTheme.textSecondary),
+        ]),
+      ),
     );
   }
 
@@ -472,6 +1028,8 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
       child: Row(mainAxisSize: MainAxisSize.min, children: [
         _viewToggleBtn('Week', 'week'),
         _viewToggleBtn('Day', 'day'),
+        _viewToggleBtn('Month', 'month'),
+        if (_payPeriodType != 'weekly') _viewToggleBtn('Pay Period', 'period'),
       ]),
     );
   }
@@ -479,7 +1037,17 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
   Widget _viewToggleBtn(String label, String mode) {
     final sel = _viewMode == mode;
     return Clickable(
-      onTap: () => mode == 'week' ? _switchToWeekView() : _switchToDayView(),
+      onTap: () {
+        if (mode == 'week') {
+          _switchToWeekView();
+        } else if (mode == 'month') {
+          _switchToMonthView();
+        } else if (mode == 'period') {
+          _switchToPeriodView();
+        } else {
+          _switchToDayView();
+        }
+      },
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
         decoration: BoxDecoration(
@@ -669,17 +1237,21 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
               decoration: const BoxDecoration(
                 border: Border(bottom: BorderSide(color: AppTheme.borderColor)),
               ),
-              child: const Row(children: [
-                Expanded(flex: 4, child: Text('EMPLOYEE',
+              child: Row(children: [
+                const Expanded(flex: 4, child: Text('EMPLOYEE',
                     style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
                         color: AppTheme.textSecondary, letterSpacing: 1))),
-                Expanded(flex: 2, child: Text('TOTAL HOURS',
+                const Expanded(flex: 2, child: Text('TOTAL HOURS',
                     style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
                         color: AppTheme.textSecondary, letterSpacing: 1))),
-                Expanded(flex: 2, child: Text('ENTRIES',
+                const Expanded(flex: 2, child: Text('ENTRIES',
                     style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
                         color: AppTheme.textSecondary, letterSpacing: 1))),
-                SizedBox(width: 24),
+                if (_canViewPayRates)
+                  const Expanded(flex: 2, child: Text('TOTAL PAY',
+                      style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                          color: AppTheme.textSecondary, letterSpacing: 1))),
+                const SizedBox(width: 24),
               ]),
             ),
             ListView.separated(
@@ -693,6 +1265,7 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
                 final name    = t['full_name'] as String? ?? 'Unknown';
                 final minutes = (t['total_minutes'] as num?)?.toInt() ?? 0;
                 final count   = (t['entry_count'] as num?)?.toInt() ?? 0;
+                final pay     = _computePay(t);
                 final initials = name.trim().split(' ')
                     .map((p) => p.isNotEmpty ? p[0] : '').take(2).join().toUpperCase();
                 return Clickable(
@@ -724,15 +1297,462 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
                           style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.brand))),
                       Expanded(flex: 2, child: Text('$count',
                           style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary))),
+                      if (_canViewPayRates)
+                        Expanded(flex: 2, child: Text(_formatCurrency(pay),
+                            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
                       const Icon(Icons.chevron_right, size: 16, color: AppTheme.textMuted),
                     ]),
                   ),
                 );
               },
             ),
+            if (_canViewPayRates) _buildWeekGrandTotalRow(),
           ]),
         ),
     ]);
+  }
+
+  Widget _buildWeekGrandTotalRow() {
+    final totalMinutes = _weekTotals.fold<int>(0, (sum, t) => sum + ((t['total_minutes'] as num?)?.toInt() ?? 0));
+    final totalEntries = _weekTotals.fold<int>(0, (sum, t) => sum + ((t['entry_count'] as num?)?.toInt() ?? 0));
+    final totalPay = _weekTotals.fold<double>(0, (sum, t) => sum + (_computePay(t) ?? 0));
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: const BoxDecoration(
+        border: Border(top: BorderSide(color: AppTheme.borderColor)),
+      ),
+      child: Row(children: [
+        const Expanded(flex: 4, child: Text('TOTAL',
+            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
+        Expanded(flex: 2, child: Text(_formatDuration(totalMinutes),
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.brand))),
+        Expanded(flex: 2, child: Text('$totalEntries',
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
+        Expanded(flex: 2, child: Text(_formatCurrency(totalPay),
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
+        const SizedBox(width: 24),
+      ]),
+    );
+  }
+
+  Widget _buildMonthView() {
+    const monthNames = ['January','February','March','April','May','June',
+        'July','August','September','October','November','December'];
+    final label = '${monthNames[_monthCursor.month - 1]} ${_monthCursor.year}';
+
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(children: [
+        Text(label,
+            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+        const SizedBox(width: 8),
+        IconButton(
+          onPressed: _prevMonth,
+          icon: const Icon(Icons.chevron_left, size: 18, color: AppTheme.textSecondary),
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+        ),
+        IconButton(
+          onPressed: _nextMonth,
+          icon: const Icon(Icons.chevron_right, size: 18, color: AppTheme.textSecondary),
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+        ),
+        Clickable(
+          onTap: () {
+            final now = DateTime.now();
+            _goToMonth(DateTime(now.year, now.month, 1), _monthSubView);
+          },
+          child: Container(
+            margin: const EdgeInsets.only(left: 4),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+            decoration: BoxDecoration(border: Border.all(color: AppTheme.borderColor), borderRadius: BorderRadius.circular(6)),
+            child: const Text('This Month', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+          ),
+        ),
+        const Spacer(),
+        Container(
+          decoration: BoxDecoration(
+            color: AppTheme.pageBg,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: AppTheme.borderColor),
+          ),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            _monthSubToggleBtn('Summary', 'summary'),
+            _monthSubToggleBtn('Calendar', 'calendar'),
+          ]),
+        ),
+      ]),
+      const SizedBox(height: 16),
+      if (_monthSubView == 'calendar') _buildMonthCalendar() else _buildMonthSummary(),
+    ]);
+  }
+
+  Widget _monthSubToggleBtn(String label, String sub) {
+    final sel = _monthSubView == sub;
+    return Clickable(
+      onTap: () => _switchToMonthSub(sub),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+        decoration: BoxDecoration(
+          color: sel ? AppTheme.brand : Colors.transparent,
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Text(label,
+            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500,
+                color: sel ? Colors.white : AppTheme.textSecondary)),
+      ),
+    );
+  }
+
+  Widget _buildMonthSummary() {
+    if (_monthTotals.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.all(48),
+        decoration: BoxDecoration(
+          color: AppTheme.cardBg,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: AppTheme.borderColor),
+        ),
+        child: const Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Icon(Icons.calendar_view_month_outlined, size: 48, color: AppTheme.textMuted),
+          SizedBox(height: 12),
+          Text('No time entries this month', style: TextStyle(fontSize: 15, color: AppTheme.textSecondary)),
+        ])),
+      );
+    }
+
+    final monthEnd = DateTime(_monthCursor.year, _monthCursor.month + 1, 0);
+
+    return Container(
+      decoration: BoxDecoration(
+        color: AppTheme.cardBg,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppTheme.borderColor),
+      ),
+      child: Column(children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          decoration: const BoxDecoration(
+            border: Border(bottom: BorderSide(color: AppTheme.borderColor)),
+          ),
+          child: Row(children: [
+            const Expanded(flex: 4, child: Text('EMPLOYEE',
+                style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                    color: AppTheme.textSecondary, letterSpacing: 1))),
+            const Expanded(flex: 2, child: Text('TOTAL HOURS',
+                style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                    color: AppTheme.textSecondary, letterSpacing: 1))),
+            const Expanded(flex: 2, child: Text('ENTRIES',
+                style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                    color: AppTheme.textSecondary, letterSpacing: 1))),
+            if (_canViewPayRates)
+              const Expanded(flex: 2, child: Text('TOTAL PAY',
+                  style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                      color: AppTheme.textSecondary, letterSpacing: 1))),
+            const SizedBox(width: 24),
+          ]),
+        ),
+        ListView.separated(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          itemCount: _monthTotals.length,
+          separatorBuilder: (_, __) => const Divider(height: 1, color: AppTheme.borderColor),
+          itemBuilder: (_, i) {
+            final t = _monthTotals[i];
+            final userId  = t['user_id'] as String?;
+            final name    = t['full_name'] as String? ?? 'Unknown';
+            final minutes = (t['total_minutes'] as num?)?.toInt() ?? 0;
+            final count   = (t['entry_count'] as num?)?.toInt() ?? 0;
+            final pay     = _computePay(t);
+            final initials = name.trim().split(' ')
+                .map((p) => p.isNotEmpty ? p[0] : '').take(2).join().toUpperCase();
+            return Clickable(
+              onTap: () {
+                if (userId == null) return;
+                _switchToDayView(userId: userId, start: _monthCursor, end: monthEnd);
+              },
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                child: Row(children: [
+                  Expanded(flex: 4, child: Row(children: [
+                    Container(
+                      width: 28, height: 28,
+                      decoration: BoxDecoration(color: AppTheme.brand, shape: BoxShape.circle),
+                      alignment: Alignment.center,
+                      child: Text(initials,
+                          style: const TextStyle(fontSize: 10, color: Colors.white, fontWeight: FontWeight.w700)),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(child: Text(name,
+                        style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                        overflow: TextOverflow.ellipsis)),
+                  ])),
+                  Expanded(flex: 2, child: Text(_formatDuration(minutes),
+                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.brand))),
+                  Expanded(flex: 2, child: Text('$count',
+                      style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary))),
+                  if (_canViewPayRates)
+                    Expanded(flex: 2, child: Text(_formatCurrency(pay),
+                        style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
+                  const Icon(Icons.chevron_right, size: 16, color: AppTheme.textMuted),
+                ]),
+              ),
+            );
+          },
+        ),
+        if (_canViewPayRates) _buildMonthGrandTotalRow(),
+      ]),
+    );
+  }
+
+  Widget _buildMonthGrandTotalRow() {
+    final totalMinutes = _monthTotals.fold<int>(0, (sum, t) => sum + ((t['total_minutes'] as num?)?.toInt() ?? 0));
+    final totalEntries = _monthTotals.fold<int>(0, (sum, t) => sum + ((t['entry_count'] as num?)?.toInt() ?? 0));
+    final totalPay = _monthTotals.fold<double>(0, (sum, t) => sum + (_computePay(t) ?? 0));
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: const BoxDecoration(
+        border: Border(top: BorderSide(color: AppTheme.borderColor)),
+      ),
+      child: Row(children: [
+        const Expanded(flex: 4, child: Text('TOTAL',
+            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
+        Expanded(flex: 2, child: Text(_formatDuration(totalMinutes),
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.brand))),
+        Expanded(flex: 2, child: Text('$totalEntries',
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
+        Expanded(flex: 2, child: Text(_formatCurrency(totalPay),
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
+        const SizedBox(width: 24),
+      ]),
+    );
+  }
+
+  Widget _buildMonthCalendar() {
+    final firstDay = _monthCursor;
+    final daysInMonth = DateTime(_monthCursor.year, _monthCursor.month + 1, 0).day;
+    // Grid starts on Sunday regardless of the business's week_start_day —
+    // a calendar month grid is a different concept from the Week view's
+    // pay-period-aligned week, so it always reads left-to-right Sun–Sat.
+    final leadingBlanks = firstDay.weekday % 7;
+
+    final minutesByDate = <String, int>{};
+    for (final d in _dailyTotals) {
+      final date = d['date'] as String?;
+      if (date == null) continue;
+      minutesByDate[date] = (d['total_minutes'] as num?)?.toInt() ?? 0;
+    }
+
+    const dayLabels = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppTheme.cardBg,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppTheme.borderColor),
+      ),
+      child: Column(children: [
+        Row(children: dayLabels.map((l) => Expanded(
+          child: Center(child: Text(l,
+              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppTheme.textSecondary))),
+        )).toList()),
+        const SizedBox(height: 8),
+        GridView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          itemCount: leadingBlanks + daysInMonth,
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: 7,
+            childAspectRatio: 1.1,
+            crossAxisSpacing: 4,
+            mainAxisSpacing: 4,
+          ),
+          itemBuilder: (_, i) {
+            if (i < leadingBlanks) return const SizedBox.shrink();
+            final dayNum = i - leadingBlanks + 1;
+            final date = DateTime(_monthCursor.year, _monthCursor.month, dayNum);
+            final dateKey = date.toIso8601String().substring(0, 10);
+            final minutes = minutesByDate[dateKey] ?? 0;
+            final hasEntries = minutes > 0;
+            return Clickable(
+              onTap: () => _switchToDayView(start: date, end: date),
+              child: Container(
+                decoration: BoxDecoration(
+                  color: hasEntries ? AppTheme.brand.withValues(alpha: 0.08) : AppTheme.pageBg,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: hasEntries ? AppTheme.brand.withValues(alpha: 0.3) : AppTheme.borderColor,
+                  ),
+                ),
+                padding: const EdgeInsets.all(6),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text('$dayNum',
+                      style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+                  const Spacer(),
+                  if (hasEntries)
+                    Text(_formatDuration(minutes),
+                        style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppTheme.brand)),
+                ]),
+              ),
+            );
+          },
+        ),
+      ]),
+    );
+  }
+
+  Widget _buildPeriodView() {
+    final bounds = _currentPayPeriod(_periodCursor);
+    final label = _periodRangeLabel(bounds[0], bounds[1]);
+
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(children: [
+        Text(label,
+            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+        const SizedBox(width: 8),
+        IconButton(
+          onPressed: _prevPeriod,
+          icon: const Icon(Icons.chevron_left, size: 18, color: AppTheme.textSecondary),
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+        ),
+        IconButton(
+          onPressed: _nextPeriod,
+          icon: const Icon(Icons.chevron_right, size: 18, color: AppTheme.textSecondary),
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+        ),
+        Clickable(
+          onTap: () => _goToPeriod(DateTime.now()),
+          child: Container(
+            margin: const EdgeInsets.only(left: 4),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+            decoration: BoxDecoration(border: Border.all(color: AppTheme.borderColor), borderRadius: BorderRadius.circular(6)),
+            child: const Text('Current Period', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+          ),
+        ),
+      ]),
+      const SizedBox(height: 16),
+      if (_periodTotals.isEmpty)
+        Container(
+          padding: const EdgeInsets.all(48),
+          decoration: BoxDecoration(
+            color: AppTheme.cardBg,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: AppTheme.borderColor),
+          ),
+          child: const Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Icon(Icons.event_note_outlined, size: 48, color: AppTheme.textMuted),
+            SizedBox(height: 12),
+            Text('No time entries this pay period', style: TextStyle(fontSize: 15, color: AppTheme.textSecondary)),
+          ])),
+        )
+      else
+        Container(
+          decoration: BoxDecoration(
+            color: AppTheme.cardBg,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: AppTheme.borderColor),
+          ),
+          child: Column(children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: const BoxDecoration(
+                border: Border(bottom: BorderSide(color: AppTheme.borderColor)),
+              ),
+              child: Row(children: [
+                const Expanded(flex: 4, child: Text('EMPLOYEE',
+                    style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                        color: AppTheme.textSecondary, letterSpacing: 1))),
+                const Expanded(flex: 2, child: Text('TOTAL HOURS',
+                    style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                        color: AppTheme.textSecondary, letterSpacing: 1))),
+                const Expanded(flex: 2, child: Text('ENTRIES',
+                    style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                        color: AppTheme.textSecondary, letterSpacing: 1))),
+                if (_canViewPayRates)
+                  const Expanded(flex: 2, child: Text('TOTAL PAY',
+                      style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                          color: AppTheme.textSecondary, letterSpacing: 1))),
+                const SizedBox(width: 24),
+              ]),
+            ),
+            ListView.separated(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: _periodTotals.length,
+              separatorBuilder: (_, __) => const Divider(height: 1, color: AppTheme.borderColor),
+              itemBuilder: (_, i) {
+                final t = _periodTotals[i];
+                final userId  = t['user_id'] as String?;
+                final name    = t['full_name'] as String? ?? 'Unknown';
+                final minutes = (t['total_minutes'] as num?)?.toInt() ?? 0;
+                final count   = (t['entry_count'] as num?)?.toInt() ?? 0;
+                final pay     = _computePay(t);
+                final initials = name.trim().split(' ')
+                    .map((p) => p.isNotEmpty ? p[0] : '').take(2).join().toUpperCase();
+                return Clickable(
+                  onTap: () {
+                    if (userId == null) return;
+                    _switchToDayView(userId: userId, start: bounds[0], end: bounds[1]);
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                    child: Row(children: [
+                      Expanded(flex: 4, child: Row(children: [
+                        Container(
+                          width: 28, height: 28,
+                          decoration: BoxDecoration(color: AppTheme.brand, shape: BoxShape.circle),
+                          alignment: Alignment.center,
+                          child: Text(initials,
+                              style: const TextStyle(fontSize: 10, color: Colors.white, fontWeight: FontWeight.w700)),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(child: Text(name,
+                            style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                            overflow: TextOverflow.ellipsis)),
+                      ])),
+                      Expanded(flex: 2, child: Text(_formatDuration(minutes),
+                          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.brand))),
+                      Expanded(flex: 2, child: Text('$count',
+                          style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary))),
+                      if (_canViewPayRates)
+                        Expanded(flex: 2, child: Text(_formatCurrency(pay),
+                            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
+                      const Icon(Icons.chevron_right, size: 16, color: AppTheme.textMuted),
+                    ]),
+                  ),
+                );
+              },
+            ),
+            if (_canViewPayRates) _buildPeriodGrandTotalRow(),
+          ]),
+        ),
+    ]);
+  }
+
+  Widget _buildPeriodGrandTotalRow() {
+    final totalMinutes = _periodTotals.fold<int>(0, (sum, t) => sum + ((t['total_minutes'] as num?)?.toInt() ?? 0));
+    final totalEntries = _periodTotals.fold<int>(0, (sum, t) => sum + ((t['entry_count'] as num?)?.toInt() ?? 0));
+    final totalPay = _periodTotals.fold<double>(0, (sum, t) => sum + (_computePay(t) ?? 0));
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: const BoxDecoration(
+        border: Border(top: BorderSide(color: AppTheme.borderColor)),
+      ),
+      child: Row(children: [
+        const Expanded(flex: 4, child: Text('TOTAL',
+            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
+        Expanded(flex: 2, child: Text(_formatDuration(totalMinutes),
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.brand))),
+        Expanded(flex: 2, child: Text('$totalEntries',
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
+        Expanded(flex: 2, child: Text(_formatCurrency(totalPay),
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
+        const SizedBox(width: 24),
+      ]),
+    );
   }
 
   Widget _buildOwnerFilters() {
