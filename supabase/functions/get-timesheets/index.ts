@@ -62,6 +62,7 @@ Deno.serve(async (req) => {
     let canManagePayRates: boolean;
     let canManageTimesheets: boolean;
     let canManagePayPeriods: boolean;
+    let isSuperuserCaller = false;
 
     if (profile?.business_id) {
       businessId = profile.business_id;
@@ -91,6 +92,31 @@ Deno.serve(async (req) => {
       canManagePayRates = true; // superuser can see pay rates too
       canManageTimesheets = true; // superuser can manage entries too
       canManagePayPeriods = true; // superuser can lock/unlock too
+      isSuperuserCaller = true;
+    }
+
+    // ── Plan-tier gate: Timesheets & Payroll requires Growth+ ──────────
+    if (!isSuperuserCaller) {
+      const { data: hasTimeTracking, error: gateErr } = await supabase.rpc("check_plan_feature", {
+        p_business_id: businessId,
+        p_feature: "time_tracking",
+      });
+      if (gateErr) {
+        return new Response(JSON.stringify({ error: "Failed to verify plan access: " + gateErr.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      if (!hasTimeTracking) {
+        return new Response(JSON.stringify({
+          error: "upgrade_required",
+          message: "Timesheets & Payroll requires the Growth plan or higher.",
+          upgrade_url: "https://nexaflow-crm.web.app/settings?section=billing",
+        }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
     }
 
     // ── Fetch active entry for the caller ──────────────────────

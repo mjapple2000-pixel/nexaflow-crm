@@ -25,6 +25,7 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
 
   bool _loading = true;
   bool _isOwner = false;
+  bool _hasTimeTrackingAccess = true;
   Map<String, dynamic>? _myActiveEntry;
   List<Map<String, dynamic>> _entries = [];
   List<Map<String, dynamic>> _totals = [];
@@ -58,6 +59,11 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
   bool _weekLoading = true;
   String? _weekError;
   List<Map<String, dynamic>> _weekTotals = [];
+  // Raw entries for whatever range is currently loaded (Week/Month/Period) —
+  // used only for the Detailed CSV export mode. get-timesheets already
+  // returns this regardless of group_by; it's just discarded outside Day
+  // view today, so capturing it costs nothing extra.
+  List<Map<String, dynamic>> _rangeEntries = [];
 
   // Month view — Summary (per-employee totals) and Calendar (per-day grid)
   // sub-views, both scoped to the currently loaded month.
@@ -117,6 +123,7 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
       await _weekStartDayFuture;
       if (!mounted) return;
     }
+    if (!_hasTimeTrackingAccess) return;
 
     final params = GoRouterState.of(context).uri.queryParameters;
     final view = params['view'];
@@ -209,12 +216,23 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
       if (activeBusinessId == null) return;
       final biz = await _db
           .from('businesses')
-          .select('week_start_day, pay_period_type, pay_period_config')
+          .select('week_start_day, pay_period_type, pay_period_config, plan, is_paid, subscription_status, is_beta')
           .eq('id', activeBusinessId)
           .maybeSingle();
       final day = biz?['week_start_day'] as String?;
       final periodType = biz?['pay_period_type'] as String?;
       final periodConfig = biz?['pay_period_config'] as Map<String, dynamic>?;
+      // Client-side mirror of check_plan_feature('time_tracking'): is_beta
+      // bypass, else is_paid + subscription_status active/trialing +
+      // plan growth/pro. Keep in sync if check_plan_feature's SQL changes.
+      final plan = biz?['plan'] as String?;
+      final isPaid = biz?['is_paid'] as bool? ?? false;
+      final subStatus = biz?['subscription_status'] as String?;
+      final isBeta = biz?['is_beta'] as bool? ?? false;
+      final hasTimeTrackingAccess = isBeta ||
+          (isPaid &&
+              (subStatus == 'active' || subStatus == 'trialing') &&
+              (plan == 'growth' || plan == 'pro'));
       if (!mounted) return;
       setState(() {
         if (day != null && _dayOrder.contains(day)) {
@@ -223,6 +241,7 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
         }
         if (periodType != null) _payPeriodType = periodType;
         if (periodConfig != null) _payPeriodConfig = periodConfig;
+        _hasTimeTrackingAccess = hasTimeTrackingAccess;
       });
     } catch (e) {
       debugPrint('Week start day load error: $e');
@@ -267,6 +286,7 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
         _payPeriods           = List<Map<String, dynamic>>.from(data['pay_periods'] as List? ?? []);
         _myActiveEntry        = data['my_active_entry'] as Map<String, dynamic>?;
         _weekTotals           = List<Map<String, dynamic>>.from(data['totals'] as List? ?? []);
+        _rangeEntries          = List<Map<String, dynamic>>.from(data['entries'] as List? ?? []);
         _teamProfiles         = List<Map<String, dynamic>>.from(data['team_profiles'] as List? ?? []);
       });
       _startOrStopTicker();
@@ -328,6 +348,7 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
         _myActiveEntry        = data['my_active_entry'] as Map<String, dynamic>?;
         _monthTotals          = List<Map<String, dynamic>>.from(data['totals'] as List? ?? []);
         _dailyTotals          = List<Map<String, dynamic>>.from(data['daily_totals'] as List? ?? []);
+        _rangeEntries          = List<Map<String, dynamic>>.from(data['entries'] as List? ?? []);
         _teamProfiles         = List<Map<String, dynamic>>.from(data['team_profiles'] as List? ?? []);
       });
       _startOrStopTicker();
@@ -438,6 +459,7 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
         _payPeriods           = List<Map<String, dynamic>>.from(data['pay_periods'] as List? ?? []);
         _myActiveEntry        = data['my_active_entry'] as Map<String, dynamic>?;
         _periodTotals         = List<Map<String, dynamic>>.from(data['totals'] as List? ?? []);
+        _rangeEntries          = List<Map<String, dynamic>>.from(data['entries'] as List? ?? []);
         _teamProfiles         = List<Map<String, dynamic>>.from(data['team_profiles'] as List? ?? []);
       });
       _startOrStopTicker();
@@ -795,6 +817,28 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
     return buffer.toString();
   }
 
+  // One row per clock-in/clock-out event, for anyone who wants to
+  // double-check individual shifts rather than just totals.
+  String _buildDetailedCsv(List<Map<String, dynamic>> entries) {
+    final buffer = StringBuffer();
+    buffer.writeln(['Employee', 'Clock In', 'Clock Out', 'Duration (Hours)', 'Status', 'Job', 'Notes']
+        .map(_csvEscape).join(','));
+
+    for (final e in entries) {
+      final name = e['full_name'] as String? ?? 'Unknown';
+      final clockedIn = _formatDateTime(e['clocked_in_at'] as String?);
+      final status = e['status'] as String? ?? 'completed';
+      final clockedOut = status == 'active' ? '—' : _formatDateTime(e['clocked_out_at'] as String?);
+      final minutes = (e['duration_minutes'] as num?)?.toInt();
+      final hours = minutes != null ? (minutes / 60.0).toStringAsFixed(2) : '';
+      final job = (e['appointment_info'] as Map<String, dynamic>?)?['appointment_type'] as String? ?? '';
+      final notes = e['notes'] as String? ?? '';
+      buffer.writeln([name, clockedIn, clockedOut, hours, status, job, notes].map(_csvEscape).join(','));
+    }
+
+    return buffer.toString();
+  }
+
   void _downloadBytes(List<int> bytes, String filename, String mimeType) {
     final blob = web.Blob(
       [Uint8List.fromList(bytes).toJS].toJS,
@@ -814,6 +858,12 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
     if (totals.isEmpty) return;
     final csv = _buildCsv(totals);
     _downloadBytes(utf8.encode(csv), '${_currentExportFilenamePrefix()}.csv', 'text/csv');
+  }
+
+  void _exportDetailedCsv() {
+    if (_rangeEntries.isEmpty) return;
+    final csv = _buildDetailedCsv(_rangeEntries);
+    _downloadBytes(utf8.encode(csv), '${_currentExportFilenamePrefix()}_detailed.csv', 'text/csv');
   }
 
   Future<void> _exportPdf() async {
@@ -1410,6 +1460,8 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (!_hasTimeTrackingAccess) return _buildLockedTeaser();
+
     final isWeekView = _viewMode == 'week';
     final isMonthView = _viewMode == 'month';
     final isPeriodView = _viewMode == 'period';
@@ -1459,6 +1511,74 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
                         ],
                       ]),
                     ),
+        ),
+      ]),
+    );
+  }
+
+  Widget _buildLockedTeaser() {
+    return Scaffold(
+      backgroundColor: AppTheme.pageBg,
+      body: Column(children: [
+        Container(
+          height: 56,
+          padding: const EdgeInsets.symmetric(horizontal: 24),
+          decoration: const BoxDecoration(
+            color: AppTheme.cardBg,
+            border: Border(bottom: BorderSide(color: AppTheme.borderColor)),
+          ),
+          child: const Row(children: [
+            Text('Timesheets',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+          ]),
+        ),
+        Expanded(
+          child: Center(
+            child: Container(
+              width: 420,
+              padding: const EdgeInsets.all(32),
+              decoration: BoxDecoration(
+                color: AppTheme.cardBg,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppTheme.borderColor),
+              ),
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                Container(
+                  width: 56, height: 56,
+                  decoration: BoxDecoration(
+                    color: AppTheme.brand.withValues(alpha: 0.1),
+                    shape: BoxShape.circle,
+                  ),
+                  alignment: Alignment.center,
+                  child: const Icon(Icons.lock_outline, size: 26, color: AppTheme.brand),
+                ),
+                const SizedBox(height: 16),
+                const Text('Timesheets & Payroll is a Growth feature',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+                const SizedBox(height: 8),
+                const Text(
+                  'Clock in/out, pay rate tracking, pay period locking, and payroll export are available on the Growth plan and above.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 13, color: AppTheme.textSecondary, height: 1.4),
+                ),
+                const SizedBox(height: 20),
+                SizedBox(
+                  width: double.infinity, height: 44,
+                  child: ElevatedButton(
+                    onPressed: () => context.go('/settings?section=billing'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppTheme.brand,
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    ),
+                    child: const Text('Upgrade Plan', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                  ),
+                ),
+              ]),
+            ),
+          ),
         ),
       ]),
     );
@@ -1529,10 +1649,12 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
       enabled: !_exportingPdf,
       onSelected: (v) {
         if (v == 'csv') _exportCsv();
+        if (v == 'csv_detailed') _exportDetailedCsv();
         if (v == 'pdf') _exportPdf();
       },
       itemBuilder: (_) => const [
-        PopupMenuItem(value: 'csv', child: Text('Download CSV')),
+        PopupMenuItem(value: 'csv', child: Text('Download CSV (Summary)')),
+        PopupMenuItem(value: 'csv_detailed', child: Text('Download CSV (Detailed)')),
         PopupMenuItem(value: 'pdf', child: Text('Download PDF')),
       ],
       child: Container(

@@ -107,6 +107,30 @@ Deno.serve(async (req) => {
       actorName = profile.full_name ?? "an admin";
     }
 
+    // ── Plan-tier gate: Timesheets & Payroll requires Growth+ ──────────
+    if (!isSuperuser) {
+      const { data: hasTimeTracking, error: gateErr } = await supabase.rpc("check_plan_feature", {
+        p_business_id: effectiveBusinessId,
+        p_feature: "time_tracking",
+      });
+      if (gateErr) {
+        return new Response(JSON.stringify({ error: "Failed to verify plan access: " + gateErr.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      if (!hasTimeTracking) {
+        return new Response(JSON.stringify({
+          error: "upgrade_required",
+          message: "Timesheets & Payroll requires the Growth plan or higher.",
+          upgrade_url: "https://nexaflow-crm.web.app/settings?section=billing",
+        }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+    }
+
     const { data: entry, error: entryError } = await supabase
       .from("time_entries")
       .select("*")

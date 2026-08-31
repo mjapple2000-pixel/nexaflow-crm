@@ -84,6 +84,7 @@ Deno.serve(async (req) => {
     let businessId: number;
     let isOwner: boolean;
     let canManagePayRates: boolean;
+    let isSuperuserCaller = false;
 
     if (profile?.business_id) {
       businessId = profile.business_id;
@@ -106,6 +107,31 @@ Deno.serve(async (req) => {
       businessId = Number(requestedBusinessId);
       isOwner = true;
       canManagePayRates = true;
+      isSuperuserCaller = true;
+    }
+
+    // ── Plan-tier gate: Timesheets & Payroll requires Growth+ ──────────
+    if (!isSuperuserCaller) {
+      const { data: hasTimeTracking, error: gateErr } = await supabase.rpc("check_plan_feature", {
+        p_business_id: businessId,
+        p_feature: "time_tracking",
+      });
+      if (gateErr) {
+        return new Response(JSON.stringify({ error: "Failed to verify plan access: " + gateErr.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      if (!hasTimeTracking) {
+        return new Response(JSON.stringify({
+          error: "upgrade_required",
+          message: "Timesheets & Payroll requires the Growth plan or higher.",
+          upgrade_url: "https://nexaflow-crm.web.app/settings?section=billing",
+        }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
     }
 
     if (!isOwner) {
