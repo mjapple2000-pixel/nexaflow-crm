@@ -5,6 +5,22 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
+// Returns the locked pay_periods row covering this date, or null if the
+// week is unlocked / no pay_periods row exists yet for it.
+// deno-lint-ignore no-explicit-any
+async function getLockedPayPeriod(supabase: any, businessId: number, isoDateTime: string) {
+  const dateOnly = isoDateTime.slice(0, 10); // YYYY-MM-DD, UTC date portion
+  const { data } = await supabase
+    .from("pay_periods")
+    .select("id, week_start, week_end, locked_at")
+    .eq("business_id", businessId)
+    .lte("week_start", dateOnly)
+    .gte("week_end", dateOnly)
+    .not("locked_at", "is", null)
+    .maybeSingle();
+  return data;
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -110,6 +126,23 @@ Deno.serve(async (req) => {
         status: 409,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
+    }
+
+    // Same lock enforcement as edit-timesheet-entry — superusers can still
+    // troubleshoot a stuck clock-in through a locked week; everyone else
+    // must unlock the week first.
+    const lockedPeriod = await getLockedPayPeriod(supabase, effectiveBusinessId!, entry.clocked_in_at);
+    if (lockedPeriod && !isSuperuser) {
+      return new Response(
+        JSON.stringify({
+          error: `This week (${lockedPeriod.week_start} to ${lockedPeriod.week_end}) is locked for payroll. Unlock it first to make changes.`,
+          locked: true,
+        }),
+        {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
     }
 
     const clockedOutAt = new Date();

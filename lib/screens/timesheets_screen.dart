@@ -51,6 +51,9 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
   String _payPeriodType = 'weekly';
   bool _canViewPayRates = false;
   bool _canManageTimesheets = false;
+  bool _canManagePayPeriods = false;
+  List<Map<String, dynamic>> _payPeriods = [];
+  bool _lockActionInProgress = false;
   late DateTime _weekStart;
   bool _weekLoading = true;
   String? _weekError;
@@ -260,6 +263,8 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
         _isOwner              = data['is_owner'] as bool? ?? false;
         _canViewPayRates      = data['can_view_pay_rates'] as bool? ?? false;
         _canManageTimesheets  = data['can_manage_timesheets'] as bool? ?? false;
+        _canManagePayPeriods  = data['can_manage_pay_periods'] as bool? ?? false;
+        _payPeriods           = List<Map<String, dynamic>>.from(data['pay_periods'] as List? ?? []);
         _myActiveEntry        = data['my_active_entry'] as Map<String, dynamic>?;
         _weekTotals           = List<Map<String, dynamic>>.from(data['totals'] as List? ?? []);
         _teamProfiles         = List<Map<String, dynamic>>.from(data['team_profiles'] as List? ?? []);
@@ -318,6 +323,8 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
         _isOwner              = data['is_owner'] as bool? ?? false;
         _canViewPayRates      = data['can_view_pay_rates'] as bool? ?? false;
         _canManageTimesheets  = data['can_manage_timesheets'] as bool? ?? false;
+        _canManagePayPeriods  = data['can_manage_pay_periods'] as bool? ?? false;
+        _payPeriods           = List<Map<String, dynamic>>.from(data['pay_periods'] as List? ?? []);
         _myActiveEntry        = data['my_active_entry'] as Map<String, dynamic>?;
         _monthTotals          = List<Map<String, dynamic>>.from(data['totals'] as List? ?? []);
         _dailyTotals          = List<Map<String, dynamic>>.from(data['daily_totals'] as List? ?? []);
@@ -427,6 +434,8 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
         _isOwner              = data['is_owner'] as bool? ?? false;
         _canViewPayRates      = data['can_view_pay_rates'] as bool? ?? false;
         _canManageTimesheets  = data['can_manage_timesheets'] as bool? ?? false;
+        _canManagePayPeriods  = data['can_manage_pay_periods'] as bool? ?? false;
+        _payPeriods           = List<Map<String, dynamic>>.from(data['pay_periods'] as List? ?? []);
         _myActiveEntry        = data['my_active_entry'] as Map<String, dynamic>?;
         _periodTotals         = List<Map<String, dynamic>>.from(data['totals'] as List? ?? []);
         _teamProfiles         = List<Map<String, dynamic>>.from(data['team_profiles'] as List? ?? []);
@@ -456,6 +465,30 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
       return '${months[_weekStart.month - 1]} ${_weekStart.day} – ${end.day}, ${end.year}';
     }
     return '${months[_weekStart.month - 1]} ${_weekStart.day} – ${months[end.month - 1]} ${end.day}, ${end.year}';
+  }
+
+  // Returns the pay_periods row for the week starting on this date, if any.
+  Map<String, dynamic>? _payPeriodForWeek(DateTime weekStart) {
+    final weekStartStr = weekStart.toIso8601String().substring(0, 10);
+    for (final p in _payPeriods) {
+      if (p['week_start'] == weekStartStr) return p;
+    }
+    return null;
+  }
+
+  // Whether this calendar date falls inside any locked pay period. String
+  // comparison works here since week_start/week_end/date are all
+  // YYYY-MM-DD, which sorts lexicographically the same as chronologically.
+  bool _isDateLocked(DateTime date) {
+    final dateStr = date.toIso8601String().substring(0, 10);
+    for (final p in _payPeriods) {
+      if (p['locked_at'] == null) continue;
+      final ws = p['week_start'] as String?;
+      final we = p['week_end'] as String?;
+      if (ws == null || we == null) continue;
+      if (dateStr.compareTo(ws) >= 0 && dateStr.compareTo(we) <= 0) return true;
+    }
+    return false;
   }
 
   void _switchToWeekView() {
@@ -544,6 +577,8 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
       setState(() {
         _isOwner              = data['is_owner'] as bool? ?? false;
         _canManageTimesheets  = data['can_manage_timesheets'] as bool? ?? false;
+        _canManagePayPeriods  = data['can_manage_pay_periods'] as bool? ?? false;
+        _payPeriods           = List<Map<String, dynamic>>.from(data['pay_periods'] as List? ?? []);
         _myActiveEntry        = data['my_active_entry'] as Map<String, dynamic>?;
         _entries              = List<Map<String, dynamic>>.from(data['entries'] as List? ?? []);
         _totals               = List<Map<String, dynamic>>.from(data['totals'] as List? ?? []);
@@ -872,7 +907,40 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
     );
   }
 
-  void _showAddEntryDialog() {
+  // Refreshes _payPeriods from the full business history (not just the
+  // currently-loaded view's date window) so _isDateLocked is accurate for
+  // any date the Add Entry dialog might be pointed at, regardless of
+  // which view (Week/Month/Period) the user was on when they opened it.
+  Future<void> _refreshAllPayPeriods() async {
+    try {
+      final activeBusinessId = await getActiveBusinessId();
+      if (activeBusinessId == null) return;
+      final rows = await _db
+          .from('pay_periods')
+          .select('id, week_start, week_end, locked_at, locked_by')
+          .eq('business_id', activeBusinessId);
+      if (!mounted) return;
+      final nameByUserId = {
+        for (final p in _teamProfiles)
+          if (p['user_id'] != null) p['user_id'] as String: p['full_name'] as String? ?? 'Unknown',
+      };
+      setState(() {
+        _payPeriods = List<Map<String, dynamic>>.from(rows).map((p) {
+          final lockedBy = p['locked_by'] as String?;
+          return {
+            ...p,
+            'locked_by_name': lockedBy != null ? nameByUserId[lockedBy] : null,
+          };
+        }).toList();
+      });
+    } catch (e) {
+      debugPrint('Pay period refresh error: $e');
+    }
+  }
+
+  Future<void> _showAddEntryDialog() async {
+    await _refreshAllPayPeriods();
+    if (!mounted) return;
     showDialog(
       context: context,
       builder: (_) => _AddTimeEntryDialog(
@@ -890,6 +958,7 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
           notes: notes,
         ),
         onFetchEntriesForUser: _fetchEntriesForUser,
+        isDateLocked: _isDateLocked,
       ),
     );
   }
@@ -927,6 +996,226 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
           SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
         );
       }
+    }
+  }
+
+  // Resolves who to stamp as locked_by. Mirrors the edited_by guard from
+  // TS-02: profiles.user_id has an FK from pay_periods.locked_by, and
+  // superuser accounts have no profiles row by design, so stamping their
+  // id unconditionally would violate that FK. Branch on whether a real
+  // profile row exists, not on any specific account.
+  Future<String?> _resolveLockedByUserId() async {
+    final currentUserId = _db.auth.currentUser?.id;
+    if (currentUserId == null) return null;
+    final myProfile = await _db
+        .from('profiles')
+        .select('user_id')
+        .eq('user_id', currentUserId)
+        .maybeSingle();
+    return myProfile != null ? currentUserId : null;
+  }
+
+  // A locked week should never contain a still-open clock-in — that hour
+  // count isn't final yet. Checked directly against time_entries, which
+  // is readable under the existing business-isolation RLS policy.
+  Future<bool> _weekHasActiveEntry(int businessId, String weekStartStr, String weekEndStr) async {
+    final rows = await _db
+        .from('time_entries')
+        .select('id')
+        .eq('business_id', businessId)
+        .eq('status', 'active')
+        .isFilter('deleted_at', null)
+        .gte('clocked_in_at', '${weekStartStr}T00:00:00.000Z')
+        .lte('clocked_in_at', '${weekEndStr}T23:59:59.999Z')
+        .limit(1);
+    return rows.isNotEmpty;
+  }
+
+  Future<void> _lockWeek() async {
+    if (_lockActionInProgress) return;
+    setState(() => _lockActionInProgress = true);
+    try {
+      final activeBusinessId = await getActiveBusinessId();
+      if (activeBusinessId == null) throw Exception('No active business');
+      final weekStartStr = _weekStart.toIso8601String().substring(0, 10);
+      final weekEndStr = _weekStart.add(const Duration(days: 6)).toIso8601String().substring(0, 10);
+      final hasActive = await _weekHasActiveEntry(activeBusinessId, weekStartStr, weekEndStr);
+      if (!mounted) return;
+      if (hasActive) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Someone is still clocked in this week. Have them clock out (or force clock out) before locking.'),
+            backgroundColor: Colors.orange,
+            duration: Duration(seconds: 4),
+          ),
+        );
+        setState(() => _lockActionInProgress = false);
+        return;
+      }
+      final lockedBy = await _resolveLockedByUserId();
+      if (!mounted) return;
+      await _db.from('pay_periods').upsert({
+        'business_id': activeBusinessId,
+        'week_start': weekStartStr,
+        'week_end': weekEndStr,
+        'locked_at': DateTime.now().toUtc().toIso8601String(),
+        'locked_by': lockedBy,
+      }, onConflict: 'business_id,week_start');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Week locked for payroll.')),
+      );
+      await _loadWeekTotals();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _lockActionInProgress = false);
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> _fetchPayPeriodHistory(int payPeriodId) async {
+    try {
+      final rows = await _db
+          .from('pay_period_audit_log')
+          .select('id, action, actor_user_id, created_at')
+          .eq('pay_period_id', payPeriodId)
+          .order('created_at', ascending: false);
+      return List<Map<String, dynamic>>.from(rows);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error loading history: $e'), backgroundColor: Colors.red),
+        );
+      }
+      return [];
+    }
+  }
+
+  void _showPayPeriodHistory(int payPeriodId) {
+    final nameByUserId = {
+      for (final p in _teamProfiles)
+        if (p['user_id'] != null) p['user_id'] as String: p['full_name'] as String? ?? 'Unknown',
+    };
+    showDialog(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        title: const Text('Lock History'),
+        content: SizedBox(
+          width: 380,
+          child: FutureBuilder<List<Map<String, dynamic>>>(
+            future: _fetchPayPeriodHistory(payPeriodId),
+            builder: (context, snapshot) {
+              if (snapshot.connectionState != ConnectionState.done) {
+                return const SizedBox(
+                  height: 80,
+                  child: Center(child: CircularProgressIndicator()),
+                );
+              }
+              final history = snapshot.data ?? [];
+              if (history.isEmpty) {
+                return const Text('No lock activity recorded for this week.',
+                    style: TextStyle(fontSize: 13, color: AppTheme.textSecondary));
+              }
+              return SizedBox(
+                width: double.maxFinite,
+                child: ListView.separated(
+                  shrinkWrap: true,
+                  itemCount: history.length,
+                  separatorBuilder: (_, __) => const Divider(height: 1, color: AppTheme.borderColor),
+                  itemBuilder: (_, i) {
+                    final h = history[i];
+                    final action = h['action'] as String? ?? 'unknown';
+                    final actorId = h['actor_user_id'] as String?;
+                    final actorName = actorId != null ? (nameByUserId[actorId] ?? 'Unknown') : 'NexaFlow Support';
+                    final at = _formatDateTime(h['created_at'] as String?);
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      child: Row(children: [
+                        Icon(
+                          action == 'locked' ? Icons.lock_outline : Icons.lock_open_outlined,
+                          size: 16,
+                          color: action == 'locked' ? AppTheme.error : AppTheme.success,
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                            Text(action == 'locked' ? 'Locked' : 'Unlocked',
+                                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+                            Text('by $actorName · $at',
+                                style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                          ]),
+                        ),
+                      ]),
+                    );
+                  },
+                ),
+              );
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogCtx, rootNavigator: true).pop(),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _confirmAndUnlockWeek() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        title: const Text('Unlock this week?'),
+        content: const Text(
+            'This week was already locked for payroll. Unlocking it will allow edits to time entries again.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogCtx, rootNavigator: true).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogCtx, rootNavigator: true).pop(true),
+            style: TextButton.styleFrom(foregroundColor: AppTheme.error),
+            child: const Text('Unlock'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    await _unlockWeek();
+  }
+
+  Future<void> _unlockWeek() async {
+    if (_lockActionInProgress) return;
+    setState(() => _lockActionInProgress = true);
+    try {
+      final activeBusinessId = await getActiveBusinessId();
+      if (activeBusinessId == null) throw Exception('No active business');
+      final weekStartStr = _weekStart.toIso8601String().substring(0, 10);
+      await _db
+          .from('pay_periods')
+          .update({'locked_at': null, 'locked_by': null})
+          .eq('business_id', activeBusinessId)
+          .eq('week_start', weekStartStr);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Week unlocked.')),
+      );
+      await _loadWeekTotals();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _lockActionInProgress = false);
     }
   }
 
@@ -1455,6 +1744,8 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
             child: const Text('This Week', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
           ),
         ),
+        const Spacer(),
+        _buildWeekLockControl(),
       ]),
       const SizedBox(height: 16),
       if (_weekTotals.isEmpty)
@@ -1579,6 +1870,77 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
             style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
         const SizedBox(width: 24),
       ]),
+    );
+  }
+
+  Widget _buildWeekLockControl() {
+    final period = _payPeriodForWeek(_weekStart);
+    final isLocked = period != null && period['locked_at'] != null;
+    if (!isLocked && !_canManagePayPeriods) return const SizedBox.shrink();
+
+    if (isLocked) {
+      final lockedByName = period['locked_by_name'] as String?;
+      final lockedAt = period['locked_at'] as String?;
+      final periodId = period['id'] as int?;
+      return Row(mainAxisSize: MainAxisSize.min, children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          decoration: BoxDecoration(
+            color: AppTheme.error.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(color: AppTheme.error.withValues(alpha: 0.3)),
+          ),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            const Icon(Icons.lock_outline, size: 14, color: AppTheme.error),
+            const SizedBox(width: 6),
+            Text(
+              lockedByName != null
+                  ? 'Locked by $lockedByName · ${_formatDateTime(lockedAt)}'
+                  : 'Locked · ${_formatDateTime(lockedAt)}',
+              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppTheme.error),
+            ),
+          ]),
+        ),
+        if (_isOwner && periodId != null) ...[
+          const SizedBox(width: 8),
+          Clickable(
+            onTap: () => _showPayPeriodHistory(periodId),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(border: Border.all(color: AppTheme.borderColor), borderRadius: BorderRadius.circular(6)),
+              child: const Text('History', style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+            ),
+          ),
+        ],
+        if (_canManagePayPeriods) ...[
+          const SizedBox(width: 8),
+          Clickable(
+            onTap: _lockActionInProgress ? null : _confirmAndUnlockWeek,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(border: Border.all(color: AppTheme.borderColor), borderRadius: BorderRadius.circular(6)),
+              child: _lockActionInProgress
+                  ? const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Text('Unlock', style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+            ),
+          ),
+        ],
+      ]);
+    }
+
+    return Clickable(
+      onTap: _lockActionInProgress ? null : _lockWeek,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(border: Border.all(color: AppTheme.borderColor), borderRadius: BorderRadius.circular(6)),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          _lockActionInProgress
+              ? const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2))
+              : const Icon(Icons.lock_open_outlined, size: 14, color: AppTheme.textSecondary),
+          const SizedBox(width: 6),
+          const Text('Lock Week', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
+        ]),
+      ),
     );
   }
 
@@ -2698,6 +3060,7 @@ class _TimeEntryDetailDialogState extends State<_TimeEntryDetailDialog> {
     final status = entry['status'] as String? ?? 'completed';
     final isActive = status == 'active';
     final isManual = status == 'manual';
+    final isWeekLocked = entry['is_week_locked'] as bool? ?? false;
     final name = entry['full_name'] as String? ?? 'Unknown';
     final notes = entry['notes'] as String?;
     final editedByName = entry['edited_by_name'] as String?;
@@ -2735,7 +3098,7 @@ class _TimeEntryDetailDialogState extends State<_TimeEntryDetailDialog> {
                         style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700,
                             color: AppTheme.textPrimary)),
                   ),
-                  if (widget.canManageTimesheets && !_editing) ...[
+                  if (widget.canManageTimesheets && !_editing && !isWeekLocked) ...[
                     IconButton(
                       onPressed: () => setState(() => _editing = true),
                       icon: const Icon(Icons.edit_outlined, size: 18, color: AppTheme.textSecondary),
@@ -2768,6 +3131,15 @@ class _TimeEntryDetailDialogState extends State<_TimeEntryDetailDialog> {
                   const SizedBox(height: 4),
                   Text('Edited by $editedByName on ${_formatDateTime(editedAt)}',
                       style: const TextStyle(fontSize: 11, fontStyle: FontStyle.italic, color: AppTheme.textSecondary)),
+                ],
+                if (isWeekLocked) ...[
+                  const SizedBox(height: 4),
+                  Row(children: [
+                    const Icon(Icons.lock_outline, size: 12, color: AppTheme.error),
+                    const SizedBox(width: 4),
+                    const Text('This week is locked for payroll.',
+                        style: TextStyle(fontSize: 11, color: AppTheme.error)),
+                  ]),
                 ],
                 const SizedBox(height: 16),
                 if (_editing) ...[
@@ -3060,12 +3432,14 @@ class _AddTimeEntryDialog extends StatefulWidget {
   final Future<bool> Function(String targetUserId, DateTime clockedInAt, DateTime clockedOutAt, String? notes) onCreate;
   final Future<bool> Function(int entryId, DateTime clockedInAt, DateTime? clockedOutAt, String? notes) onUpdate;
   final Future<List<Map<String, dynamic>>> Function(String userId) onFetchEntriesForUser;
+  final bool Function(DateTime date) isDateLocked;
 
   const _AddTimeEntryDialog({
     required this.teamProfiles,
     required this.onCreate,
     required this.onUpdate,
     required this.onFetchEntriesForUser,
+    required this.isDateLocked,
   });
 
   @override
@@ -3225,6 +3599,10 @@ class _AddTimeEntryDialogState extends State<_AddTimeEntryDialog> {
     }
 
     final baseDate = _mode == 'edit' ? (_selectedEntryBaseDate ?? DateTime.now()) : _selectedDate;
+    if (widget.isDateLocked(baseDate)) {
+      setState(() => _formError = 'This week is locked for payroll — unlock it first to make changes.');
+      return;
+    }
     var start = _combine(baseDate, _startTime!);
     DateTime? end = _endTime != null ? _combine(baseDate, _endTime!) : null;
     if (end != null && !end.isAfter(start)) {
@@ -3337,31 +3715,44 @@ class _AddTimeEntryDialogState extends State<_AddTimeEntryDialog> {
                     padding: EdgeInsets.symmetric(vertical: 8),
                     child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
                   )
-                else if (_userEntries.isEmpty)
-                  const Text('No shifts found in the last 60 days for this team member.',
+                else if (_userEntries.where((e) => e['is_week_locked'] != true).isEmpty)
+                  const Text('No correctable shifts found in the last 60 days for this team member (some may be in locked pay periods).',
                       style: TextStyle(fontSize: 12, color: AppTheme.textMuted))
                 else
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                    decoration: BoxDecoration(
-                      color: AppTheme.pageBg,
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: AppTheme.borderColor),
-                    ),
-                    child: DropdownButtonHideUnderline(child: DropdownButton<int>(
-                      isExpanded: true,
-                      value: _selectedEntryId,
-                      hint: const Text('Select a shift', style: TextStyle(fontSize: 13, color: AppTheme.textSecondary)),
-                      dropdownColor: AppTheme.cardBg,
-                      style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
-                      items: _userEntries.map((e) => DropdownMenuItem<int>(
-                        value: e['id'] as int,
-                        child: Text(_shiftLabel(e)),
-                      )).toList(),
-                      onChanged: _onEntrySelected,
-                    )),
-                  ),
+                  Builder(builder: (context) {
+                    final selectableEntries = _userEntries.where((e) => e['is_week_locked'] != true).toList();
+                    final hiddenCount = _userEntries.length - selectableEntries.length;
+                    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        decoration: BoxDecoration(
+                          color: AppTheme.pageBg,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: AppTheme.borderColor),
+                        ),
+                        child: DropdownButtonHideUnderline(child: DropdownButton<int>(
+                          isExpanded: true,
+                          value: _selectedEntryId,
+                          hint: const Text('Select a shift', style: TextStyle(fontSize: 13, color: AppTheme.textSecondary)),
+                          dropdownColor: AppTheme.cardBg,
+                          style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                          items: selectableEntries.map((e) => DropdownMenuItem<int>(
+                            value: e['id'] as int,
+                            child: Text(_shiftLabel(e)),
+                          )).toList(),
+                          onChanged: _onEntrySelected,
+                        )),
+                      ),
+                      if (hiddenCount > 0) ...[
+                        const SizedBox(height: 4),
+                        Text(
+                          '$hiddenCount shift${hiddenCount == 1 ? '' : 's'} from locked pay period${hiddenCount == 1 ? '' : 's'} not shown here.',
+                          style: const TextStyle(fontSize: 10, color: AppTheme.textMuted),
+                        ),
+                      ],
+                    ]);
+                  }),
                 const SizedBox(height: 16),
               ],
 
@@ -3385,6 +3776,11 @@ class _AddTimeEntryDialogState extends State<_AddTimeEntryDialog> {
                     ]),
                   ),
                 ),
+                if (widget.isDateLocked(_selectedDate)) ...[
+                  const SizedBox(height: 4),
+                  const Text('This date falls in a pay period that\'s locked for payroll.',
+                      style: TextStyle(fontSize: 10, color: AppTheme.error)),
+                ],
                 const SizedBox(height: 16),
               ] else if (_selectedEntryBaseDate != null) ...[
                 const Text('Date', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppTheme.textSecondary)),

@@ -5,6 +5,22 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
+// Returns the locked pay_periods row covering this date, or null if the
+// week is unlocked / no pay_periods row exists yet for it.
+// deno-lint-ignore no-explicit-any
+async function getLockedPayPeriod(supabase: any, businessId: number, isoDateTime: string) {
+  const dateOnly = isoDateTime.slice(0, 10); // YYYY-MM-DD, UTC date portion
+  const { data } = await supabase
+    .from("pay_periods")
+    .select("id, week_start, week_end, locked_at")
+    .eq("business_id", businessId)
+    .lte("week_start", dateOnly)
+    .gte("week_end", dateOnly)
+    .not("locked_at", "is", null)
+    .maybeSingle();
+  return data;
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -81,6 +97,7 @@ Deno.serve(async (req) => {
 
     let businessId: number;
     let canManageTimesheets: boolean;
+    let isSuperuserCaller = false;
 
     if (profile?.business_id) {
       businessId = profile.business_id;
@@ -103,6 +120,7 @@ Deno.serve(async (req) => {
 
       businessId = Number(requestedBusinessId);
       canManageTimesheets = true; // superuser
+      isSuperuserCaller = true; // superusers can troubleshoot through a locked week
     }
 
     if (!canManageTimesheets) {
@@ -130,7 +148,7 @@ Deno.serve(async (req) => {
 
       const { data: existing, error: fetchError } = await supabase
         .from("time_entries")
-        .select("id, business_id, deleted_at")
+        .select("id, business_id, deleted_at, clocked_in_at")
         .eq("id", entry_id)
         .maybeSingle();
 
@@ -151,6 +169,20 @@ Deno.serve(async (req) => {
           status: 409,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
+      }
+
+      const lockedPeriod = await getLockedPayPeriod(supabase, businessId, existing.clocked_in_at);
+      if (lockedPeriod && !isSuperuserCaller) {
+        return new Response(
+          JSON.stringify({
+            error: `This week (${lockedPeriod.week_start} to ${lockedPeriod.week_end}) is locked for payroll. Unlock it first to make changes.`,
+            locked: true,
+          }),
+          {
+            status: 403,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          }
+        );
       }
 
       const { data: deleted, error: deleteError } = await supabase
@@ -223,6 +255,20 @@ Deno.serve(async (req) => {
         });
       }
 
+      const lockedPeriod = await getLockedPayPeriod(supabase, businessId, clocked_in_at);
+      if (lockedPeriod && !isSuperuserCaller) {
+        return new Response(
+          JSON.stringify({
+            error: `This week (${lockedPeriod.week_start} to ${lockedPeriod.week_end}) is locked for payroll. Unlock it first to make changes.`,
+            locked: true,
+          }),
+          {
+            status: 403,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          }
+        );
+      }
+
       const { data: created, error: insertError } = await supabase
         .from("time_entries")
         .insert({
@@ -262,7 +308,7 @@ Deno.serve(async (req) => {
 
     const { data: existing, error: fetchError } = await supabase
       .from("time_entries")
-      .select("id, business_id, status, deleted_at")
+      .select("id, business_id, status, deleted_at, clocked_in_at")
       .eq("id", entry_id)
       .maybeSingle();
 
@@ -283,6 +329,20 @@ Deno.serve(async (req) => {
         status: 409,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
+    }
+
+    const lockedPeriod = await getLockedPayPeriod(supabase, businessId, existing.clocked_in_at);
+    if (lockedPeriod && !isSuperuserCaller) {
+      return new Response(
+        JSON.stringify({
+          error: `This week (${lockedPeriod.week_start} to ${lockedPeriod.week_end}) is locked for payroll. Unlock it first to make changes.`,
+          locked: true,
+        }),
+        {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
     }
 
     // If the entry was still "active" (no clock-out) and this edit supplies

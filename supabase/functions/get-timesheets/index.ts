@@ -5,6 +5,11 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
+// deno-lint-ignore no-explicit-any
+function findLockedPeriod(payPeriods: any[], dateOnly: string) {
+  return payPeriods.find((p) => p.locked_at && p.week_start <= dateOnly && p.week_end >= dateOnly) ?? null;
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -56,6 +61,7 @@ Deno.serve(async (req) => {
     let isOwner: boolean;
     let canManagePayRates: boolean;
     let canManageTimesheets: boolean;
+    let canManagePayPeriods: boolean;
 
     if (profile?.business_id) {
       businessId = profile.business_id;
@@ -63,6 +69,7 @@ Deno.serve(async (req) => {
       isOwner = profile.role === "owner" || profile.role === "admin" || perms.timesheets_full_view === true;
       canManagePayRates = profile.role === "owner" || profile.role === "admin" || perms.manage_pay_rates === true;
       canManageTimesheets = profile.role === "owner" || profile.role === "admin" || perms.manage_timesheets === true;
+      canManagePayPeriods = profile.role === "owner" || profile.role === "admin";
     } else {
       // No profile row — check if caller is a verified superuser before
       // trusting any business_id from the request body.
@@ -83,6 +90,7 @@ Deno.serve(async (req) => {
       isOwner = true; // superuser sees the full team view
       canManagePayRates = true; // superuser can see pay rates too
       canManageTimesheets = true; // superuser can manage entries too
+      canManagePayPeriods = true; // superuser can lock/unlock too
     }
 
     // ── Fetch active entry for the caller ──────────────────────
@@ -112,6 +120,22 @@ Deno.serve(async (req) => {
         annual_salary: p.annual_salary ?? null,
       };
     }
+
+    // ── Fetch pay period lock state for this business ─────────────────
+    let payPeriodsQuery = supabase
+      .from("pay_periods")
+      .select("id, week_start, week_end, locked_at, locked_by")
+      .eq("business_id", businessId);
+
+    if (start_date) payPeriodsQuery = payPeriodsQuery.gte("week_end", start_date);
+    if (end_date) payPeriodsQuery = payPeriodsQuery.lte("week_start", end_date);
+
+    const { data: payPeriodsRaw } = await payPeriodsQuery;
+
+    const payPeriods = (payPeriodsRaw ?? []).map((p) => ({
+      ...p,
+      locked_by_name: p.locked_by ? (profileMap[p.locked_by] ?? null) : null,
+    }));
 
     // ── Build time_entries query ────────────────────────────
     let query = supabase
@@ -248,13 +272,15 @@ Deno.serve(async (req) => {
       }
     }
 
-    // ── Flag stale entries (active for 14+ hours) ───────────────
+    // ── Flag stale entries (active for 14+ hours) and locked-week entries ──
     const now = new Date();
     const enrichedWithStale = enriched.map((e) => {
-      if (e.status !== "active") return e;
+      const dateOnly = String(e.clocked_in_at).substring(0, 10);
+      const isWeekLocked = findLockedPeriod(payPeriods, dateOnly) != null;
+      if (e.status !== "active") return { ...e, is_week_locked: isWeekLocked };
       const clockedIn = new Date(e.clocked_in_at);
       const hoursElapsed = (now.getTime() - clockedIn.getTime()) / (1000 * 60 * 60);
-      return { ...e, is_stale_display: hoursElapsed >= 14 };
+      return { ...e, is_stale_display: hoursElapsed >= 14, is_week_locked: isWeekLocked };
     });
 
     // ── Optional per-day aggregation for the Month Calendar sub-view ──
@@ -287,6 +313,8 @@ Deno.serve(async (req) => {
         totals: isOwner ? Object.values(totals) : [],
         daily_totals: dailyTotals,
         team_profiles: isOwner ? teamProfilesForResponse : [],
+        can_manage_pay_periods: canManagePayPeriods,
+        pay_periods: payPeriods,
       }),
       {
         status: 200,
