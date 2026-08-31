@@ -50,6 +50,7 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
   String _weekStartDay = 'monday';
   String _payPeriodType = 'weekly';
   bool _canViewPayRates = false;
+  bool _canManageTimesheets = false;
   late DateTime _weekStart;
   bool _weekLoading = true;
   String? _weekError;
@@ -256,11 +257,12 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
       }
 
       setState(() {
-        _isOwner         = data['is_owner'] as bool? ?? false;
-        _canViewPayRates = data['can_view_pay_rates'] as bool? ?? false;
-        _myActiveEntry   = data['my_active_entry'] as Map<String, dynamic>?;
-        _weekTotals      = List<Map<String, dynamic>>.from(data['totals'] as List? ?? []);
-        _teamProfiles    = List<Map<String, dynamic>>.from(data['team_profiles'] as List? ?? []);
+        _isOwner              = data['is_owner'] as bool? ?? false;
+        _canViewPayRates      = data['can_view_pay_rates'] as bool? ?? false;
+        _canManageTimesheets  = data['can_manage_timesheets'] as bool? ?? false;
+        _myActiveEntry        = data['my_active_entry'] as Map<String, dynamic>?;
+        _weekTotals           = List<Map<String, dynamic>>.from(data['totals'] as List? ?? []);
+        _teamProfiles         = List<Map<String, dynamic>>.from(data['team_profiles'] as List? ?? []);
       });
       _startOrStopTicker();
 
@@ -313,12 +315,13 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
       }
 
       setState(() {
-        _isOwner         = data['is_owner'] as bool? ?? false;
-        _canViewPayRates = data['can_view_pay_rates'] as bool? ?? false;
-        _myActiveEntry   = data['my_active_entry'] as Map<String, dynamic>?;
-        _monthTotals     = List<Map<String, dynamic>>.from(data['totals'] as List? ?? []);
-        _dailyTotals     = List<Map<String, dynamic>>.from(data['daily_totals'] as List? ?? []);
-        _teamProfiles    = List<Map<String, dynamic>>.from(data['team_profiles'] as List? ?? []);
+        _isOwner              = data['is_owner'] as bool? ?? false;
+        _canViewPayRates      = data['can_view_pay_rates'] as bool? ?? false;
+        _canManageTimesheets  = data['can_manage_timesheets'] as bool? ?? false;
+        _myActiveEntry        = data['my_active_entry'] as Map<String, dynamic>?;
+        _monthTotals          = List<Map<String, dynamic>>.from(data['totals'] as List? ?? []);
+        _dailyTotals          = List<Map<String, dynamic>>.from(data['daily_totals'] as List? ?? []);
+        _teamProfiles         = List<Map<String, dynamic>>.from(data['team_profiles'] as List? ?? []);
       });
       _startOrStopTicker();
     } catch (e) {
@@ -421,11 +424,12 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
       }
 
       setState(() {
-        _isOwner         = data['is_owner'] as bool? ?? false;
-        _canViewPayRates = data['can_view_pay_rates'] as bool? ?? false;
-        _myActiveEntry   = data['my_active_entry'] as Map<String, dynamic>?;
-        _periodTotals    = List<Map<String, dynamic>>.from(data['totals'] as List? ?? []);
-        _teamProfiles    = List<Map<String, dynamic>>.from(data['team_profiles'] as List? ?? []);
+        _isOwner              = data['is_owner'] as bool? ?? false;
+        _canViewPayRates      = data['can_view_pay_rates'] as bool? ?? false;
+        _canManageTimesheets  = data['can_manage_timesheets'] as bool? ?? false;
+        _myActiveEntry        = data['my_active_entry'] as Map<String, dynamic>?;
+        _periodTotals         = List<Map<String, dynamic>>.from(data['totals'] as List? ?? []);
+        _teamProfiles         = List<Map<String, dynamic>>.from(data['team_profiles'] as List? ?? []);
       });
       _startOrStopTicker();
     } catch (e) {
@@ -538,11 +542,12 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
       }
 
       setState(() {
-        _isOwner       = data['is_owner'] as bool? ?? false;
-        _myActiveEntry = data['my_active_entry'] as Map<String, dynamic>?;
-        _entries       = List<Map<String, dynamic>>.from(data['entries'] as List? ?? []);
-        _totals        = List<Map<String, dynamic>>.from(data['totals'] as List? ?? []);
-        _teamProfiles  = List<Map<String, dynamic>>.from(data['team_profiles'] as List? ?? []);
+        _isOwner              = data['is_owner'] as bool? ?? false;
+        _canManageTimesheets  = data['can_manage_timesheets'] as bool? ?? false;
+        _myActiveEntry        = data['my_active_entry'] as Map<String, dynamic>?;
+        _entries              = List<Map<String, dynamic>>.from(data['entries'] as List? ?? []);
+        _totals               = List<Map<String, dynamic>>.from(data['totals'] as List? ?? []);
+        _teamProfiles         = List<Map<String, dynamic>>.from(data['team_profiles'] as List? ?? []);
       });
       _startOrStopTicker();
     } catch (e) {
@@ -854,7 +859,37 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
       builder: (_) => _TimeEntryDetailDialog(
         entry: entry,
         isOwner: _isOwner,
+        canManageTimesheets: _canManageTimesheets,
         onForceClockOut: () => _forceClockOut(entry['id'] as int),
+        onSave: (entryId, clockedInAt, clockedOutAt, notes) => _saveTimeEntry(
+          entryId: entryId,
+          clockedInAt: clockedInAt,
+          clockedOutAt: clockedOutAt,
+          notes: notes,
+        ),
+        onDelete: (entryId) => _deleteTimeEntry(entryId),
+      ),
+    );
+  }
+
+  void _showAddEntryDialog() {
+    showDialog(
+      context: context,
+      builder: (_) => _AddTimeEntryDialog(
+        teamProfiles: _teamProfiles,
+        onCreate: (targetUserId, clockedInAt, clockedOutAt, notes) => _createTimeEntry(
+          targetUserId: targetUserId,
+          clockedInAt: clockedInAt,
+          clockedOutAt: clockedOutAt,
+          notes: notes,
+        ),
+        onUpdate: (entryId, clockedInAt, clockedOutAt, notes) => _saveTimeEntry(
+          entryId: entryId,
+          clockedInAt: clockedInAt,
+          clockedOutAt: clockedOutAt,
+          notes: notes,
+        ),
+        onFetchEntriesForUser: _fetchEntriesForUser,
       ),
     );
   }
@@ -892,6 +927,195 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
           SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
         );
       }
+    }
+  }
+
+  // Reloads whichever view is currently active — used after a manual
+  // edit/create/delete so the totals and table reflect the change.
+  Future<void> _reloadCurrentView() async {
+    if (_viewMode == 'week') {
+      await _loadWeekTotals();
+    } else if (_viewMode == 'month') {
+      await _loadMonthTotals();
+    } else if (_viewMode == 'period') {
+      await _loadPeriodTotals();
+    } else {
+      await _load();
+    }
+  }
+
+  Future<bool> _saveTimeEntry({
+    required int entryId,
+    required DateTime clockedInAt,
+    DateTime? clockedOutAt,
+    String? notes,
+  }) async {
+    try {
+      await _db.auth.refreshSession();
+      final token = _db.auth.currentSession?.accessToken;
+      if (token == null) throw Exception('Not authenticated');
+
+      final body = <String, dynamic>{
+        'action': 'update',
+        'entry_id': entryId,
+        'clocked_in_at': clockedInAt.toUtc().toIso8601String(),
+        if (clockedOutAt != null) 'clocked_out_at': clockedOutAt.toUtc().toIso8601String(),
+        'notes': notes,
+      };
+      final activeBusinessId = await getActiveBusinessId();
+      if (activeBusinessId != null) body['business_id'] = activeBusinessId;
+
+      final resp = await http.post(
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/edit-timesheet-entry'),
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode(body),
+      );
+      if (!mounted) return false;
+      final data = jsonDecode(resp.body);
+      if (resp.statusCode != 200 || data['success'] != true) {
+        throw Exception(data['error'] ?? 'Failed to update entry');
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Time entry updated.')),
+      );
+      await _reloadCurrentView();
+      return true;
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+        );
+      }
+      return false;
+    }
+  }
+
+  Future<bool> _deleteTimeEntry(int entryId) async {
+    try {
+      await _db.auth.refreshSession();
+      final token = _db.auth.currentSession?.accessToken;
+      if (token == null) throw Exception('Not authenticated');
+
+      final body = <String, dynamic>{'action': 'delete', 'entry_id': entryId};
+      final activeBusinessId = await getActiveBusinessId();
+      if (activeBusinessId != null) body['business_id'] = activeBusinessId;
+
+      final resp = await http.post(
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/edit-timesheet-entry'),
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode(body),
+      );
+      if (!mounted) return false;
+      final data = jsonDecode(resp.body);
+      if (resp.statusCode != 200 || data['success'] != true) {
+        throw Exception(data['error'] ?? 'Failed to delete entry');
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Time entry deleted.')),
+      );
+      await _reloadCurrentView();
+      return true;
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+        );
+      }
+      return false;
+    }
+  }
+
+  Future<bool> _createTimeEntry({
+    required String targetUserId,
+    required DateTime clockedInAt,
+    required DateTime clockedOutAt,
+    String? notes,
+  }) async {
+    try {
+      await _db.auth.refreshSession();
+      final token = _db.auth.currentSession?.accessToken;
+      if (token == null) throw Exception('Not authenticated');
+
+      final body = <String, dynamic>{
+        'action': 'create',
+        'target_user_id': targetUserId,
+        'clocked_in_at': clockedInAt.toUtc().toIso8601String(),
+        'clocked_out_at': clockedOutAt.toUtc().toIso8601String(),
+        'notes': notes,
+      };
+      final activeBusinessId = await getActiveBusinessId();
+      if (activeBusinessId != null) body['business_id'] = activeBusinessId;
+
+      final resp = await http.post(
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/edit-timesheet-entry'),
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode(body),
+      );
+      if (!mounted) return false;
+      final data = jsonDecode(resp.body);
+      if (resp.statusCode != 200 || data['success'] != true) {
+        throw Exception(data['error'] ?? 'Failed to create entry');
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Time entry added.')),
+      );
+      await _reloadCurrentView();
+      return true;
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+        );
+      }
+      return false;
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> _fetchEntriesForUser(String userId) async {
+    try {
+      await _db.auth.refreshSession();
+      final token = _db.auth.currentSession?.accessToken;
+      if (token == null) throw Exception('Not authenticated');
+
+      final endDate = DateTime.now();
+      final startDate = endDate.subtract(const Duration(days: 60));
+      final body = <String, dynamic>{
+        'user_id_filter': userId,
+        'start_date': startDate.toIso8601String().substring(0, 10),
+        'end_date': endDate.toIso8601String().substring(0, 10),
+      };
+      final activeBusinessId = await getActiveBusinessId();
+      if (activeBusinessId != null) body['business_id'] = activeBusinessId;
+
+      final resp = await http.post(
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/get-timesheets'),
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode(body),
+      );
+      final data = jsonDecode(resp.body);
+      if (resp.statusCode != 200 || data['success'] != true) {
+        throw Exception(data['error'] ?? 'Failed to load shifts');
+      }
+      return List<Map<String, dynamic>>.from(data['entries'] as List? ?? []);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error loading shifts: $e'), backgroundColor: Colors.red),
+        );
+      }
+      return [];
     }
   }
 
@@ -965,6 +1189,10 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
         const SizedBox(width: 20),
         if (_isOwner) _buildViewToggle(),
         const Spacer(),
+        if (_canManageTimesheets) ...[
+          _buildAddEntryButton(),
+          const SizedBox(width: 8),
+        ],
         if (_canExport) ...[
           _buildExportButton(),
           const SizedBox(width: 8),
@@ -985,6 +1213,25 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
           tooltip: 'Refresh',
         ),
       ]),
+    );
+  }
+
+  Widget _buildAddEntryButton() {
+    return Clickable(
+      onTap: _showAddEntryDialog,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: AppTheme.pageBg,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: AppTheme.borderColor),
+        ),
+        child: const Row(mainAxisSize: MainAxisSize.min, children: [
+          Icon(Icons.add, size: 16, color: AppTheme.textSecondary),
+          SizedBox(width: 6),
+          Text('Add Entry', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
+        ]),
+      ),
     );
   }
 
@@ -2245,16 +2492,55 @@ class _LiveDurationState extends State<_LiveDuration> {
   Widget build(BuildContext context) => Text(_format(_elapsed), style: widget.style);
 }
 
-class _TimeEntryDetailDialog extends StatelessWidget {
+class _TimeEntryDetailDialog extends StatefulWidget {
   final Map<String, dynamic> entry;
   final bool isOwner;
+  final bool canManageTimesheets;
   final VoidCallback onForceClockOut;
+  final Future<bool> Function(int entryId, DateTime clockedInAt, DateTime? clockedOutAt, String? notes) onSave;
+  final Future<bool> Function(int entryId) onDelete;
 
   const _TimeEntryDetailDialog({
     required this.entry,
     required this.isOwner,
+    required this.canManageTimesheets,
     required this.onForceClockOut,
+    required this.onSave,
+    required this.onDelete,
   });
+
+  @override
+  State<_TimeEntryDetailDialog> createState() => _TimeEntryDetailDialogState();
+}
+
+class _TimeEntryDetailDialogState extends State<_TimeEntryDetailDialog> {
+  bool _editing = false;
+  bool _saving = false;
+  bool _deleting = false;
+  late TimeOfDay _editStartTime;
+  TimeOfDay? _editEndTime;
+  late TextEditingController _notesController;
+  String? _formError;
+
+  Map<String, dynamic> get entry => widget.entry;
+
+  @override
+  void initState() {
+    super.initState();
+    final startDt = DateTime.tryParse(entry['clocked_in_at'] as String? ?? '')?.toLocal();
+    final endDt = DateTime.tryParse(entry['clocked_out_at'] as String? ?? '')?.toLocal();
+    _editStartTime = startDt != null
+        ? TimeOfDay(hour: startDt.hour, minute: startDt.minute)
+        : const TimeOfDay(hour: 8, minute: 0);
+    _editEndTime = endDt != null ? TimeOfDay(hour: endDt.hour, minute: endDt.minute) : null;
+    _notesController = TextEditingController(text: entry['notes'] as String? ?? '');
+  }
+
+  @override
+  void dispose() {
+    _notesController.dispose();
+    super.dispose();
+  }
 
   String _formatDateTime(String? raw) {
     if (raw == null) return '—';
@@ -2265,6 +2551,13 @@ class _TimeEntryDetailDialog extends StatelessWidget {
     final m = dt.minute.toString().padLeft(2, '0');
     final ampm = dt.hour < 12 ? 'AM' : 'PM';
     return '${months[dt.month - 1]} ${dt.day} · $h:$m $ampm';
+  }
+
+  String _formatTimeOfDay(TimeOfDay? t) {
+    if (t == null) return 'Select time';
+    final h = t.hourOfPeriod == 0 ? 12 : t.hourOfPeriod;
+    final m = t.minute.toString().padLeft(2, '0');
+    return '$h:$m ${t.period == DayPeriod.am ? 'AM' : 'PM'}';
   }
 
   String _formatDuration(int? minutes) {
@@ -2329,18 +2622,102 @@ class _TimeEntryDetailDialog extends StatelessWidget {
     return '$h:$m ${dt.hour < 12 ? 'AM' : 'PM'}';
   }
 
+  Future<void> _pickEditStartTime() async {
+    final picked = await showTimePicker(context: context, initialTime: _editStartTime);
+    if (!mounted || picked == null) return;
+    setState(() => _editStartTime = picked);
+  }
+
+  Future<void> _pickEditEndTime() async {
+    final picked = await showTimePicker(context: context, initialTime: _editEndTime ?? const TimeOfDay(hour: 17, minute: 0));
+    if (!mounted || picked == null) return;
+    setState(() => _editEndTime = picked);
+  }
+
+  DateTime _combine(TimeOfDay time) {
+    final baseDt = DateTime.tryParse(entry['clocked_in_at'] as String? ?? '')?.toLocal() ?? DateTime.now();
+    return DateTime(baseDt.year, baseDt.month, baseDt.day, time.hour, time.minute);
+  }
+
+  Future<void> _saveEdit() async {
+    var start = _combine(_editStartTime);
+    DateTime? end = _editEndTime != null ? _combine(_editEndTime!) : null;
+    if (end != null && !end.isAfter(start)) {
+      // Overnight shift — end time-of-day is earlier than start, roll to next day.
+      end = end.add(const Duration(days: 1));
+    }
+    setState(() { _formError = null; _saving = true; });
+    final success = await widget.onSave(
+      entry['id'] as int,
+      start,
+      end,
+      _notesController.text.trim().isEmpty ? null : _notesController.text.trim(),
+    );
+    if (!mounted) return;
+    if (success) {
+      Navigator.of(context, rootNavigator: true).pop();
+    } else {
+      setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _confirmDelete() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        title: const Text('Delete this time entry?'),
+        content: const Text(
+            'This removes the entry from the employee\'s totals. This can\'t be undone from here — contact support if you need it restored.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogCtx, rootNavigator: true).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogCtx, rootNavigator: true).pop(true),
+            style: TextButton.styleFrom(foregroundColor: AppTheme.error),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _deleting = true);
+    final success = await widget.onDelete(entry['id'] as int);
+    if (!mounted) return;
+    if (success) {
+      Navigator.of(context, rootNavigator: true).pop();
+    } else {
+      setState(() => _deleting = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final status = entry['status'] as String? ?? 'completed';
     final isActive = status == 'active';
+    final isManual = status == 'manual';
     final name = entry['full_name'] as String? ?? 'Unknown';
     final notes = entry['notes'] as String?;
+    final editedByName = entry['edited_by_name'] as String?;
+    final editedAt = entry['edited_at'] as String?;
     final shiftCheckIns = List<Map<String, dynamic>>.from(entry['shift_check_ins'] as List? ?? []);
 
     final clockInLat = (entry['clock_in_lat'] as num?)?.toDouble();
     final clockInLng = (entry['clock_in_lng'] as num?)?.toDouble();
     final clockOutLat = (entry['clock_out_lat'] as num?)?.toDouble();
     final clockOutLng = (entry['clock_out_lng'] as num?)?.toDouble();
+
+    Color badgeColor = AppTheme.textSecondary;
+    String badgeLabel = 'Completed';
+    if (isActive) {
+      badgeColor = AppTheme.success;
+      badgeLabel = 'Clocked In';
+    } else if (isManual) {
+      badgeColor = AppTheme.brand;
+      badgeLabel = 'Manual Entry';
+    }
 
     return Dialog(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -2358,40 +2735,103 @@ class _TimeEntryDetailDialog extends StatelessWidget {
                         style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700,
                             color: AppTheme.textPrimary)),
                   ),
+                  if (widget.canManageTimesheets && !_editing) ...[
+                    IconButton(
+                      onPressed: () => setState(() => _editing = true),
+                      icon: const Icon(Icons.edit_outlined, size: 18, color: AppTheme.textSecondary),
+                      tooltip: 'Edit entry',
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                    ),
+                    IconButton(
+                      onPressed: _deleting ? null : _confirmDelete,
+                      icon: _deleting
+                          ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                          : const Icon(Icons.delete_outline, size: 18, color: AppTheme.error),
+                      tooltip: 'Delete entry',
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                    ),
+                    const SizedBox(width: 4),
+                  ],
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                     decoration: BoxDecoration(
-                      color: isActive
-                          ? AppTheme.success.withValues(alpha: 0.1)
-                          : AppTheme.borderColor.withValues(alpha: 0.3),
+                      color: badgeColor.withValues(alpha: 0.1),
                       borderRadius: BorderRadius.circular(99),
                     ),
-                    child: Text(isActive ? 'Clocked In' : 'Completed',
-                        style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600,
-                            color: isActive ? AppTheme.success : AppTheme.textSecondary)),
+                    child: Text(badgeLabel,
+                        style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: badgeColor)),
                   ),
                 ]),
+                if (editedByName != null && editedAt != null) ...[
+                  const SizedBox(height: 4),
+                  Text('Edited by $editedByName on ${_formatDateTime(editedAt)}',
+                      style: const TextStyle(fontSize: 11, fontStyle: FontStyle.italic, color: AppTheme.textSecondary)),
+                ],
                 const SizedBox(height: 16),
-                Row(children: [
-                  Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    const Text('Clocked In', style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
-                    const SizedBox(height: 2),
-                    Text(_formatDateTime(entry['clocked_in_at'] as String?),
-                        style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
-                  ])),
-                  Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    const Text('Clocked Out', style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
-                    const SizedBox(height: 2),
-                    Text(isActive ? '—' : _formatDateTime(entry['clocked_out_at'] as String?),
-                        style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
-                  ])),
-                  Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    const Text('Duration', style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
-                    const SizedBox(height: 2),
-                    Text(isActive ? 'In progress' : _formatDuration(entry['duration_minutes'] as int?),
-                        style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
-                  ])),
-                ]),
+                if (_editing) ...[
+                  Row(children: [
+                    Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      const Text('Clocked In', style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                      const SizedBox(height: 4),
+                      Clickable(
+                        onTap: _pickEditStartTime,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                          decoration: BoxDecoration(
+                            color: AppTheme.pageBg,
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: AppTheme.borderColor),
+                          ),
+                          child: Text(_formatTimeOfDay(_editStartTime),
+                              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+                        ),
+                      ),
+                    ])),
+                    const SizedBox(width: 12),
+                    Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      const Text('Clocked Out', style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                      const SizedBox(height: 4),
+                      Clickable(
+                        onTap: _pickEditEndTime,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                          decoration: BoxDecoration(
+                            color: AppTheme.pageBg,
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: AppTheme.borderColor),
+                          ),
+                          child: Text(_formatTimeOfDay(_editEndTime),
+                              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+                        ),
+                      ),
+                    ])),
+                  ]),
+                  const SizedBox(height: 4),
+                  const Text('Correcting the date isn\'t supported here — only the time of day.',
+                      style: TextStyle(fontSize: 10, color: AppTheme.textMuted)),
+                ] else
+                  Row(children: [
+                    Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      const Text('Clocked In', style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                      const SizedBox(height: 2),
+                      Text(_formatDateTime(entry['clocked_in_at'] as String?),
+                          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+                    ])),
+                    Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      const Text('Clocked Out', style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                      const SizedBox(height: 2),
+                      Text(isActive ? '—' : _formatDateTime(entry['clocked_out_at'] as String?),
+                          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+                    ])),
+                    Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      const Text('Duration', style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                      const SizedBox(height: 2),
+                      Text(isActive ? 'In progress' : _formatDuration(entry['duration_minutes'] as int?),
+                          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+                    ])),
+                  ]),
                 const SizedBox(height: 20),
                 Builder(builder: (context) {
                   final apptInfo = entry['appointment_info'] as Map<String, dynamic>?;
@@ -2450,7 +2890,7 @@ class _TimeEntryDetailDialog extends StatelessWidget {
                       style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
                   const SizedBox(height: 8),
                   ...shiftCheckIns.map((c) {
-                    final name = c['appointment_name'] as String? ?? 'Job';
+                    final ciName = c['appointment_name'] as String? ?? 'Job';
                     final loc = c['location'] as String?;
                     final at = DateTime.tryParse(c['checked_in_at'] as String? ?? '')?.toLocal();
                     return InkWell(
@@ -2460,7 +2900,7 @@ class _TimeEntryDetailDialog extends StatelessWidget {
                         backgroundColor: Colors.transparent,
                         builder: (_) => _CheckInDetailSheet(
                           appointmentId: c['appointment_id'] as int,
-                          appointmentName: name,
+                          appointmentName: ciName,
                           location: loc,
                           checkedInAt: at,
                         ),
@@ -2481,7 +2921,7 @@ class _TimeEntryDetailDialog extends StatelessWidget {
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text(name, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+                                Text(ciName, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
                                 if (loc != null && loc.isNotEmpty)
                                   Text(loc, style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
                               ],
@@ -2496,11 +2936,32 @@ class _TimeEntryDetailDialog extends StatelessWidget {
                     );
                   }),
                 ],
-                if (notes != null && notes.trim().isNotEmpty) ...[
-                  const SizedBox(height: 16),
-                  const Text('Notes',
-                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
-                  const SizedBox(height: 6),
+                const SizedBox(height: 16),
+                const Text('Notes',
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+                const SizedBox(height: 6),
+                if (_editing)
+                  TextField(
+                    controller: _notesController,
+                    maxLines: 3,
+                    style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary),
+                    decoration: InputDecoration(
+                      hintText: 'Add a note about this correction',
+                      hintStyle: const TextStyle(fontSize: 12, color: AppTheme.textMuted),
+                      filled: true,
+                      fillColor: AppTheme.pageBg,
+                      contentPadding: const EdgeInsets.all(12),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        borderSide: const BorderSide(color: AppTheme.borderColor),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        borderSide: const BorderSide(color: AppTheme.borderColor),
+                      ),
+                    ),
+                  )
+                else if (notes != null && notes.trim().isNotEmpty)
                   Container(
                     width: double.infinity,
                     padding: const EdgeInsets.all(12),
@@ -2511,45 +2972,554 @@ class _TimeEntryDetailDialog extends StatelessWidget {
                     ),
                     child: Text(notes,
                         style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary, height: 1.4)),
-                  ),
+                  )
+                else
+                  const Text('No notes.', style: TextStyle(fontSize: 12, color: AppTheme.textMuted)),
+                if (_formError != null) ...[
+                  const SizedBox(height: 10),
+                  Text(_formError!, style: const TextStyle(fontSize: 12, color: AppTheme.error)),
                 ],
                 const SizedBox(height: 24),
-                Row(children: [
-                  if (isOwner && isActive) ...[
+                if (_editing)
+                  Row(children: [
                     Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: () {
-                          Navigator.of(context, rootNavigator: true).pop();
-                          onForceClockOut();
-                        },
-                        icon: const Icon(Icons.stop_circle_outlined, size: 16, color: AppTheme.error),
-                        label: const Text('Force Clock Out'),
+                      child: OutlinedButton(
+                        onPressed: _saving ? null : () => setState(() => _editing = false),
                         style: OutlinedButton.styleFrom(
-                          foregroundColor: AppTheme.error,
-                          side: const BorderSide(color: AppTheme.error),
+                          foregroundColor: AppTheme.textSecondary,
+                          side: const BorderSide(color: AppTheme.borderColor),
                           padding: const EdgeInsets.symmetric(vertical: 12),
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                         ),
+                        child: const Text('Cancel'),
                       ),
                     ),
                     const SizedBox(width: 10),
-                  ],
-                  Expanded(
-                    child: ElevatedButton(
-                      onPressed: () => Navigator.of(context, rootNavigator: true).pop(),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: AppTheme.brand,
-                        foregroundColor: Colors.white,
-                        elevation: 0,
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: _saving ? null : _saveEdit,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppTheme.brand,
+                          foregroundColor: Colors.white,
+                          elevation: 0,
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                        ),
+                        child: _saving
+                            ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                            : const Text('Save Changes'),
                       ),
-                      child: const Text('Close'),
                     ),
-                  ),
-                ]),
+                  ])
+                else
+                  Row(children: [
+                    if (widget.isOwner && isActive) ...[
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: () {
+                            Navigator.of(context, rootNavigator: true).pop();
+                            widget.onForceClockOut();
+                          },
+                          icon: const Icon(Icons.stop_circle_outlined, size: 16, color: AppTheme.error),
+                          label: const Text('Force Clock Out'),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: AppTheme.error,
+                            side: const BorderSide(color: AppTheme.error),
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                    ],
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: () => Navigator.of(context, rootNavigator: true).pop(),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppTheme.brand,
+                          foregroundColor: Colors.white,
+                          elevation: 0,
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                        ),
+                        child: const Text('Close'),
+                      ),
+                    ),
+                  ]),
               ],
             ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _AddTimeEntryDialog extends StatefulWidget {
+  final List<Map<String, dynamic>> teamProfiles;
+  final Future<bool> Function(String targetUserId, DateTime clockedInAt, DateTime clockedOutAt, String? notes) onCreate;
+  final Future<bool> Function(int entryId, DateTime clockedInAt, DateTime? clockedOutAt, String? notes) onUpdate;
+  final Future<List<Map<String, dynamic>>> Function(String userId) onFetchEntriesForUser;
+
+  const _AddTimeEntryDialog({
+    required this.teamProfiles,
+    required this.onCreate,
+    required this.onUpdate,
+    required this.onFetchEntriesForUser,
+  });
+
+  @override
+  State<_AddTimeEntryDialog> createState() => _AddTimeEntryDialogState();
+}
+
+class _AddTimeEntryDialogState extends State<_AddTimeEntryDialog> {
+  // 'new' adds a fresh shift; 'edit' corrects the start/end time of a
+  // shift the employee already clocked. Nothing is ever deleted either way.
+  String _mode = 'new';
+
+  String? _selectedUserId;
+  DateTime _selectedDate = DateTime.now();
+  TimeOfDay? _startTime;
+  TimeOfDay? _endTime;
+  final _notesController = TextEditingController();
+  bool _saving = false;
+  String? _formError;
+
+  bool _entriesLoading = false;
+  List<Map<String, dynamic>> _userEntries = [];
+  int? _selectedEntryId;
+  DateTime? _selectedEntryBaseDate;
+
+  @override
+  void dispose() {
+    _notesController.dispose();
+    super.dispose();
+  }
+
+  String _formatDate(DateTime dt) {
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    return '${months[dt.month - 1]} ${dt.day}, ${dt.year}';
+  }
+
+  String _formatTime(TimeOfDay? t) {
+    if (t == null) return 'Select time';
+    final h = t.hourOfPeriod == 0 ? 12 : t.hourOfPeriod;
+    final m = t.minute.toString().padLeft(2, '0');
+    return '$h:$m ${t.period == DayPeriod.am ? 'AM' : 'PM'}';
+  }
+
+  String _shiftLabel(Map<String, dynamic> e) {
+    final start = DateTime.tryParse(e['clocked_in_at'] as String? ?? '')?.toLocal();
+    final end = DateTime.tryParse(e['clocked_out_at'] as String? ?? '')?.toLocal();
+    if (start == null) return 'Shift';
+    final dateStr = _formatDate(start);
+    final startStr = _formatTime(TimeOfDay(hour: start.hour, minute: start.minute));
+    final endStr = end != null ? _formatTime(TimeOfDay(hour: end.hour, minute: end.minute)) : 'In progress';
+    return '$dateStr · $startStr – $endStr';
+  }
+
+  Future<void> _pickDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _selectedDate,
+      firstDate: DateTime(2020),
+      lastDate: DateTime.now().add(const Duration(days: 1)),
+    );
+    if (!mounted || picked == null) return;
+    setState(() => _selectedDate = picked);
+  }
+
+  Future<void> _pickStartTime() async {
+    final picked = await showTimePicker(
+      context: context,
+      initialTime: _startTime ?? const TimeOfDay(hour: 8, minute: 0),
+    );
+    if (!mounted || picked == null) return;
+    setState(() => _startTime = picked);
+  }
+
+  Future<void> _pickEndTime() async {
+    final picked = await showTimePicker(
+      context: context,
+      initialTime: _endTime ?? const TimeOfDay(hour: 17, minute: 0),
+    );
+    if (!mounted || picked == null) return;
+    setState(() => _endTime = picked);
+  }
+
+  Future<void> _onUserSelected(String? userId) async {
+    setState(() {
+      _selectedUserId = userId;
+      _selectedEntryId = null;
+      _selectedEntryBaseDate = null;
+      _userEntries = [];
+      _startTime = null;
+      _endTime = null;
+      _notesController.clear();
+      _formError = null;
+    });
+    if (userId == null || _mode != 'edit') return;
+    setState(() => _entriesLoading = true);
+    final entries = await widget.onFetchEntriesForUser(userId);
+    if (!mounted) return;
+    setState(() {
+      _userEntries = entries;
+      _entriesLoading = false;
+    });
+  }
+
+  void _onModeChanged(String mode) {
+    setState(() {
+      _mode = mode;
+      _selectedEntryId = null;
+      _selectedEntryBaseDate = null;
+      _userEntries = [];
+      _startTime = null;
+      _endTime = null;
+      _notesController.clear();
+      _formError = null;
+    });
+    if (mode == 'edit' && _selectedUserId != null) {
+      _onUserSelected(_selectedUserId);
+    }
+  }
+
+  void _onEntrySelected(int? entryId) {
+    final selected = _userEntries.firstWhere(
+      (e) => e['id'] == entryId,
+      orElse: () => <String, dynamic>{},
+    );
+    if (selected.isEmpty) return;
+    final start = DateTime.tryParse(selected['clocked_in_at'] as String? ?? '')?.toLocal();
+    final end = DateTime.tryParse(selected['clocked_out_at'] as String? ?? '')?.toLocal();
+    setState(() {
+      _selectedEntryId = entryId;
+      _selectedEntryBaseDate = start;
+      _startTime = start != null ? TimeOfDay(hour: start.hour, minute: start.minute) : null;
+      _endTime = end != null ? TimeOfDay(hour: end.hour, minute: end.minute) : null;
+      _notesController.text = selected['notes'] as String? ?? '';
+      _formError = null;
+    });
+  }
+
+  DateTime _combine(DateTime baseDate, TimeOfDay time) => DateTime(
+        baseDate.year, baseDate.month, baseDate.day, time.hour, time.minute,
+      );
+
+  Future<void> _save() async {
+    if (_selectedUserId == null) {
+      setState(() => _formError = 'Select a team member.');
+      return;
+    }
+    if (_mode == 'edit' && _selectedEntryId == null) {
+      setState(() => _formError = 'Select which shift to correct.');
+      return;
+    }
+    if (_startTime == null) {
+      setState(() => _formError = 'Set a start time.');
+      return;
+    }
+    if (_mode == 'new' && _endTime == null) {
+      setState(() => _formError = 'Set an end time.');
+      return;
+    }
+
+    final baseDate = _mode == 'edit' ? (_selectedEntryBaseDate ?? DateTime.now()) : _selectedDate;
+    var start = _combine(baseDate, _startTime!);
+    DateTime? end = _endTime != null ? _combine(baseDate, _endTime!) : null;
+    if (end != null && !end.isAfter(start)) {
+      // Overnight shift — end time-of-day is earlier than start, roll to next day.
+      end = end.add(const Duration(days: 1));
+    }
+
+    setState(() { _formError = null; _saving = true; });
+
+    final notes = _notesController.text.trim().isEmpty ? null : _notesController.text.trim();
+    final success = _mode == 'edit'
+        ? await widget.onUpdate(_selectedEntryId!, start, end, notes)
+        : await widget.onCreate(_selectedUserId!, start, end!, notes);
+
+    if (!mounted) return;
+    if (success) {
+      Navigator.of(context, rootNavigator: true).pop();
+    } else {
+      setState(() => _saving = false);
+    }
+  }
+
+  Widget _modeToggleBtn(String label, String mode) {
+    final sel = _mode == mode;
+    return Expanded(
+      child: Clickable(
+        onTap: () => _onModeChanged(mode),
+        child: Container(
+          alignment: Alignment.center,
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          decoration: BoxDecoration(
+            color: sel ? AppTheme.brand : Colors.transparent,
+            borderRadius: BorderRadius.circular(6),
+          ),
+          child: Text(label,
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600,
+                  color: sel ? Colors.white : AppTheme.textSecondary)),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final members = widget.teamProfiles.where((p) => p['user_id'] != null).toList();
+
+    return Dialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 480),
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Add Time Entry',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+              const SizedBox(height: 4),
+              const Text('Nothing is ever deleted here — this only adds a shift or corrects one that was already clocked.',
+                  style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+              const SizedBox(height: 16),
+
+              Container(
+                decoration: BoxDecoration(
+                  color: AppTheme.pageBg,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppTheme.borderColor),
+                ),
+                padding: const EdgeInsets.all(3),
+                child: Row(children: [
+                  _modeToggleBtn('Add New Shift', 'new'),
+                  _modeToggleBtn('Correct Existing Shift', 'edit'),
+                ]),
+              ),
+              const SizedBox(height: 20),
+
+              const Text('Team Member', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppTheme.textSecondary)),
+              const SizedBox(height: 6),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                decoration: BoxDecoration(
+                  color: AppTheme.pageBg,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppTheme.borderColor),
+                ),
+                child: DropdownButtonHideUnderline(child: DropdownButton<String>(
+                  isExpanded: true,
+                  value: _selectedUserId,
+                  hint: const Text('Select team member', style: TextStyle(fontSize: 13, color: AppTheme.textSecondary)),
+                  dropdownColor: AppTheme.cardBg,
+                  style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                  items: members.map((m) => DropdownMenuItem<String>(
+                    value: m['user_id'] as String,
+                    child: Text(m['full_name'] as String? ?? 'Unknown'),
+                  )).toList(),
+                  onChanged: _onUserSelected,
+                )),
+              ),
+              const SizedBox(height: 16),
+
+              if (_mode == 'edit') ...[
+                const Text('Shift to Correct', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppTheme.textSecondary)),
+                const SizedBox(height: 6),
+                if (_selectedUserId == null)
+                  const Text('Select a team member first.', style: TextStyle(fontSize: 12, color: AppTheme.textMuted))
+                else if (_entriesLoading)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 8),
+                    child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+                  )
+                else if (_userEntries.isEmpty)
+                  const Text('No shifts found in the last 60 days for this team member.',
+                      style: TextStyle(fontSize: 12, color: AppTheme.textMuted))
+                else
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    decoration: BoxDecoration(
+                      color: AppTheme.pageBg,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: AppTheme.borderColor),
+                    ),
+                    child: DropdownButtonHideUnderline(child: DropdownButton<int>(
+                      isExpanded: true,
+                      value: _selectedEntryId,
+                      hint: const Text('Select a shift', style: TextStyle(fontSize: 13, color: AppTheme.textSecondary)),
+                      dropdownColor: AppTheme.cardBg,
+                      style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                      items: _userEntries.map((e) => DropdownMenuItem<int>(
+                        value: e['id'] as int,
+                        child: Text(_shiftLabel(e)),
+                      )).toList(),
+                      onChanged: _onEntrySelected,
+                    )),
+                  ),
+                const SizedBox(height: 16),
+              ],
+
+              if (_mode == 'new') ...[
+                const Text('Date', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppTheme.textSecondary)),
+                const SizedBox(height: 6),
+                Clickable(
+                  onTap: _pickDate,
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                    decoration: BoxDecoration(
+                      color: AppTheme.pageBg,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: AppTheme.borderColor),
+                    ),
+                    child: Row(children: [
+                      const Icon(Icons.calendar_today_outlined, size: 14, color: AppTheme.textSecondary),
+                      const SizedBox(width: 8),
+                      Text(_formatDate(_selectedDate), style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary)),
+                    ]),
+                  ),
+                ),
+                const SizedBox(height: 16),
+              ] else if (_selectedEntryBaseDate != null) ...[
+                const Text('Date', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppTheme.textSecondary)),
+                const SizedBox(height: 6),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: AppTheme.pageBg,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: AppTheme.borderColor),
+                  ),
+                  child: Row(children: [
+                    const Icon(Icons.calendar_today_outlined, size: 14, color: AppTheme.textMuted),
+                    const SizedBox(width: 8),
+                    Text(_formatDate(_selectedEntryBaseDate!), style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary)),
+                    const Spacer(),
+                    const Text('From original shift', style: TextStyle(fontSize: 10, color: AppTheme.textMuted)),
+                  ]),
+                ),
+                const SizedBox(height: 4),
+                const Text('Only the time of day can be corrected here — not the date.',
+                    style: TextStyle(fontSize: 10, color: AppTheme.textMuted)),
+                const SizedBox(height: 16),
+              ],
+
+              Row(children: [
+                Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  const Text('Start Time', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppTheme.textSecondary)),
+                  const SizedBox(height: 6),
+                  Clickable(
+                    onTap: _pickStartTime,
+                    child: Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                      decoration: BoxDecoration(
+                        color: AppTheme.pageBg,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: AppTheme.borderColor),
+                      ),
+                      child: Row(children: [
+                        const Icon(Icons.schedule_outlined, size: 14, color: AppTheme.textSecondary),
+                        const SizedBox(width: 8),
+                        Text(_formatTime(_startTime), style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary)),
+                      ]),
+                    ),
+                  ),
+                ])),
+                const SizedBox(width: 12),
+                Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  const Text('End Time', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppTheme.textSecondary)),
+                  const SizedBox(height: 6),
+                  Clickable(
+                    onTap: _pickEndTime,
+                    child: Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                      decoration: BoxDecoration(
+                        color: AppTheme.pageBg,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: AppTheme.borderColor),
+                      ),
+                      child: Row(children: [
+                        const Icon(Icons.schedule_outlined, size: 14, color: AppTheme.textSecondary),
+                        const SizedBox(width: 8),
+                        Text(_formatTime(_endTime), style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary)),
+                      ]),
+                    ),
+                  ),
+                ])),
+              ]),
+              const SizedBox(height: 16),
+
+              const Text('Notes (optional)', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppTheme.textSecondary)),
+              const SizedBox(height: 6),
+              TextField(
+                controller: _notesController,
+                maxLines: 3,
+                style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                decoration: InputDecoration(
+                  hintText: _mode == 'edit'
+                      ? 'Add a note about this correction'
+                      : 'e.g. Forgot to clock in, confirmed with employee',
+                  hintStyle: const TextStyle(fontSize: 12, color: AppTheme.textMuted),
+                  filled: true,
+                  fillColor: AppTheme.pageBg,
+                  contentPadding: const EdgeInsets.all(12),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(8),
+                    borderSide: const BorderSide(color: AppTheme.borderColor),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(8),
+                    borderSide: const BorderSide(color: AppTheme.borderColor),
+                  ),
+                ),
+              ),
+
+              if (_formError != null) ...[
+                const SizedBox(height: 10),
+                Text(_formError!, style: const TextStyle(fontSize: 12, color: AppTheme.error)),
+              ],
+
+              const SizedBox(height: 24),
+              Row(children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: _saving ? null : () => Navigator.of(context, rootNavigator: true).pop(),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: AppTheme.textSecondary,
+                      side: const BorderSide(color: AppTheme.borderColor),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    ),
+                    child: const Text('Cancel'),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: ElevatedButton(
+                    onPressed: _saving ? null : _save,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppTheme.brand,
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    ),
+                    child: _saving
+                        ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                        : Text(_mode == 'edit' ? 'Save Correction' : 'Add Entry'),
+                  ),
+                ),
+              ]),
+            ],
           ),
         ),
       ),

@@ -55,12 +55,14 @@ Deno.serve(async (req) => {
     let businessId: number;
     let isOwner: boolean;
     let canManagePayRates: boolean;
+    let canManageTimesheets: boolean;
 
     if (profile?.business_id) {
       businessId = profile.business_id;
       const perms = (profile.permissions ?? {}) as Record<string, unknown>;
       isOwner = profile.role === "owner" || profile.role === "admin" || perms.timesheets_full_view === true;
       canManagePayRates = profile.role === "owner" || profile.role === "admin" || perms.manage_pay_rates === true;
+      canManageTimesheets = profile.role === "owner" || profile.role === "admin" || perms.manage_timesheets === true;
     } else {
       // No profile row — check if caller is a verified superuser before
       // trusting any business_id from the request body.
@@ -80,6 +82,7 @@ Deno.serve(async (req) => {
       businessId = Number(requestedBusinessId);
       isOwner = true; // superuser sees the full team view
       canManagePayRates = true; // superuser can see pay rates too
+      canManageTimesheets = true; // superuser can manage entries too
     }
 
     // ── Fetch active entry for the caller ──────────────────────
@@ -208,6 +211,7 @@ Deno.serve(async (req) => {
       return {
         ...e,
         full_name: profileMap[e.user_id] ?? "Unknown",
+        edited_by_name: e.edited_by ? (profileMap[e.edited_by] ?? null) : null,
         appointment_info: e.appointment_id ? (appointmentMap[e.appointment_id] ?? null) : null,
         shift_check_ins: shiftCheckIns,
       };
@@ -277,6 +281,7 @@ Deno.serve(async (req) => {
         success: true,
         is_owner: isOwner,
         can_view_pay_rates: isOwner ? canManagePayRates : false,
+        can_manage_timesheets: canManageTimesheets,
         my_active_entry: myActiveEntry ?? null,
         entries: enrichedWithStale,
         totals: isOwner ? Object.values(totals) : [],
