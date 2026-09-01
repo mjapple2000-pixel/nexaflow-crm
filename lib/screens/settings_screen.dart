@@ -10697,6 +10697,11 @@ class _PayrollSettingsSectionState extends State<_PayrollSettingsSection> {
   int _semiDayOne = 1;
   int _semiDayTwo = 16;
   bool _defaultBreakPaid = false;
+  bool _dailyOtEnabled = false;
+  final _dailyThresholdCtrl = TextEditingController();
+  bool _weeklyOtEnabled = true;
+  final _weeklyThresholdCtrl = TextEditingController(text: '40');
+  bool _loadingOvertimeRules = true;
   bool _saving = false;
   String? _successMsg;
   String? _error;
@@ -10728,6 +10733,48 @@ class _PayrollSettingsSectionState extends State<_PayrollSettingsSection> {
     _semiDayOne = (config['day_one'] as num?)?.toInt() ?? 1;
     _semiDayTwo = (config['day_two'] as num?)?.toInt() ?? 16;
     _defaultBreakPaid = b['default_break_paid'] as bool? ?? false;
+    _loadOvertimeRules();
+  }
+
+  @override
+  void dispose() {
+    _dailyThresholdCtrl.dispose();
+    _weeklyThresholdCtrl.dispose();
+    super.dispose();
+  }
+
+  bool get _hasOvertimeAccess {
+    final plan = widget.business['plan'] as String? ?? '';
+    final isBeta = widget.business['is_beta'] as bool? ?? false;
+    return isBeta || plan == 'pro';
+  }
+
+  Future<void> _loadOvertimeRules() async {
+    final businessId = widget.business['id'] as int?;
+    if (businessId == null) {
+      if (mounted) setState(() => _loadingOvertimeRules = false);
+      return;
+    }
+    try {
+      final row = await Supabase.instance.client
+          .from('overtime_rules')
+          .select('daily_threshold_hours, daily_ot_enabled, weekly_threshold_hours, weekly_ot_enabled')
+          .eq('business_id', businessId)
+          .filter('deleted_at', 'is', null)
+          .maybeSingle();
+      if (row != null && mounted) {
+        _dailyOtEnabled = row['daily_ot_enabled'] as bool? ?? false;
+        final dailyThreshold = row['daily_threshold_hours'];
+        _dailyThresholdCtrl.text = dailyThreshold != null ? (dailyThreshold as num).toString() : '';
+        _weeklyOtEnabled = row['weekly_ot_enabled'] as bool? ?? true;
+        final weeklyThreshold = row['weekly_threshold_hours'];
+        _weeklyThresholdCtrl.text = weeklyThreshold != null ? (weeklyThreshold as num).toString() : '40';
+      }
+    } catch (e) {
+      debugPrint('Overtime rules load error: $e');
+    } finally {
+      if (mounted) setState(() => _loadingOvertimeRules = false);
+    }
   }
 
   Future<void> _pickAnchorDate() async {
@@ -10746,23 +10793,88 @@ class _PayrollSettingsSectionState extends State<_PayrollSettingsSection> {
       setState(() => _error = 'Pick an anchor date for biweekly pay periods.');
       return;
     }
+    double? dailyThresholdValue;
+    if (_hasOvertimeAccess && _dailyOtEnabled) {
+      dailyThresholdValue = double.tryParse(_dailyThresholdCtrl.text.trim());
+      if (dailyThresholdValue == null || dailyThresholdValue <= 0) {
+        setState(() => _error = 'Enter a valid daily overtime threshold (hours).');
+        return;
+      }
+    }
+    double weeklyThresholdValue = 40;
+    if (_hasOvertimeAccess) {
+      final parsed = double.tryParse(_weeklyThresholdCtrl.text.trim());
+      if (parsed == null || parsed <= 0) {
+        setState(() => _error = 'Enter a valid weekly overtime threshold (hours).');
+        return;
+      }
+      weeklyThresholdValue = parsed;
+    }
     setState(() { _saving = true; _error = null; _successMsg = null; });
     try {
+      // overtime_rules is a separate table, not a businesses column, so it
+      // gets its own check-then-write here — TS-06's unique index on
+      // business_id is partial (WHERE deleted_at IS NULL), and Postgres
+      // ON CONFLICT can't target a partial index via supabase-js's plain
+      // column-name onConflict, so this does the update-or-insert by hand.
+      //
+      // This runs BEFORE widget.onSave() below, deliberately. widget.onSave
+      // triggers the parent Settings screen's _loadBusiness(), which briefly
+      // swaps this whole section out for a full-page spinner while it
+      // re-fetches — tearing down and rebuilding this widget's State mid-save.
+      // Anything sequenced after that await (including the success setState)
+      // can silently no-op once that happens, which is why the save looked
+      // like it needed two tries: the write was landing, but the
+      // confirmation never had a live widget left to show it.
+      if (_hasOvertimeAccess) {
+        final businessId = widget.business['id'] as int?;
+        if (businessId != null) {
+          final payload = {
+            'business_id': businessId,
+            'daily_threshold_hours': _dailyOtEnabled ? dailyThresholdValue : null,
+            'daily_ot_enabled': _dailyOtEnabled,
+            'weekly_threshold_hours': weeklyThresholdValue,
+            'weekly_ot_enabled': _weeklyOtEnabled,
+            'updated_at': DateTime.now().toUtc().toIso8601String(),
+          };
+          final existingRow = await Supabase.instance.client
+              .from('overtime_rules')
+              .select('id')
+              .eq('business_id', businessId)
+              .filter('deleted_at', 'is', null)
+              .maybeSingle();
+          if (existingRow != null) {
+            await Supabase.instance.client
+                .from('overtime_rules')
+                .update(payload)
+                .eq('id', existingRow['id']);
+          } else {
+            await Supabase.instance.client.from('overtime_rules').insert(payload);
+          }
+        }
+      }
+
       Map<String, dynamic> config = {};
       if (_payPeriodType == 'biweekly') {
         config = {'anchor_date': _biweeklyAnchor!.toIso8601String().substring(0, 10)};
       } else if (_payPeriodType == 'semimonthly') {
         config = {'day_one': _semiDayOne, 'day_two': _semiDayTwo};
       }
+
+      // Show confirmation now, while this widget is still guaranteed to be
+      // mounted, before handing off to the parent's disruptive reload.
+      if (mounted) {
+        setState(() { _successMsg = 'Payroll settings saved.'; _saving = false; });
+      }
+
       await widget.onSave({
         'week_start_day': _weekStartDay,
         'pay_period_type': _payPeriodType,
         'pay_period_config': config,
         'default_break_paid': _defaultBreakPaid,
       });
-      setState(() { _successMsg = 'Payroll settings saved.'; _saving = false; });
     } catch (e) {
-      setState(() { _error = e.toString(); _saving = false; });
+      if (mounted) setState(() { _error = e.toString(); _saving = false; });
     }
   }
 
@@ -10931,6 +11043,115 @@ class _PayrollSettingsSectionState extends State<_PayrollSettingsSection> {
             value: _defaultBreakPaid,
             onChanged: (v) => setState(() => _defaultBreakPaid = v),
           ),
+        ]),
+        const SizedBox(height: 24),
+        _SettingsGroup(title: 'Overtime', children: [
+          if (!_hasOvertimeAccess) ...[
+            Row(children: [
+              Container(
+                width: 36, height: 36,
+                decoration: BoxDecoration(
+                  color: AppTheme.brand.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Icon(Icons.lock_outline, size: 16, color: AppTheme.brand),
+              ),
+              const SizedBox(width: 12),
+              const Expanded(
+                child: Text(
+                  'Automatic overtime flagging is available on the Pro plan. Upgrade to set daily and weekly thresholds and see regular vs. overtime hours broken out in Timesheets.',
+                  style: TextStyle(fontSize: 12, color: AppTheme.textSecondary, height: 1.4),
+                ),
+              ),
+              const SizedBox(width: 12),
+              MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: ElevatedButton(
+                  onPressed: () => context.go('/settings?section=billing'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppTheme.brand,
+                    foregroundColor: Colors.white,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  child: const Text('Upgrade'),
+                ),
+              ),
+            ]),
+          ] else if (_loadingOvertimeRules) ...[
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: Center(child: SizedBox(width: 18, height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2))),
+            ),
+          ] else ...[
+            const Text(
+              'Sets the thresholds used to flag overtime on the Timesheets Week view. These are the numbers NexaFlow uses to split regular vs. overtime hours — always double check your state\'s actual labor law.',
+              style: TextStyle(fontSize: 11, color: AppTheme.textSecondary, height: 1.4),
+            ),
+            const SizedBox(height: 14),
+            _ToggleRow(
+              label: 'Daily Overtime',
+              subtitle: 'Flag hours worked beyond a daily threshold as overtime, on top of the weekly rule below.',
+              value: _dailyOtEnabled,
+              onChanged: (v) => setState(() => _dailyOtEnabled = v),
+            ),
+            if (_dailyOtEnabled) ...[
+              const SizedBox(height: 4),
+              SizedBox(
+                width: 180,
+                child: TextField(
+                  controller: _dailyThresholdCtrl,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                  decoration: InputDecoration(
+                    labelText: 'Daily Threshold (hours)',
+                    hintText: 'e.g. 8',
+                    filled: true, fillColor: AppTheme.pageBg,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                        borderSide: const BorderSide(color: AppTheme.borderColor)),
+                    enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                        borderSide: const BorderSide(color: AppTheme.borderColor)),
+                    focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                        borderSide: BorderSide(color: AppTheme.brand, width: 1.5)),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+            ],
+            const Divider(color: AppTheme.borderColor, height: 1),
+            const SizedBox(height: 12),
+            _ToggleRow(
+              label: 'Weekly Overtime',
+              subtitle: 'Flag hours worked beyond a weekly threshold as overtime, once daily overtime (if any) is already accounted for.',
+              value: _weeklyOtEnabled,
+              onChanged: (v) => setState(() => _weeklyOtEnabled = v),
+            ),
+            if (_weeklyOtEnabled) ...[
+              const SizedBox(height: 4),
+              SizedBox(
+                width: 180,
+                child: TextField(
+                  controller: _weeklyThresholdCtrl,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                  decoration: InputDecoration(
+                    labelText: 'Weekly Threshold (hours)',
+                    hintText: 'e.g. 40',
+                    filled: true, fillColor: AppTheme.pageBg,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                        borderSide: const BorderSide(color: AppTheme.borderColor)),
+                    enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                        borderSide: const BorderSide(color: AppTheme.borderColor)),
+                    focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                        borderSide: BorderSide(color: AppTheme.brand, width: 1.5)),
+                  ),
+                ),
+              ),
+            ],
+          ],
         ]),
       ]),
     );

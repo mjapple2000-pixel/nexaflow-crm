@@ -26,6 +26,7 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
   bool _loading = true;
   bool _isOwner = false;
   bool _hasTimeTrackingAccess = true;
+  bool _hasOvertimeTracking = false;
   Map<String, dynamic>? _myActiveEntry;
   List<Map<String, dynamic>> _entries = [];
   List<Map<String, dynamic>> _totals = [];
@@ -288,6 +289,7 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
         _weekTotals           = List<Map<String, dynamic>>.from(data['totals'] as List? ?? []);
         _rangeEntries          = List<Map<String, dynamic>>.from(data['entries'] as List? ?? []);
         _teamProfiles         = List<Map<String, dynamic>>.from(data['team_profiles'] as List? ?? []);
+        _hasOvertimeTracking  = data['has_overtime_tracking'] as bool? ?? false;
       });
       _startOrStopTicker();
 
@@ -708,6 +710,12 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
     return '${h}h ${m}m';
   }
 
+  // TS-06: how many of _weekTotals have any overtime minutes this week —
+  // powers the "X employees have overtime this week" banner.
+  int get _weekOvertimeEmployeeCount => _weekTotals
+      .where((t) => ((t['overtime_minutes'] as num?)?.toInt() ?? 0) > 0)
+      .length;
+
   double? _computePay(Map<String, dynamic> t) {
     if (!_canViewPayRates) return null;
     final payType = t['pay_type'] as String? ?? 'hourly';
@@ -778,11 +786,15 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
 
   String _buildCsv(List<Map<String, dynamic>> totals) {
     final buffer = StringBuffer();
-    final headers = ['Employee', 'Total Hours', 'Break Hours', 'Entries'];
+    final headers = ['Employee', 'Total Hours'];
+    if (_hasOvertimeTracking) headers.addAll(['Regular Hours', 'Overtime Hours']);
+    headers.addAll(['Break Hours', 'Entries']);
     if (_canViewPayRates) headers.addAll(['Pay Type', 'Rate', 'Total Pay']);
     buffer.writeln(headers.map(_csvEscape).join(','));
 
     int grandMinutes = 0;
+    int grandRegularMinutes = 0;
+    int grandOvertimeMinutes = 0;
     int grandBreakMinutes = 0;
     int grandEntries = 0;
     double grandPay = 0;
@@ -790,13 +802,21 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
     for (final t in totals) {
       final name = t['full_name'] as String? ?? 'Unknown';
       final minutes = (t['total_minutes'] as num?)?.toInt() ?? 0;
+      final regularMinutes = (t['regular_minutes'] as num?)?.toInt() ?? minutes;
+      final overtimeMinutes = (t['overtime_minutes'] as num?)?.toInt() ?? 0;
       final breakMinutes = (t['total_break_minutes'] as num?)?.toInt() ?? 0;
       final count = (t['entry_count'] as num?)?.toInt() ?? 0;
       grandMinutes += minutes;
+      grandRegularMinutes += regularMinutes;
+      grandOvertimeMinutes += overtimeMinutes;
       grandBreakMinutes += breakMinutes;
       grandEntries += count;
 
-      final row = <String>[name, (minutes / 60.0).toStringAsFixed(2), (breakMinutes / 60.0).toStringAsFixed(2), '$count'];
+      final row = <String>[name, (minutes / 60.0).toStringAsFixed(2)];
+      if (_hasOvertimeTracking) {
+        row.addAll([(regularMinutes / 60.0).toStringAsFixed(2), (overtimeMinutes / 60.0).toStringAsFixed(2)]);
+      }
+      row.addAll([(breakMinutes / 60.0).toStringAsFixed(2), '$count']);
       if (_canViewPayRates) {
         final payType = t['pay_type'] as String? ?? 'hourly';
         final rateVal = payType == 'salary'
@@ -813,7 +833,11 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
       buffer.writeln(row.map(_csvEscape).join(','));
     }
 
-    final totalRow = <String>['TOTAL', (grandMinutes / 60.0).toStringAsFixed(2), (grandBreakMinutes / 60.0).toStringAsFixed(2), '$grandEntries'];
+    final totalRow = <String>['TOTAL', (grandMinutes / 60.0).toStringAsFixed(2)];
+    if (_hasOvertimeTracking) {
+      totalRow.addAll([(grandRegularMinutes / 60.0).toStringAsFixed(2), (grandOvertimeMinutes / 60.0).toStringAsFixed(2)]);
+    }
+    totalRow.addAll([(grandBreakMinutes / 60.0).toStringAsFixed(2), '$grandEntries']);
     if (_canViewPayRates) totalRow.addAll(['', '', grandPay.toStringAsFixed(2)]);
     buffer.writeln(totalRow.map(_csvEscape).join(','));
 
@@ -1915,6 +1939,25 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
         const Spacer(),
         _buildWeekLockControl(),
       ]),
+      if (_hasOvertimeTracking && _weekOvertimeEmployeeCount > 0) ...[
+        const SizedBox(height: 12),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          decoration: BoxDecoration(
+            color: Colors.orange.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: Colors.orange.withValues(alpha: 0.3)),
+          ),
+          child: Row(children: [
+            const Icon(Icons.warning_amber_rounded, size: 16, color: Colors.orange),
+            const SizedBox(width: 8),
+            Text(
+              '$_weekOvertimeEmployeeCount ${_weekOvertimeEmployeeCount == 1 ? 'employee has' : 'employees have'} overtime this week — double check before running payroll.',
+              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.orange),
+            ),
+          ]),
+        ),
+      ],
       const SizedBox(height: 16),
       if (_weekTotals.isEmpty)
         Container(
@@ -1950,6 +1993,14 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
                 const Expanded(flex: 2, child: Text('TOTAL HOURS',
                     style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
                         color: AppTheme.textSecondary, letterSpacing: 1))),
+                if (_hasOvertimeTracking) ...[
+                  const Expanded(flex: 2, child: Text('REGULAR',
+                      style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                          color: AppTheme.textSecondary, letterSpacing: 1))),
+                  const Expanded(flex: 2, child: Text('OT',
+                      style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                          color: AppTheme.textSecondary, letterSpacing: 1))),
+                ],
                 const Expanded(flex: 2, child: Text('BREAK',
                     style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
                         color: AppTheme.textSecondary, letterSpacing: 1))),
@@ -1973,6 +2024,8 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
                 final userId  = t['user_id'] as String?;
                 final name    = t['full_name'] as String? ?? 'Unknown';
                 final minutes = (t['total_minutes'] as num?)?.toInt() ?? 0;
+                final overtimeMinutes = (t['overtime_minutes'] as num?)?.toInt() ?? 0;
+                final regularMinutes = (t['regular_minutes'] as num?)?.toInt();
                 final breakMinutes = (t['total_break_minutes'] as num?)?.toInt() ?? 0;
                 final count   = (t['entry_count'] as num?)?.toInt() ?? 0;
                 final pay     = _computePay(t);
@@ -2005,6 +2058,15 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
                       ])),
                       Expanded(flex: 2, child: Text(_formatDuration(minutes),
                           style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.brand))),
+                      if (_hasOvertimeTracking) ...[
+                        Expanded(flex: 2, child: Text(
+                            regularMinutes != null ? _formatDuration(regularMinutes) : _formatDuration(minutes),
+                            style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary))),
+                        Expanded(flex: 2, child: Text(
+                            overtimeMinutes > 0 ? _formatDuration(overtimeMinutes) : '—',
+                            style: TextStyle(fontSize: 13, fontWeight: overtimeMinutes > 0 ? FontWeight.w700 : FontWeight.w400,
+                                color: overtimeMinutes > 0 ? Colors.orange : AppTheme.textSecondary))),
+                      ],
                       Expanded(flex: 2, child: Text(
                           breakMinutes > 0 ? _formatDuration(breakMinutes) : '—',
                           style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary))),
@@ -2027,6 +2089,8 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
 
   Widget _buildWeekGrandTotalRow() {
     final totalMinutes = _weekTotals.fold<int>(0, (sum, t) => sum + ((t['total_minutes'] as num?)?.toInt() ?? 0));
+    final totalOvertimeMinutes = _weekTotals.fold<int>(0, (sum, t) => sum + ((t['overtime_minutes'] as num?)?.toInt() ?? 0));
+    final totalRegularMinutes = _weekTotals.fold<int>(0, (sum, t) => sum + ((t['regular_minutes'] as num?)?.toInt() ?? (t['total_minutes'] as num?)?.toInt() ?? 0));
     final totalBreakMinutes = _weekTotals.fold<int>(0, (sum, t) => sum + ((t['total_break_minutes'] as num?)?.toInt() ?? 0));
     final totalEntries = _weekTotals.fold<int>(0, (sum, t) => sum + ((t['entry_count'] as num?)?.toInt() ?? 0));
     final totalPay = _weekTotals.fold<double>(0, (sum, t) => sum + (_computePay(t) ?? 0));
@@ -2040,6 +2104,14 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
             style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
         Expanded(flex: 2, child: Text(_formatDuration(totalMinutes),
             style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.brand))),
+        if (_hasOvertimeTracking) ...[
+          Expanded(flex: 2, child: Text(_formatDuration(totalRegularMinutes),
+              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
+          Expanded(flex: 2, child: Text(
+              totalOvertimeMinutes > 0 ? _formatDuration(totalOvertimeMinutes) : '—',
+              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700,
+                  color: totalOvertimeMinutes > 0 ? Colors.orange : AppTheme.textSecondary))),
+        ],
         Expanded(flex: 2, child: Text(
             totalBreakMinutes > 0 ? _formatDuration(totalBreakMinutes) : '—',
             style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textSecondary))),
@@ -2230,6 +2302,14 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
             const Expanded(flex: 2, child: Text('TOTAL HOURS',
                 style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
                     color: AppTheme.textSecondary, letterSpacing: 1))),
+            if (_hasOvertimeTracking) ...[
+              const Expanded(flex: 2, child: Text('REGULAR',
+                  style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                      color: AppTheme.textSecondary, letterSpacing: 1))),
+              const Expanded(flex: 2, child: Text('OT',
+                  style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                      color: AppTheme.textSecondary, letterSpacing: 1))),
+            ],
             const Expanded(flex: 2, child: Text('ENTRIES',
                 style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
                     color: AppTheme.textSecondary, letterSpacing: 1))),
@@ -2250,6 +2330,8 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
             final userId  = t['user_id'] as String?;
             final name    = t['full_name'] as String? ?? 'Unknown';
             final minutes = (t['total_minutes'] as num?)?.toInt() ?? 0;
+            final regularMinutes = (t['regular_minutes'] as num?)?.toInt();
+            final overtimeMinutes = (t['overtime_minutes'] as num?)?.toInt() ?? 0;
             final count   = (t['entry_count'] as num?)?.toInt() ?? 0;
             final pay     = _computePay(t);
             final initials = name.trim().split(' ')
@@ -2277,6 +2359,15 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
                   ])),
                   Expanded(flex: 2, child: Text(_formatDuration(minutes),
                       style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.brand))),
+                  if (_hasOvertimeTracking) ...[
+                    Expanded(flex: 2, child: Text(
+                        regularMinutes != null ? _formatDuration(regularMinutes) : _formatDuration(minutes),
+                        style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary))),
+                    Expanded(flex: 2, child: Text(
+                        overtimeMinutes > 0 ? _formatDuration(overtimeMinutes) : '—',
+                        style: TextStyle(fontSize: 13, fontWeight: overtimeMinutes > 0 ? FontWeight.w700 : FontWeight.w400,
+                            color: overtimeMinutes > 0 ? Colors.orange : AppTheme.textSecondary))),
+                  ],
                   Expanded(flex: 2, child: Text('$count',
                       style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary))),
                   if (_canViewPayRates)
@@ -2295,6 +2386,8 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
 
   Widget _buildMonthGrandTotalRow() {
     final totalMinutes = _monthTotals.fold<int>(0, (sum, t) => sum + ((t['total_minutes'] as num?)?.toInt() ?? 0));
+    final totalOvertimeMinutes = _monthTotals.fold<int>(0, (sum, t) => sum + ((t['overtime_minutes'] as num?)?.toInt() ?? 0));
+    final totalRegularMinutes = _monthTotals.fold<int>(0, (sum, t) => sum + ((t['regular_minutes'] as num?)?.toInt() ?? (t['total_minutes'] as num?)?.toInt() ?? 0));
     final totalEntries = _monthTotals.fold<int>(0, (sum, t) => sum + ((t['entry_count'] as num?)?.toInt() ?? 0));
     final totalPay = _monthTotals.fold<double>(0, (sum, t) => sum + (_computePay(t) ?? 0));
     return Container(
@@ -2307,6 +2400,14 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
             style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
         Expanded(flex: 2, child: Text(_formatDuration(totalMinutes),
             style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.brand))),
+        if (_hasOvertimeTracking) ...[
+          Expanded(flex: 2, child: Text(_formatDuration(totalRegularMinutes),
+              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
+          Expanded(flex: 2, child: Text(
+              totalOvertimeMinutes > 0 ? _formatDuration(totalOvertimeMinutes) : '—',
+              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700,
+                  color: totalOvertimeMinutes > 0 ? Colors.orange : AppTheme.textSecondary))),
+        ],
         Expanded(flex: 2, child: Text('$totalEntries',
             style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
         Expanded(flex: 2, child: Text(_formatCurrency(totalPay),
@@ -2456,6 +2557,14 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
                 const Expanded(flex: 2, child: Text('TOTAL HOURS',
                     style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
                         color: AppTheme.textSecondary, letterSpacing: 1))),
+                if (_hasOvertimeTracking) ...[
+                  const Expanded(flex: 2, child: Text('REGULAR',
+                      style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                          color: AppTheme.textSecondary, letterSpacing: 1))),
+                  const Expanded(flex: 2, child: Text('OT',
+                      style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                          color: AppTheme.textSecondary, letterSpacing: 1))),
+                ],
                 const Expanded(flex: 2, child: Text('ENTRIES',
                     style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
                         color: AppTheme.textSecondary, letterSpacing: 1))),
@@ -2476,6 +2585,8 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
                 final userId  = t['user_id'] as String?;
                 final name    = t['full_name'] as String? ?? 'Unknown';
                 final minutes = (t['total_minutes'] as num?)?.toInt() ?? 0;
+                final regularMinutes = (t['regular_minutes'] as num?)?.toInt();
+                final overtimeMinutes = (t['overtime_minutes'] as num?)?.toInt() ?? 0;
                 final count   = (t['entry_count'] as num?)?.toInt() ?? 0;
                 final pay     = _computePay(t);
                 final initials = name.trim().split(' ')
@@ -2503,6 +2614,15 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
                       ])),
                       Expanded(flex: 2, child: Text(_formatDuration(minutes),
                           style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.brand))),
+                      if (_hasOvertimeTracking) ...[
+                        Expanded(flex: 2, child: Text(
+                            regularMinutes != null ? _formatDuration(regularMinutes) : _formatDuration(minutes),
+                            style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary))),
+                        Expanded(flex: 2, child: Text(
+                            overtimeMinutes > 0 ? _formatDuration(overtimeMinutes) : '—',
+                            style: TextStyle(fontSize: 13, fontWeight: overtimeMinutes > 0 ? FontWeight.w700 : FontWeight.w400,
+                                color: overtimeMinutes > 0 ? Colors.orange : AppTheme.textSecondary))),
+                      ],
                       Expanded(flex: 2, child: Text('$count',
                           style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary))),
                       if (_canViewPayRates)
@@ -2522,6 +2642,8 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
 
   Widget _buildPeriodGrandTotalRow() {
     final totalMinutes = _periodTotals.fold<int>(0, (sum, t) => sum + ((t['total_minutes'] as num?)?.toInt() ?? 0));
+    final totalOvertimeMinutes = _periodTotals.fold<int>(0, (sum, t) => sum + ((t['overtime_minutes'] as num?)?.toInt() ?? 0));
+    final totalRegularMinutes = _periodTotals.fold<int>(0, (sum, t) => sum + ((t['regular_minutes'] as num?)?.toInt() ?? (t['total_minutes'] as num?)?.toInt() ?? 0));
     final totalEntries = _periodTotals.fold<int>(0, (sum, t) => sum + ((t['entry_count'] as num?)?.toInt() ?? 0));
     final totalPay = _periodTotals.fold<double>(0, (sum, t) => sum + (_computePay(t) ?? 0));
     return Container(
@@ -2534,6 +2656,14 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
             style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
         Expanded(flex: 2, child: Text(_formatDuration(totalMinutes),
             style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.brand))),
+        if (_hasOvertimeTracking) ...[
+          Expanded(flex: 2, child: Text(_formatDuration(totalRegularMinutes),
+              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
+          Expanded(flex: 2, child: Text(
+              totalOvertimeMinutes > 0 ? _formatDuration(totalOvertimeMinutes) : '—',
+              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700,
+                  color: totalOvertimeMinutes > 0 ? Colors.orange : AppTheme.textSecondary))),
+        ],
         Expanded(flex: 2, child: Text('$totalEntries',
             style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
         Expanded(flex: 2, child: Text(_formatCurrency(totalPay),

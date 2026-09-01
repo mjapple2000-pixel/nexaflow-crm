@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme/app_theme.dart';
 import '../utils/phone_utils.dart';
+import '../navigation/app_router.dart';
 
 const _kPermissionLabels = {
   'launchpad':     'Launchpad',
@@ -50,6 +51,15 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
   }
 
   Future<void> _checkPayRateCapability() async {
+    // Superuser has no profiles row by design — same pattern that hit the
+    // conversations/tasks assignment dropdowns earlier. A plain profiles
+    // lookup by user_id returns null for them, which would silently
+    // default _canManagePayRates to false and hide this card. Check the
+    // cached superuser flag first, same as everywhere else in the app.
+    if (AppRouter.cachedIsSuperuser == true) {
+      if (mounted) setState(() { _canManagePayRates = true; _loadingCapability = false; });
+      return;
+    }
     try {
       final userId = _db.auth.currentUser?.id;
       if (userId == null) {

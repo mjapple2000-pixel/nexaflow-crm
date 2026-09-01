@@ -119,6 +119,70 @@ Deno.serve(async (req) => {
       }
     }
 
+    // ── TS-06: Fetch overtime rules + business week-start-day. Gated on
+    // the overtime_tracking plan feature (Pro only) — Growth+ businesses
+    // still get everything else in this response, just no regular/
+    // overtime split (defaults to 0 overtime, all hours "regular").
+    let hasOvertimeTracking = isSuperuserCaller;
+    if (!isSuperuserCaller) {
+      const { data: hasOt } = await supabase.rpc("check_plan_feature", {
+        p_business_id: businessId,
+        p_feature: "overtime_tracking",
+      });
+      hasOvertimeTracking = hasOt === true;
+    }
+
+    const WEEKDAY_INDEX: Record<string, number> = {
+      sunday: 0, monday: 1, tuesday: 2, wednesday: 3, thursday: 4, friday: 5, saturday: 6,
+    };
+
+    let overtimeRules = {
+      daily_threshold_hours: null as number | null,
+      daily_ot_enabled: false,
+      weekly_threshold_hours: 40,
+      weekly_ot_enabled: true,
+    };
+    let weekStartIndex = 1; // Monday, matches businesses.week_start_day default
+
+    if (hasOvertimeTracking) {
+      const { data: businessRow } = await supabase
+        .from("businesses")
+        .select("week_start_day")
+        .eq("id", businessId)
+        .maybeSingle();
+      if (businessRow?.week_start_day && WEEKDAY_INDEX[businessRow.week_start_day] !== undefined) {
+        weekStartIndex = WEEKDAY_INDEX[businessRow.week_start_day];
+      }
+
+      const { data: rulesRow } = await supabase
+        .from("overtime_rules")
+        .select("daily_threshold_hours, daily_ot_enabled, weekly_threshold_hours, weekly_ot_enabled")
+        .eq("business_id", businessId)
+        .is("deleted_at", null)
+        .maybeSingle();
+      if (rulesRow) {
+        overtimeRules = {
+          daily_threshold_hours: rulesRow.daily_threshold_hours != null ? Number(rulesRow.daily_threshold_hours) : null,
+          daily_ot_enabled: rulesRow.daily_ot_enabled === true,
+          weekly_threshold_hours: rulesRow.weekly_threshold_hours != null ? Number(rulesRow.weekly_threshold_hours) : 40,
+          weekly_ot_enabled: rulesRow.weekly_ot_enabled !== false,
+        };
+      }
+    }
+
+    // Given a "YYYY-MM-DD" date-only string, returns the date-only string
+    // of that week's start, per the business's configured week_start_day.
+    // Mirrors the existing convention in this function of treating
+    // clocked_in_at's UTC date substring as "the day" (see dailyTotals,
+    // findLockedPeriod below) — not introducing a new timezone concept.
+    function weekStartKeyFor(dateOnly: string): string {
+      const d = new Date(`${dateOnly}T00:00:00.000Z`);
+      const dow = d.getUTCDay();
+      const diff = (dow - weekStartIndex + 7) % 7;
+      d.setUTCDate(d.getUTCDate() - diff);
+      return d.toISOString().substring(0, 10);
+    }
+
     // ── Fetch active entry for the caller ──────────────────────
     const { data: myActiveEntry } = await supabase
       .from("time_entries")
@@ -321,6 +385,58 @@ Deno.serve(async (req) => {
       };
     });
 
+    // ── TS-06: Overtime split ────────────────────────────────
+    // Per-user-per-day payable minutes first (a day can have multiple
+    // shifts/entries), then daily OT is hours over daily_threshold_hours
+    // on that day, then weekly OT is hours over weekly_threshold_hours
+    // once each day's *regular* (non-daily-OT) minutes are summed across
+    // the business's configured week. This avoids double-counting the
+    // same hour as both daily and weekly overtime.
+    const dayMinutesByUserDay: Record<string, number> = {}; // key: `${user_id}|${dateOnly}`
+    for (const e of enriched) {
+      const dateOnly = String(e.clocked_in_at).substring(0, 10);
+      const key = `${e.user_id}|${dateOnly}`;
+      dayMinutesByUserDay[key] = (dayMinutesByUserDay[key] ?? 0) + (e.payable_minutes ?? e.duration_minutes ?? 0);
+    }
+
+    const dailyThresholdMinutes = overtimeRules.daily_ot_enabled && overtimeRules.daily_threshold_hours != null
+      ? overtimeRules.daily_threshold_hours * 60
+      : null;
+    const weeklyThresholdMinutes = overtimeRules.weekly_threshold_hours * 60;
+
+    // Per-day breakdown (daily OT rule only — weekly OT isn't attributable
+    // to a single day, it's shown at the week/range level instead).
+    const overtimeByDay: Array<{ user_id: string; date: string; regular_minutes: number; overtime_minutes: number; total_minutes: number }> = [];
+    // Running per-user-per-week regular pool, to apply the weekly threshold after.
+    const weeklyRegularPoolByUserWeek: Record<string, number> = {}; // key: `${user_id}|${weekStartKey}`
+    const weeklyDailyOtByUserWeek: Record<string, number> = {};
+
+    for (const [key, totalMins] of Object.entries(dayMinutesByUserDay)) {
+      const [userId, dateOnly] = key.split("|");
+      const dailyOt = dailyThresholdMinutes != null ? Math.max(0, totalMins - dailyThresholdMinutes) : 0;
+      const dailyRegular = totalMins - dailyOt;
+      overtimeByDay.push({ user_id: userId, date: dateOnly, regular_minutes: dailyRegular, overtime_minutes: dailyOt, total_minutes: totalMins });
+
+      const weekKey = `${userId}|${weekStartKeyFor(dateOnly)}`;
+      weeklyRegularPoolByUserWeek[weekKey] = (weeklyRegularPoolByUserWeek[weekKey] ?? 0) + dailyRegular;
+      weeklyDailyOtByUserWeek[weekKey] = (weeklyDailyOtByUserWeek[weekKey] ?? 0) + dailyOt;
+    }
+
+    // Apply the weekly threshold per user-week, then sum across all
+    // weeks touched by this request into one regular/overtime total per
+    // user (the totals object below covers the whole requested range).
+    const regularMinutesByUser: Record<string, number> = {};
+    const overtimeMinutesByUser: Record<string, number> = {};
+    for (const [weekKey, regularPool] of Object.entries(weeklyRegularPoolByUserWeek)) {
+      const [userId] = weekKey.split("|");
+      const weeklyOt = overtimeRules.weekly_ot_enabled ? Math.max(0, regularPool - weeklyThresholdMinutes) : 0;
+      const weeklyRegular = regularPool - weeklyOt;
+      const dailyOtForWeek = weeklyDailyOtByUserWeek[weekKey] ?? 0;
+
+      regularMinutesByUser[userId] = (regularMinutesByUser[userId] ?? 0) + weeklyRegular;
+      overtimeMinutesByUser[userId] = (overtimeMinutesByUser[userId] ?? 0) + dailyOtForWeek + weeklyOt;
+    }
+
     // ── Compute per-member totals (owner view) ────────────────
     const totals: Record<string, {
       user_id: string;
@@ -328,6 +444,8 @@ Deno.serve(async (req) => {
       total_minutes: number;
       total_break_minutes: number;
       entry_count: number;
+      regular_minutes?: number;
+      overtime_minutes?: number;
       pay_type?: string;
       hourly_rate?: number | null;
       annual_salary?: number | null;
@@ -347,6 +465,10 @@ Deno.serve(async (req) => {
             totals[e.user_id].pay_type = payInfo?.pay_type ?? "hourly";
             totals[e.user_id].hourly_rate = payInfo?.hourly_rate ?? null;
             totals[e.user_id].annual_salary = payInfo?.annual_salary ?? null;
+          }
+          if (hasOvertimeTracking) {
+            totals[e.user_id].regular_minutes = regularMinutesByUser[e.user_id] ?? 0;
+            totals[e.user_id].overtime_minutes = overtimeMinutesByUser[e.user_id] ?? 0;
           }
         }
         // total_minutes is payable time (duration minus unpaid break time),
@@ -401,6 +523,9 @@ Deno.serve(async (req) => {
         team_profiles: isOwner ? teamProfilesForResponse : [],
         can_manage_pay_periods: canManagePayPeriods,
         pay_periods: payPeriods,
+        has_overtime_tracking: hasOvertimeTracking,
+        overtime_rules: hasOvertimeTracking ? overtimeRules : null,
+        overtime_by_day: hasOvertimeTracking ? (isOwner ? overtimeByDay : overtimeByDay.filter((d) => d.user_id === callerUserId)) : [],
       }),
       {
         status: 200,

@@ -143,10 +143,61 @@ Deno.serve(async (req) => {
 
     const { data: business } = await supabase
       .from("businesses")
-      .select("business_name")
+      .select("business_name, week_start_day")
       .eq("id", businessId)
       .maybeSingle();
     const businessName = business?.business_name ?? "NexaFlow";
+
+    // ── TS-06: overtime split, gated on the overtime_tracking plan
+    // feature (Pro only). Mirrors get-timesheets' logic exactly so the
+    // PDF's regular/OT numbers never drift from what the Week view shows.
+    let hasOvertimeTracking = isSuperuserCaller;
+    if (!isSuperuserCaller) {
+      const { data: hasOt } = await supabase.rpc("check_plan_feature", {
+        p_business_id: businessId,
+        p_feature: "overtime_tracking",
+      });
+      hasOvertimeTracking = hasOt === true;
+    }
+
+    const WEEKDAY_INDEX: Record<string, number> = {
+      sunday: 0, monday: 1, tuesday: 2, wednesday: 3, thursday: 4, friday: 5, saturday: 6,
+    };
+    let weekStartIndex = 1;
+    if (business?.week_start_day && WEEKDAY_INDEX[business.week_start_day] !== undefined) {
+      weekStartIndex = WEEKDAY_INDEX[business.week_start_day];
+    }
+
+    let overtimeRules = {
+      daily_threshold_hours: null as number | null,
+      daily_ot_enabled: false,
+      weekly_threshold_hours: 40,
+      weekly_ot_enabled: true,
+    };
+    if (hasOvertimeTracking) {
+      const { data: rulesRow } = await supabase
+        .from("overtime_rules")
+        .select("daily_threshold_hours, daily_ot_enabled, weekly_threshold_hours, weekly_ot_enabled")
+        .eq("business_id", businessId)
+        .is("deleted_at", null)
+        .maybeSingle();
+      if (rulesRow) {
+        overtimeRules = {
+          daily_threshold_hours: rulesRow.daily_threshold_hours != null ? Number(rulesRow.daily_threshold_hours) : null,
+          daily_ot_enabled: rulesRow.daily_ot_enabled === true,
+          weekly_threshold_hours: rulesRow.weekly_threshold_hours != null ? Number(rulesRow.weekly_threshold_hours) : 40,
+          weekly_ot_enabled: rulesRow.weekly_ot_enabled !== false,
+        };
+      }
+    }
+
+    function weekStartKeyFor(dateOnly: string): string {
+      const d = new Date(`${dateOnly}T00:00:00.000Z`);
+      const dow = d.getUTCDay();
+      const diff = (dow - weekStartIndex + 7) % 7;
+      d.setUTCDate(d.getUTCDate() - diff);
+      return d.toISOString().substring(0, 10);
+    }
 
     const { data: teamProfiles } = await supabase
       .from("profiles")
@@ -165,7 +216,7 @@ Deno.serve(async (req) => {
 
     const { data: entries, error: entriesError } = await supabase
       .from("time_entries")
-      .select("id, user_id, duration_minutes")
+      .select("id, user_id, clocked_in_at, duration_minutes")
       .eq("business_id", businessId)
       .is("deleted_at", null)
       .gte("clocked_in_at", `${start_date}T00:00:00.000Z`)
@@ -201,7 +252,8 @@ Deno.serve(async (req) => {
       }
     }
 
-    const totalsMap: Record<string, { user_id: string; total_minutes: number; total_break_minutes: number; entry_count: number }> = {};
+    const totalsMap: Record<string, { user_id: string; total_minutes: number; total_break_minutes: number; entry_count: number; regular_minutes?: number; overtime_minutes?: number }> = {};
+    const dayMinutesByUserDay: Record<string, number> = {};
     for (const e of (entries ?? [])) {
       if (!totalsMap[e.user_id]) {
         totalsMap[e.user_id] = { user_id: e.user_id, total_minutes: 0, total_break_minutes: 0, entry_count: 0 };
@@ -211,7 +263,48 @@ Deno.serve(async (req) => {
       totalsMap[e.user_id].total_minutes += payableMinutes;
       totalsMap[e.user_id].total_break_minutes += breakInfo.break_minutes;
       totalsMap[e.user_id].entry_count += 1;
+
+      if (hasOvertimeTracking) {
+        const dateOnly = String(e.clocked_in_at).substring(0, 10);
+        const key = `${e.user_id}|${dateOnly}`;
+        dayMinutesByUserDay[key] = (dayMinutesByUserDay[key] ?? 0) + payableMinutes;
+      }
     }
+
+    if (hasOvertimeTracking) {
+      const dailyThresholdMinutes = overtimeRules.daily_ot_enabled && overtimeRules.daily_threshold_hours != null
+        ? overtimeRules.daily_threshold_hours * 60
+        : null;
+      const weeklyThresholdMinutes = overtimeRules.weekly_threshold_hours * 60;
+      const weeklyRegularPoolByUserWeek: Record<string, number> = {};
+      const weeklyDailyOtByUserWeek: Record<string, number> = {};
+
+      for (const [key, totalMins] of Object.entries(dayMinutesByUserDay)) {
+        const [userId, dateOnly] = key.split("|");
+        const dailyOt = dailyThresholdMinutes != null ? Math.max(0, totalMins - dailyThresholdMinutes) : 0;
+        const dailyRegular = totalMins - dailyOt;
+        const weekKey = `${userId}|${weekStartKeyFor(dateOnly)}`;
+        weeklyRegularPoolByUserWeek[weekKey] = (weeklyRegularPoolByUserWeek[weekKey] ?? 0) + dailyRegular;
+        weeklyDailyOtByUserWeek[weekKey] = (weeklyDailyOtByUserWeek[weekKey] ?? 0) + dailyOt;
+      }
+
+      const regularMinutesByUser: Record<string, number> = {};
+      const overtimeMinutesByUser: Record<string, number> = {};
+      for (const [weekKey, regularPool] of Object.entries(weeklyRegularPoolByUserWeek)) {
+        const [userId] = weekKey.split("|");
+        const weeklyOt = overtimeRules.weekly_ot_enabled ? Math.max(0, regularPool - weeklyThresholdMinutes) : 0;
+        const weeklyRegular = regularPool - weeklyOt;
+        const dailyOtForWeek = weeklyDailyOtByUserWeek[weekKey] ?? 0;
+        regularMinutesByUser[userId] = (regularMinutesByUser[userId] ?? 0) + weeklyRegular;
+        overtimeMinutesByUser[userId] = (overtimeMinutesByUser[userId] ?? 0) + dailyOtForWeek + weeklyOt;
+      }
+
+      for (const t of Object.values(totalsMap)) {
+        t.regular_minutes = regularMinutesByUser[t.user_id] ?? 0;
+        t.overtime_minutes = overtimeMinutesByUser[t.user_id] ?? 0;
+      }
+    }
+
     const totals = Object.values(totalsMap).sort((a, b) => {
       const nameA = profileByUserId[a.user_id]?.full_name ?? "";
       const nameB = profileByUserId[b.user_id]?.full_name ?? "";
@@ -257,12 +350,18 @@ Deno.serve(async (req) => {
     page.drawText(`${start_date} to ${end_date}`, { x: MARGIN, y, size: 10, font, color: rgb(0.5, 0.5, 0.5) });
     y -= 28;
 
-    const colX = { name: MARGIN, hours: MARGIN + 170, breaks: MARGIN + 250, entries: MARGIN + 330, pay: MARGIN + 410 };
+    const colX = hasOvertimeTracking
+      ? { name: MARGIN, hours: MARGIN + 130, regular: MARGIN + 195, ot: MARGIN + 255, breaks: MARGIN + 305, entries: MARGIN + 360, pay: MARGIN + 415 }
+      : { name: MARGIN, hours: MARGIN + 170, regular: 0, ot: 0, breaks: MARGIN + 250, entries: MARGIN + 330, pay: MARGIN + 410 };
     const rowHeight = 20;
 
     function drawHeader() {
       page.drawText("EMPLOYEE", { x: colX.name, y, size: 9, font: boldFont, color: rgb(0.4, 0.4, 0.4) });
       page.drawText("TOTAL HOURS", { x: colX.hours, y, size: 9, font: boldFont, color: rgb(0.4, 0.4, 0.4) });
+      if (hasOvertimeTracking) {
+        page.drawText("REGULAR", { x: colX.regular, y, size: 9, font: boldFont, color: rgb(0.4, 0.4, 0.4) });
+        page.drawText("OT", { x: colX.ot, y, size: 9, font: boldFont, color: rgb(0.4, 0.4, 0.4) });
+      }
       page.drawText("BREAK", { x: colX.breaks, y, size: 9, font: boldFont, color: rgb(0.4, 0.4, 0.4) });
       page.drawText("ENTRIES", { x: colX.entries, y, size: 9, font: boldFont, color: rgb(0.4, 0.4, 0.4) });
       if (canManagePayRates) {
@@ -279,6 +378,8 @@ Deno.serve(async (req) => {
     drawHeader();
 
     let grandMinutes = 0;
+    let grandRegularMinutes = 0;
+    let grandOvertimeMinutes = 0;
     let grandBreakMinutes = 0;
     let grandEntries = 0;
     let grandPay = 0;
@@ -292,12 +393,19 @@ Deno.serve(async (req) => {
       const name = profileByUserId[t.user_id]?.full_name ?? "Unknown";
       const pay = computePay(t.user_id, t.total_minutes);
       grandMinutes += t.total_minutes;
+      grandRegularMinutes += t.regular_minutes ?? t.total_minutes;
+      grandOvertimeMinutes += t.overtime_minutes ?? 0;
       grandBreakMinutes += t.total_break_minutes;
       grandEntries += t.entry_count;
       grandPay += pay ?? 0;
 
       page.drawText(name, { x: colX.name, y, size: 10, font, color: rgb(0.15, 0.15, 0.15) });
       page.drawText(formatDuration(t.total_minutes), { x: colX.hours, y, size: 10, font, color: rgb(0.15, 0.15, 0.15) });
+      if (hasOvertimeTracking) {
+        page.drawText(formatDuration(t.regular_minutes ?? t.total_minutes), { x: colX.regular, y, size: 10, font, color: rgb(0.15, 0.15, 0.15) });
+        const ot = t.overtime_minutes ?? 0;
+        page.drawText(ot > 0 ? formatDuration(ot) : "—", { x: colX.ot, y, size: 10, font, color: ot > 0 ? rgb(0.85, 0.45, 0) : rgb(0.15, 0.15, 0.15) });
+      }
       page.drawText(t.total_break_minutes > 0 ? formatDuration(t.total_break_minutes) : "—", { x: colX.breaks, y, size: 10, font, color: rgb(0.15, 0.15, 0.15) });
       page.drawText(String(t.entry_count), { x: colX.entries, y, size: 10, font, color: rgb(0.15, 0.15, 0.15) });
       if (canManagePayRates) {
@@ -315,6 +423,10 @@ Deno.serve(async (req) => {
 
     page.drawText("TOTAL", { x: colX.name, y, size: 10, font: boldFont, color: rgb(0.1, 0.1, 0.1) });
     page.drawText(formatDuration(grandMinutes), { x: colX.hours, y, size: 10, font: boldFont, color: rgb(0.1, 0.1, 0.1) });
+    if (hasOvertimeTracking) {
+      page.drawText(formatDuration(grandRegularMinutes), { x: colX.regular, y, size: 10, font: boldFont, color: rgb(0.1, 0.1, 0.1) });
+      page.drawText(grandOvertimeMinutes > 0 ? formatDuration(grandOvertimeMinutes) : "—", { x: colX.ot, y, size: 10, font: boldFont, color: grandOvertimeMinutes > 0 ? rgb(0.85, 0.45, 0) : rgb(0.1, 0.1, 0.1) });
+    }
     page.drawText(grandBreakMinutes > 0 ? formatDuration(grandBreakMinutes) : "—", { x: colX.breaks, y, size: 10, font: boldFont, color: rgb(0.1, 0.1, 0.1) });
     page.drawText(String(grandEntries), { x: colX.entries, y, size: 10, font: boldFont, color: rgb(0.1, 0.1, 0.1) });
     if (canManagePayRates) {
