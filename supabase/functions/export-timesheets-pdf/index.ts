@@ -165,7 +165,7 @@ Deno.serve(async (req) => {
 
     const { data: entries, error: entriesError } = await supabase
       .from("time_entries")
-      .select("user_id, duration_minutes")
+      .select("id, user_id, duration_minutes")
       .eq("business_id", businessId)
       .is("deleted_at", null)
       .gte("clocked_in_at", `${start_date}T00:00:00.000Z`)
@@ -178,12 +178,38 @@ Deno.serve(async (req) => {
       });
     }
 
-    const totalsMap: Record<string, { user_id: string; total_minutes: number; entry_count: number }> = {};
+    // ── Break minutes per entry — same payable-minutes logic as
+    // get-timesheets. Without this, the PDF would show raw clock time
+    // (including breaks) instead of what's actually payable.
+    const entryIds = (entries ?? []).map((e) => e.id);
+    const breaksByEntryId: Record<number, { break_minutes: number; unpaid_minutes: number }> = {};
+    if (entryIds.length > 0) {
+      const { data: breaks } = await supabase
+        .from("time_entry_breaks")
+        .select("time_entry_id, started_at, ended_at, is_paid")
+        .in("time_entry_id", entryIds)
+        .is("deleted_at", null);
+
+      for (const b of (breaks ?? [])) {
+        if (!b.ended_at) continue;
+        const mins = Math.round((new Date(b.ended_at).getTime() - new Date(b.started_at).getTime()) / 60000);
+        if (!breaksByEntryId[b.time_entry_id]) {
+          breaksByEntryId[b.time_entry_id] = { break_minutes: 0, unpaid_minutes: 0 };
+        }
+        breaksByEntryId[b.time_entry_id].break_minutes += mins;
+        if (!b.is_paid) breaksByEntryId[b.time_entry_id].unpaid_minutes += mins;
+      }
+    }
+
+    const totalsMap: Record<string, { user_id: string; total_minutes: number; total_break_minutes: number; entry_count: number }> = {};
     for (const e of (entries ?? [])) {
       if (!totalsMap[e.user_id]) {
-        totalsMap[e.user_id] = { user_id: e.user_id, total_minutes: 0, entry_count: 0 };
+        totalsMap[e.user_id] = { user_id: e.user_id, total_minutes: 0, total_break_minutes: 0, entry_count: 0 };
       }
-      totalsMap[e.user_id].total_minutes += (e.duration_minutes ?? 0);
+      const breakInfo = breaksByEntryId[e.id] ?? { break_minutes: 0, unpaid_minutes: 0 };
+      const payableMinutes = Math.max(0, (e.duration_minutes ?? 0) - breakInfo.unpaid_minutes);
+      totalsMap[e.user_id].total_minutes += payableMinutes;
+      totalsMap[e.user_id].total_break_minutes += breakInfo.break_minutes;
       totalsMap[e.user_id].entry_count += 1;
     }
     const totals = Object.values(totalsMap).sort((a, b) => {
@@ -231,12 +257,13 @@ Deno.serve(async (req) => {
     page.drawText(`${start_date} to ${end_date}`, { x: MARGIN, y, size: 10, font, color: rgb(0.5, 0.5, 0.5) });
     y -= 28;
 
-    const colX = { name: MARGIN, hours: MARGIN + 220, entries: MARGIN + 320, pay: MARGIN + 400 };
+    const colX = { name: MARGIN, hours: MARGIN + 170, breaks: MARGIN + 250, entries: MARGIN + 330, pay: MARGIN + 410 };
     const rowHeight = 20;
 
     function drawHeader() {
       page.drawText("EMPLOYEE", { x: colX.name, y, size: 9, font: boldFont, color: rgb(0.4, 0.4, 0.4) });
       page.drawText("TOTAL HOURS", { x: colX.hours, y, size: 9, font: boldFont, color: rgb(0.4, 0.4, 0.4) });
+      page.drawText("BREAK", { x: colX.breaks, y, size: 9, font: boldFont, color: rgb(0.4, 0.4, 0.4) });
       page.drawText("ENTRIES", { x: colX.entries, y, size: 9, font: boldFont, color: rgb(0.4, 0.4, 0.4) });
       if (canManagePayRates) {
         page.drawText("TOTAL PAY", { x: colX.pay, y, size: 9, font: boldFont, color: rgb(0.4, 0.4, 0.4) });
@@ -252,6 +279,7 @@ Deno.serve(async (req) => {
     drawHeader();
 
     let grandMinutes = 0;
+    let grandBreakMinutes = 0;
     let grandEntries = 0;
     let grandPay = 0;
 
@@ -264,11 +292,13 @@ Deno.serve(async (req) => {
       const name = profileByUserId[t.user_id]?.full_name ?? "Unknown";
       const pay = computePay(t.user_id, t.total_minutes);
       grandMinutes += t.total_minutes;
+      grandBreakMinutes += t.total_break_minutes;
       grandEntries += t.entry_count;
       grandPay += pay ?? 0;
 
       page.drawText(name, { x: colX.name, y, size: 10, font, color: rgb(0.15, 0.15, 0.15) });
       page.drawText(formatDuration(t.total_minutes), { x: colX.hours, y, size: 10, font, color: rgb(0.15, 0.15, 0.15) });
+      page.drawText(t.total_break_minutes > 0 ? formatDuration(t.total_break_minutes) : "—", { x: colX.breaks, y, size: 10, font, color: rgb(0.15, 0.15, 0.15) });
       page.drawText(String(t.entry_count), { x: colX.entries, y, size: 10, font, color: rgb(0.15, 0.15, 0.15) });
       if (canManagePayRates) {
         page.drawText(formatCurrency(pay), { x: colX.pay, y, size: 10, font, color: rgb(0.15, 0.15, 0.15) });
@@ -285,6 +315,7 @@ Deno.serve(async (req) => {
 
     page.drawText("TOTAL", { x: colX.name, y, size: 10, font: boldFont, color: rgb(0.1, 0.1, 0.1) });
     page.drawText(formatDuration(grandMinutes), { x: colX.hours, y, size: 10, font: boldFont, color: rgb(0.1, 0.1, 0.1) });
+    page.drawText(grandBreakMinutes > 0 ? formatDuration(grandBreakMinutes) : "—", { x: colX.breaks, y, size: 10, font: boldFont, color: rgb(0.1, 0.1, 0.1) });
     page.drawText(String(grandEntries), { x: colX.entries, y, size: 10, font: boldFont, color: rgb(0.1, 0.1, 0.1) });
     if (canManagePayRates) {
       page.drawText(formatCurrency(grandPay), { x: colX.pay, y, size: 10, font: boldFont, color: rgb(0.1, 0.1, 0.1) });

@@ -10696,6 +10696,7 @@ class _PayrollSettingsSectionState extends State<_PayrollSettingsSection> {
   DateTime? _biweeklyAnchor;
   int _semiDayOne = 1;
   int _semiDayTwo = 16;
+  bool _defaultBreakPaid = false;
   bool _saving = false;
   String? _successMsg;
   String? _error;
@@ -10726,6 +10727,7 @@ class _PayrollSettingsSectionState extends State<_PayrollSettingsSection> {
     if (anchorStr != null) _biweeklyAnchor = DateTime.tryParse(anchorStr);
     _semiDayOne = (config['day_one'] as num?)?.toInt() ?? 1;
     _semiDayTwo = (config['day_two'] as num?)?.toInt() ?? 16;
+    _defaultBreakPaid = b['default_break_paid'] as bool? ?? false;
   }
 
   Future<void> _pickAnchorDate() async {
@@ -10756,6 +10758,7 @@ class _PayrollSettingsSectionState extends State<_PayrollSettingsSection> {
         'week_start_day': _weekStartDay,
         'pay_period_type': _payPeriodType,
         'pay_period_config': config,
+        'default_break_paid': _defaultBreakPaid,
       });
       setState(() { _successMsg = 'Payroll settings saved.'; _saving = false; });
     } catch (e) {
@@ -10919,6 +10922,15 @@ class _PayrollSettingsSectionState extends State<_PayrollSettingsSection> {
               Expanded(child: _dayOfMonthDropdown(_semiDayTwo, (v) => setState(() => _semiDayTwo = v))),
             ]),
           ],
+        ]),
+        const SizedBox(height: 24),
+        _SettingsGroup(title: 'Breaks', children: [
+          _ToggleRow(
+            label: 'Paid by Default',
+            subtitle: 'New breaks are unpaid unless this is on. Whoever manages pay rates can still mark an individual break as paid when reviewing a shift — changing this default never rewrites breaks that already happened.',
+            value: _defaultBreakPaid,
+            onChanged: (v) => setState(() => _defaultBreakPaid = v),
+          ),
         ]),
       ]),
     );

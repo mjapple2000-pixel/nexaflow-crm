@@ -31,6 +31,8 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
   String _businessName = '';
   bool _requireLocation = false;
   Map<String, dynamic>? _activeEntry;
+  Map<String, dynamic>? _activeBreak;
+  bool _timeTrackingEnabled = true;
   List<Map<String, dynamic>> _appointments = [];
   List<Map<String, dynamic>> _routeStops = [];
   List<Map<String, dynamic>> _pastJobForms = [];
@@ -105,6 +107,8 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
         _gpsTrackingEnabled = data['gps_tracking_enabled'] as bool? ?? false;
         _locationSharingEnabled = data['location_sharing_enabled'] as bool? ?? false;
         _activeEntry = data['active_entry'] as Map<String, dynamic>?;
+        _activeBreak = data['active_break'] as Map<String, dynamic>?;
+        _timeTrackingEnabled = data['time_tracking_enabled'] as bool? ?? true;
         _appointments =
             List<Map<String, dynamic>>.from(data['appointments'] ?? []);
         _routeStops =
@@ -377,6 +381,48 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
     }
   }
 
+  // Break start/stop — simple updates to the existing time_entries row via
+  // employee-hub-action, same pattern as clock in/out but no location
+  // requirement (breaks don't need GPS) and no offline queueing (a missed
+  // break sync is low-stakes compared to a missed clock time).
+  Future<void> _breakAction(String action) async {
+    setState(() => _submitting = true);
+    try {
+      final res = await http
+          .post(
+            Uri.parse('$_fnBase/employee-hub-action'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'token': widget.token, 'action': action}),
+          )
+          .timeout(const Duration(seconds: 15));
+      if (!mounted) return;
+
+      final body = jsonDecode(res.body) as Map<String, dynamic>;
+
+      if (res.statusCode == 200) {
+        await _load();
+      } else {
+        final msg = body['message'] as String? ??
+            body['error'] as String? ??
+            'Something went wrong.';
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(msg),
+          backgroundColor: AppTheme.error,
+          duration: const Duration(seconds: 6),
+        ));
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('No signal right now — please try again in a moment.'),
+        backgroundColor: Colors.orange,
+        duration: Duration(seconds: 6),
+      ));
+    } finally {
+      if (mounted) setState(() => _submitting = false);
+    }
+  }
+
   Future<void> _savePendingSync(Map<String, dynamic> actionBody) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_pendingActionKey, jsonEncode(actionBody));
@@ -442,6 +488,16 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
     final m = (d.inMinutes % 60).toString().padLeft(2, '0');
     final s = (d.inSeconds % 60).toString().padLeft(2, '0');
     return '$h:$m:$s';
+  }
+
+  String _formatBreakStart(Map<String, dynamic>? brk) {
+    final iso = brk?['started_at'] as String?;
+    final dt = iso == null ? null : DateTime.tryParse(iso)?.toLocal();
+    if (dt == null) return '';
+    final h = dt.hour % 12 == 0 ? 12 : dt.hour % 12;
+    final min = dt.minute.toString().padLeft(2, '0');
+    final ampm = dt.hour < 12 ? 'AM' : 'PM';
+    return '$h:$min $ampm';
   }
 
   List<Map<String, dynamic>> get _filteredAppointments {
@@ -544,6 +600,7 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
     }
 
     final isClockedIn = _activeEntry != null;
+    final isOnBreak = _activeBreak != null;
 
     return Scaffold(
       backgroundColor: AppTheme.pageBg,
@@ -568,6 +625,9 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
                   const SizedBox(height: 24),
 
                   // ── Status card ─────────────────────────────────────
+                  if (!_timeTrackingEnabled)
+                    _buildClockLockedCard()
+                  else
                   Container(
                     width: double.infinity,
                     padding: const EdgeInsets.all(24),
@@ -575,10 +635,12 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
                       color: AppTheme.cardBg,
                       borderRadius: BorderRadius.circular(14),
                       border: Border.all(
-                        color: isClockedIn
-                            ? AppTheme.success.withValues(alpha: 0.4)
-                            : AppTheme.borderColor,
-                        width: isClockedIn ? 1.5 : 1,
+                        color: isOnBreak
+                            ? Colors.orange.withValues(alpha: 0.4)
+                            : (isClockedIn
+                                ? AppTheme.success.withValues(alpha: 0.4)
+                                : AppTheme.borderColor),
+                        width: (isClockedIn || isOnBreak) ? 1.5 : 1,
                       ),
                     ),
                     child: Column(
@@ -587,19 +649,25 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
                           padding: const EdgeInsets.symmetric(
                               horizontal: 10, vertical: 4),
                           decoration: BoxDecoration(
-                            color: isClockedIn
-                                ? AppTheme.success.withValues(alpha: 0.1)
-                                : AppTheme.borderColor.withValues(alpha: 0.3),
+                            color: isOnBreak
+                                ? Colors.orange.withValues(alpha: 0.1)
+                                : (isClockedIn
+                                    ? AppTheme.success.withValues(alpha: 0.1)
+                                    : AppTheme.borderColor.withValues(alpha: 0.3)),
                             borderRadius: BorderRadius.circular(99),
                           ),
                           child: Text(
-                            isClockedIn ? 'Clocked In' : 'Clocked Out',
+                            isOnBreak
+                                ? 'On Break'
+                                : (isClockedIn ? 'Clocked In' : 'Clocked Out'),
                             style: TextStyle(
                                 fontSize: 12,
                                 fontWeight: FontWeight.w600,
-                                color: isClockedIn
-                                    ? AppTheme.success
-                                    : AppTheme.textSecondary),
+                                color: isOnBreak
+                                    ? Colors.orange
+                                    : (isClockedIn
+                                        ? AppTheme.success
+                                        : AppTheme.textSecondary)),
                           ),
                         ),
                         const SizedBox(height: 16),
@@ -612,6 +680,15 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
                                 color: AppTheme.textPrimary,
                                 fontFeatures: [FontFeature.tabularFigures()]),
                           ),
+                          if (isOnBreak) ...[
+                            const SizedBox(height: 6),
+                            Text(
+                                'On break since ${_formatBreakStart(_activeBreak)}',
+                                style: const TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                    color: Colors.orange)),
+                          ],
                           const SizedBox(height: 20),
                         ] else if (_appointments.isNotEmpty) ...[
                           Align(
@@ -692,36 +769,91 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
                           const SizedBox(height: 20),
                         ] else
                           const SizedBox(height: 4),
-                        SizedBox(
-                          width: double.infinity,
-                          child: ElevatedButton(
-                            onPressed: _submitting
-                                ? null
-                                : () => _clockAction(
-                                    isClockedIn ? 'clock_out' : 'clock_in'),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: isClockedIn
-                                  ? AppTheme.error
-                                  : AppTheme.brand,
-                              foregroundColor: Colors.white,
-                              elevation: 0,
-                              padding:
-                                  const EdgeInsets.symmetric(vertical: 16),
-                              shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(10)),
-                              textStyle: const TextStyle(
-                                  fontSize: 15, fontWeight: FontWeight.w700),
+                        if (isClockedIn) ...[
+                          SizedBox(
+                            width: double.infinity,
+                            child: ElevatedButton(
+                              onPressed: (_submitting || isOnBreak)
+                                  ? null
+                                  : () => _clockAction('clock_out'),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: AppTheme.error,
+                                foregroundColor: Colors.white,
+                                disabledBackgroundColor:
+                                    AppTheme.error.withValues(alpha: 0.4),
+                                elevation: 0,
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 16),
+                                shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(10)),
+                                textStyle: const TextStyle(
+                                    fontSize: 15, fontWeight: FontWeight.w700),
+                              ),
+                              child: _submitting && !isOnBreak
+                                  ? const SizedBox(
+                                      height: 20,
+                                      width: 20,
+                                      child: CircularProgressIndicator(
+                                          strokeWidth: 2, color: Colors.white))
+                                  : const Text('Clock Out'),
                             ),
-                            child: _submitting
-                                ? const SizedBox(
-                                    height: 20,
-                                    width: 20,
-                                    child: CircularProgressIndicator(
-                                        strokeWidth: 2, color: Colors.white))
-                                : Text(
-                                    isClockedIn ? 'Clock Out' : 'Clock In'),
                           ),
-                        ),
+                          if (isOnBreak) ...[
+                            const SizedBox(height: 6),
+                            const Text('End your break to clock out.',
+                                style: TextStyle(
+                                    fontSize: 11,
+                                    color: AppTheme.textSecondary)),
+                          ],
+                          const SizedBox(height: 10),
+                          SizedBox(
+                            width: double.infinity,
+                            child: OutlinedButton(
+                              onPressed: _submitting
+                                  ? null
+                                  : () => _breakAction(
+                                      isOnBreak ? 'end_break' : 'start_break'),
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: Colors.orange,
+                                side: const BorderSide(color: Colors.orange),
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 14),
+                                shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(10)),
+                                textStyle: const TextStyle(
+                                    fontSize: 14, fontWeight: FontWeight.w700),
+                              ),
+                              child: Text(
+                                  isOnBreak ? 'End Break' : 'Start Break'),
+                            ),
+                          ),
+                        ] else
+                          SizedBox(
+                            width: double.infinity,
+                            child: ElevatedButton(
+                              onPressed: _submitting
+                                  ? null
+                                  : () => _clockAction('clock_in'),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: AppTheme.brand,
+                                foregroundColor: Colors.white,
+                                elevation: 0,
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 16),
+                                shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(10)),
+                                textStyle: const TextStyle(
+                                    fontSize: 15, fontWeight: FontWeight.w700),
+                              ),
+                              child: _submitting
+                                  ? const SizedBox(
+                                      height: 20,
+                                      width: 20,
+                                      child: CircularProgressIndicator(
+                                          strokeWidth: 2, color: Colors.white))
+                                  : const Text('Clock In'),
+                            ),
+                          ),
                       ],
                     ),
                   ),
@@ -878,6 +1010,38 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildClockLockedCard() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        color: AppTheme.cardBg,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppTheme.borderColor),
+      ),
+      child: Column(children: [
+        Container(
+          width: 48,
+          height: 48,
+          decoration: BoxDecoration(
+            color: AppTheme.textSecondary.withValues(alpha: 0.1),
+            shape: BoxShape.circle,
+          ),
+          alignment: Alignment.center,
+          child: const Icon(Icons.timer_off_outlined, size: 22, color: AppTheme.textSecondary),
+        ),
+        const SizedBox(height: 12),
+        const Text('Time tracking isn\'t available for this business yet.',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+        const SizedBox(height: 4),
+        const Text('Talk to your manager if you think this is a mistake.',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+      ]),
     );
   }
 }

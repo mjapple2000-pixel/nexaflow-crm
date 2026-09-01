@@ -778,22 +778,25 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
 
   String _buildCsv(List<Map<String, dynamic>> totals) {
     final buffer = StringBuffer();
-    final headers = ['Employee', 'Total Hours', 'Entries'];
+    final headers = ['Employee', 'Total Hours', 'Break Hours', 'Entries'];
     if (_canViewPayRates) headers.addAll(['Pay Type', 'Rate', 'Total Pay']);
     buffer.writeln(headers.map(_csvEscape).join(','));
 
     int grandMinutes = 0;
+    int grandBreakMinutes = 0;
     int grandEntries = 0;
     double grandPay = 0;
 
     for (final t in totals) {
       final name = t['full_name'] as String? ?? 'Unknown';
       final minutes = (t['total_minutes'] as num?)?.toInt() ?? 0;
+      final breakMinutes = (t['total_break_minutes'] as num?)?.toInt() ?? 0;
       final count = (t['entry_count'] as num?)?.toInt() ?? 0;
       grandMinutes += minutes;
+      grandBreakMinutes += breakMinutes;
       grandEntries += count;
 
-      final row = <String>[name, (minutes / 60.0).toStringAsFixed(2), '$count'];
+      final row = <String>[name, (minutes / 60.0).toStringAsFixed(2), (breakMinutes / 60.0).toStringAsFixed(2), '$count'];
       if (_canViewPayRates) {
         final payType = t['pay_type'] as String? ?? 'hourly';
         final rateVal = payType == 'salary'
@@ -810,7 +813,7 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
       buffer.writeln(row.map(_csvEscape).join(','));
     }
 
-    final totalRow = <String>['TOTAL', (grandMinutes / 60.0).toStringAsFixed(2), '$grandEntries'];
+    final totalRow = <String>['TOTAL', (grandMinutes / 60.0).toStringAsFixed(2), (grandBreakMinutes / 60.0).toStringAsFixed(2), '$grandEntries'];
     if (_canViewPayRates) totalRow.addAll(['', '', grandPay.toStringAsFixed(2)]);
     buffer.writeln(totalRow.map(_csvEscape).join(','));
 
@@ -821,7 +824,7 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
   // double-check individual shifts rather than just totals.
   String _buildDetailedCsv(List<Map<String, dynamic>> entries) {
     final buffer = StringBuffer();
-    buffer.writeln(['Employee', 'Clock In', 'Clock Out', 'Duration (Hours)', 'Status', 'Job', 'Notes']
+    buffer.writeln(['Employee', 'Clock In', 'Clock Out', 'Duration (Hours)', 'Break (Hours)', 'Status', 'Job', 'Notes']
         .map(_csvEscape).join(','));
 
     for (final e in entries) {
@@ -831,9 +834,11 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
       final clockedOut = status == 'active' ? '—' : _formatDateTime(e['clocked_out_at'] as String?);
       final minutes = (e['duration_minutes'] as num?)?.toInt();
       final hours = minutes != null ? (minutes / 60.0).toStringAsFixed(2) : '';
+      final breakMinutes = (e['break_minutes'] as num?)?.toInt() ?? 0;
+      final breakHours = breakMinutes > 0 ? (breakMinutes / 60.0).toStringAsFixed(2) : '';
       final job = (e['appointment_info'] as Map<String, dynamic>?)?['appointment_type'] as String? ?? '';
       final notes = e['notes'] as String? ?? '';
-      buffer.writeln([name, clockedIn, clockedOut, hours, status, job, notes].map(_csvEscape).join(','));
+      buffer.writeln([name, clockedIn, clockedOut, hours, breakHours, status, job, notes].map(_csvEscape).join(','));
     }
 
     return buffer.toString();
@@ -945,6 +950,7 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
         entry: entry,
         isOwner: _isOwner,
         canManageTimesheets: _canManageTimesheets,
+        canManagePayRates: _canViewPayRates,
         onForceClockOut: () => _forceClockOut(entry['id'] as int),
         onSave: (entryId, clockedInAt, clockedOutAt, notes) => _saveTimeEntry(
           entryId: entryId,
@@ -953,6 +959,7 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
           notes: notes,
         ),
         onDelete: (entryId) => _deleteTimeEntry(entryId),
+        onUpdateBreak: (breakId, isPaid) => _updateBreak(breakId, isPaid),
       ),
     );
   }
@@ -1320,6 +1327,45 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Time entry updated.')),
       );
+      await _reloadCurrentView();
+      return true;
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+        );
+      }
+      return false;
+    }
+  }
+
+  Future<bool> _updateBreak(int breakId, bool isPaid) async {
+    try {
+      await _db.auth.refreshSession();
+      final token = _db.auth.currentSession?.accessToken;
+      if (token == null) throw Exception('Not authenticated');
+
+      final body = <String, dynamic>{
+        'action': 'update_break',
+        'break_id': breakId,
+        'is_paid': isPaid,
+      };
+      final activeBusinessId = await getActiveBusinessId();
+      if (activeBusinessId != null) body['business_id'] = activeBusinessId;
+
+      final resp = await http.post(
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/edit-timesheet-entry'),
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode(body),
+      );
+      if (!mounted) return false;
+      final data = jsonDecode(resp.body);
+      if (resp.statusCode != 200 || data['success'] != true) {
+        throw Exception(data['error'] ?? 'Failed to update break');
+      }
       await _reloadCurrentView();
       return true;
     } catch (e) {
@@ -1904,6 +1950,9 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
                 const Expanded(flex: 2, child: Text('TOTAL HOURS',
                     style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
                         color: AppTheme.textSecondary, letterSpacing: 1))),
+                const Expanded(flex: 2, child: Text('BREAK',
+                    style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                        color: AppTheme.textSecondary, letterSpacing: 1))),
                 const Expanded(flex: 2, child: Text('ENTRIES',
                     style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
                         color: AppTheme.textSecondary, letterSpacing: 1))),
@@ -1924,6 +1973,7 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
                 final userId  = t['user_id'] as String?;
                 final name    = t['full_name'] as String? ?? 'Unknown';
                 final minutes = (t['total_minutes'] as num?)?.toInt() ?? 0;
+                final breakMinutes = (t['total_break_minutes'] as num?)?.toInt() ?? 0;
                 final count   = (t['entry_count'] as num?)?.toInt() ?? 0;
                 final pay     = _computePay(t);
                 final initials = name.trim().split(' ')
@@ -1955,6 +2005,9 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
                       ])),
                       Expanded(flex: 2, child: Text(_formatDuration(minutes),
                           style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.brand))),
+                      Expanded(flex: 2, child: Text(
+                          breakMinutes > 0 ? _formatDuration(breakMinutes) : '—',
+                          style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary))),
                       Expanded(flex: 2, child: Text('$count',
                           style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary))),
                       if (_canViewPayRates)
@@ -1974,6 +2027,7 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
 
   Widget _buildWeekGrandTotalRow() {
     final totalMinutes = _weekTotals.fold<int>(0, (sum, t) => sum + ((t['total_minutes'] as num?)?.toInt() ?? 0));
+    final totalBreakMinutes = _weekTotals.fold<int>(0, (sum, t) => sum + ((t['total_break_minutes'] as num?)?.toInt() ?? 0));
     final totalEntries = _weekTotals.fold<int>(0, (sum, t) => sum + ((t['entry_count'] as num?)?.toInt() ?? 0));
     final totalPay = _weekTotals.fold<double>(0, (sum, t) => sum + (_computePay(t) ?? 0));
     return Container(
@@ -1986,6 +2040,9 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
             style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
         Expanded(flex: 2, child: Text(_formatDuration(totalMinutes),
             style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.brand))),
+        Expanded(flex: 2, child: Text(
+            totalBreakMinutes > 0 ? _formatDuration(totalBreakMinutes) : '—',
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textSecondary))),
         Expanded(flex: 2, child: Text('$totalEntries',
             style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
         Expanded(flex: 2, child: Text(_formatCurrency(totalPay),
@@ -2652,6 +2709,9 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
             const Expanded(flex: 2, child: Text('DURATION',
                 style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
                     color: AppTheme.textSecondary, letterSpacing: 1))),
+            const Expanded(flex: 2, child: Text('BREAK',
+                style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                    color: AppTheme.textSecondary, letterSpacing: 1))),
             const Expanded(flex: 2, child: Text('STATUS',
                 style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
                     color: AppTheme.textSecondary, letterSpacing: 1))),
@@ -2671,6 +2731,7 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
             final isActive = status == 'active';
             final isStale  = e['is_stale_display'] as bool? ?? false;
             final name     = e['full_name'] as String? ?? 'Unknown';
+            final breakMinutes = (e['break_minutes'] as num?)?.toInt() ?? 0;
             final initials = name.trim().split(' ')
                 .map((p) => p.isNotEmpty ? p[0] : '').take(2).join().toUpperCase();
 
@@ -2730,6 +2791,9 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
                         style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
                             color: AppTheme.textPrimary),
                       )),
+                Expanded(flex: 2, child: Text(
+                    breakMinutes > 0 ? _formatDuration(breakMinutes) : '—',
+                    style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary))),
                 Expanded(flex: 2, child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                   decoration: BoxDecoration(
@@ -2980,17 +3044,21 @@ class _TimeEntryDetailDialog extends StatefulWidget {
   final Map<String, dynamic> entry;
   final bool isOwner;
   final bool canManageTimesheets;
+  final bool canManagePayRates;
   final VoidCallback onForceClockOut;
   final Future<bool> Function(int entryId, DateTime clockedInAt, DateTime? clockedOutAt, String? notes) onSave;
   final Future<bool> Function(int entryId) onDelete;
+  final Future<bool> Function(int breakId, bool isPaid)? onUpdateBreak;
 
   const _TimeEntryDetailDialog({
     required this.entry,
     required this.isOwner,
     required this.canManageTimesheets,
+    this.canManagePayRates = false,
     required this.onForceClockOut,
     required this.onSave,
     required this.onDelete,
+    this.onUpdateBreak,
   });
 
   @override
@@ -3005,8 +3073,36 @@ class _TimeEntryDetailDialogState extends State<_TimeEntryDetailDialog> {
   TimeOfDay? _editEndTime;
   late TextEditingController _notesController;
   String? _formError;
+  late List<Map<String, dynamic>> _breaks;
+  final Set<int> _breaksUpdating = {};
 
   Map<String, dynamic> get entry => widget.entry;
+
+  String _fmtBreakTime(String? iso) {
+    final dt = iso == null ? null : DateTime.tryParse(iso)?.toLocal();
+    if (dt == null) return '—';
+    final h = dt.hour % 12 == 0 ? 12 : dt.hour % 12;
+    final m = dt.minute.toString().padLeft(2, '0');
+    return '$h:$m ${dt.hour < 12 ? 'AM' : 'PM'}';
+  }
+
+  Future<void> _toggleBreakPaid(int breakId, bool newValue) async {
+    if (widget.onUpdateBreak == null) return;
+    setState(() => _breaksUpdating.add(breakId));
+    final success = await widget.onUpdateBreak!(breakId, newValue);
+    if (!mounted) return;
+    if (success) {
+      setState(() {
+        _breaks = _breaks.map((b) {
+          if (b['id'] == breakId) return {...b, 'is_paid': newValue};
+          return b;
+        }).toList();
+        _breaksUpdating.remove(breakId);
+      });
+    } else {
+      setState(() => _breaksUpdating.remove(breakId));
+    }
+  }
 
   @override
   void initState() {
@@ -3018,6 +3114,7 @@ class _TimeEntryDetailDialogState extends State<_TimeEntryDetailDialog> {
         : const TimeOfDay(hour: 8, minute: 0);
     _editEndTime = endDt != null ? TimeOfDay(hour: endDt.hour, minute: endDt.minute) : null;
     _notesController = TextEditingController(text: entry['notes'] as String? ?? '');
+    _breaks = List<Map<String, dynamic>>.from(entry['breaks'] as List? ?? []);
   }
 
   @override
@@ -3326,6 +3423,72 @@ class _TimeEntryDetailDialogState extends State<_TimeEntryDetailDialog> {
                           style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
                     ])),
                   ]),
+                if (((entry['break_minutes'] as num?)?.toInt() ?? 0) > 0) ...[
+                  const SizedBox(height: 10),
+                  Row(children: [
+                    Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      const Text('Break Time', style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                      const SizedBox(height: 2),
+                      Text(_formatDuration((entry['break_minutes'] as num).toInt()),
+                          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Colors.orange)),
+                    ])),
+                    Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      const Text('Unpaid', style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                      const SizedBox(height: 2),
+                      Text(_formatDuration((entry['unpaid_break_minutes'] as num?)?.toInt() ?? 0),
+                          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+                    ])),
+                    Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      const Text('Payable', style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                      const SizedBox(height: 2),
+                      Text(_formatDuration((entry['payable_minutes'] as num?)?.toInt()),
+                          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.brand)),
+                    ])),
+                  ]),
+                  if (widget.canManagePayRates && _breaks.isNotEmpty) ...[
+                    const SizedBox(height: 10),
+                    ..._breaks.map((b) {
+                      final breakId = b['id'] as int;
+                      final isPaid = b['is_paid'] as bool? ?? false;
+                      final minutes = (b['minutes'] as num?)?.toInt();
+                      final updating = _breaksUpdating.contains(breakId);
+                      return Container(
+                        margin: const EdgeInsets.only(bottom: 6),
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: AppTheme.pageBg,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: AppTheme.borderColor),
+                        ),
+                        child: Row(children: [
+                          Expanded(
+                            child: Text(
+                              '${_fmtBreakTime(b['started_at'] as String?)} – ${_fmtBreakTime(b['ended_at'] as String?)}'
+                              '${minutes != null ? ' · ${_formatDuration(minutes)}' : ' · in progress'}',
+                              style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary),
+                            ),
+                          ),
+                          Text(isPaid ? 'Paid' : 'Unpaid',
+                              style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600,
+                                  color: isPaid ? AppTheme.success : AppTheme.textSecondary)),
+                          const SizedBox(width: 6),
+                          updating
+                              ? const SizedBox(width: 32, height: 20,
+                                  child: Center(child: SizedBox(width: 14, height: 14,
+                                      child: CircularProgressIndicator(strokeWidth: 2))))
+                              : Switch(
+                                  value: isPaid,
+                                  onChanged: widget.canManageTimesheets && !isWeekLocked
+                                      ? (v) => _toggleBreakPaid(breakId, v)
+                                      : null,
+                                  activeColor: AppTheme.success,
+                                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                ),
+                        ]),
+                      );
+                    }),
+                  ],
+                ],
                 const SizedBox(height: 20),
                 Builder(builder: (context) {
                   final apptInfo = entry['appointment_info'] as Map<String, dynamic>?;

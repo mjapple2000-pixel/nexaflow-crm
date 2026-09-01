@@ -124,7 +124,7 @@ Deno.serve(async (req) => {
       .from("time_entries")
       .select("*")
       .eq("user_id", callerUserId)
-      .eq("status", "active")
+      .in("status", ["active", "on_break"])
       .is("deleted_at", null)
       .maybeSingle();
 
@@ -194,6 +194,50 @@ Deno.serve(async (req) => {
       });
     }
 
+    // ── Fetch breaks for these entries — TS-05. Used to compute payable
+    // minutes (duration minus unpaid break time) and to show a break
+    // column per shift. Only ended breaks count; an open break (still on
+    // break right now) contributes 0 until it's closed.
+    const entryIds = (entries ?? []).map((e) => e.id);
+    const breaksByEntryId: Record<number, {
+      break_minutes: number;
+      unpaid_break_minutes: number;
+      paid_break_minutes: number;
+      list: Array<{ id: number; started_at: string; ended_at: string | null; is_paid: boolean; minutes: number | null }>;
+    }> = {};
+    if (entryIds.length > 0) {
+      const { data: breaks } = await supabase
+        .from("time_entry_breaks")
+        .select("id, time_entry_id, started_at, ended_at, is_paid")
+        .in("time_entry_id", entryIds)
+        .is("deleted_at", null)
+        .order("started_at", { ascending: true });
+
+      for (const b of (breaks ?? [])) {
+        if (!breaksByEntryId[b.time_entry_id]) {
+          breaksByEntryId[b.time_entry_id] = { break_minutes: 0, unpaid_break_minutes: 0, paid_break_minutes: 0, list: [] };
+        }
+        const mins = b.ended_at
+          ? Math.round((new Date(b.ended_at).getTime() - new Date(b.started_at).getTime()) / 60000)
+          : null;
+        if (mins != null) {
+          breaksByEntryId[b.time_entry_id].break_minutes += mins;
+          if (b.is_paid) {
+            breaksByEntryId[b.time_entry_id].paid_break_minutes += mins;
+          } else {
+            breaksByEntryId[b.time_entry_id].unpaid_break_minutes += mins;
+          }
+        }
+        breaksByEntryId[b.time_entry_id].list.push({
+          id: b.id,
+          started_at: b.started_at,
+          ended_at: b.ended_at,
+          is_paid: b.is_paid === true,
+          minutes: mins,
+        });
+      }
+    }
+
     // ── Fetch appointment details for entries that have one ──────────
     const appointmentIds = [...new Set(
       (entries ?? []).map((e) => e.appointment_id).filter((id) => id != null)
@@ -258,12 +302,22 @@ Deno.serve(async (req) => {
         })
         .sort((a, b) => new Date(a.checked_in_at).getTime() - new Date(b.checked_in_at).getTime());
 
+      const breakInfo = breaksByEntryId[e.id] ?? { break_minutes: 0, unpaid_break_minutes: 0, paid_break_minutes: 0, list: [] };
+      const payableMinutes = e.duration_minutes != null
+        ? Math.max(0, e.duration_minutes - breakInfo.unpaid_break_minutes)
+        : null;
+
       return {
         ...e,
         full_name: profileMap[e.user_id] ?? "Unknown",
         edited_by_name: e.edited_by ? (profileMap[e.edited_by] ?? null) : null,
         appointment_info: e.appointment_id ? (appointmentMap[e.appointment_id] ?? null) : null,
         shift_check_ins: shiftCheckIns,
+        break_minutes: breakInfo.break_minutes,
+        unpaid_break_minutes: breakInfo.unpaid_break_minutes,
+        paid_break_minutes: breakInfo.paid_break_minutes,
+        payable_minutes: payableMinutes,
+        breaks: canManagePayRates ? breakInfo.list : [],
       };
     });
 
@@ -272,6 +326,7 @@ Deno.serve(async (req) => {
       user_id: string;
       full_name: string;
       total_minutes: number;
+      total_break_minutes: number;
       entry_count: number;
       pay_type?: string;
       hourly_rate?: number | null;
@@ -284,6 +339,7 @@ Deno.serve(async (req) => {
             user_id: e.user_id,
             full_name: e.full_name,
             total_minutes: 0,
+            total_break_minutes: 0,
             entry_count: 0,
           };
           if (canManagePayRates) {
@@ -293,7 +349,10 @@ Deno.serve(async (req) => {
             totals[e.user_id].annual_salary = payInfo?.annual_salary ?? null;
           }
         }
-        totals[e.user_id].total_minutes += (e.duration_minutes ?? 0);
+        // total_minutes is payable time (duration minus unpaid break time),
+        // not raw clock-in-to-clock-out time. Paid breaks stay included.
+        totals[e.user_id].total_minutes += (e.payable_minutes ?? e.duration_minutes ?? 0);
+        totals[e.user_id].total_break_minutes += (e.break_minutes ?? 0);
         totals[e.user_id].entry_count += 1;
       }
     }
@@ -310,13 +369,14 @@ Deno.serve(async (req) => {
     });
 
     // ── Optional per-day aggregation for the Month Calendar sub-view ──
-    let dailyTotals: Array<{ date: string; total_minutes: number; entry_count: number }> = [];
+    let dailyTotals: Array<{ date: string; total_minutes: number; total_break_minutes: number; entry_count: number }> = [];
     if (group_by === "day") {
-      const dayMap: Record<string, { total_minutes: number; entry_count: number }> = {};
-      for (const e of (entries ?? [])) {
+      const dayMap: Record<string, { total_minutes: number; total_break_minutes: number; entry_count: number }> = {};
+      for (const e of enrichedWithStale) {
         const dateKey = String(e.clocked_in_at).substring(0, 10);
-        if (!dayMap[dateKey]) dayMap[dateKey] = { total_minutes: 0, entry_count: 0 };
-        dayMap[dateKey].total_minutes += (e.duration_minutes ?? 0);
+        if (!dayMap[dateKey]) dayMap[dateKey] = { total_minutes: 0, total_break_minutes: 0, entry_count: 0 };
+        dayMap[dateKey].total_minutes += (e.payable_minutes ?? e.duration_minutes ?? 0);
+        dayMap[dateKey].total_break_minutes += (e.break_minutes ?? 0);
         dayMap[dateKey].entry_count += 1;
       }
       dailyTotals = Object.entries(dayMap).map(([date, v]) => ({ date, ...v }));

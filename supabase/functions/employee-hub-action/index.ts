@@ -72,7 +72,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    const validActions = ["clock_in", "clock_out", "toggle_location_sharing", "update_location", "add_note", "send_on_my_way", "check_in_at_stop", "log_expense"];
+    const validActions = ["clock_in", "clock_out", "toggle_location_sharing", "update_location", "add_note", "send_on_my_way", "check_in_at_stop", "log_expense", "start_break", "end_break"];
     if (!validActions.includes(action)) {
       return new Response(JSON.stringify({ error: "Invalid action" }), {
         status: 400,
@@ -578,6 +578,190 @@ Deno.serve(async (req) => {
       });
     }
 
+    // ── Start break: stamps is_paid from the business's default_break_paid
+    // setting at the moment the break starts — never recomputed later even
+    // if the business default changes afterward (same immutability rule
+    // used for referral rewards), so a manager who flips the default later
+    // doesn't silently rewrite pay for breaks that already happened.
+    if (action === "start_break") {
+      const { data: active, error: activeError } = await supabase
+        .from("time_entries")
+        .select("id, status")
+        .eq("user_id", callerUserId)
+        .in("status", ["active", "on_break"])
+        .is("deleted_at", null)
+        .maybeSingle();
+
+      if (activeError) {
+        return new Response(JSON.stringify({ error: "Error finding active clock-in: " + activeError.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      if (!active) {
+        return new Response(JSON.stringify({ error: "No active clock-in found" }), {
+          status: 409,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      if (active.status === "on_break") {
+        return new Response(JSON.stringify({ error: "Already on break" }), {
+          status: 409,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const { data: breakFeatureAllowed, error: breakGateErr } = await supabase
+        .rpc("check_plan_feature", { p_business_id: businessId, p_feature: "time_tracking" });
+      if (breakGateErr) {
+        return new Response(JSON.stringify({ error: "Error checking plan: " + breakGateErr.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      if (!breakFeatureAllowed) {
+        return new Response(JSON.stringify({
+          error: "upgrade_required",
+          message: "Timesheets & Payroll requires the Growth plan or above.",
+        }), { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
+      const { data: bizBreakSettings } = await supabase
+        .from("businesses")
+        .select("default_break_paid")
+        .eq("id", businessId)
+        .maybeSingle();
+
+      const nowIso = new Date().toISOString();
+
+      const { data: newBreak, error: breakInsertError } = await supabase
+        .from("time_entry_breaks")
+        .insert({
+          time_entry_id: active.id,
+          business_id: businessId,
+          started_at: nowIso,
+          is_paid: bizBreakSettings?.default_break_paid === true,
+        })
+        .select()
+        .single();
+
+      if (breakInsertError) {
+        return new Response(JSON.stringify({ error: "Error starting break: " + breakInsertError.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const { error: statusError } = await supabase
+        .from("time_entries")
+        .update({ status: "on_break" })
+        .eq("id", active.id);
+
+      if (statusError) {
+        return new Response(JSON.stringify({ error: "Error updating status: " + statusError.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      return new Response(JSON.stringify({ success: true, break: newBreak }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    // ── End break: closes the open time_entry_breaks row and returns the
+    // shift to "active". is_paid is never touched here — it was already
+    // stamped at start_break and stays put per the immutability rule above.
+    if (action === "end_break") {
+      const { data: active, error: activeError } = await supabase
+        .from("time_entries")
+        .select("id, status")
+        .eq("user_id", callerUserId)
+        .eq("status", "on_break")
+        .is("deleted_at", null)
+        .maybeSingle();
+
+      if (activeError) {
+        return new Response(JSON.stringify({ error: "Error finding active break: " + activeError.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      if (!active) {
+        return new Response(JSON.stringify({ error: "No active break found" }), {
+          status: 409,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const { data: breakFeatureAllowed, error: breakGateErr } = await supabase
+        .rpc("check_plan_feature", { p_business_id: businessId, p_feature: "time_tracking" });
+      if (breakGateErr) {
+        return new Response(JSON.stringify({ error: "Error checking plan: " + breakGateErr.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      if (!breakFeatureAllowed) {
+        return new Response(JSON.stringify({
+          error: "upgrade_required",
+          message: "Timesheets & Payroll requires the Growth plan or above.",
+        }), { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
+      const { data: openBreak, error: openBreakError } = await supabase
+        .from("time_entry_breaks")
+        .select("id")
+        .eq("time_entry_id", active.id)
+        .is("ended_at", null)
+        .is("deleted_at", null)
+        .maybeSingle();
+
+      if (openBreakError || !openBreak) {
+        return new Response(JSON.stringify({ error: "No open break found for this shift" }), {
+          status: 409,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const nowIso = new Date().toISOString();
+
+      const { data: closedBreak, error: closeError } = await supabase
+        .from("time_entry_breaks")
+        .update({ ended_at: nowIso })
+        .eq("id", openBreak.id)
+        .select()
+        .single();
+
+      if (closeError) {
+        return new Response(JSON.stringify({ error: "Error ending break: " + closeError.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const { error: statusError } = await supabase
+        .from("time_entries")
+        .update({ status: "active" })
+        .eq("id", active.id);
+
+      if (statusError) {
+        return new Response(JSON.stringify({ error: "Error updating status: " + statusError.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      return new Response(JSON.stringify({ success: true, break: closedBreak }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
     // ── 3. Check location requirement ────────────────────────────────────────
     const { data: bizSettings } = await supabase
       .from("businesses")
@@ -595,6 +779,28 @@ Deno.serve(async (req) => {
         }),
         { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
+    }
+
+    // ── Plan-tier gate: Timesheets & Payroll requires Growth+. Reached
+    // only by clock_in/clock_out — every other action already returned
+    // above. Matches the same check_plan_feature('time_tracking') gate
+    // already enforced on get-timesheets, edit-timesheet-entry,
+    // force-clock-out, export-timesheets-pdf, pay_periods RLS, and the
+    // break actions — clock_in/clock_out were the one path that had
+    // never been gated.
+    const { data: clockFeatureAllowed, error: clockGateErr } = await supabase
+      .rpc("check_plan_feature", { p_business_id: businessId, p_feature: "time_tracking" });
+    if (clockGateErr) {
+      return new Response(JSON.stringify({ error: "Error checking plan: " + clockGateErr.message }), {
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+    if (!clockFeatureAllowed) {
+      return new Response(JSON.stringify({
+        error: "upgrade_required",
+        message: "Timesheets & Payroll requires the Growth plan or above.",
+      }), { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
     if (action === "clock_in" && appointment_id) {
@@ -632,7 +838,7 @@ Deno.serve(async (req) => {
         .from("time_entries")
         .select("id")
         .eq("user_id", callerUserId)
-        .eq("status", "active")
+        .in("status", ["active", "on_break"])
         .is("deleted_at", null)
         .maybeSingle();
 
@@ -685,7 +891,7 @@ Deno.serve(async (req) => {
         .from("time_entries")
         .select("*")
         .eq("user_id", callerUserId)
-        .eq("status", "active")
+        .in("status", ["active", "on_break"])
         .is("deleted_at", null)
         .maybeSingle();
 
@@ -698,6 +904,13 @@ Deno.serve(async (req) => {
 
       if (!active) {
         return new Response(JSON.stringify({ error: "No active clock-in found" }), {
+          status: 409,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      if (active.status === "on_break") {
+        return new Response(JSON.stringify({ error: "on_break", message: "Please end your break before clocking out." }), {
           status: 409,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });

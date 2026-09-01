@@ -86,6 +86,14 @@ Deno.serve(async (req) => {
     const { data: jobCostingAllowed } = await supabase
       .rpc("check_plan_feature", { p_business_id: hubToken.business_id, p_feature: "job_costing" });
 
+    // ── Time Tracking plan gate — powers the clock in/out card. Mirrors
+    // the same check_plan_feature('time_tracking') gate already enforced
+    // server-side on clock_in/clock_out/start_break/end_break in
+    // employee-hub-action; this just lets the UI show a clear locked
+    // message instead of the tech hitting a 403 after tapping the button.
+    const { data: timeTrackingAllowed } = await supabase
+      .rpc("check_plan_feature", { p_business_id: hubToken.business_id, p_feature: "time_tracking" });
+
     let expenseCategories: any[] = [];
     if (jobCostingAllowed) {
       const { data: categories, error: categoriesError } = await supabase
@@ -106,9 +114,24 @@ Deno.serve(async (req) => {
       .from("time_entries")
       .select("*")
       .eq("user_id", profile.user_id)
-      .eq("status", "active")
+      .in("status", ["active", "on_break"])
       .is("deleted_at", null)
       .maybeSingle();
+
+    // ── 5a. Open break on the active entry, if any — lets the Hub UI show
+    // "On Break since ..." and swap the button to "End Break" without a
+    // second round trip.
+    let activeBreak: any = null;
+    if (activeEntry) {
+      const { data: openBreak } = await supabase
+        .from("time_entry_breaks")
+        .select("*")
+        .eq("time_entry_id", activeEntry.id)
+        .is("ended_at", null)
+        .is("deleted_at", null)
+        .maybeSingle();
+      activeBreak = openBreak ?? null;
+    }
 
     // ── 6. Today's assigned appointments ──────────────────────────
     const todayStart = new Date();
@@ -377,8 +400,10 @@ Deno.serve(async (req) => {
         gps_tracking_enabled: business?.gps_tracking_enabled === true,
         location_sharing_enabled: profile.location_sharing_enabled === true,
         job_costing_enabled: jobCostingAllowed === true,
+        time_tracking_enabled: timeTrackingAllowed === true,
         expense_categories: expenseCategories,
         active_entry: activeEntry ?? null,
+        active_break: activeBreak,
         route_stops: routeStops,
         appointments: allAppointments.map((a: any) => ({
           id: a.id,

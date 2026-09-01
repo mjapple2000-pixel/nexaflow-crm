@@ -64,12 +64,14 @@ Deno.serve(async (req) => {
     }
 
     const {
-      action, // "create" | "update" | "delete"
+      action, // "create" | "update" | "delete" | "update_break"
       entry_id,
       target_user_id,
       clocked_in_at,
       clocked_out_at,
       notes,
+      break_id,
+      is_paid,
       business_id: requestedBusinessId,
     } = body as {
       action?: string;
@@ -78,11 +80,13 @@ Deno.serve(async (req) => {
       clocked_in_at?: string;
       clocked_out_at?: string;
       notes?: string;
+      break_id?: number;
+      is_paid?: boolean;
       business_id?: number | string;
     };
 
-    if (!action || !["create", "update", "delete"].includes(action)) {
-      return new Response(JSON.stringify({ error: "action must be create, update, or delete" }), {
+    if (!action || !["create", "update", "delete", "update_break"].includes(action)) {
+      return new Response(JSON.stringify({ error: "action must be create, update, delete, or update_break" }), {
         status: 400,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
@@ -97,6 +101,7 @@ Deno.serve(async (req) => {
 
     let businessId: number;
     let canManageTimesheets: boolean;
+    let canManagePayRates: boolean;
     let isSuperuserCaller = false;
 
     if (profile?.business_id) {
@@ -104,6 +109,8 @@ Deno.serve(async (req) => {
       const perms = (profile.permissions ?? {}) as Record<string, unknown>;
       canManageTimesheets =
         profile.role === "owner" || profile.role === "admin" || perms.manage_timesheets === true;
+      canManagePayRates =
+        profile.role === "owner" || profile.role === "admin" || perms.manage_pay_rates === true;
     } else {
       const { data: superuserRow } = await supabase
         .from("superusers")
@@ -120,6 +127,7 @@ Deno.serve(async (req) => {
 
       businessId = Number(requestedBusinessId);
       canManageTimesheets = true; // superuser
+      canManagePayRates = true; // superuser
       isSuperuserCaller = true; // superusers can troubleshoot through a locked week
     }
 
@@ -145,6 +153,81 @@ Deno.serve(async (req) => {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
+    }
+
+    // ── Update a single break's paid/unpaid flag — the per-case override.
+    // Gated on manage_pay_rates specifically, not manage_timesheets, since
+    // this changes what someone gets paid for, same sensitivity level as
+    // editing an hourly rate. Only the flag changes; started_at/ended_at
+    // are untouched, so this never rewrites when the break happened.
+    if (action === "update_break") {
+      if (!canManagePayRates) {
+        return new Response(JSON.stringify({ error: "You do not have permission to manage pay rates" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      if (!break_id || typeof is_paid !== "boolean") {
+        return new Response(JSON.stringify({ error: "break_id and is_paid are required" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const { data: existingBreak, error: breakFetchError } = await supabase
+        .from("time_entry_breaks")
+        .select("id, business_id, started_at, deleted_at")
+        .eq("id", break_id)
+        .maybeSingle();
+
+      if (breakFetchError || !existingBreak) {
+        return new Response(JSON.stringify({ error: "Break not found" }), {
+          status: 404,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      if (existingBreak.business_id !== businessId) {
+        return new Response(JSON.stringify({ error: "Break does not belong to your business" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      if (existingBreak.deleted_at) {
+        return new Response(JSON.stringify({ error: "Cannot edit a deleted break" }), {
+          status: 409,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const lockedBreakPeriod = await getLockedPayPeriod(supabase, businessId, existingBreak.started_at);
+      if (lockedBreakPeriod && !isSuperuserCaller) {
+        return new Response(
+          JSON.stringify({
+            error: `This week (${lockedBreakPeriod.week_start} to ${lockedBreakPeriod.week_end}) is locked for payroll. Unlock it first to make changes.`,
+            locked: true,
+          }),
+          { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      const { data: updatedBreak, error: breakUpdateError } = await supabase
+        .from("time_entry_breaks")
+        .update({ is_paid })
+        .eq("id", break_id)
+        .select()
+        .maybeSingle();
+
+      if (breakUpdateError) {
+        return new Response(JSON.stringify({ error: "Failed to update break: " + breakUpdateError.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      return new Response(JSON.stringify({ success: true, break: updatedBreak }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     if (!canManageTimesheets) {
