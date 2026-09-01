@@ -42,6 +42,8 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
   // explicitly granted.
   bool _canManagePayRates = false;
   bool _loadingCapability = true;
+  int? _myProfileId;
+  List<Map<String, dynamic>> _rateHistory = [];
 
   @override
   void initState() {
@@ -68,7 +70,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
       }
       final me = await _db
           .from('profiles')
-          .select('role, permissions')
+          .select('id, role, permissions')
           .eq('user_id', userId)
           .maybeSingle();
       final role = me?['role'] as String? ?? 'member';
@@ -76,6 +78,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
       if (mounted) {
         setState(() {
           _canManagePayRates = role == 'owner' || role == 'admin' || perms['manage_pay_rates'] == true;
+          _myProfileId = me?['id'] as int?;
           _loadingCapability = false;
         });
       }
@@ -90,6 +93,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
       context: context, isScrollControlled: true, backgroundColor: Colors.transparent,
       builder: (_) => _EditPayRateSheet(
         profile: _profile!,
+        viewerProfileId: _myProfileId,
         onSaved: () { context.pop(); _load(); },
       ),
     );
@@ -100,7 +104,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     try {
       final data = await _db.from('profiles')
           .select('id, user_id, full_name, email, phone, role, status, job_title, '
-              'created_at, invited_at, timezone, permissions, '
+              'created_at, invited_at, timezone, permissions, business_id, '
               'pay_type, hourly_rate, annual_salary')
           .eq('id', _id)
           .maybeSingle();
@@ -109,7 +113,22 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
         return;
       }
       if (!mounted) return;
-      setState(() { _profile = data; _loading = false; });
+      // RLS on pay_rate_history already scopes this (self sees their own
+      // rows, manage_pay_rates holders see everyone's in their business),
+      // so an unauthorized viewer just gets an empty list, not an error.
+      List<Map<String, dynamic>> history = [];
+      try {
+        final rows = await _db.from('pay_rate_history')
+            .select('id, pay_type, hourly_rate, annual_salary, effective_date, note, created_at')
+            .eq('profile_id', _id)
+            .order('effective_date', ascending: false)
+            .limit(24);
+        history = List<Map<String, dynamic>>.from(rows as List);
+      } catch (_) {
+        // Non-fatal — the profile itself still loaded fine.
+      }
+      if (!mounted) return;
+      setState(() { _profile = data; _rateHistory = history; _loading = false; });
     } catch (e) {
       if (mounted) setState(() { _error = e.toString(); _loading = false; });
     }
@@ -278,6 +297,8 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                   if (!_loadingCapability && _canManagePayRates) ...[
                     const SizedBox(height: 16),
                     _buildPayRateCard(p),
+                    const SizedBox(height: 16),
+                    _buildPayRateHistoryCard(),
                   ],
                 ])),
               ],
@@ -325,6 +346,46 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
             style: const TextStyle(color: AppTheme.textPrimary, fontSize: 15, fontWeight: FontWeight.w700),
           ),
         ],
+      ]),
+    );
+  }
+
+  Widget _buildPayRateHistoryCard() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(color: AppTheme.cardBg, borderRadius: BorderRadius.circular(12), border: Border.all(color: AppTheme.borderColor)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Text('RATE HISTORY',
+            style: TextStyle(color: AppTheme.textSecondary, fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 0.8)),
+        const SizedBox(height: 12),
+        if (_rateHistory.isEmpty)
+          const Text('No rate changes recorded yet.', style: TextStyle(color: AppTheme.textSecondary, fontSize: 12))
+        else
+          ..._rateHistory.map((r) {
+            final payType = r['pay_type'] as String? ?? 'hourly';
+            final hourlyRate = (r['hourly_rate'] as num?)?.toDouble();
+            final annualSalary = (r['annual_salary'] as num?)?.toDouble();
+            final amountText = payType == 'hourly'
+                ? (hourlyRate != null ? '\$${hourlyRate.toStringAsFixed(2)}/hr' : '—')
+                : (annualSalary != null ? '\$${annualSalary.toStringAsFixed(0)}/yr' : '—');
+            final note = r['note'] as String?;
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text('Effective ${_fmtDate(r['effective_date'] as String?)}',
+                      style: const TextStyle(color: AppTheme.textSecondary, fontSize: 10)),
+                  Text(amountText, style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13, fontWeight: FontWeight.w600)),
+                  if (note != null && note.trim().isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Text(note, style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11)),
+                    ),
+                ])),
+              ]),
+            );
+          }),
       ]),
     );
   }
@@ -512,8 +573,9 @@ class _EditEmployeeSheetState extends State<_EditEmployeeSheet> {
 
 class _EditPayRateSheet extends StatefulWidget {
   final Map<String, dynamic> profile;
+  final int? viewerProfileId;
   final VoidCallback onSaved;
-  const _EditPayRateSheet({required this.profile, required this.onSaved});
+  const _EditPayRateSheet({required this.profile, required this.viewerProfileId, required this.onSaved});
   @override
   State<_EditPayRateSheet> createState() => _EditPayRateSheetState();
 }
@@ -523,23 +585,81 @@ class _EditPayRateSheetState extends State<_EditPayRateSheet> {
   late String _payType = widget.profile['pay_type'] as String? ?? 'hourly';
   late final _hourlyRateCtrl = TextEditingController(text: widget.profile['hourly_rate']?.toString() ?? '');
   late final _annualSalaryCtrl = TextEditingController(text: widget.profile['annual_salary']?.toString() ?? '');
+  late final _noteCtrl = TextEditingController();
+  DateTime _effectiveDate = DateTime.now();
   bool _saving = false;
 
   @override
   void dispose() {
     _hourlyRateCtrl.dispose();
     _annualSalaryCtrl.dispose();
+    _noteCtrl.dispose();
     super.dispose();
+  }
+
+  Future<void> _pickEffectiveDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _effectiveDate,
+      firstDate: DateTime(2020),
+      lastDate: DateTime.now().add(const Duration(days: 365)),
+    );
+    if (picked != null && mounted) setState(() => _effectiveDate = picked);
+  }
+
+  String _fmtEffectiveDate(DateTime d) {
+    const months = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    return '${months[d.month]} ${d.day}, ${d.year}';
   }
 
   Future<void> _save() async {
     setState(() => _saving = true);
     try {
+      final hourlyRate = _payType == 'hourly' ? double.tryParse(_hourlyRateCtrl.text.trim()) : null;
+      final annualSalary = _payType == 'salary' ? double.tryParse(_annualSalaryCtrl.text.trim()) : null;
+      final effectiveDateStr = _effectiveDate.toUtc().toIso8601String().split('T').first;
+
+      // pay_rate_history is the source of truth for wage history. The
+      // (profile_id, effective_date) unique index is partial (WHERE
+      // deleted_at IS NULL), so ON CONFLICT can't target it directly —
+      // hand-rolled check-then-update-or-insert, same pattern as
+      // overtime_rules in TS-06.
+      final existing = await _db.from('pay_rate_history')
+          .select('id')
+          .eq('profile_id', widget.profile['id'])
+          .eq('effective_date', effectiveDateStr)
+          .filter('deleted_at', 'is', null)
+          .maybeSingle();
+
+      final historyRow = {
+        'business_id': widget.profile['business_id'],
+        'profile_id': widget.profile['id'],
+        'pay_type': _payType,
+        'hourly_rate': hourlyRate,
+        'annual_salary': annualSalary,
+        'effective_date': effectiveDateStr,
+        'note': _noteCtrl.text.trim().isEmpty ? null : _noteCtrl.text.trim(),
+        'set_by_profile_id': widget.viewerProfileId,
+      };
+
+      if (existing != null) {
+        await _db.from('pay_rate_history')
+            .update({...historyRow, 'updated_at': DateTime.now().toUtc().toIso8601String()})
+            .eq('id', existing['id']);
+      } else {
+        await _db.from('pay_rate_history').insert(historyRow);
+      }
+
+      // profiles.hourly_rate/annual_salary/pay_type stay as a fast "current
+      // rate" cache — get-timesheets and the Pay Rate card both read these
+      // directly. Keeping this write means nothing that already depends on
+      // the profiles columns breaks.
       await _db.from('profiles').update({
         'pay_type': _payType,
-        'hourly_rate': _payType == 'hourly' ? double.tryParse(_hourlyRateCtrl.text.trim()) : null,
-        'annual_salary': _payType == 'salary' ? double.tryParse(_annualSalaryCtrl.text.trim()) : null,
+        'hourly_rate': hourlyRate,
+        'annual_salary': annualSalary,
       }).eq('id', widget.profile['id']);
+
       widget.onSaved();
     } catch (e) {
       if (mounted) {
@@ -630,6 +750,34 @@ class _EditPayRateSheetState extends State<_EditPayRateSheet> {
                   ? 'Pay shown on Timesheets is this salary divided across the business\'s pay periods — hours are still tracked normally.'
                   : 'Used to calculate pay totals on Timesheets Week and Pay Period views.',
               style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11, height: 1.4),
+            ),
+            const SizedBox(height: 20),
+            const Text('Effective Date', style: TextStyle(color: AppTheme.textSecondary, fontSize: 13)),
+            const SizedBox(height: 6),
+            GestureDetector(
+              onTap: _pickEffectiveDate,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                decoration: BoxDecoration(borderRadius: BorderRadius.circular(8), border: Border.all(color: AppTheme.borderColor)),
+                child: Row(children: [
+                  const Icon(Icons.calendar_today_outlined, size: 15, color: AppTheme.textSecondary),
+                  const SizedBox(width: 8),
+                  Text(_fmtEffectiveDate(_effectiveDate), style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13)),
+                ]),
+              ),
+            ),
+            const SizedBox(height: 6),
+            const Text('This becomes a new dated entry in Rate History — it doesn\'t overwrite past rates.',
+              style: TextStyle(color: AppTheme.textSecondary, fontSize: 11, height: 1.4)),
+            const SizedBox(height: 16),
+            TextFormField(
+              controller: _noteCtrl,
+              style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13),
+              decoration: const InputDecoration(
+                labelText: 'Note (optional)',
+                hintText: 'e.g. Annual raise',
+                labelStyle: TextStyle(color: AppTheme.textSecondary, fontSize: 13),
+              ),
             ),
           ])),
           Container(

@@ -13,6 +13,7 @@ import '../utils/business_utils.dart';
 import '../widgets/office_job_form_viewer_sheet.dart';
 import '../utils/phone_utils.dart';
 import 'package:image_picker/image_picker.dart';
+import '../navigation/app_router.dart';
 
 class AppointmentsScreen extends StatefulWidget {
   const AppointmentsScreen({super.key});
@@ -38,6 +39,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
   int? _businessId;
   Map<String, dynamic>? _business;
   bool _jobCostingEnabled = false;
+  bool _laborCostEnabled = false;
 
   // Mirrors check_plan_feature('job_costing') server-side exactly — beta
   // bypasses everything, otherwise requires a paid, active/trialing
@@ -51,6 +53,19 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
     if (sub != 'active' && sub != 'trialing') return false;
     final plan = business['plan'] as String?;
     return plan == 'growth' || plan == 'pro';
+  }
+
+  // Mirrors check_plan_feature('labor_cost_tracking') server-side exactly —
+  // Pro only (TS-07), stricter than job_costing above. Kept in sync so this
+  // teaser never disagrees with pay_rate_history's RLS.
+  bool _computeLaborCostEnabled(Map<String, dynamic>? business) {
+    if (business == null) return false;
+    if (business['is_beta'] == true) return true;
+    if (business['is_paid'] != true) return false;
+    final sub = business['subscription_status'] as String?;
+    if (sub != 'active' && sub != 'trialing') return false;
+    final plan = business['plan'] as String?;
+    return plan == 'pro';
   }
 
   late final _AppLifecycleObserver _observer = _AppLifecycleObserver(onResume: _load);
@@ -153,6 +168,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
       _appointments  = List<Map<String, dynamic>>.from(results[0] as List);
       _business      = results[1] as Map<String, dynamic>?;
       _jobCostingEnabled = _computeJobCostingEnabled(_business);
+      _laborCostEnabled = _computeLaborCostEnabled(_business);
       await _mergeResolvedContactInfo();
       _teamMembers   = List<Map<String, dynamic>>.from(results[2] as List);
       if (_selectedUserIds.isEmpty) {
@@ -2122,6 +2138,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
         jobTypes: _jobTypes,
         businessDefaultHours: _business?['availability_hours'],
         jobCostingEnabled: _jobCostingEnabled,
+        laborCostEnabled: _laborCostEnabled,
         onUpdated: () { Navigator.pop(context); _load(); },
       ));
   }
@@ -5471,6 +5488,7 @@ class _AppointmentDetailSheet extends StatefulWidget {
   final List<Map<String, dynamic>> jobTypes;
   final dynamic businessDefaultHours;
   final bool jobCostingEnabled;
+  final bool laborCostEnabled;
 
   const _AppointmentDetailSheet({
     required this.appointment,
@@ -5482,6 +5500,7 @@ class _AppointmentDetailSheet extends StatefulWidget {
     this.jobTypes = const [],
     this.businessDefaultHours,
     this.jobCostingEnabled = false,
+    this.laborCostEnabled = false,
   });
 
   @override
@@ -5507,6 +5526,12 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
   bool _loadingExpenses = false;
   bool _jobCostsSectionExpanded = true;
   String? _expenseError;
+
+  // Labor Cost state (TS-07) — compensation-derived, so only ever shown to
+  // viewers who can already manage pay rates, on top of the Pro plan gate.
+  bool _canViewLaborCost = false;
+  bool _loadingLaborCost = false;
+  double? _laborCostTotal;
 
   // Job Forms state
   List<Map<String, dynamic>> _attachedForms = [];
@@ -5573,6 +5598,7 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
       _loadActiveTimeEntry();
       _loadAttachedForms();
       _loadAvailableJobForms();
+      _checkLaborCostViewCapability().then((_) => _loadLaborCost());
     });
   }
 
@@ -5588,6 +5614,129 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
     _adminEmailCtrl.dispose();
     _clockTimer?.cancel();
     super.dispose();
+  }
+
+  Future<void> _checkLaborCostViewCapability() async {
+    if (AppRouter.cachedIsSuperuser == true) {
+      if (mounted) setState(() => _canViewLaborCost = true);
+      return;
+    }
+    try {
+      final userId = _db.auth.currentUser?.id;
+      if (userId == null) return;
+      final me = await _db
+          .from('profiles')
+          .select('role, permissions')
+          .eq('user_id', userId)
+          .maybeSingle();
+      final role = me?['role'] as String? ?? 'member';
+      final perms = Map<String, dynamic>.from((me?['permissions'] as Map?) ?? {});
+      if (mounted) {
+        setState(() {
+          _canViewLaborCost = role == 'owner' || role == 'admin' || perms['manage_pay_rates'] == true;
+        });
+      }
+    } catch (e) {
+      debugPrint('Check labor cost capability error: $e');
+    }
+  }
+
+  // Salaried employees have no hourly figure on file, so this approximates
+  // one using a standard 2,080-hour work year (52 weeks x 40 hours) — the
+  // same assumption most payroll tools default to. Flagged since it's an
+  // approximation, not an exact figure.
+  double? _hourlyEquivalent(String? payType, dynamic hourlyRate, dynamic annualSalary) {
+    if (payType == 'salary') {
+      final salary = (annualSalary as num?)?.toDouble();
+      return salary == null ? null : salary / 2080.0;
+    }
+    return (hourlyRate as num?)?.toDouble();
+  }
+
+  // Calculated on read, per TS-07's spec — never stored on time_entries,
+  // since rates can change retroactively and a stored number would go
+  // stale. For each tracked hour on this job, picks the pay_rate_history
+  // row that was in effect on the day the hour was worked (falling back to
+  // the profiles cache for rates set before TS-07 shipped), so the total
+  // holds up correctly even if a customer questions the cost later.
+  Future<void> _loadLaborCost() async {
+    if (!widget.laborCostEnabled || !_canViewLaborCost) return;
+    if (!mounted) return;
+    setState(() => _loadingLaborCost = true);
+    try {
+      final apptId = widget.appointment['id'] as int;
+      final entries = await _db
+          .from('time_entries')
+          .select('id, user_id, clocked_in_at, clocked_out_at, duration_minutes, status')
+          .eq('appointment_id', apptId)
+          .filter('deleted_at', 'is', null);
+      final entryList = List<Map<String, dynamic>>.from(entries);
+      if (entryList.isEmpty) {
+        if (mounted) setState(() { _laborCostTotal = 0; _loadingLaborCost = false; });
+        return;
+      }
+
+      // time_entries.user_id is the login-identity uuid, but pay_rate_history
+      // keys off profiles.id — resolve every worker on this job in one query.
+      final userIds = entryList.map((e) => e['user_id']).whereType<String>().toSet().toList();
+      final profiles = await _db
+          .from('profiles')
+          .select('id, user_id, pay_type, hourly_rate, annual_salary')
+          .inFilter('user_id', userIds);
+      final profileByUserId = {
+        for (final p in List<Map<String, dynamic>>.from(profiles)) p['user_id'] as String: p,
+      };
+      final profileIds = profileByUserId.values.map((p) => p['id'] as int).toSet().toList();
+
+      final history = profileIds.isEmpty
+          ? <Map<String, dynamic>>[]
+          : List<Map<String, dynamic>>.from(await _db
+              .from('pay_rate_history')
+              .select('profile_id, pay_type, hourly_rate, annual_salary, effective_date')
+              .inFilter('profile_id', profileIds)
+              .filter('deleted_at', 'is', null)
+              .order('effective_date', ascending: false));
+
+      double? hourlyRateFor(int profileId, DateTime onDate) {
+        final dateOnly = DateTime(onDate.year, onDate.month, onDate.day);
+        for (final h in history) {
+          if (h['profile_id'] != profileId) continue;
+          final eff = DateTime.tryParse(h['effective_date'] as String? ?? '');
+          if (eff == null || eff.isAfter(dateOnly)) continue;
+          return _hourlyEquivalent(h['pay_type'] as String?, h['hourly_rate'], h['annual_salary']);
+        }
+        final p = profileByUserId.values.firstWhere((p) => p['id'] == profileId, orElse: () => {});
+        if (p.isEmpty) return null;
+        return _hourlyEquivalent(p['pay_type'] as String?, p['hourly_rate'], p['annual_salary']);
+      }
+
+      double total = 0;
+      final now = DateTime.now().toUtc();
+      for (final e in entryList) {
+        final profile = profileByUserId[e['user_id']];
+        if (profile == null) continue;
+        final profileId = profile['id'] as int;
+        final clockedIn = DateTime.tryParse(e['clocked_in_at'] as String? ?? '');
+        if (clockedIn == null) continue;
+        double minutes;
+        if (e['status'] == 'active') {
+          minutes = now.difference(clockedIn.toUtc()).inMinutes.toDouble();
+        } else if (e['duration_minutes'] != null) {
+          minutes = (e['duration_minutes'] as num).toDouble();
+        } else {
+          final clockedOut = DateTime.tryParse(e['clocked_out_at'] as String? ?? '');
+          minutes = clockedOut == null ? 0 : clockedOut.toUtc().difference(clockedIn.toUtc()).inMinutes.toDouble();
+        }
+        final rate = hourlyRateFor(profileId, clockedIn);
+        if (rate == null) continue;
+        total += (minutes / 60.0) * rate;
+      }
+
+      if (mounted) setState(() { _laborCostTotal = total; _loadingLaborCost = false; });
+    } catch (e) {
+      debugPrint('Load labor cost error: $e');
+      if (mounted) setState(() => _loadingLaborCost = false);
+    }
   }
 
   Future<void> _loadExpenses() async {
@@ -6551,6 +6700,10 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
           if (!blocked) _buildJobCostsSection(context),
           if (!blocked) const SizedBox(height: 24),
 
+          // ── Labor Cost ────────────────────────────────────────────────
+          if (!blocked && _canViewLaborCost) _buildLaborCostSection(context),
+          if (!blocked && _canViewLaborCost) const SizedBox(height: 24),
+
           // ── Job Forms ─────────────────────────────────────────────────
           if (!blocked) _buildJobFormsSection(context),
           if (!blocked) const SizedBox(height: 24),
@@ -6900,6 +7053,98 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
             ]),
           ),
       ],
+    ]);
+  }
+
+  Widget _buildLaborCostSection(BuildContext context) {
+    if (!widget.laborCostEnabled) {
+      return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Text('LABOR COST', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700,
+            color: AppTheme.textSecondary, letterSpacing: 0.5)),
+        const SizedBox(height: 8),
+        Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: AppTheme.pageBg,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: AppTheme.borderColor),
+          ),
+          child: Row(children: [
+            Container(
+              width: 32, height: 32,
+              decoration: BoxDecoration(
+                color: AppTheme.brand.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Icon(Icons.lock_outline, size: 16, color: AppTheme.brand),
+            ),
+            const SizedBox(width: 12),
+            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Text('Labor Cost is a Pro plan feature',
+                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+              const SizedBox(height: 2),
+              const Text('See what this job cost in tracked hours, using each tech\'s pay rate.',
+                  style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+            ])),
+            const SizedBox(width: 8),
+            GestureDetector(
+              onTap: () => context.go('/settings?section=billing'),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: AppTheme.brand,
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: const Text('Upgrade', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.white)),
+              ),
+            ),
+          ]),
+        ),
+      ]);
+    }
+
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(children: [
+        const Text('LABOR COST', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700,
+            color: AppTheme.textSecondary, letterSpacing: 0.5)),
+        const Spacer(),
+        if (_laborCostTotal != null)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+            decoration: BoxDecoration(
+              color: AppTheme.brand.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(99),
+            ),
+            child: Text('\$${_laborCostTotal!.toStringAsFixed(2)} total',
+                style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppTheme.brand)),
+          ),
+      ]),
+      const SizedBox(height: 8),
+      if (_loadingLaborCost)
+        const Padding(
+          padding: EdgeInsets.symmetric(vertical: 12),
+          child: Center(child: SizedBox(width: 20, height: 20,
+              child: CircularProgressIndicator(strokeWidth: 2))),
+        )
+      else
+        Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: AppTheme.pageBg,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: AppTheme.borderColor),
+          ),
+          child: Row(children: [
+            const Icon(Icons.payments_outlined, size: 16, color: AppTheme.textMuted),
+            const SizedBox(width: 8),
+            Expanded(child: Text(
+              _laborCostTotal == null || _laborCostTotal == 0
+                  ? 'No tracked hours with a pay rate on file for this job yet.'
+                  : 'Calculated from tracked hours × each tech\'s rate at the time worked.',
+              style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+            )),
+          ]),
+        ),
     ]);
   }
 
