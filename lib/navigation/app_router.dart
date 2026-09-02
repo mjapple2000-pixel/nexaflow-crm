@@ -54,6 +54,9 @@ import '../screens/timesheets_screen.dart';
 import '../screens/routes_screen.dart';
 import '../screens/ai_form_recreation_screen.dart';
 import '../screens/quickbooks_team_mapping_screen.dart';
+import '../screens/pto_policy_screen.dart';
+import '../screens/pto_requests_screen.dart';
+import '../screens/employee_pto_screen.dart';
 
 class AppRouter {
   static bool? cachedIsSuperuser;
@@ -617,6 +620,21 @@ class AppRouter {
             path: '/settings/quickbooks-team-mapping',
             name: 'quickbooks-team-mapping',
             builder: (context, state) => const QuickBooksTeamMappingScreen(),
+          ),
+          GoRoute(
+            path: '/settings/pto-policy',
+            name: 'pto-policy',
+            builder: (context, state) => const PtoPolicyScreen(),
+          ),
+          GoRoute(
+            path: '/settings/pto-requests',
+            name: 'pto-requests',
+            builder: (context, state) => const PtoRequestsScreen(),
+          ),
+          GoRoute(
+            path: '/settings/my-pto',
+            name: 'my-pto',
+            builder: (context, state) => const EmployeePtoScreen(),
           ),
           GoRoute(
             path: '/ai-chat',

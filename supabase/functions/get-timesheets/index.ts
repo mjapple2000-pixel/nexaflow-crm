@@ -211,6 +211,31 @@ Deno.serve(async (req) => {
       };
     }
 
+    // ── TS-10: approved PTO hours overlapping the requested range, so the
+    // Timesheets UI can show them alongside worked hours (kept separate,
+    // never merged into total_minutes — PTO isn't clock time).
+    const ptoRangeStart = start_date ?? "0001-01-01";
+    const ptoRangeEnd = end_date ?? "9999-12-31";
+    const { data: approvedPto } = await supabase
+      .from("pto_requests")
+      .select("profile_id, start_date, end_date, hours_requested")
+      .eq("business_id", businessId)
+      .eq("status", "approved")
+      .is("deleted_at", null)
+      .lte("start_date", ptoRangeEnd)
+      .gte("end_date", ptoRangeStart);
+
+    const userIdByProfileId: Record<number, string> = {};
+    for (const [uid, pid] of Object.entries(profileIdByUserId)) {
+      userIdByProfileId[pid] = uid;
+    }
+    const ptoHoursByUserId: Record<string, number> = {};
+    for (const r of (approvedPto ?? [])) {
+      const uid = userIdByProfileId[r.profile_id];
+      if (!uid) continue;
+      ptoHoursByUserId[uid] = (ptoHoursByUserId[uid] ?? 0) + Number(r.hours_requested ?? 0);
+    }
+
     // ── Fetch pay period lock state for this business ─────────────────
     let payPeriodsQuery = supabase
       .from("pay_periods")
@@ -449,6 +474,7 @@ Deno.serve(async (req) => {
       pay_type?: string;
       hourly_rate?: number | null;
       annual_salary?: number | null;
+      pto_hours?: number;
     }> = {};
     if (isOwner) {
       for (const e of enriched) {
@@ -476,6 +502,30 @@ Deno.serve(async (req) => {
         totals[e.user_id].total_minutes += (e.payable_minutes ?? e.duration_minutes ?? 0);
         totals[e.user_id].total_break_minutes += (e.break_minutes ?? 0);
         totals[e.user_id].entry_count += 1;
+      }
+
+      // Also surface team members whose only activity this period was
+      // approved PTO (no clock-ins at all) — otherwise time entirely off
+      // would vanish from the summary.
+      for (const [uid, hours] of Object.entries(ptoHoursByUserId)) {
+        if (!totals[uid]) {
+          totals[uid] = {
+            user_id: uid,
+            full_name: profileMap[uid] ?? "Unknown",
+            total_minutes: 0,
+            total_break_minutes: 0,
+            entry_count: 0,
+            pto_hours: hours,
+          };
+          if (canManagePayRates) {
+            const payInfo = payRateByUserId[uid];
+            totals[uid].pay_type = payInfo?.pay_type ?? "hourly";
+            totals[uid].hourly_rate = payInfo?.hourly_rate ?? null;
+            totals[uid].annual_salary = payInfo?.annual_salary ?? null;
+          }
+        } else {
+          totals[uid].pto_hours = hours;
+        }
       }
     }
 

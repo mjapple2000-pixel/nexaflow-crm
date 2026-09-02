@@ -201,10 +201,11 @@ Deno.serve(async (req) => {
 
     const { data: teamProfiles } = await supabase
       .from("profiles")
-      .select("user_id, full_name, pay_type, hourly_rate, annual_salary")
+      .select("id, user_id, full_name, pay_type, hourly_rate, annual_salary")
       .eq("business_id", businessId);
 
     const profileByUserId: Record<string, { full_name: string; pay_type: string; hourly_rate: number | null; annual_salary: number | null }> = {};
+    const userIdByProfileId: Record<number, string> = {};
     for (const p of (teamProfiles ?? [])) {
       profileByUserId[p.user_id] = {
         full_name: p.full_name ?? "Unknown",
@@ -212,6 +213,25 @@ Deno.serve(async (req) => {
         hourly_rate: p.hourly_rate ?? null,
         annual_salary: p.annual_salary ?? null,
       };
+      if (typeof p.id === "number") userIdByProfileId[p.id] = p.user_id;
+    }
+
+    // ── TS-10: approved PTO hours overlapping the export range, kept as
+    // its own column rather than folded into worked hours.
+    const { data: approvedPto } = await supabase
+      .from("pto_requests")
+      .select("profile_id, hours_requested")
+      .eq("business_id", businessId)
+      .eq("status", "approved")
+      .is("deleted_at", null)
+      .lte("start_date", end_date)
+      .gte("end_date", start_date);
+
+    const ptoHoursByUserId: Record<string, number> = {};
+    for (const r of (approvedPto ?? [])) {
+      const uid = userIdByProfileId[r.profile_id];
+      if (!uid) continue;
+      ptoHoursByUserId[uid] = (ptoHoursByUserId[uid] ?? 0) + Number(r.hours_requested ?? 0);
     }
 
     const { data: entries, error: entriesError } = await supabase
@@ -252,7 +272,7 @@ Deno.serve(async (req) => {
       }
     }
 
-    const totalsMap: Record<string, { user_id: string; total_minutes: number; total_break_minutes: number; entry_count: number; regular_minutes?: number; overtime_minutes?: number }> = {};
+    const totalsMap: Record<string, { user_id: string; total_minutes: number; total_break_minutes: number; entry_count: number; regular_minutes?: number; overtime_minutes?: number; pto_hours?: number }> = {};
     const dayMinutesByUserDay: Record<string, number> = {};
     for (const e of (entries ?? [])) {
       if (!totalsMap[e.user_id]) {
@@ -305,6 +325,16 @@ Deno.serve(async (req) => {
       }
     }
 
+    // PTO-only members (approved time off, no clock-ins in range) need a
+    // row too, or their time off silently vanishes from the export.
+    for (const [uid, hours] of Object.entries(ptoHoursByUserId)) {
+      if (!totalsMap[uid]) {
+        totalsMap[uid] = { user_id: uid, total_minutes: 0, total_break_minutes: 0, entry_count: 0, pto_hours: hours };
+      } else {
+        totalsMap[uid].pto_hours = hours;
+      }
+    }
+
     const totals = Object.values(totalsMap).sort((a, b) => {
       const nameA = profileByUserId[a.user_id]?.full_name ?? "";
       const nameB = profileByUserId[b.user_id]?.full_name ?? "";
@@ -320,16 +350,20 @@ Deno.serve(async (req) => {
     const payPeriodType = businessConfig?.pay_period_type ?? "weekly";
     const periodsPerYear = payPeriodType === "biweekly" ? 26 : payPeriodType === "semimonthly" ? 24 : 52;
 
-    function computePay(userId: string, minutes: number): number | null {
+    function computePay(userId: string, minutes: number, ptoHours: number): number | null {
       if (!canManagePayRates) return null;
       const info = profileByUserId[userId];
       if (!info) return null;
       if (info.pay_type === "salary") {
         if (info.annual_salary == null) return null;
+        // Flat period pay already covers any PTO taken — salaried pay
+        // doesn't change based on hours worked or hours off.
         return info.annual_salary / periodsPerYear;
       }
       if (info.hourly_rate == null) return null;
-      return (minutes / 60) * info.hourly_rate;
+      // Hourly employees are paid for approved PTO at their regular rate,
+      // same as worked hours — standard PTO payout practice.
+      return ((minutes / 60) + ptoHours) * info.hourly_rate;
     }
 
     // ── Build the PDF ──────────────────────────────────────────
@@ -351,8 +385,8 @@ Deno.serve(async (req) => {
     y -= 28;
 
     const colX = hasOvertimeTracking
-      ? { name: MARGIN, hours: MARGIN + 130, regular: MARGIN + 195, ot: MARGIN + 255, breaks: MARGIN + 305, entries: MARGIN + 360, pay: MARGIN + 415 }
-      : { name: MARGIN, hours: MARGIN + 170, regular: 0, ot: 0, breaks: MARGIN + 250, entries: MARGIN + 330, pay: MARGIN + 410 };
+      ? { name: MARGIN, hours: MARGIN + 110, regular: MARGIN + 170, ot: MARGIN + 225, pto: MARGIN + 260, breaks: MARGIN + 305, entries: MARGIN + 355, pay: MARGIN + 410 }
+      : { name: MARGIN, hours: MARGIN + 150, regular: 0, ot: 0, pto: MARGIN + 210, breaks: MARGIN + 255, entries: MARGIN + 330, pay: MARGIN + 410 };
     const rowHeight = 20;
 
     function drawHeader() {
@@ -362,6 +396,7 @@ Deno.serve(async (req) => {
         page.drawText("REGULAR", { x: colX.regular, y, size: 9, font: boldFont, color: rgb(0.4, 0.4, 0.4) });
         page.drawText("OT", { x: colX.ot, y, size: 9, font: boldFont, color: rgb(0.4, 0.4, 0.4) });
       }
+      page.drawText("PTO", { x: colX.pto, y, size: 9, font: boldFont, color: rgb(0.4, 0.4, 0.4) });
       page.drawText("BREAK", { x: colX.breaks, y, size: 9, font: boldFont, color: rgb(0.4, 0.4, 0.4) });
       page.drawText("ENTRIES", { x: colX.entries, y, size: 9, font: boldFont, color: rgb(0.4, 0.4, 0.4) });
       if (canManagePayRates) {
@@ -380,6 +415,7 @@ Deno.serve(async (req) => {
     let grandMinutes = 0;
     let grandRegularMinutes = 0;
     let grandOvertimeMinutes = 0;
+    let grandPtoHours = 0;
     let grandBreakMinutes = 0;
     let grandEntries = 0;
     let grandPay = 0;
@@ -391,10 +427,12 @@ Deno.serve(async (req) => {
         drawHeader();
       }
       const name = profileByUserId[t.user_id]?.full_name ?? "Unknown";
-      const pay = computePay(t.user_id, t.total_minutes);
+      const ptoHours = t.pto_hours ?? 0;
+      const pay = computePay(t.user_id, t.total_minutes, ptoHours);
       grandMinutes += t.total_minutes;
       grandRegularMinutes += t.regular_minutes ?? t.total_minutes;
       grandOvertimeMinutes += t.overtime_minutes ?? 0;
+      grandPtoHours += ptoHours;
       grandBreakMinutes += t.total_break_minutes;
       grandEntries += t.entry_count;
       grandPay += pay ?? 0;
@@ -406,6 +444,7 @@ Deno.serve(async (req) => {
         const ot = t.overtime_minutes ?? 0;
         page.drawText(ot > 0 ? formatDuration(ot) : "—", { x: colX.ot, y, size: 10, font, color: ot > 0 ? rgb(0.85, 0.45, 0) : rgb(0.15, 0.15, 0.15) });
       }
+      page.drawText(ptoHours > 0 ? `${ptoHours.toFixed(1)}h` : "—", { x: colX.pto, y, size: 10, font, color: rgb(0.15, 0.15, 0.15) });
       page.drawText(t.total_break_minutes > 0 ? formatDuration(t.total_break_minutes) : "—", { x: colX.breaks, y, size: 10, font, color: rgb(0.15, 0.15, 0.15) });
       page.drawText(String(t.entry_count), { x: colX.entries, y, size: 10, font, color: rgb(0.15, 0.15, 0.15) });
       if (canManagePayRates) {
@@ -427,6 +466,7 @@ Deno.serve(async (req) => {
       page.drawText(formatDuration(grandRegularMinutes), { x: colX.regular, y, size: 10, font: boldFont, color: rgb(0.1, 0.1, 0.1) });
       page.drawText(grandOvertimeMinutes > 0 ? formatDuration(grandOvertimeMinutes) : "—", { x: colX.ot, y, size: 10, font: boldFont, color: grandOvertimeMinutes > 0 ? rgb(0.85, 0.45, 0) : rgb(0.1, 0.1, 0.1) });
     }
+    page.drawText(grandPtoHours > 0 ? `${grandPtoHours.toFixed(1)}h` : "—", { x: colX.pto, y, size: 10, font: boldFont, color: rgb(0.1, 0.1, 0.1) });
     page.drawText(grandBreakMinutes > 0 ? formatDuration(grandBreakMinutes) : "—", { x: colX.breaks, y, size: 10, font: boldFont, color: rgb(0.1, 0.1, 0.1) });
     page.drawText(String(grandEntries), { x: colX.entries, y, size: 10, font: boldFont, color: rgb(0.1, 0.1, 0.1) });
     if (canManagePayRates) {

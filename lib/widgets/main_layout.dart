@@ -799,8 +799,21 @@ class _AppNavBarState extends State<AppNavBar> {
                     ),
 
                   // ── ACCOUNT ───────────────────────────────────────────
-                  if (_can('forms') || _can('ai_chat') || _can('settings'))
-                    _SectionLabel('Account'),
+                  // My Profile is always reachable regardless of role or
+                  // permissions — same rule Settings already applies
+                  // internally (_settingsPermissionKeys[1] = null) — but
+                  // that rule was never actually reachable before, since
+                  // the outer "Settings" nav item itself was fully gated
+                  // by _hasAnySettingsAccess(), which requires at least
+                  // one real settings_* grant. This item bypasses that.
+                  _SectionLabel('Account'),
+                  _NavItem(
+                    icon: Icons.person_outline,
+                    label: 'My Profile',
+                    route: '/settings?section=profile',
+                    active: location.startsWith('/settings') &&
+                        Uri.parse(location).queryParameters['section'] == 'profile',
+                  ),
                   if (_can('forms'))
                     _NavItem(
                       icon: Icons.dynamic_form_outlined,

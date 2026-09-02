@@ -99,6 +99,7 @@ const _kPermissions = [
   ('timesheets',            'Timesheets',                 Icons.access_time_outlined),
   ('timesheets_full_view',  'Timesheets - Full Team View', Icons.groups_outlined),
   ('manage_pay_rates',      'Manage Pay Rates',            Icons.attach_money_rounded),
+  ('manage_pto',            'Manage PTO',                  Icons.beach_access_outlined),
   ('routes',           'Routes',           Icons.route_outlined),
   ('manage_job_forms', 'Manage Job Forms', Icons.checklist_rtl_rounded),
   ('tasks',            'Tasks',            Icons.task_alt_outlined),
@@ -157,6 +158,7 @@ Map<String, bool> _defaultPermissions() => {
   'timesheets':       false,
   'timesheets_full_view': false,
   'manage_pay_rates': false,
+  'manage_pto':       false,
   'routes':           false,
   'manage_job_forms': false,
   'tasks':            true,
@@ -6839,6 +6841,58 @@ class _MyProfileSectionState extends State<_MyProfileSection> {
           ),
           const SizedBox(height: 24),
 
+          // ── My PTO ─────────────────────────────────────────────────
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: AppTheme.brand.withValues(alpha: 0.05),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: AppTheme.brand.withValues(alpha: 0.2)),
+            ),
+            child: Row(children: [
+              const Icon(Icons.beach_access_outlined, size: 18, color: AppTheme.brand),
+              const SizedBox(width: 10),
+              const Expanded(
+                child: Text('View your PTO balance and request time off.',
+                    style: TextStyle(fontSize: 12, color: AppTheme.brand, height: 1.4)),
+              ),
+              MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: TextButton(
+                  onPressed: () => context.go('/settings/my-pto'),
+                  child: const Text('My PTO'),
+                ),
+              ),
+            ]),
+          ),
+          const SizedBox(height: 24),
+
+          // ── My PTO ─────────────────────────────────────────────────
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: AppTheme.brand.withValues(alpha: 0.05),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: AppTheme.brand.withValues(alpha: 0.2)),
+            ),
+            child: Row(children: [
+              const Icon(Icons.beach_access_outlined, size: 18, color: AppTheme.brand),
+              const SizedBox(width: 10),
+              const Expanded(
+                child: Text('View your PTO balance and request time off.',
+                    style: TextStyle(fontSize: 12, color: AppTheme.brand, height: 1.4)),
+              ),
+              MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: TextButton(
+                  onPressed: () => context.go('/settings/my-pto'),
+                  child: const Text('My PTO'),
+                ),
+              ),
+            ]),
+          ),
+          const SizedBox(height: 24),
+
           // ── Personal Info ─────────────────────────────────────────
           _SettingsGroup(title: 'Personal Information', children: [
             _TwoCol(
@@ -10962,6 +11016,54 @@ class _PayrollSettingsSectionState extends State<_PayrollSettingsSection> {
       successMsg: _successMsg,
       error: _error,
       child: Column(children: [
+        Container(
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: AppTheme.brand.withValues(alpha: 0.05),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: AppTheme.brand.withValues(alpha: 0.2)),
+          ),
+          child: Row(children: [
+            Container(
+              width: 44, height: 44,
+              decoration: BoxDecoration(
+                color: AppTheme.brand.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              alignment: Alignment.center,
+              child: const Icon(Icons.beach_access_outlined, size: 20, color: AppTheme.brand),
+            ),
+            const SizedBox(width: 14),
+            const Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text('PTO / Vacation Tracking',
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+                SizedBox(height: 3),
+                Text(
+                  'Set accrual rates and manage time-off balances for your team.',
+                  style: TextStyle(fontSize: 12, color: AppTheme.textSecondary, height: 1.4),
+                ),
+              ]),
+            ),
+            const SizedBox(width: 12),
+            MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: ElevatedButton.icon(
+                onPressed: () => context.go('/settings/pto-policy'),
+                icon: const Icon(Icons.tune_rounded, size: 15),
+                label: const Text('Manage PTO Policy'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppTheme.brand,
+                  foregroundColor: Colors.white,
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                ),
+              ),
+            ),
+          ]),
+        ),
+        const SizedBox(height: 24),
         _SettingsGroup(title: 'Work Week', children: [
           const Text('Week Start Day',
               style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),

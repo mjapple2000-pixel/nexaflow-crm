@@ -730,11 +730,16 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
           : _payPeriodType == 'semimonthly'
               ? 24
               : 52;
+      // Flat period pay already covers any PTO taken — salaried pay
+      // doesn't change based on hours worked or hours off.
       return salary / periodsPerYear;
     }
     final rate = (t['hourly_rate'] as num?)?.toDouble();
     if (rate == null) return null;
-    return (minutes / 60.0) * rate;
+    final ptoHours = (t['pto_hours'] as num?)?.toDouble() ?? 0;
+    // Hourly team members are paid for approved PTO at their regular
+    // rate, same as worked hours — matches export-timesheets-pdf.
+    return ((minutes / 60.0) + ptoHours) * rate;
   }
 
   String _formatCurrency(double? amount) {
@@ -790,13 +795,14 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
     final buffer = StringBuffer();
     final headers = ['Employee', 'Total Hours'];
     if (_hasOvertimeTracking) headers.addAll(['Regular Hours', 'Overtime Hours']);
-    headers.addAll(['Break Hours', 'Entries']);
+    headers.addAll(['PTO Hours', 'Break Hours', 'Entries']);
     if (_canViewPayRates) headers.addAll(['Pay Type', 'Rate', 'Total Pay']);
     buffer.writeln(headers.map(_csvEscape).join(','));
 
     int grandMinutes = 0;
     int grandRegularMinutes = 0;
     int grandOvertimeMinutes = 0;
+    double grandPtoHours = 0;
     int grandBreakMinutes = 0;
     int grandEntries = 0;
     double grandPay = 0;
@@ -806,11 +812,13 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
       final minutes = (t['total_minutes'] as num?)?.toInt() ?? 0;
       final regularMinutes = (t['regular_minutes'] as num?)?.toInt() ?? minutes;
       final overtimeMinutes = (t['overtime_minutes'] as num?)?.toInt() ?? 0;
+      final ptoHours = (t['pto_hours'] as num?)?.toDouble() ?? 0;
       final breakMinutes = (t['total_break_minutes'] as num?)?.toInt() ?? 0;
       final count = (t['entry_count'] as num?)?.toInt() ?? 0;
       grandMinutes += minutes;
       grandRegularMinutes += regularMinutes;
       grandOvertimeMinutes += overtimeMinutes;
+      grandPtoHours += ptoHours;
       grandBreakMinutes += breakMinutes;
       grandEntries += count;
 
@@ -818,7 +826,7 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
       if (_hasOvertimeTracking) {
         row.addAll([(regularMinutes / 60.0).toStringAsFixed(2), (overtimeMinutes / 60.0).toStringAsFixed(2)]);
       }
-      row.addAll([(breakMinutes / 60.0).toStringAsFixed(2), '$count']);
+      row.addAll([ptoHours.toStringAsFixed(2), (breakMinutes / 60.0).toStringAsFixed(2), '$count']);
       if (_canViewPayRates) {
         final payType = t['pay_type'] as String? ?? 'hourly';
         final rateVal = payType == 'salary'
@@ -839,7 +847,7 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
     if (_hasOvertimeTracking) {
       totalRow.addAll([(grandRegularMinutes / 60.0).toStringAsFixed(2), (grandOvertimeMinutes / 60.0).toStringAsFixed(2)]);
     }
-    totalRow.addAll([(grandBreakMinutes / 60.0).toStringAsFixed(2), '$grandEntries']);
+    totalRow.addAll([grandPtoHours.toStringAsFixed(2), (grandBreakMinutes / 60.0).toStringAsFixed(2), '$grandEntries']);
     if (_canViewPayRates) totalRow.addAll(['', '', grandPay.toStringAsFixed(2)]);
     buffer.writeln(totalRow.map(_csvEscape).join(','));
 
