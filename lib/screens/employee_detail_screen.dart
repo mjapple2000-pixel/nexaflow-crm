@@ -21,6 +21,32 @@ const _kPermissionLabels = {
   'settings':      'Settings',
 };
 
+// Recomputes profiles.pay_type/hourly_rate/annual_salary — the fast "current
+// rate" cache read by get-timesheets and the Pay Rate card — from
+// pay_rate_history. Now that multiple same-effective-date rows are allowed,
+// "current" is not just "whatever was last saved": it's the row with the
+// latest effective_date that isn't in the future, ties broken by whichever
+// was entered most recently. Call after any insert, edit, or delete on
+// pay_rate_history for a profile.
+Future<void> recomputeCurrentPayRate(SupabaseClient db, int profileId) async {
+  final todayStr = DateTime.now().toUtc().toIso8601String().split('T').first;
+  final row = await db.from('pay_rate_history')
+      .select('pay_type, hourly_rate, annual_salary')
+      .eq('profile_id', profileId)
+      .filter('deleted_at', 'is', null)
+      .lte('effective_date', todayStr)
+      .order('effective_date', ascending: false)
+      .order('created_at', ascending: false)
+      .limit(1)
+      .maybeSingle();
+  if (row == null) return;
+  await db.from('profiles').update({
+    'pay_type': row['pay_type'],
+    'hourly_rate': row['hourly_rate'],
+    'annual_salary': row['annual_salary'],
+  }).eq('id', profileId);
+}
+
 class EmployeeDetailScreen extends StatefulWidget {
   final String employeeId;
   const EmployeeDetailScreen({super.key, required this.employeeId});
@@ -99,6 +125,55 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     );
   }
 
+  // Fixes a specific Rate History row in place — a typo correction, not a
+  // new rate change. Distinct from _editPayRate above, which always adds.
+  void _editRateHistoryRow(Map<String, dynamic> row) {
+    if (_profile == null || _isSelf) return;
+    showModalBottomSheet(
+      context: context, isScrollControlled: true, backgroundColor: Colors.transparent,
+      builder: (_) => _EditPayRateSheet(
+        profile: _profile!,
+        viewerProfileId: _myProfileId,
+        existingRow: row,
+        onSaved: () { context.pop(); _load(); },
+      ),
+    );
+  }
+
+  Future<void> _confirmDeleteRateHistoryRow(Map<String, dynamic> row) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.cardBg,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        title: const Text('Delete Rate History Entry', style: TextStyle(color: AppTheme.textPrimary, fontWeight: FontWeight.w700)),
+        content: const Text('This removes the entry from Rate History. This cannot be undone from here.',
+          style: TextStyle(color: AppTheme.textSecondary, fontSize: 14, height: 1.5)),
+        actions: [
+          TextButton(onPressed: () => ctx.pop(false), child: const Text('Cancel', style: TextStyle(color: AppTheme.textSecondary))),
+          ElevatedButton(
+            onPressed: () => ctx.pop(true),
+            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.error, foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+            child: const Text('Delete')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      await _db.from('pay_rate_history')
+          .update({'deleted_at': DateTime.now().toUtc().toIso8601String()})
+          .eq('id', row['id']);
+      if (!mounted) return;
+      await recomputeCurrentPayRate(_db, _id);
+      if (!mounted) return;
+      _load();
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error: $e'), backgroundColor: AppTheme.error));
+    }
+  }
+
   Future<void> _load() async {
     setState(() { _loading = true; _error = null; });
     try {
@@ -121,6 +196,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
         final rows = await _db.from('pay_rate_history')
             .select('id, pay_type, hourly_rate, annual_salary, effective_date, note, created_at')
             .eq('profile_id', _id)
+            .filter('deleted_at', 'is', null)
             .order('effective_date', ascending: false)
             .limit(24);
         history = List<Map<String, dynamic>>.from(rows as List);
@@ -383,6 +459,22 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                       child: Text(note, style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11)),
                     ),
                 ])),
+                if (!_isSelf) ...[
+                  GestureDetector(
+                    onTap: () => _editRateHistoryRow(r),
+                    child: const Padding(
+                      padding: EdgeInsets.only(left: 8),
+                      child: Icon(Icons.edit_outlined, size: 14, color: AppTheme.textSecondary),
+                    ),
+                  ),
+                  GestureDetector(
+                    onTap: () => _confirmDeleteRateHistoryRow(r),
+                    child: const Padding(
+                      padding: EdgeInsets.only(left: 8),
+                      child: Icon(Icons.delete_outline, size: 14, color: AppTheme.error),
+                    ),
+                  ),
+                ],
               ]),
             );
           }),
@@ -575,20 +667,25 @@ class _EditPayRateSheet extends StatefulWidget {
   final Map<String, dynamic> profile;
   final int? viewerProfileId;
   final VoidCallback onSaved;
-  const _EditPayRateSheet({required this.profile, required this.viewerProfileId, required this.onSaved});
+  // When set, this sheet edits that specific pay_rate_history row in place
+  // (a typo fix) instead of adding a new dated entry. Add flow (from the
+  // Pay Rate card) leaves this null.
+  final Map<String, dynamic>? existingRow;
+  const _EditPayRateSheet({required this.profile, required this.viewerProfileId, required this.onSaved, this.existingRow});
   @override
   State<_EditPayRateSheet> createState() => _EditPayRateSheetState();
 }
 
 class _EditPayRateSheetState extends State<_EditPayRateSheet> {
   final _db = Supabase.instance.client;
-  late String _payType = widget.profile['pay_type'] as String? ?? 'hourly';
-  late final _hourlyRateCtrl = TextEditingController(text: widget.profile['hourly_rate']?.toString() ?? '');
-  late final _annualSalaryCtrl = TextEditingController(text: widget.profile['annual_salary']?.toString() ?? '');
-  late final _noteCtrl = TextEditingController();
-  DateTime _effectiveDate = DateTime.now();
+  late String _payType = (widget.existingRow ?? widget.profile)['pay_type'] as String? ?? 'hourly';
+  late final _hourlyRateCtrl = TextEditingController(text: (widget.existingRow ?? widget.profile)['hourly_rate']?.toString() ?? '');
+  late final _annualSalaryCtrl = TextEditingController(text: (widget.existingRow ?? widget.profile)['annual_salary']?.toString() ?? '');
+  late final _noteCtrl = TextEditingController(text: widget.existingRow?['note'] as String? ?? '');
+  late DateTime _effectiveDate = widget.existingRow != null
+      ? (DateTime.tryParse(widget.existingRow!['effective_date'] as String? ?? '') ?? DateTime.now())
+      : DateTime.now();
   bool _saving = false;
-
   @override
   void dispose() {
     _hourlyRateCtrl.dispose();
@@ -619,18 +716,6 @@ class _EditPayRateSheetState extends State<_EditPayRateSheet> {
       final annualSalary = _payType == 'salary' ? double.tryParse(_annualSalaryCtrl.text.trim()) : null;
       final effectiveDateStr = _effectiveDate.toUtc().toIso8601String().split('T').first;
 
-      // pay_rate_history is the source of truth for wage history. The
-      // (profile_id, effective_date) unique index is partial (WHERE
-      // deleted_at IS NULL), so ON CONFLICT can't target it directly —
-      // hand-rolled check-then-update-or-insert, same pattern as
-      // overtime_rules in TS-06.
-      final existing = await _db.from('pay_rate_history')
-          .select('id')
-          .eq('profile_id', widget.profile['id'])
-          .eq('effective_date', effectiveDateStr)
-          .filter('deleted_at', 'is', null)
-          .maybeSingle();
-
       final historyRow = {
         'business_id': widget.profile['business_id'],
         'profile_id': widget.profile['id'],
@@ -642,23 +727,23 @@ class _EditPayRateSheetState extends State<_EditPayRateSheet> {
         'set_by_profile_id': widget.viewerProfileId,
       };
 
-      if (existing != null) {
+      // pay_rate_history is the source of truth for wage history. Every
+      // save is a new row now — no check-then-update-or-insert. History
+      // must never silently collapse two real rate changes into one just
+      // because they land on the same calendar day (TS-07 bug fix).
+      // Correcting a mistake is a deliberate edit/delete on a specific row
+      // from the Rate History card (see _editRateHistoryRow /
+      // _confirmDeleteRateHistoryRow below), not an implicit side effect
+      // of saving again with the same date.
+      if (widget.existingRow != null) {
         await _db.from('pay_rate_history')
             .update({...historyRow, 'updated_at': DateTime.now().toUtc().toIso8601String()})
-            .eq('id', existing['id']);
+            .eq('id', widget.existingRow!['id']);
       } else {
         await _db.from('pay_rate_history').insert(historyRow);
       }
 
-      // profiles.hourly_rate/annual_salary/pay_type stay as a fast "current
-      // rate" cache — get-timesheets and the Pay Rate card both read these
-      // directly. Keeping this write means nothing that already depends on
-      // the profiles columns breaks.
-      await _db.from('profiles').update({
-        'pay_type': _payType,
-        'hourly_rate': hourlyRate,
-        'annual_salary': annualSalary,
-      }).eq('id', widget.profile['id']);
+      await recomputeCurrentPayRate(_db, widget.profile['id'] as int);
 
       widget.onSaved();
     } catch (e) {
@@ -680,8 +765,8 @@ class _EditPayRateSheetState extends State<_EditPayRateSheet> {
             decoration: BoxDecoration(color: AppTheme.borderColor, borderRadius: BorderRadius.circular(2))),
           Padding(padding: const EdgeInsets.fromLTRB(24, 16, 24, 16),
             child: Row(children: [
-              const Text('Edit Pay Rate', style: TextStyle(color: AppTheme.textPrimary, fontSize: 18, fontWeight: FontWeight.w700)),
-              const Spacer(),
+              Text(widget.existingRow != null ? 'Edit Rate History Entry' : 'Edit Pay Rate',
+                  style: const TextStyle(color: AppTheme.textPrimary, fontSize: 18, fontWeight: FontWeight.w700)),              const Spacer(),
               GestureDetector(onTap: () => context.pop(),
                 child: Container(width: 32, height: 32,
                   decoration: BoxDecoration(color: AppTheme.pageBg, borderRadius: BorderRadius.circular(8)),
@@ -767,8 +852,12 @@ class _EditPayRateSheetState extends State<_EditPayRateSheet> {
               ),
             ),
             const SizedBox(height: 6),
-            const Text('This becomes a new dated entry in Rate History — it doesn\'t overwrite past rates.',
-              style: TextStyle(color: AppTheme.textSecondary, fontSize: 11, height: 1.4)),
+            Text(
+              widget.existingRow != null
+                  ? 'This updates this specific history entry only — it won\'t change any other rate change on record.'
+                  : 'This becomes a new dated entry in Rate History — it doesn\'t overwrite past rates.',
+              style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11, height: 1.4),
+            ),
             const SizedBox(height: 16),
             TextFormField(
               controller: _noteCtrl,

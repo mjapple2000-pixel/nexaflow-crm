@@ -5532,6 +5532,8 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
   bool _canViewLaborCost = false;
   bool _loadingLaborCost = false;
   double? _laborCostTotal;
+  List<Map<String, dynamic>> _laborCostBreakdown = [];
+  bool _laborCostSectionExpanded = true;
 
   // Job Forms state
   List<Map<String, dynamic>> _attachedForms = [];
@@ -5653,6 +5655,14 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
     return (hourlyRate as num?)?.toDouble();
   }
 
+  String _fmtRateDate(String? iso) {
+    if (iso == null) return '—';
+    final dt = DateTime.tryParse(iso);
+    if (dt == null) return '—';
+    const months = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    return '${months[dt.month]} ${dt.day}, ${dt.year}';
+  }
+
   // Calculated on read, per TS-07's spec — never stored on time_entries,
   // since rates can change retroactively and a stored number would go
   // stale. For each tracked hour on this job, picks the pay_rate_history
@@ -5672,7 +5682,7 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
           .filter('deleted_at', 'is', null);
       final entryList = List<Map<String, dynamic>>.from(entries);
       if (entryList.isEmpty) {
-        if (mounted) setState(() { _laborCostTotal = 0; _loadingLaborCost = false; });
+        if (mounted) setState(() { _laborCostTotal = 0; _laborCostBreakdown = []; _loadingLaborCost = false; });
         return;
       }
 
@@ -5692,25 +5702,35 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
           ? <Map<String, dynamic>>[]
           : List<Map<String, dynamic>>.from(await _db
               .from('pay_rate_history')
-              .select('profile_id, pay_type, hourly_rate, annual_salary, effective_date')
+              .select('profile_id, pay_type, hourly_rate, annual_salary, effective_date, created_at')
               .inFilter('profile_id', profileIds)
               .filter('deleted_at', 'is', null)
-              .order('effective_date', ascending: false));
+              .order('effective_date', ascending: false)
+              .order('created_at', ascending: false));
 
-      double? hourlyRateFor(int profileId, DateTime onDate) {
+      ({double? rate, String? effectiveDate, bool isCurrent}) rateInfoFor(int profileId, DateTime onDate) {
         final dateOnly = DateTime(onDate.year, onDate.month, onDate.day);
         for (final h in history) {
           if (h['profile_id'] != profileId) continue;
           final eff = DateTime.tryParse(h['effective_date'] as String? ?? '');
           if (eff == null || eff.isAfter(dateOnly)) continue;
-          return _hourlyEquivalent(h['pay_type'] as String?, h['hourly_rate'], h['annual_salary']);
+          return (
+            rate: _hourlyEquivalent(h['pay_type'] as String?, h['hourly_rate'], h['annual_salary']),
+            effectiveDate: h['effective_date'] as String?,
+            isCurrent: false,
+          );
         }
         final p = profileByUserId.values.firstWhere((p) => p['id'] == profileId, orElse: () => {});
-        if (p.isEmpty) return null;
-        return _hourlyEquivalent(p['pay_type'] as String?, p['hourly_rate'], p['annual_salary']);
+        if (p.isEmpty) return (rate: null, effectiveDate: null, isCurrent: true);
+        return (
+          rate: _hourlyEquivalent(p['pay_type'] as String?, p['hourly_rate'], p['annual_salary']),
+          effectiveDate: null,
+          isCurrent: true,
+        );
       }
 
       double total = 0;
+      final breakdown = <Map<String, dynamic>>[];
       final now = DateTime.now().toUtc();
       for (final e in entryList) {
         final profile = profileByUserId[e['user_id']];
@@ -5727,12 +5747,29 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
           final clockedOut = DateTime.tryParse(e['clocked_out_at'] as String? ?? '');
           minutes = clockedOut == null ? 0 : clockedOut.toUtc().difference(clockedIn.toUtc()).inMinutes.toDouble();
         }
-        final rate = hourlyRateFor(profileId, clockedIn);
-        if (rate == null) continue;
-        total += (minutes / 60.0) * rate;
+        final info = rateInfoFor(profileId, clockedIn);
+        if (info.rate == null) continue;
+        final hours = minutes / 60.0;
+        final subtotal = hours * info.rate!;
+        total += subtotal;
+
+        final member = widget.teamMembers.firstWhere((m) => m['id'] == profileId, orElse: () => {});
+        breakdown.add({
+          'name': member['full_name'] as String? ?? 'Unknown',
+          'hours': hours,
+          'rate': info.rate,
+          'subtotal': subtotal,
+          'effective_date': info.effectiveDate,
+          'is_current_rate': info.isCurrent,
+        });
       }
 
-      if (mounted) setState(() { _laborCostTotal = total; _loadingLaborCost = false; });
+      breakdown.sort((a, b) => (a['name'] as String).compareTo(b['name'] as String));
+      if (mounted) setState(() {
+        _laborCostTotal = total;
+        _laborCostBreakdown = breakdown;
+        _loadingLaborCost = false;
+      });
     } catch (e) {
       debugPrint('Load labor cost error: $e');
       if (mounted) setState(() => _loadingLaborCost = false);
@@ -7105,9 +7142,16 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
 
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Row(children: [
-        const Text('LABOR COST', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700,
-            color: AppTheme.textSecondary, letterSpacing: 0.5)),
-        const Spacer(),
+        Expanded(child: GestureDetector(
+          onTap: () => setState(() => _laborCostSectionExpanded = !_laborCostSectionExpanded),
+          child: Row(children: [
+            const Text('LABOR COST', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700,
+                color: AppTheme.textSecondary, letterSpacing: 0.5)),
+            const SizedBox(width: 6),
+            Icon(_laborCostSectionExpanded ? Icons.expand_less : Icons.expand_more,
+                size: 16, color: AppTheme.textSecondary),
+          ]),
+        )),
         if (_laborCostTotal != null)
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
@@ -7120,31 +7164,65 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
           ),
       ]),
       const SizedBox(height: 8),
-      if (_loadingLaborCost)
-        const Padding(
-          padding: EdgeInsets.symmetric(vertical: 12),
-          child: Center(child: SizedBox(width: 20, height: 20,
-              child: CircularProgressIndicator(strokeWidth: 2))),
-        )
-      else
-        Container(
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            color: AppTheme.pageBg,
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: AppTheme.borderColor),
+      if (_laborCostSectionExpanded) ...[
+        if (_loadingLaborCost)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 12),
+            child: Center(child: SizedBox(width: 20, height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2))),
+          )
+        else if (_laborCostBreakdown.isEmpty)
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: AppTheme.pageBg,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: AppTheme.borderColor),
+            ),
+            child: const Row(children: [
+              Icon(Icons.payments_outlined, size: 16, color: AppTheme.textMuted),
+              SizedBox(width: 8),
+              Expanded(child: Text(
+                'No tracked hours with a pay rate on file for this job yet.',
+                style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+              )),
+            ]),
+          )
+        else
+          Container(
+            decoration: BoxDecoration(
+              color: AppTheme.pageBg,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: AppTheme.borderColor),
+            ),
+            child: Column(children: [
+              for (int i = 0; i < _laborCostBreakdown.length; i++)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  decoration: BoxDecoration(
+                    border: i < _laborCostBreakdown.length - 1
+                        ? const Border(bottom: BorderSide(color: AppTheme.borderColor))
+                        : null,
+                  ),
+                  child: Row(children: [
+                    const Icon(Icons.person_outline, size: 14, color: AppTheme.textSecondary),
+                    const SizedBox(width: 8),
+                    Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Text(_laborCostBreakdown[i]['name'] as String,
+                          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+                      Text(
+                        '${(_laborCostBreakdown[i]['hours'] as double).toStringAsFixed(2)} hrs × \$${(_laborCostBreakdown[i]['rate'] as double).toStringAsFixed(2)}/hr'
+                        '${_laborCostBreakdown[i]['is_current_rate'] == true ? ' (current rate)' : ' (rate effective ${_fmtRateDate(_laborCostBreakdown[i]['effective_date'] as String?)})'}',
+                        style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
+                      ),
+                    ])),
+                    Text('\$${(_laborCostBreakdown[i]['subtotal'] as double).toStringAsFixed(2)}',
+                        style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+                  ]),
+                ),
+            ]),
           ),
-          child: Row(children: [
-            const Icon(Icons.payments_outlined, size: 16, color: AppTheme.textMuted),
-            const SizedBox(width: 8),
-            Expanded(child: Text(
-              _laborCostTotal == null || _laborCostTotal == 0
-                  ? 'No tracked hours with a pay rate on file for this job yet.'
-                  : 'Calculated from tracked hours × each tech\'s rate at the time worked.',
-              style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
-            )),
-          ]),
-        ),
+      ],
     ]);
   }
 
