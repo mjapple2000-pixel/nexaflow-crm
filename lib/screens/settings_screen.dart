@@ -6319,6 +6319,23 @@ class _QuickBooksCard extends StatelessWidget {
                               style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: qbColor)),
                     ),
                   ),
+                )
+              else
+                MouseRegion(
+                  cursor: SystemMouseCursors.click,
+                  child: GestureDetector(
+                    onTap: () => context.go('/settings/quickbooks-team-mapping'),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: qbColor.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: qbColor.withValues(alpha: 0.3)),
+                      ),
+                      child: Text('Team Mapping',
+                          style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: qbColor)),
+                    ),
+                  ),
                 ),
               const SizedBox(width: 4),
               MouseRegion(

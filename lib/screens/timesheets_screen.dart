@@ -56,6 +56,8 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
   bool _canManagePayPeriods = false;
   List<Map<String, dynamic>> _payPeriods = [];
   bool _lockActionInProgress = false;
+  bool _qboSyncRetryInProgress = false;
+  final Set<int> _dismissedQboSyncBanners = {};
   late DateTime _weekStart;
   bool _weekLoading = true;
   String? _weekError;
@@ -1300,6 +1302,46 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
     }
   }
 
+  // Manual retry from the UI — hits quickbooks-sync-hours with a real JWT
+  // (not the cron secret the client never holds) and is_manual_retry:true,
+  // which resets that function's internal retry budget so a period that
+  // already exhausted the automatic sweep can still be retried by hand.
+  Future<void> _retryQuickBooksSync(int payPeriodId) async {
+    if (_qboSyncRetryInProgress) return;
+    setState(() => _qboSyncRetryInProgress = true);
+    try {
+      await _db.auth.refreshSession();
+      final token = _db.auth.currentSession?.accessToken;
+      if (token == null) throw Exception('Not authenticated');
+
+      final resp = await http.post(
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/quickbooks-sync-hours'),
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({'pay_period_id': payPeriodId, 'is_manual_retry': true}),
+      );
+      if (!mounted) return;
+      final data = jsonDecode(resp.body);
+      if (data is Map && data['error'] != null && data['success'] != true) {
+        throw Exception(data['error']);
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('QuickBooks sync retried.')),
+      );
+      await _reloadCurrentView();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Retry failed: $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _qboSyncRetryInProgress = false);
+    }
+  }
+
   // Reloads whichever view is currently active — used after a manual
   // edit/create/delete so the totals and table reflect the change.
   Future<void> _reloadCurrentView() async {
@@ -1563,6 +1605,7 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
                       padding: const EdgeInsets.all(24),
                       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                         _buildClockCard(),
+                        if (_isOwner) _buildQboSyncErrorBanner(),
                         const SizedBox(height: 24),
                         if (isWeekView)
                           _buildWeekView()
@@ -2124,6 +2167,92 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
     );
   }
 
+  Widget _buildQboSyncBadge(String status, String? lastSynced, int? periodId) {
+    Color color;
+    IconData icon;
+    String label;
+    switch (status) {
+      case 'success':
+        color = const Color(0xFF10B981);
+        icon = Icons.cloud_done_outlined;
+        label = 'Synced to QB${lastSynced != null ? ' · ${_formatDateTime(lastSynced)}' : ''}';
+        break;
+      case 'syncing':
+        color = AppTheme.brand;
+        icon = Icons.cloud_sync_outlined;
+        label = 'Syncing to QB…';
+        break;
+      case 'failed':
+        color = Colors.orange;
+        icon = Icons.cloud_off_outlined;
+        label = 'QB sync failed';
+        break;
+      default:
+        return const SizedBox.shrink();
+    }
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: color.withValues(alpha: 0.3)),
+      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Icon(icon, size: 14, color: color),
+        const SizedBox(width: 6),
+        Text(label, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: color)),
+        if (status == 'failed' && _canManagePayPeriods && periodId != null) ...[
+          const SizedBox(width: 8),
+          Clickable(
+            onTap: _qboSyncRetryInProgress ? null : () => _retryQuickBooksSync(periodId),
+            child: _qboSyncRetryInProgress
+                ? const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2))
+                : Text('Retry',
+                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: color,
+                        decoration: TextDecoration.underline)),
+          ),
+        ],
+      ]),
+    );
+  }
+
+  Widget _buildQboSyncErrorBanner() {
+    final failed = _payPeriods.where((p) =>
+        p['qbo_sync_status'] == 'failed' &&
+        !_dismissedQboSyncBanners.contains(p['id'] as int)).toList();
+    if (failed.isEmpty) return const SizedBox.shrink();
+    final count = failed.length;
+    return Padding(
+      padding: const EdgeInsets.only(top: 16),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          color: Colors.orange.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.orange.withValues(alpha: 0.3)),
+        ),
+        child: Row(children: [
+          const Icon(Icons.cloud_off_outlined, size: 16, color: Colors.orange),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              '$count pay period${count == 1 ? '' : 's'} failed to sync to QuickBooks. Open the pay period to retry.',
+              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.orange),
+            ),
+          ),
+          Clickable(
+            onTap: () => setState(() {
+              for (final p in failed) {
+                _dismissedQboSyncBanners.add(p['id'] as int);
+              }
+            }),
+            child: const Icon(Icons.close, size: 15, color: Colors.orange),
+          ),
+        ]),
+      ),
+    );
+  }
+
   Widget _buildWeekLockControl() {
     final period = _payPeriodForWeek(_weekStart);
     final isLocked = period != null && period['locked_at'] != null;
@@ -2133,6 +2262,8 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
       final lockedByName = period['locked_by_name'] as String?;
       final lockedAt = period['locked_at'] as String?;
       final periodId = period['id'] as int?;
+      final qboStatus = period['qbo_sync_status'] as String?;
+      final qboLastSynced = period['qbo_last_synced_at'] as String?;
       return Row(mainAxisSize: MainAxisSize.min, children: [
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -2152,6 +2283,10 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
             ),
           ]),
         ),
+        if (qboStatus != null) ...[
+          const SizedBox(width: 8),
+          _buildQboSyncBadge(qboStatus, qboLastSynced, periodId),
+        ],
         if (_isOwner && periodId != null) ...[
           const SizedBox(width: 8),
           Clickable(

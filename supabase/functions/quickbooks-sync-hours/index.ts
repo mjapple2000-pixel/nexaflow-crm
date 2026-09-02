@@ -13,6 +13,11 @@ const QB_API_BASE = QB_ENV === "production"
 
 const MAX_RETRIES = 3;
 
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+};
+
 const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
 
 type TokenResult = { accessToken: string; realmId: string } | { error: string };
@@ -104,12 +109,16 @@ async function logSync(params: {
 }
 
 Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") {
+    return new Response(null, { headers: corsHeaders });
+  }
+
   try {
     const { pay_period_id, is_manual_retry } = await req.json();
     if (!pay_period_id) {
       return new Response(JSON.stringify({ error: "pay_period_id required" }), {
         status: 400,
-        headers: { "Content-Type": "application/json" },
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
@@ -122,7 +131,7 @@ Deno.serve(async (req) => {
     if (ppErr || !payPeriod) {
       return new Response(JSON.stringify({ error: "Pay period not found" }), {
         status: 404,
-        headers: { "Content-Type": "application/json" },
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
@@ -138,7 +147,7 @@ Deno.serve(async (req) => {
       if (!authHeader) {
         return new Response(JSON.stringify({ error: "Unauthorized" }), {
           status: 401,
-          headers: { "Content-Type": "application/json" },
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
       const supabaseAuth = createClient(SUPABASE_URL, Deno.env.get("SUPABASE_ANON_KEY")!, {
@@ -148,7 +157,7 @@ Deno.serve(async (req) => {
       if (userError || !userData?.user) {
         return new Response(JSON.stringify({ error: "Invalid or expired session" }), {
           status: 401,
-          headers: { "Content-Type": "application/json" },
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
 
@@ -170,14 +179,14 @@ Deno.serve(async (req) => {
       if (!isSuperuser && !(isOwnerOrAdmin && businessMatches)) {
         return new Response(JSON.stringify({ error: "Not authorized to manage this pay period's sync" }), {
           status: 403,
-          headers: { "Content-Type": "application/json" },
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
     }
 
     if (!payPeriod.locked_at) {
       return new Response(JSON.stringify({ skipped: true, reason: "Pay period is not locked" }), {
-        headers: { "Content-Type": "application/json" },
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
@@ -190,7 +199,7 @@ Deno.serve(async (req) => {
 
     if (attemptNumber >= MAX_RETRIES) {
       return new Response(JSON.stringify({ skipped: true, reason: "Max retry attempts reached — manual retry required" }), {
-        headers: { "Content-Type": "application/json" },
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
@@ -217,7 +226,7 @@ Deno.serve(async (req) => {
       });
       return new Response(JSON.stringify({ error: "upgrade_required" }), {
         status: 200,
-        headers: { "Content-Type": "application/json" },
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
@@ -234,7 +243,7 @@ Deno.serve(async (req) => {
       });
       return new Response(JSON.stringify({ error: tokenResult.error }), {
         status: 200,
-        headers: { "Content-Type": "application/json" },
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
     const { accessToken, realmId } = tokenResult;
@@ -267,7 +276,7 @@ Deno.serve(async (req) => {
       });
       return new Response(JSON.stringify({ error: entriesErr.message }), {
         status: 200,
-        headers: { "Content-Type": "application/json" },
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
@@ -299,10 +308,10 @@ Deno.serve(async (req) => {
     if (userIds.length === 0) {
       await supabase
         .from("pay_periods")
-        .update({ qbo_sync_status: "success", qbo_last_synced_at: new Date().toISOString() })
+        .update({ qbo_sync_status: "success", qbo_last_synced_at: new Date().toISOString(), qbo_sync_attempts: 0 })
         .eq("id", payPeriod.id);
       return new Response(JSON.stringify({ success: true, synced: 0, reason: "No payable hours in this period" }), {
-        headers: { "Content-Type": "application/json" },
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
@@ -438,23 +447,30 @@ Deno.serve(async (req) => {
       }
     }
 
+    // On full success, reset the attempt counter — only *consecutive
+    // failures* should count toward MAX_RETRIES. Without this, a period
+    // that took a few attempts to get right (map a missing employee,
+    // auto-retry succeeds) permanently exhausts its budget, and any
+    // future legitimate relock gets silently skipped with no visible
+    // error until someone happens to hit the manual Retry button.
     await supabase
       .from("pay_periods")
       .update({
         qbo_sync_status: anyFailed ? "failed" : "success",
         qbo_last_synced_at: new Date().toISOString(),
+        qbo_sync_attempts: anyFailed ? attemptNumber + 1 : 0,
       })
       .eq("id", payPeriod.id);
 
     return new Response(JSON.stringify({ success: !anyFailed, synced: syncedCount, total: userIds.length }), {
-      headers: { "Content-Type": "application/json" },
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     console.error("quickbooks-sync-hours error:", message);
     return new Response(JSON.stringify({ error: message }), {
       status: 500,
-      headers: { "Content-Type": "application/json" },
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 });

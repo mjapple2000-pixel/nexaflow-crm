@@ -53,6 +53,7 @@ import '../screens/job_form_view_screen.dart';
 import '../screens/timesheets_screen.dart';
 import '../screens/routes_screen.dart';
 import '../screens/ai_form_recreation_screen.dart';
+import '../screens/quickbooks_team_mapping_screen.dart';
 
 class AppRouter {
   static bool? cachedIsSuperuser;
@@ -611,6 +612,11 @@ class AppRouter {
             path: '/settings/ai-form-recreation',
             name: 'ai-form-recreation',
             builder: (context, state) => const AiFormRecreationScreen(),
+          ),
+          GoRoute(
+            path: '/settings/quickbooks-team-mapping',
+            name: 'quickbooks-team-mapping',
+            builder: (context, state) => const QuickBooksTeamMappingScreen(),
           ),
           GoRoute(
             path: '/ai-chat',

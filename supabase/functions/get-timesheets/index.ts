@@ -214,7 +214,7 @@ Deno.serve(async (req) => {
     // ── Fetch pay period lock state for this business ─────────────────
     let payPeriodsQuery = supabase
       .from("pay_periods")
-      .select("id, week_start, week_end, locked_at, locked_by")
+      .select("id, week_start, week_end, locked_at, locked_by, qbo_sync_status, qbo_last_synced_at, qbo_sync_attempts")
       .eq("business_id", businessId);
 
     if (start_date) payPeriodsQuery = payPeriodsQuery.gte("week_end", start_date);
