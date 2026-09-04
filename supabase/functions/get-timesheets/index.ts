@@ -252,6 +252,38 @@ Deno.serve(async (req) => {
       locked_by_name: p.locked_by ? (profileMap[p.locked_by] ?? null) : null,
     }));
 
+    // ── TS-11: per-employee submit/approve/reject status for whichever
+    // pay_periods rows are in view. Scoped to those rows rather than
+    // recomputed here, so it automatically matches whatever cadence the
+    // business is on — a Week-view request only pulled weekly rows, a
+    // Period-view request only pulled the biweekly/semimonthly row for
+    // that range. No cadence branching needed on this end.
+    const payPeriodIds = (payPeriodsRaw ?? []).map((p) => p.id);
+    let employeePayPeriodStatuses: Array<Record<string, unknown>> = [];
+    if (payPeriodIds.length > 0) {
+      let statusQuery = supabase
+        .from("employee_pay_period_status")
+        .select("id, pay_period_id, user_id, status, submitted_at, approved_at, approved_by, rejected_at, rejected_by, rejection_reason")
+        .in("pay_period_id", payPeriodIds);
+
+      // Non-owners only need to see their own status, matching the same
+      // visibility rule already applied to time_entries below.
+      if (!isOwner) {
+        statusQuery = statusQuery.eq("user_id", callerUserId);
+      }
+
+      const { data: statusRows, error: statusError } = await statusQuery;
+      if (statusError) {
+        console.error("get-timesheets employee_pay_period_status lookup error:", statusError);
+      }
+      employeePayPeriodStatuses = (statusRows ?? []).map((s) => ({
+        ...s,
+        full_name: profileMap[s.user_id] ?? "Unknown",
+        approved_by_name: s.approved_by ? (profileMap[s.approved_by] ?? null) : null,
+        rejected_by_name: s.rejected_by ? (profileMap[s.rejected_by] ?? null) : null,
+      }));
+    }
+
     // ── Build time_entries query ────────────────────────────
     let query = supabase
       .from("time_entries")
@@ -573,6 +605,7 @@ Deno.serve(async (req) => {
         team_profiles: isOwner ? teamProfilesForResponse : [],
         can_manage_pay_periods: canManagePayPeriods,
         pay_periods: payPeriods,
+        employee_pay_period_statuses: employeePayPeriodStatuses,
         has_overtime_tracking: hasOvertimeTracking,
         overtime_rules: hasOvertimeTracking ? overtimeRules : null,
         overtime_by_day: hasOvertimeTracking ? (isOwner ? overtimeByDay : overtimeByDay.filter((d) => d.user_id === callerUserId)) : [],

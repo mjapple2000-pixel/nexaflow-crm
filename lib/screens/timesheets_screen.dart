@@ -87,6 +87,14 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
   List<Map<String, dynamic>> _periodTotals = [];
   bool _exportingPdf = false;
 
+  // TS-11: per-employee submit/approve/reject status, scoped to whichever
+  // pay_periods rows the current view loaded. Populated by both
+  // _loadWeekTotals and _loadPeriodTotals — never Month, since a
+  // calendar month doesn't map to a single pay_periods row for any
+  // cadence, so there's no one period to approve there.
+  List<Map<String, dynamic>> _employeePayPeriodStatuses = [];
+  bool _decisionInProgress = false;
+
   static const _dayOrder = [
     'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
   ];
@@ -295,6 +303,7 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
         _rangeEntries          = List<Map<String, dynamic>>.from(data['entries'] as List? ?? []);
         _teamProfiles         = List<Map<String, dynamic>>.from(data['team_profiles'] as List? ?? []);
         _hasOvertimeTracking  = data['has_overtime_tracking'] as bool? ?? false;
+        _employeePayPeriodStatuses = List<Map<String, dynamic>>.from(data['employee_pay_period_statuses'] as List? ?? []);
       });
       _startOrStopTicker();
 
@@ -470,6 +479,7 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
         _rangeEntries          = List<Map<String, dynamic>>.from(data['entries'] as List? ?? []);
         _teamProfiles         = List<Map<String, dynamic>>.from(data['team_profiles'] as List? ?? []);
         _hasOvertimeTracking  = data['has_overtime_tracking'] as bool? ?? false;
+        _employeePayPeriodStatuses = List<Map<String, dynamic>>.from(data['employee_pay_period_statuses'] as List? ?? []);
       });
       _startOrStopTicker();
     } catch (e) {
@@ -2263,6 +2273,8 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
                       if (_canViewPayRates)
                         Expanded(flex: 2, child: Text(_formatCurrency(pay),
                             style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
+                      _buildApprovalCell(userId, _weekStart, _weekStart.add(const Duration(days: 6)), _payPeriodForWeek(_weekStart)?['id'] as int?),
+                      const SizedBox(width: 8),
                       const Icon(Icons.chevron_right, size: 16, color: AppTheme.textMuted),
                     ]),
                   ),
@@ -2314,6 +2326,212 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
         const SizedBox(width: 24),
       ]),
     );
+  }
+
+  // Looks up this employee's submission status for the exact pay_periods
+  // row backing the view currently on screen. Returns null (nothing
+  // rendered) if they've never submitted for this period at all.
+  Map<String, dynamic>? _statusFor(String? userId, int? payPeriodId) {
+    if (userId == null || payPeriodId == null) return null;
+    for (final s in _employeePayPeriodStatuses) {
+      if (s['user_id'] == userId && s['pay_period_id'] == payPeriodId) return s;
+    }
+    return null;
+  }
+
+  Future<void> _decideTimesheet({
+    required String targetUserId,
+    required DateTime periodStart,
+    required DateTime periodEnd,
+    required String decision,
+    String? reason,
+  }) async {
+    if (_decisionInProgress) return;
+    setState(() => _decisionInProgress = true);
+    try {
+      await _db.auth.refreshSession();
+      final token = _db.auth.currentSession?.accessToken;
+      if (token == null) throw Exception('Not authenticated');
+
+      final body = <String, dynamic>{
+        'target_user_id': targetUserId,
+        'week_start': periodStart.toIso8601String().substring(0, 10),
+        'week_end': periodEnd.toIso8601String().substring(0, 10),
+        'decision': decision,
+        if (reason != null) 'reason': reason,
+      };
+      final activeBusinessId = await getActiveBusinessId();
+      if (activeBusinessId != null) body['business_id'] = activeBusinessId;
+
+      final resp = await http.post(
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/decide-timesheet'),
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode(body),
+      );
+      if (!mounted) return;
+      final data = jsonDecode(resp.body);
+      if (resp.statusCode != 200 || data['success'] != true) {
+        throw Exception(data['error'] ?? 'Failed to record decision');
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(decision == 'approved' ? 'Timesheet approved.' : 'Timesheet rejected.')),
+      );
+      await _reloadCurrentView();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _decisionInProgress = false);
+    }
+  }
+
+  Future<void> _confirmAndRejectTimesheet(String targetUserId, DateTime periodStart, DateTime periodEnd) async {
+    final reasonCtrl = TextEditingController();
+    final reason = await showDialog<String>(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        title: const Text('Reject this timesheet?'),
+        content: SizedBox(
+          width: 360,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('The employee will be notified and can correct and resubmit.',
+                  style: TextStyle(fontSize: 13, color: AppTheme.textSecondary)),
+              const SizedBox(height: 12),
+              TextField(
+                controller: reasonCtrl,
+                maxLines: 3,
+                autofocus: true,
+                decoration: const InputDecoration(
+                  hintText: 'Reason for rejecting (required)',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogCtx, rootNavigator: true).pop(),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              if (reasonCtrl.text.trim().isEmpty) return;
+              Navigator.of(dialogCtx, rootNavigator: true).pop(reasonCtrl.text.trim());
+            },
+            style: TextButton.styleFrom(foregroundColor: AppTheme.error),
+            child: const Text('Reject'),
+          ),
+        ],
+      ),
+    );
+    reasonCtrl.dispose();
+    if (reason == null || reason.isEmpty || !mounted) return;
+    await _decideTimesheet(
+      targetUserId: targetUserId,
+      periodStart: periodStart,
+      periodEnd: periodEnd,
+      decision: 'rejected',
+      reason: reason,
+    );
+  }
+
+  // Renders nothing if the employee has never submitted for this exact
+  // period. Otherwise a status chip, with Approve/Reject actions inline
+  // when it's awaiting a decision and the viewer can manage timesheets.
+  Widget _buildApprovalCell(String? userId, DateTime periodStart, DateTime periodEnd, int? payPeriodId) {
+    final s = _statusFor(userId, payPeriodId);
+    if (s == null || userId == null) return const SizedBox.shrink();
+    final status = s['status'] as String? ?? 'draft';
+
+    if (status == 'submitted') {
+      if (!_canManageTimesheets) {
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          decoration: BoxDecoration(
+            color: Colors.orange.withValues(alpha: 0.1),
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(color: Colors.orange.withValues(alpha: 0.3)),
+          ),
+          child: const Text('Submitted', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: Colors.orange)),
+        );
+      }
+      return Row(mainAxisSize: MainAxisSize.min, children: [
+        Clickable(
+          onTap: _decisionInProgress ? null : () => _decideTimesheet(
+            targetUserId: userId,
+            periodStart: periodStart,
+            periodEnd: periodEnd,
+            decision: 'approved',
+          ),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: AppTheme.success.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: AppTheme.success.withValues(alpha: 0.3)),
+            ),
+            child: const Text('Approve', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.success)),
+          ),
+        ),
+        const SizedBox(width: 6),
+        Clickable(
+          onTap: _decisionInProgress ? null : () => _confirmAndRejectTimesheet(userId, periodStart, periodEnd),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: AppTheme.error.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: AppTheme.error.withValues(alpha: 0.3)),
+            ),
+            child: const Text('Reject', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppTheme.error)),
+          ),
+        ),
+      ]);
+    }
+
+    if (status == 'approved') {
+      final approvedByName = s['approved_by_name'] as String?;
+      return Tooltip(
+        message: approvedByName != null ? 'Approved by $approvedByName' : 'Approved',
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          decoration: BoxDecoration(
+            color: AppTheme.success.withValues(alpha: 0.1),
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(color: AppTheme.success.withValues(alpha: 0.3)),
+          ),
+          child: const Text('Approved', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: AppTheme.success)),
+        ),
+      );
+    }
+
+    if (status == 'rejected') {
+      final reason = s['rejection_reason'] as String?;
+      return Tooltip(
+        message: reason ?? 'Rejected',
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          decoration: BoxDecoration(
+            color: AppTheme.error.withValues(alpha: 0.1),
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(color: AppTheme.error.withValues(alpha: 0.3)),
+          ),
+          child: const Text('Rejected', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: AppTheme.error)),
+        ),
+      );
+    }
+
+    return const SizedBox.shrink();
   }
 
   Widget _buildQboSyncBadge(String status, String? lastSynced, int? periodId) {
@@ -3029,6 +3247,8 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
                       if (_canViewPayRates)
                         Expanded(flex: 2, child: Text(_formatCurrency(pay),
                             style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
+                      _buildApprovalCell(userId, bounds[0], bounds[1], _payPeriodForRange(bounds[0], bounds[1])?['id'] as int?),
+                      const SizedBox(width: 8),
                       const Icon(Icons.chevron_right, size: 16, color: AppTheme.textMuted),
                     ]),
                   ),

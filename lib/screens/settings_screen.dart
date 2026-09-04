@@ -2762,10 +2762,9 @@ class _MyStaffSectionState extends State<_MyStaffSection> {
                             member['user_id'] == null
                                 ? () => _resendInvite(member)
                                 : null,
-                        onResendHubLink:
-                            (member['phone'] as String?)?.isNotEmpty == true
-                                ? () => _resendHubLink(member)
-                                : null,
+                        // Phone-number gate removed — hub link can be sent
+                        // regardless of whether a phone is on file yet.
+                        onResendHubLink: () => _resendHubLink(member),
                       )),
                   if (activeMembers.isNotEmpty && inactiveMembers.isNotEmpty)
                     const Padding(
@@ -2798,10 +2797,7 @@ class _MyStaffSectionState extends State<_MyStaffSection> {
                             member['user_id'] == null
                                 ? () => _resendInvite(member)
                                 : null,
-                        onResendHubLink:
-                            (member['phone'] as String?)?.isNotEmpty == true
-                                ? () => _resendHubLink(member)
-                                : null,
+                        onResendHubLink: () => _resendHubLink(member),
                       )),
                 ],
               ),

@@ -13,6 +13,50 @@ const supabase = createClient(
 const TWILIO_ACCOUNT_SID = Deno.env.get("TWILIO_ACCOUNT_SID")!;
 const TWILIO_AUTH_TOKEN = Deno.env.get("TWILIO_AUTH_TOKEN")!;
 
+const MAILGUN_API_KEY = Deno.env.get("MAILGUN_API_KEY") ?? "";
+const MAILGUN_DOMAIN = Deno.env.get("MAILGUN_DOMAIN") ?? "mail.vantagecaretech.com";
+
+// Internal ops alert — for failures that shouldn't ever fail silently
+// (e.g. a notification email that never went out). Never throws itself.
+const INTERNAL_ALERT_EMAIL = "vantagecaretech@gmail.com";
+
+async function sendInternalAlert(
+  source: string,
+  businessId: number | null,
+  detail: unknown,
+  errorMessage: string,
+) {
+  try {
+    await supabase.from("system_alert_log").insert({
+      source,
+      business_id: businessId,
+      detail,
+      error_message: errorMessage,
+    });
+  } catch (logErr) {
+    console.error(`sendInternalAlert: failed to write system_alert_log for ${source}:`, logErr);
+  }
+
+  if (!MAILGUN_API_KEY) return;
+  try {
+    const form = new URLSearchParams();
+    form.append("from", `NexaFlow Alerts <no-reply@${MAILGUN_DOMAIN}>`);
+    form.append("to", INTERNAL_ALERT_EMAIL);
+    form.append("subject", `⚠️ NexaFlow Alert: ${source}`);
+    form.append("text", `${errorMessage}\n\nDetail: ${JSON.stringify(detail, null, 2)}`);
+    await fetch(`https://api.mailgun.net/v3/${MAILGUN_DOMAIN}/messages`, {
+      method: "POST",
+      headers: {
+        "Authorization": "Basic " + btoa(`api:${MAILGUN_API_KEY}`),
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: form.toString(),
+    });
+  } catch (alertErr) {
+    console.error(`sendInternalAlert: failed to send alert email for ${source}:`, alertErr);
+  }
+}
+
 // Resolves the timestamp to record for a clock action. If the client
 // captured its own timestamp at button-press time (used when the request
 // had to be queued locally due to no connectivity and retried later),
@@ -63,6 +107,7 @@ Deno.serve(async (req) => {
     const {
       token, action, appointment_id, lat, lng, notes, enabled, accuracy, client_timestamp,
       category_id, amount_cents, description, billable, receipt_base64, receipt_filename,
+      week_start, week_end,
     } = body;
 
     if (!token) {
@@ -72,7 +117,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    const validActions = ["clock_in", "clock_out", "toggle_location_sharing", "update_location", "add_note", "send_on_my_way", "check_in_at_stop", "log_expense", "start_break", "end_break"];
+    const validActions = ["clock_in", "clock_out", "toggle_location_sharing", "update_location", "add_note", "send_on_my_way", "check_in_at_stop", "log_expense", "start_break", "end_break", "submit_timesheet"];
     if (!validActions.includes(action)) {
       return new Response(JSON.stringify({ error: "Invalid action" }), {
         status: 400,
@@ -667,6 +712,251 @@ Deno.serve(async (req) => {
       }
 
       return new Response(JSON.stringify({ success: true, break: newBreak }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    // ── Submit for approval (TS-11): employee-triggered, always submits
+    // the caller's own timesheet for the period the client computed
+    // (same client-computes-boundaries convention get-timesheets and the
+    // office Pay Period lock controls already use — this function just
+    // trusts and validates week_start/week_end, it never recomputes
+    // pay_period_type boundary math itself).
+    if (action === "submit_timesheet") {
+      if (!week_start || !week_end) {
+        return new Response(JSON.stringify({ error: "week_start and week_end are required" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      if (week_end < week_start) {
+        return new Response(JSON.stringify({ error: "week_end must be on or after week_start" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const { data: timeTrackingAllowed, error: submitGateErr } = await supabase
+        .rpc("check_plan_feature", { p_business_id: businessId, p_feature: "time_tracking" });
+      if (submitGateErr) {
+        return new Response(JSON.stringify({ error: "Error checking plan: " + submitGateErr.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      if (!timeTrackingAllowed) {
+        return new Response(JSON.stringify({
+          error: "upgrade_required",
+          message: "Timesheets & Payroll requires the Growth plan or above.",
+        }), { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
+      // TS-11: the submit/approve/reject workflow itself is a Pro (or
+      // beta) feature — Growth+ still gets plain Timesheets & Payroll
+      // (clock in/out, pay rates, lock/unlock), just not this workflow.
+      const { data: approvalWorkflowAllowed, error: approvalGateErr } = await supabase
+        .rpc("check_plan_feature", { p_business_id: businessId, p_feature: "timesheet_approval_workflow" });
+      if (approvalGateErr) {
+        return new Response(JSON.stringify({ error: "Error checking plan: " + approvalGateErr.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      if (!approvalWorkflowAllowed) {
+        return new Response(JSON.stringify({
+          error: "upgrade_required",
+          message: "Timesheet submission & approval requires the Pro plan.",
+        }), { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
+      const { data: existingPeriod, error: periodFetchErr } = await supabase
+        .from("pay_periods")
+        .select("id, week_start, week_end, locked_at")
+        .eq("business_id", businessId)
+        .eq("week_start", week_start)
+        .maybeSingle();
+
+      if (periodFetchErr) {
+        return new Response(JSON.stringify({ error: "Failed to look up pay period: " + periodFetchErr.message }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      let payPeriodId: number;
+
+      if (existingPeriod) {
+        if (existingPeriod.week_end !== week_end) {
+          return new Response(
+            JSON.stringify({
+              error: `A pay period starting ${week_start} already exists with a different end date (${existingPeriod.week_end}). Check the period dates and try again.`,
+            }),
+            { status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+        if (existingPeriod.locked_at) {
+          return new Response(
+            JSON.stringify({ error: "This pay period is already locked and can't accept new submissions.", locked: true }),
+            { status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+        payPeriodId = existingPeriod.id;
+      } else {
+        const { data: created, error: createErr } = await supabase
+          .from("pay_periods")
+          .insert({ business_id: businessId, week_start, week_end })
+          .select("id")
+          .maybeSingle();
+
+        if (createErr || !created) {
+          return new Response(JSON.stringify({ error: "Failed to create pay period: " + (createErr?.message ?? "unknown error") }), {
+            status: 500,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+        payPeriodId = created.id;
+      }
+
+      const { data: existingStatus } = await supabase
+        .from("employee_pay_period_status")
+        .select("id, status")
+        .eq("pay_period_id", payPeriodId)
+        .eq("user_id", callerUserId)
+        .maybeSingle();
+
+      if (existingStatus?.status === "submitted") {
+        return new Response(JSON.stringify({ error: "This timesheet has already been submitted and is awaiting review." }), {
+          status: 409,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      if (existingStatus?.status === "approved") {
+        return new Response(JSON.stringify({ error: "This timesheet has already been approved." }), {
+          status: 409,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const fromStatus = existingStatus?.status ?? null;
+      const nowIso = new Date().toISOString();
+
+      let statusRow;
+      if (existingStatus) {
+        const { data: updated, error: updateErr } = await supabase
+          .from("employee_pay_period_status")
+          .update({
+            status: "submitted",
+            submitted_at: nowIso,
+            rejected_at: null,
+            rejected_by: null,
+            rejection_reason: null,
+          })
+          .eq("id", existingStatus.id)
+          .select()
+          .maybeSingle();
+        if (updateErr) {
+          return new Response(JSON.stringify({ error: "Failed to submit timesheet: " + updateErr.message }), {
+            status: 500,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+        statusRow = updated;
+      } else {
+        const { data: inserted, error: insertErr } = await supabase
+          .from("employee_pay_period_status")
+          .insert({
+            business_id: businessId,
+            pay_period_id: payPeriodId,
+            user_id: callerUserId,
+            status: "submitted",
+            submitted_at: nowIso,
+          })
+          .select()
+          .maybeSingle();
+        if (insertErr) {
+          return new Response(JSON.stringify({ error: "Failed to submit timesheet: " + insertErr.message }), {
+            status: 500,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+        statusRow = inserted;
+      }
+
+      await supabase.from("pay_period_status_history").insert({
+        business_id: businessId,
+        pay_period_id: payPeriodId,
+        user_id: callerUserId,
+        from_status: fromStatus,
+        to_status: "submitted",
+        changed_by: callerUserId,
+      });
+
+      // ── Notify the owner. Never blocks the submission, but a failure
+      // here is never silent — system_alert_log + an internal email.
+      try {
+        const { data: business } = await supabase
+          .from("businesses")
+          .select("business_name, owner_email, business_email, admin_email")
+          .eq("id", businessId)
+          .maybeSingle();
+
+        const ownerEmail = business?.owner_email || business?.business_email || business?.admin_email;
+        const businessName = business?.business_name || "your business";
+
+        if (!ownerEmail) {
+          await sendInternalAlert(
+            "employee-hub-action:submit_timesheet:notify-owner",
+            businessId,
+            { user_id: callerUserId, week_start, week_end },
+            "Business has no owner_email/business_email/admin_email on file — submission was recorded but the owner was never notified.",
+          );
+        } else if (MAILGUN_API_KEY) {
+          const employeeName = profile.full_name || "An employee";
+          const lines = [
+            `${employeeName} just submitted their timesheet for review.`,
+            "",
+            `Period: ${week_start} to ${week_end}`,
+            "",
+            "Review it in NexaFlow under Timesheets & Payroll.",
+            "",
+            `— ${businessName}`,
+          ];
+          const form = new URLSearchParams();
+          form.append("from", `${businessName} <no-reply@${MAILGUN_DOMAIN}>`);
+          form.append("to", ownerEmail);
+          form.append("subject", `🕒 Timesheet Submitted by ${employeeName}`);
+          form.append("text", lines.join("\n"));
+
+          const mailgunRes = await fetch(`https://api.mailgun.net/v3/${MAILGUN_DOMAIN}/messages`, {
+            method: "POST",
+            headers: {
+              "Authorization": "Basic " + btoa(`api:${MAILGUN_API_KEY}`),
+              "Content-Type": "application/x-www-form-urlencoded",
+            },
+            body: form.toString(),
+          });
+
+          if (!mailgunRes.ok) {
+            const mailgunErrText = await mailgunRes.text();
+            await sendInternalAlert(
+              "employee-hub-action:submit_timesheet:notify-owner",
+              businessId,
+              { user_id: callerUserId, week_start, week_end, mailgun_status: mailgunRes.status },
+              `Mailgun returned ${mailgunRes.status}: ${mailgunErrText}`,
+            );
+          }
+        }
+      } catch (notifyErr) {
+        await sendInternalAlert(
+          "employee-hub-action:submit_timesheet:notify-owner",
+          businessId,
+          { user_id: callerUserId, week_start, week_end },
+          notifyErr instanceof Error ? notifyErr.message : String(notifyErr),
+        );
+      }
+
+      return new Response(JSON.stringify({ success: true, status: statusRow }), {
         status: 200,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });

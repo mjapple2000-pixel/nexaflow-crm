@@ -53,6 +53,23 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
   bool _jobCostingEnabled = false;
   List<Map<String, dynamic>> _expenseCategories = [];
 
+  // TS-11: submit-for-approval. Boundaries computed client-side with the
+  // same math timesheets_screen.dart uses for the office Pay Period view,
+  // so a submission always lands on the exact same pay_periods row the
+  // office locks/approves against, regardless of weekly/biweekly/
+  // semimonthly cadence.
+  String _payPeriodType = 'weekly';
+  Map<String, dynamic> _payPeriodConfig = {};
+  String _weekStartDay = 'monday';
+  Map<String, dynamic>? _periodSummary;
+  bool _submittingTimesheet = false;
+  List<Map<String, dynamic>> _submissionHistory = [];
+  bool _timesheetApprovalEnabled = false;
+
+  static const _dayOrder = [
+    'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
+  ];
+
   final _jobSearchCtrl = TextEditingController();
   bool _showJobResults = false;
   final _pastFormsSearchCtrl = TextEditingController();
@@ -118,11 +135,17 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
         _jobCostingEnabled = data['job_costing_enabled'] as bool? ?? false;
         _expenseCategories =
             List<Map<String, dynamic>>.from(data['expense_categories'] ?? []);
+        _payPeriodType = data['pay_period_type'] as String? ?? 'weekly';
+        _payPeriodConfig = Map<String, dynamic>.from(data['pay_period_config'] as Map? ?? {});
+        _weekStartDay = data['week_start_day'] as String? ?? 'monday';
+        _submissionHistory = List<Map<String, dynamic>>.from(data['submission_history'] as List? ?? []);
+        _timesheetApprovalEnabled = data['timesheet_approval_enabled'] as bool? ?? false;
         _loading = false;
       });
 
       _startTickerIfNeeded();
       _updateLocationLoop();
+      if (_timeTrackingEnabled && _timesheetApprovalEnabled) _loadPeriodSummary();
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -130,6 +153,388 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
         _loading = false;
       });
     }
+  }
+
+  DateTime _startOfWeekContaining(DateTime date, String startDayName) {
+    final startIdx = _dayOrder.indexOf(startDayName);
+    final safeStartIdx = startIdx == -1 ? 0 : startIdx;
+    final dateIdx = date.weekday - 1;
+    final diff = (dateIdx - safeStartIdx + 7) % 7;
+    final d = DateTime(date.year, date.month, date.day);
+    return d.subtract(Duration(days: diff));
+  }
+
+  int _daysInMonth(int year, int month) => DateTime(year, month + 1, 0).day;
+
+  // Ported verbatim from timesheets_screen.dart's _currentPayPeriod so a
+  // Hub submission always lands on the exact same pay_periods row the
+  // office side locks/approves against.
+  List<DateTime> _currentPayPeriod(DateTime date) {
+    if (_payPeriodType == 'biweekly') {
+      final anchorStr = _payPeriodConfig['anchor_date'] as String?;
+      final anchor = anchorStr != null ? DateTime.tryParse(anchorStr) : null;
+      if (anchor == null) {
+        return [date, date.add(const Duration(days: 13))];
+      }
+      final anchorDate = DateTime(anchor.year, anchor.month, anchor.day);
+      final dateOnly = DateTime(date.year, date.month, date.day);
+      final daysSince = dateOnly.difference(anchorDate).inDays;
+      final periodIndex = daysSince >= 0
+          ? daysSince ~/ 14
+          : -(((-daysSince) + 13) ~/ 14);
+      final start = anchorDate.add(Duration(days: periodIndex * 14));
+      return [start, start.add(const Duration(days: 13))];
+    }
+
+    if (_payPeriodType == 'semimonthly') {
+      final dayOneRaw = (_payPeriodConfig['day_one'] as num?)?.toInt() ?? 1;
+      final dayTwoRaw = (_payPeriodConfig['day_two'] as num?)?.toInt() ?? 16;
+      final maxDay = _daysInMonth(date.year, date.month);
+      final dayOne = dayOneRaw > maxDay ? maxDay : dayOneRaw;
+      final dayTwo = dayTwoRaw > maxDay ? maxDay : dayTwoRaw;
+
+      if (date.day < dayOne) {
+        final prevMonth = DateTime(date.year, date.month - 1, 1);
+        final prevMax = _daysInMonth(prevMonth.year, prevMonth.month);
+        final prevDayTwoRaw = (_payPeriodConfig['day_two'] as num?)?.toInt() ?? 16;
+        final prevDayTwo = prevDayTwoRaw > prevMax ? prevMax : prevDayTwoRaw;
+        return [
+          DateTime(prevMonth.year, prevMonth.month, prevDayTwo),
+          DateTime(date.year, date.month, dayOne).subtract(const Duration(days: 1)),
+        ];
+      } else if (date.day < dayTwo) {
+        return [
+          DateTime(date.year, date.month, dayOne),
+          DateTime(date.year, date.month, dayTwo).subtract(const Duration(days: 1)),
+        ];
+      } else {
+        return [
+          DateTime(date.year, date.month, dayTwo),
+          DateTime(date.year, date.month, maxDay),
+        ];
+      }
+    }
+
+    // weekly
+    final start = _startOfWeekContaining(date, _weekStartDay);
+    return [start, start.add(const Duration(days: 6))];
+  }
+
+  // The most recently *completed* period — never the one still in
+  // progress, matching "available once the period has ended." Found by
+  // asking for the period containing the day right before the current
+  // one starts, which works identically for all three cadences.
+  List<DateTime> _lastCompletedPeriod() {
+    final current = _currentPayPeriod(DateTime.now());
+    return _currentPayPeriod(current[0].subtract(const Duration(days: 1)));
+  }
+
+  Future<void> _loadPeriodSummary() async {
+    try {
+      final bounds = _lastCompletedPeriod();
+      final startStr = bounds[0].toIso8601String().substring(0, 10);
+      final endStr = bounds[1].toIso8601String().substring(0, 10);
+      final res = await http.get(
+        Uri.parse('$_fnBase/get-employee-hub-data?token=${widget.token}&period_start=$startStr&period_end=$endStr'),
+      );
+      if (!mounted || res.statusCode != 200) return;
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      setState(() {
+        _periodSummary = data['period_summary'] as Map<String, dynamic>?;
+      });
+    } catch (e) {
+      debugPrint('Period summary load error: $e');
+    }
+  }
+
+  Future<void> _submitTimesheet() async {
+    setState(() => _submittingTimesheet = true);
+    try {
+      final bounds = _lastCompletedPeriod();
+      final res = await http.post(
+        Uri.parse('$_fnBase/employee-hub-action'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'token': widget.token,
+          'action': 'submit_timesheet',
+          'week_start': bounds[0].toIso8601String().substring(0, 10),
+          'week_end': bounds[1].toIso8601String().substring(0, 10),
+        }),
+      );
+      if (!mounted) return;
+      final body = jsonDecode(res.body) as Map<String, dynamic>;
+      if (res.statusCode == 200 && body['success'] == true) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Timesheet submitted for approval.')),
+        );
+        await _loadPeriodSummary();
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(body['error'] as String? ?? 'Failed to submit timesheet.'),
+          backgroundColor: AppTheme.error,
+        ));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Error: $e'),
+          backgroundColor: AppTheme.error,
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _submittingTimesheet = false);
+    }
+  }
+
+  String _formatPeriodRange(DateTime start, DateTime end) {
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    if (start.month == end.month && start.year == end.year) {
+      return '${months[start.month - 1]} ${start.day} – ${end.day}';
+    }
+    return '${months[start.month - 1]} ${start.day} – ${months[end.month - 1]} ${end.day}';
+  }
+
+  String _formatSummaryHours(int minutes) {
+    final h = minutes ~/ 60;
+    final m = minutes % 60;
+    if (h == 0) return '${m}m';
+    if (m == 0) return '${h}h';
+    return '${h}h ${m}m';
+  }
+
+  String _historyStatusLabel(String status) {
+    switch (status) {
+      case 'submitted':
+        return 'Awaiting Review';
+      case 'approved':
+        return 'Approved';
+      case 'rejected':
+        return 'Needs Changes';
+      default:
+        return status;
+    }
+  }
+
+  Color _historyStatusColor(String status) {
+    switch (status) {
+      case 'submitted':
+        return Colors.orange;
+      case 'approved':
+        return AppTheme.success;
+      case 'rejected':
+        return AppTheme.error;
+      default:
+        return AppTheme.textSecondary;
+    }
+  }
+
+  String _historyDate(String? iso) {
+    if (iso == null) return '';
+    final dt = DateTime.tryParse(iso)?.toLocal();
+    if (dt == null) return '';
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    final h = dt.hour % 12 == 0 ? 12 : dt.hour % 12;
+    final min = dt.minute.toString().padLeft(2, '0');
+    final ampm = dt.hour < 12 ? 'AM' : 'PM';
+    return '${months[dt.month - 1]} ${dt.day} · $h:$min $ampm';
+  }
+
+  void _showTimesheetHistory() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => Container(
+        decoration: const BoxDecoration(
+          color: AppTheme.cardBg,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
+        constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.75),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(child: Container(width: 40, height: 4,
+                decoration: BoxDecoration(color: AppTheme.borderColor, borderRadius: BorderRadius.circular(2)))),
+            const SizedBox(height: 16),
+            const Text('Timesheet History',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+            const SizedBox(height: 12),
+            Flexible(
+              child: ListView.separated(
+                shrinkWrap: true,
+                itemCount: _submissionHistory.length,
+                separatorBuilder: (_, __) => const Divider(height: 1, color: AppTheme.borderColor),
+                itemBuilder: (_, i) {
+                  final h = _submissionHistory[i];
+                  final status = h['status'] as String? ?? 'submitted';
+                  final start = DateTime.tryParse(h['period_start'] as String? ?? '');
+                  final end = DateTime.tryParse(h['period_end'] as String? ?? '');
+                  final reason = h['rejection_reason'] as String?;
+                  final color = _historyStatusColor(status);
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Row(children: [
+                        Expanded(
+                          child: Text(
+                            start != null && end != null ? _formatPeriodRange(start, end) : 'Unknown period',
+                            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary),
+                          ),
+                        ),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: color.withValues(alpha: 0.1),
+                            borderRadius: BorderRadius.circular(99),
+                          ),
+                          child: Text(_historyStatusLabel(status),
+                              style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: color)),
+                        ),
+                      ]),
+                      const SizedBox(height: 2),
+                      Text(
+                        status == 'approved'
+                            ? 'Approved ${_historyDate(h['approved_at'] as String?)}'
+                            : status == 'rejected'
+                                ? 'Rejected ${_historyDate(h['rejected_at'] as String?)}'
+                                : 'Submitted ${_historyDate(h['submitted_at'] as String?)}',
+                        style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
+                      ),
+                      if (status == 'rejected' && reason != null && reason.isNotEmpty) ...[
+                        const SizedBox(height: 4),
+                        Text(reason, style: const TextStyle(fontSize: 12, color: AppTheme.error)),
+                      ],
+                    ]),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTimesheetLockedTeaser() {
+    return Container(
+      margin: const EdgeInsets.only(top: 16),
+      width: double.infinity,
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: AppTheme.cardBg,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppTheme.borderColor),
+      ),
+      child: Row(children: [
+        Container(
+          width: 40, height: 40,
+          decoration: BoxDecoration(
+            color: AppTheme.brand.withValues(alpha: 0.1),
+            shape: BoxShape.circle,
+          ),
+          alignment: Alignment.center,
+          child: const Icon(Icons.fact_check_outlined, size: 20, color: AppTheme.brand),
+        ),
+        const SizedBox(width: 12),
+        const Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('Timesheet Submission & Approval',
+                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+            SizedBox(height: 2),
+            Text('Available on the Pro plan.',
+                style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+          ]),
+        ),
+      ]),
+    );
+  }
+
+  Widget _buildTimesheetCard() {
+    if (!_timesheetApprovalEnabled) return _buildTimesheetLockedTeaser();
+    if (_periodSummary == null) return const SizedBox.shrink();
+    final bounds = _lastCompletedPeriod();
+    final status = _periodSummary!['status'] as String? ?? 'draft';
+    final totalMinutes = (_periodSummary!['total_minutes'] as num?)?.toInt() ?? 0;
+    final rejectionReason = _periodSummary!['rejection_reason'] as String?;
+
+    Color chipColor = AppTheme.textSecondary;
+    String chipLabel = 'Not Submitted';
+    if (status == 'submitted') { chipColor = Colors.orange; chipLabel = 'Awaiting Review'; }
+    if (status == 'approved') { chipColor = AppTheme.success; chipLabel = 'Approved'; }
+    if (status == 'rejected') { chipColor = AppTheme.error; chipLabel = 'Needs Changes'; }
+
+    return Container(
+      margin: const EdgeInsets.only(top: 16),
+      width: double.infinity,
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: AppTheme.cardBg,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppTheme.borderColor),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Expanded(
+            child: Text('Timesheet: ${_formatPeriodRange(bounds[0], bounds[1])}',
+                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              color: chipColor.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(99),
+            ),
+            child: Text(chipLabel, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: chipColor)),
+          ),
+        ]),
+        if (_submissionHistory.isNotEmpty) ...[
+          const SizedBox(height: 4),
+          GestureDetector(
+            onTap: _showTimesheetHistory,
+            child: const Text('View History',
+                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppTheme.brand,
+                    decoration: TextDecoration.underline)),
+          ),
+        ],
+        const SizedBox(height: 6),
+        Text(_formatSummaryHours(totalMinutes),
+            style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+        if (status == 'rejected' && rejectionReason != null && rejectionReason.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: AppTheme.error.withValues(alpha: 0.06),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: AppTheme.error.withValues(alpha: 0.2)),
+            ),
+            child: Text(rejectionReason,
+                style: const TextStyle(fontSize: 12, color: AppTheme.error)),
+          ),
+        ],
+        if (status == 'draft' || status == 'rejected') ...[
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              onPressed: _submittingTimesheet ? null : _submitTimesheet,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.brand,
+                foregroundColor: Colors.white,
+                elevation: 0,
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              child: _submittingTimesheet
+                  ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                  : Text(status == 'rejected' ? 'Resubmit for Approval' : 'Submit for Approval'),
+            ),
+          ),
+        ],
+      ]),
+    );
   }
 
   void _startTickerIfNeeded() {
@@ -627,7 +1032,7 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
                   // ── Status card ─────────────────────────────────────
                   if (!_timeTrackingEnabled)
                     _buildClockLockedCard()
-                  else
+                  else ...[
                   Container(
                     width: double.infinity,
                     padding: const EdgeInsets.all(24),
@@ -857,6 +1262,8 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
                       ],
                     ),
                   ),
+                  _buildTimesheetCard(),
+                  ],
 
                   if (_gpsTrackingEnabled) ...[
                     const SizedBox(height: 16),

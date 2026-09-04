@@ -1,6 +1,8 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
+import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme/app_theme.dart';
 import '../utils/phone_utils.dart';
@@ -71,11 +73,71 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
   int? _myProfileId;
   List<Map<String, dynamic>> _rateHistory = [];
 
+  // Gates the Resend Hub Link action — mirrors the same time_tracking
+  // check used everywhere else the Employee Hub is reachable (clock-in,
+  // breaks, the Hub's own locked-teaser message). Not the stricter
+  // timesheet_approval_workflow gate — that's submit/approve only and
+  // has nothing to do with whether the Hub itself is reachable.
+  bool _hubAccessEnabled = false;
+  bool _loadingHubAccess = true;
+  bool _resendingHubLink = false;
+
   @override
   void initState() {
     super.initState();
     _load();
     _checkPayRateCapability();
+  }
+
+  Future<void> _checkHubAccess(int businessId) async {
+    try {
+      final res = await _db.rpc('check_plan_feature',
+          params: {'p_business_id': businessId, 'p_feature': 'time_tracking'});
+      if (mounted) {
+        setState(() {
+          _hubAccessEnabled = res == true;
+          _loadingHubAccess = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) setState(() => _loadingHubAccess = false);
+    }
+  }
+
+  Future<void> _resendHubLink() async {
+    if (_profile == null) return;
+    setState(() => _resendingHubLink = true);
+    try {
+      final session = _db.auth.currentSession;
+      final response = await http.post(
+        Uri.parse(
+            'https://rllriopqojaraceytdno.supabase.co/functions/v1/resend-employee-hub-link'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ${session?.accessToken}',
+        },
+        body: jsonEncode({'profile_id': _profile!['id']}),
+      );
+      final body = jsonDecode(response.body);
+      if (!mounted) return;
+      if (response.statusCode == 200) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Hub link resent.'), backgroundColor: Color(0xFF10B981)),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to resend: ${body['error'] ?? 'Unknown error'}'), backgroundColor: AppTheme.error),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: AppTheme.error),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _resendingHubLink = false);
+    }
   }
 
   Future<void> _checkPayRateCapability() async {
@@ -205,6 +267,8 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
       }
       if (!mounted) return;
       setState(() { _profile = data; _rateHistory = history; _loading = false; });
+      final businessId = data['business_id'] as int?;
+      if (businessId != null) _checkHubAccess(businessId);
     } catch (e) {
       if (mounted) setState(() { _error = e.toString(); _loading = false; });
     }
@@ -322,6 +386,20 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                 label: const Text('Edit'),
                 style: OutlinedButton.styleFrom(foregroundColor: AppTheme.textPrimary, side: const BorderSide(color: AppTheme.borderColor)),
               ),
+              if (!_isOwner && !_isInactive && !_loadingHubAccess && _hubAccessEnabled) ...[
+                const SizedBox(width: 8),
+                OutlinedButton.icon(
+                  onPressed: _resendingHubLink ? null : _resendHubLink,
+                  icon: _resendingHubLink
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: AppTheme.brand))
+                      : const Icon(Icons.phone_iphone_outlined, size: 16, color: AppTheme.brand),
+                  label: const Text('Resend Hub Link', style: TextStyle(color: AppTheme.brand)),
+                  style: OutlinedButton.styleFrom(side: const BorderSide(color: AppTheme.brand)),
+                ),
+              ],
               if (!_isOwner) ...[
                 const SizedBox(width: 8),
                 OutlinedButton.icon(

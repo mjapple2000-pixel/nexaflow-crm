@@ -18,6 +18,8 @@ Deno.serve(async (req) => {
   try {
     const url = new URL(req.url);
     const token = url.searchParams.get("token");
+    const periodStart = url.searchParams.get("period_start");
+    const periodEnd = url.searchParams.get("period_end");
 
     if (!token) {
       return new Response(JSON.stringify({ error: "token is required" }), {
@@ -71,13 +73,134 @@ Deno.serve(async (req) => {
     // ── 4. Load business ────────────────────────────────────────────────
     const { data: business, error: businessError } = await supabase
       .from("businesses")
-      .select("business_name, require_location_on_clock, gps_tracking_enabled")
+      .select("business_name, require_location_on_clock, gps_tracking_enabled, week_start_day, pay_period_type, pay_period_config")
       .eq("id", hubToken.business_id)
       .maybeSingle();
 
     if (businessError) {
       console.error("get-employee-hub-data business lookup error:", businessError);
     }
+
+    // TS-11: submit/approve/reject is Pro (or beta) only. Declared here,
+    // before any code that references it below (periodSummary,
+    // submission history) — this must stay above both of those blocks.
+    const { data: approvalWorkflowAllowed } = await supabase
+      .rpc("check_plan_feature", { p_business_id: hubToken.business_id, p_feature: "timesheet_approval_workflow" });
+
+    // ── TS-11: employee's own hours + submission status for a specific
+    // period, when the client asks for one. Boundaries are computed
+    // client-side (same convention as get-timesheets/employee-hub-action
+    // submit_timesheet) using pay_period_type/pay_period_config/
+    // week_start_day returned below — this endpoint just aggregates
+    // whatever range it's given, no cadence logic lives here.
+    let periodSummary: Record<string, unknown> | null = null;
+    if (approvalWorkflowAllowed && periodStart && periodEnd) {
+      const { data: periodEntries, error: periodEntriesError } = await supabase
+        .from("time_entries")
+        .select("id, duration_minutes")
+        .eq("business_id", hubToken.business_id)
+        .eq("user_id", profile.user_id)
+        .is("deleted_at", null)
+        .gte("clocked_in_at", `${periodStart}T00:00:00.000Z`)
+        .lte("clocked_in_at", `${periodEnd}T23:59:59.999Z`);
+
+      if (periodEntriesError) {
+        console.error("get-employee-hub-data period entries lookup error:", periodEntriesError);
+      }
+
+      const entryIds = (periodEntries ?? []).map((e) => e.id);
+      const unpaidBreakByEntry: Record<number, number> = {};
+      if (entryIds.length > 0) {
+        const { data: breaks } = await supabase
+          .from("time_entry_breaks")
+          .select("time_entry_id, started_at, ended_at, is_paid")
+          .in("time_entry_id", entryIds)
+          .is("deleted_at", null);
+        for (const b of breaks ?? []) {
+          if (!b.ended_at || b.is_paid) continue;
+          const mins = Math.round((new Date(b.ended_at).getTime() - new Date(b.started_at).getTime()) / 60000);
+          unpaidBreakByEntry[b.time_entry_id] = (unpaidBreakByEntry[b.time_entry_id] ?? 0) + mins;
+        }
+      }
+
+      let totalMinutes = 0;
+      for (const e of periodEntries ?? []) {
+        const unpaid = unpaidBreakByEntry[e.id] ?? 0;
+        totalMinutes += Math.max(0, (e.duration_minutes ?? 0) - unpaid);
+      }
+
+      const { data: periodRow } = await supabase
+        .from("pay_periods")
+        .select("id, locked_at")
+        .eq("business_id", hubToken.business_id)
+        .eq("week_start", periodStart)
+        .maybeSingle();
+
+      let statusRow: { status: string; submitted_at: string | null; rejection_reason: string | null } | null = null;
+      if (periodRow) {
+        const { data: s } = await supabase
+          .from("employee_pay_period_status")
+          .select("status, submitted_at, rejection_reason")
+          .eq("pay_period_id", periodRow.id)
+          .eq("user_id", profile.user_id)
+          .maybeSingle();
+        statusRow = s;
+      }
+
+      periodSummary = {
+        period_start: periodStart,
+        period_end: periodEnd,
+        total_minutes: totalMinutes,
+        entry_count: (periodEntries ?? []).length,
+        period_locked: periodRow?.locked_at != null,
+        status: statusRow?.status ?? "draft",
+        submitted_at: statusRow?.submitted_at ?? null,
+        rejection_reason: statusRow?.rejection_reason ?? null,
+      };
+    }
+
+    // ── Submission history — every past period this employee has ever
+    // submitted (any status besides untouched 'draft'), most recent
+    // first. Independent of period_start/period_end above; always
+    // returned so the Hub can show a "History" view regardless of
+    // whether the caller also asked for the current period's summary.
+    let historyRows: Array<{ pay_period_id: number; status: string; submitted_at: string | null; approved_at: string | null; rejected_at: string | null; rejection_reason: string | null }> = [];
+    if (approvalWorkflowAllowed) {
+      const { data, error: historyError } = await supabase
+        .from("employee_pay_period_status")
+        .select("pay_period_id, status, submitted_at, approved_at, rejected_at, rejection_reason")
+        .eq("user_id", profile.user_id)
+        .neq("status", "draft")
+        .order("submitted_at", { ascending: false })
+        .limit(12);
+
+      if (historyError) {
+        console.error("get-employee-hub-data submission history lookup error:", historyError);
+      }
+      historyRows = data ?? [];
+    }
+
+    const historyPeriodIds = [...new Set(historyRows.map((r) => r.pay_period_id))];
+    const periodBoundsById: Record<number, { week_start: string; week_end: string }> = {};
+    if (historyPeriodIds.length > 0) {
+      const { data: periodsForHistory } = await supabase
+        .from("pay_periods")
+        .select("id, week_start, week_end")
+        .in("id", historyPeriodIds);
+      for (const p of periodsForHistory ?? []) {
+        periodBoundsById[p.id] = { week_start: p.week_start, week_end: p.week_end };
+      }
+    }
+
+    const submissionHistory = historyRows.map((r) => ({
+      period_start: periodBoundsById[r.pay_period_id]?.week_start ?? null,
+      period_end: periodBoundsById[r.pay_period_id]?.week_end ?? null,
+      status: r.status,
+      submitted_at: r.submitted_at,
+      approved_at: r.approved_at,
+      rejected_at: r.rejected_at,
+      rejection_reason: r.rejection_reason,
+    }));
 
     // ── 4a. Expense categories + Job Costing plan gate — powers the
     // "Log an Expense" section in the appointment detail sheet. Categories
@@ -93,6 +216,8 @@ Deno.serve(async (req) => {
     // message instead of the tech hitting a 403 after tapping the button.
     const { data: timeTrackingAllowed } = await supabase
       .rpc("check_plan_feature", { p_business_id: hubToken.business_id, p_feature: "time_tracking" });
+
+    // (approvalWorkflowAllowed already resolved above, before periodSummary)
 
     let expenseCategories: any[] = [];
     if (jobCostingAllowed) {
@@ -401,6 +526,12 @@ Deno.serve(async (req) => {
         location_sharing_enabled: profile.location_sharing_enabled === true,
         job_costing_enabled: jobCostingAllowed === true,
         time_tracking_enabled: timeTrackingAllowed === true,
+        pay_period_type: business?.pay_period_type ?? "weekly",
+        pay_period_config: business?.pay_period_config ?? {},
+        week_start_day: business?.week_start_day ?? "monday",
+        timesheet_approval_enabled: approvalWorkflowAllowed === true,
+        period_summary: periodSummary,
+        submission_history: submissionHistory,
         expense_categories: expenseCategories,
         active_entry: activeEntry ?? null,
         active_break: activeBreak,
