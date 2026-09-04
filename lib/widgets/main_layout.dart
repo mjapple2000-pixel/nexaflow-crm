@@ -814,6 +814,19 @@ class _AppNavBarState extends State<AppNavBar> {
                     active: location.startsWith('/settings') &&
                         Uri.parse(location).queryParameters['section'] == 'profile',
                   ),
+                  // Lives outside the Settings hierarchy entirely — manage_pto
+                  // grants database access via RLS, but there was previously no
+                  // navigation path to it unless the person also happened to
+                  // have settings_payroll. Mirrors how Timesheets already gets
+                  // its own top-level item rather than being buried in Settings.
+                  if (_can('manage_pto'))
+                    _NavItem(
+                      icon: Icons.beach_access_outlined,
+                      label: 'PTO Policy',
+                      route: '/settings/pto-policy',
+                      active: location.startsWith('/settings/pto-policy') ||
+                          location.startsWith('/settings/pto-requests'),
+                    ),
                   if (_can('forms'))
                     _NavItem(
                       icon: Icons.dynamic_form_outlined,

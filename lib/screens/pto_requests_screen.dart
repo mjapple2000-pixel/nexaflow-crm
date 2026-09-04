@@ -126,6 +126,15 @@ class _PtoRequestsScreenState extends State<PtoRequestsScreen> {
 
   Future<void> _deny(Map<String, dynamic> request) async {
     final id = request['id'] as int;
+    final profileId = (request['profile_id'] as num).toInt();
+    if (profileId == _myProfileId) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('You cannot deny your own PTO request.'),
+            behavior: SnackBarBehavior.floating),
+      );
+      return;
+    }
     setState(() => _actioning.add(id));
     try {
       await _db.from('pto_requests').update({
@@ -148,6 +157,14 @@ class _PtoRequestsScreenState extends State<PtoRequestsScreen> {
   Future<void> _approve(Map<String, dynamic> request) async {
     final id = request['id'] as int;
     final profileId = (request['profile_id'] as num).toInt();
+    if (profileId == _myProfileId) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('You cannot approve your own PTO request.'),
+            behavior: SnackBarBehavior.floating),
+      );
+      return;
+    }
     final hoursRequested = (request['hours_requested'] as num).toDouble();
     setState(() => _actioning.add(id));
     try {
@@ -359,7 +376,9 @@ class _PtoRequestsScreenState extends State<PtoRequestsScreen> {
           final isPending = status == 'pending';
           final id = r['id'] as int;
           final isActioning = _actioning.contains(id);
-          final name = _namesByProfileId[(r['profile_id'] as num).toInt()] ?? 'Unknown';
+          final requestProfileId = (r['profile_id'] as num).toInt();
+          final isOwnRequest = requestProfileId == _myProfileId;
+          final name = _namesByProfileId[requestProfileId] ?? 'Unknown';
 
           return Container(
             decoration: BoxDecoration(
@@ -391,7 +410,10 @@ class _PtoRequestsScreenState extends State<PtoRequestsScreen> {
                       style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
                 ]),
               ),
-              if (isPending)
+              if (isPending && isOwnRequest)
+                const Text('Awaiting another approver',
+                    style: TextStyle(fontSize: 11, fontStyle: FontStyle.italic, color: AppTheme.textSecondary))
+              else if (isPending)
                 isActioning
                     ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
                     : Row(children: [

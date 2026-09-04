@@ -137,13 +137,16 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
     final monthStr = params['month'];
     final pcursorStr = params['pcursor'];
 
+    final defaultViewMode = _payPeriodType == 'weekly' ? 'week' : 'period';
     final newViewMode = view == 'day'
         ? 'day'
         : view == 'month'
             ? 'month'
             : view == 'period'
                 ? 'period'
-                : 'week';
+                : (view == 'week' && _payPeriodType == 'weekly')
+                    ? 'week'
+                    : defaultViewMode;
     final newStart = startStr != null ? DateTime.tryParse(startStr) : null;
     final newEnd = endStr != null ? DateTime.tryParse(endStr) : null;
     final newMonthSub = sub == 'calendar' ? 'calendar' : 'summary';
@@ -354,6 +357,7 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
         _dailyTotals          = List<Map<String, dynamic>>.from(data['daily_totals'] as List? ?? []);
         _rangeEntries          = List<Map<String, dynamic>>.from(data['entries'] as List? ?? []);
         _teamProfiles         = List<Map<String, dynamic>>.from(data['team_profiles'] as List? ?? []);
+        _hasOvertimeTracking  = data['has_overtime_tracking'] as bool? ?? false;
       });
       _startOrStopTicker();
     } catch (e) {
@@ -465,6 +469,7 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
         _periodTotals         = List<Map<String, dynamic>>.from(data['totals'] as List? ?? []);
         _rangeEntries          = List<Map<String, dynamic>>.from(data['entries'] as List? ?? []);
         _teamProfiles         = List<Map<String, dynamic>>.from(data['team_profiles'] as List? ?? []);
+        _hasOvertimeTracking  = data['has_overtime_tracking'] as bool? ?? false;
       });
       _startOrStopTicker();
     } catch (e) {
@@ -715,6 +720,14 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
   // TS-06: how many of _weekTotals have any overtime minutes this week —
   // powers the "X employees have overtime this week" banner.
   int get _weekOvertimeEmployeeCount => _weekTotals
+      .where((t) => ((t['overtime_minutes'] as num?)?.toInt() ?? 0) > 0)
+      .length;
+
+  // Same as above, scoped to the current Pay Period totals — Week's
+  // overtime banner is unreachable for biweekly/semimonthly businesses
+  // now that the Week tab is hidden for them, so Pay Period needs its
+  // own copy of this warning.
+  int get _periodOvertimeEmployeeCount => _periodTotals
       .where((t) => ((t['overtime_minutes'] as num?)?.toInt() ?? 0) > 0)
       .length;
 
@@ -1310,6 +1323,123 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
     }
   }
 
+  // Returns the pay_periods row covering exactly this date range — used
+  // by Pay Period view's lock control, since a period's actual bounds
+  // (14 days for biweekly, a variable half-month for semimonthly) aren't
+  // always a single calendar week the way _payPeriodForWeek assumes.
+  Map<String, dynamic>? _payPeriodForRange(DateTime start, DateTime end) {
+    final startStr = start.toIso8601String().substring(0, 10);
+    final endStr = end.toIso8601String().substring(0, 10);
+    for (final p in _payPeriods) {
+      if (p['week_start'] == startStr && p['week_end'] == endStr) return p;
+    }
+    return null;
+  }
+
+  // Locks the entire current pay period as one unit — for biweekly and
+  // semimonthly businesses, this replaces per-week locking so QuickBooks
+  // sync and PTO accrual never see the same days locked twice under two
+  // different pay_periods rows.
+  Future<void> _lockPeriod() async {
+    if (_lockActionInProgress) return;
+    setState(() => _lockActionInProgress = true);
+    try {
+      final activeBusinessId = await getActiveBusinessId();
+      if (activeBusinessId == null) throw Exception('No active business');
+      final bounds = _currentPayPeriod(_periodCursor);
+      final periodStartStr = bounds[0].toIso8601String().substring(0, 10);
+      final periodEndStr = bounds[1].toIso8601String().substring(0, 10);
+      final hasActive = await _weekHasActiveEntry(activeBusinessId, periodStartStr, periodEndStr);
+      if (!mounted) return;
+      if (hasActive) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Someone is still clocked in during this pay period. Have them clock out (or force clock out) before locking.'),
+            backgroundColor: Colors.orange,
+            duration: Duration(seconds: 4),
+          ),
+        );
+        setState(() => _lockActionInProgress = false);
+        return;
+      }
+      final lockedBy = await _resolveLockedByUserId();
+      if (!mounted) return;
+      await _db.from('pay_periods').upsert({
+        'business_id': activeBusinessId,
+        'week_start': periodStartStr,
+        'week_end': periodEndStr,
+        'locked_at': DateTime.now().toUtc().toIso8601String(),
+        'locked_by': lockedBy,
+      }, onConflict: 'business_id,week_start');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Pay period locked for payroll.')),
+      );
+      await _loadPeriodTotals();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _lockActionInProgress = false);
+    }
+  }
+
+  Future<void> _confirmAndUnlockPeriod() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        title: const Text('Unlock this pay period?'),
+        content: const Text(
+            'This pay period was already locked for payroll. Unlocking it will allow edits to time entries again.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogCtx, rootNavigator: true).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogCtx, rootNavigator: true).pop(true),
+            style: TextButton.styleFrom(foregroundColor: AppTheme.error),
+            child: const Text('Unlock'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    await _unlockPeriod();
+  }
+
+  Future<void> _unlockPeriod() async {
+    if (_lockActionInProgress) return;
+    setState(() => _lockActionInProgress = true);
+    try {
+      final activeBusinessId = await getActiveBusinessId();
+      if (activeBusinessId == null) throw Exception('No active business');
+      final bounds = _currentPayPeriod(_periodCursor);
+      final periodStartStr = bounds[0].toIso8601String().substring(0, 10);
+      await _db
+          .from('pay_periods')
+          .update({'locked_at': null, 'locked_by': null})
+          .eq('business_id', activeBusinessId)
+          .eq('week_start', periodStartStr);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Pay period unlocked.')),
+      );
+      await _loadPeriodTotals();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _lockActionInProgress = false);
+    }
+  }
+
   // Manual retry from the UI — hits quickbooks-sync-hours with a real JWT
   // (not the cron secret the client never holds) and is_manual_retry:true,
   // which resets that function's internal retry budget so a period that
@@ -1805,7 +1935,7 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
         border: Border.all(color: AppTheme.borderColor),
       ),
       child: Row(mainAxisSize: MainAxisSize.min, children: [
-        _viewToggleBtn('Week', 'week'),
+        if (_payPeriodType == 'weekly') _viewToggleBtn('Week', 'week'),
         _viewToggleBtn('Day', 'day'),
         _viewToggleBtn('Month', 'month'),
         if (_payPeriodType != 'weekly') _viewToggleBtn('Pay Period', 'period'),
@@ -2052,6 +2182,9 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
                       style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
                           color: AppTheme.textSecondary, letterSpacing: 1))),
                 ],
+                const Expanded(flex: 2, child: Text('PTO',
+                    style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                        color: AppTheme.textSecondary, letterSpacing: 1))),
                 const Expanded(flex: 2, child: Text('BREAK',
                     style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
                         color: AppTheme.textSecondary, letterSpacing: 1))),
@@ -2077,6 +2210,7 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
                 final minutes = (t['total_minutes'] as num?)?.toInt() ?? 0;
                 final overtimeMinutes = (t['overtime_minutes'] as num?)?.toInt() ?? 0;
                 final regularMinutes = (t['regular_minutes'] as num?)?.toInt();
+                final ptoHours = (t['pto_hours'] as num?)?.toDouble() ?? 0;
                 final breakMinutes = (t['total_break_minutes'] as num?)?.toInt() ?? 0;
                 final count   = (t['entry_count'] as num?)?.toInt() ?? 0;
                 final pay     = _computePay(t);
@@ -2119,6 +2253,9 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
                                 color: overtimeMinutes > 0 ? Colors.orange : AppTheme.textSecondary))),
                       ],
                       Expanded(flex: 2, child: Text(
+                          ptoHours > 0 ? '${ptoHours.toStringAsFixed(1)}h' : '—',
+                          style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary))),
+                      Expanded(flex: 2, child: Text(
                           breakMinutes > 0 ? _formatDuration(breakMinutes) : '—',
                           style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary))),
                       Expanded(flex: 2, child: Text('$count',
@@ -2142,6 +2279,7 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
     final totalMinutes = _weekTotals.fold<int>(0, (sum, t) => sum + ((t['total_minutes'] as num?)?.toInt() ?? 0));
     final totalOvertimeMinutes = _weekTotals.fold<int>(0, (sum, t) => sum + ((t['overtime_minutes'] as num?)?.toInt() ?? 0));
     final totalRegularMinutes = _weekTotals.fold<int>(0, (sum, t) => sum + ((t['regular_minutes'] as num?)?.toInt() ?? (t['total_minutes'] as num?)?.toInt() ?? 0));
+    final totalPtoHours = _weekTotals.fold<double>(0, (sum, t) => sum + ((t['pto_hours'] as num?)?.toDouble() ?? 0));
     final totalBreakMinutes = _weekTotals.fold<int>(0, (sum, t) => sum + ((t['total_break_minutes'] as num?)?.toInt() ?? 0));
     final totalEntries = _weekTotals.fold<int>(0, (sum, t) => sum + ((t['entry_count'] as num?)?.toInt() ?? 0));
     final totalPay = _weekTotals.fold<double>(0, (sum, t) => sum + (_computePay(t) ?? 0));
@@ -2163,6 +2301,9 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
               style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700,
                   color: totalOvertimeMinutes > 0 ? Colors.orange : AppTheme.textSecondary))),
         ],
+        Expanded(flex: 2, child: Text(
+            totalPtoHours > 0 ? '${totalPtoHours.toStringAsFixed(1)}h' : '—',
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textSecondary))),
         Expanded(flex: 2, child: Text(
             totalBreakMinutes > 0 ? _formatDuration(totalBreakMinutes) : '—',
             style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textSecondary))),
@@ -2338,6 +2479,84 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
     );
   }
 
+  Widget _buildPeriodLockControl() {
+    final bounds = _currentPayPeriod(_periodCursor);
+    final period = _payPeriodForRange(bounds[0], bounds[1]);
+    final isLocked = period != null && period['locked_at'] != null;
+    if (!isLocked && !_canManagePayPeriods) return const SizedBox.shrink();
+
+    if (isLocked) {
+      final lockedByName = period['locked_by_name'] as String?;
+      final lockedAt = period['locked_at'] as String?;
+      final periodId = period['id'] as int?;
+      final qboStatus = period['qbo_sync_status'] as String?;
+      final qboLastSynced = period['qbo_last_synced_at'] as String?;
+      return Row(mainAxisSize: MainAxisSize.min, children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          decoration: BoxDecoration(
+            color: AppTheme.error.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(color: AppTheme.error.withValues(alpha: 0.3)),
+          ),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            const Icon(Icons.lock_outline, size: 14, color: AppTheme.error),
+            const SizedBox(width: 6),
+            Text(
+              lockedByName != null
+                  ? 'Locked by $lockedByName · ${_formatDateTime(lockedAt)}'
+                  : 'Locked · ${_formatDateTime(lockedAt)}',
+              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppTheme.error),
+            ),
+          ]),
+        ),
+        if (qboStatus != null) ...[
+          const SizedBox(width: 8),
+          _buildQboSyncBadge(qboStatus, qboLastSynced, periodId),
+        ],
+        if (_isOwner && periodId != null) ...[
+          const SizedBox(width: 8),
+          Clickable(
+            onTap: () => _showPayPeriodHistory(periodId),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(border: Border.all(color: AppTheme.borderColor), borderRadius: BorderRadius.circular(6)),
+              child: const Text('History', style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+            ),
+          ),
+        ],
+        if (_canManagePayPeriods) ...[
+          const SizedBox(width: 8),
+          Clickable(
+            onTap: _lockActionInProgress ? null : _confirmAndUnlockPeriod,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(border: Border.all(color: AppTheme.borderColor), borderRadius: BorderRadius.circular(6)),
+              child: _lockActionInProgress
+                  ? const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Text('Unlock', style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+            ),
+          ),
+        ],
+      ]);
+    }
+
+    return Clickable(
+      onTap: _lockActionInProgress ? null : _lockPeriod,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(border: Border.all(color: AppTheme.borderColor), borderRadius: BorderRadius.circular(6)),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          _lockActionInProgress
+              ? const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2))
+              : const Icon(Icons.lock_open_outlined, size: 14, color: AppTheme.textSecondary),
+          const SizedBox(width: 6),
+          const Text('Lock Period', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
+        ]),
+      ),
+    );
+  }
+
   Widget _buildMonthView() {
     const monthNames = ['January','February','March','April','May','June',
         'July','August','September','October','November','December'];
@@ -2453,6 +2672,9 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
                   style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
                       color: AppTheme.textSecondary, letterSpacing: 1))),
             ],
+            const Expanded(flex: 2, child: Text('PTO',
+                style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                    color: AppTheme.textSecondary, letterSpacing: 1))),
             const Expanded(flex: 2, child: Text('ENTRIES',
                 style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
                     color: AppTheme.textSecondary, letterSpacing: 1))),
@@ -2475,6 +2697,7 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
             final minutes = (t['total_minutes'] as num?)?.toInt() ?? 0;
             final regularMinutes = (t['regular_minutes'] as num?)?.toInt();
             final overtimeMinutes = (t['overtime_minutes'] as num?)?.toInt() ?? 0;
+            final ptoHours = (t['pto_hours'] as num?)?.toDouble() ?? 0;
             final count   = (t['entry_count'] as num?)?.toInt() ?? 0;
             final pay     = _computePay(t);
             final initials = name.trim().split(' ')
@@ -2511,6 +2734,9 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
                         style: TextStyle(fontSize: 13, fontWeight: overtimeMinutes > 0 ? FontWeight.w700 : FontWeight.w400,
                             color: overtimeMinutes > 0 ? Colors.orange : AppTheme.textSecondary))),
                   ],
+                  Expanded(flex: 2, child: Text(
+                      ptoHours > 0 ? '${ptoHours.toStringAsFixed(1)}h' : '—',
+                      style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary))),
                   Expanded(flex: 2, child: Text('$count',
                       style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary))),
                   if (_canViewPayRates)
@@ -2531,6 +2757,7 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
     final totalMinutes = _monthTotals.fold<int>(0, (sum, t) => sum + ((t['total_minutes'] as num?)?.toInt() ?? 0));
     final totalOvertimeMinutes = _monthTotals.fold<int>(0, (sum, t) => sum + ((t['overtime_minutes'] as num?)?.toInt() ?? 0));
     final totalRegularMinutes = _monthTotals.fold<int>(0, (sum, t) => sum + ((t['regular_minutes'] as num?)?.toInt() ?? (t['total_minutes'] as num?)?.toInt() ?? 0));
+    final totalPtoHours = _monthTotals.fold<double>(0, (sum, t) => sum + ((t['pto_hours'] as num?)?.toDouble() ?? 0));
     final totalEntries = _monthTotals.fold<int>(0, (sum, t) => sum + ((t['entry_count'] as num?)?.toInt() ?? 0));
     final totalPay = _monthTotals.fold<double>(0, (sum, t) => sum + (_computePay(t) ?? 0));
     return Container(
@@ -2551,6 +2778,9 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
               style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700,
                   color: totalOvertimeMinutes > 0 ? Colors.orange : AppTheme.textSecondary))),
         ],
+        Expanded(flex: 2, child: Text(
+            totalPtoHours > 0 ? '${totalPtoHours.toStringAsFixed(1)}h' : '—',
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textSecondary))),
         Expanded(flex: 2, child: Text('$totalEntries',
             style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
         Expanded(flex: 2, child: Text(_formatCurrency(totalPay),
@@ -2664,7 +2894,28 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
             child: const Text('Current Period', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
           ),
         ),
+        const Spacer(),
+        _buildPeriodLockControl(),
       ]),
+      if (_hasOvertimeTracking && _periodOvertimeEmployeeCount > 0) ...[
+        const SizedBox(height: 12),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          decoration: BoxDecoration(
+            color: Colors.orange.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: Colors.orange.withValues(alpha: 0.3)),
+          ),
+          child: Row(children: [
+            const Icon(Icons.warning_amber_rounded, size: 16, color: Colors.orange),
+            const SizedBox(width: 8),
+            Text(
+              '$_periodOvertimeEmployeeCount ${_periodOvertimeEmployeeCount == 1 ? 'employee has' : 'employees have'} overtime this pay period — double check before running payroll.',
+              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.orange),
+            ),
+          ]),
+        ),
+      ],
       const SizedBox(height: 16),
       if (_periodTotals.isEmpty)
         Container(
@@ -2708,6 +2959,9 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
                       style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
                           color: AppTheme.textSecondary, letterSpacing: 1))),
                 ],
+                const Expanded(flex: 2, child: Text('PTO',
+                    style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                        color: AppTheme.textSecondary, letterSpacing: 1))),
                 const Expanded(flex: 2, child: Text('ENTRIES',
                     style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
                         color: AppTheme.textSecondary, letterSpacing: 1))),
@@ -2730,6 +2984,7 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
                 final minutes = (t['total_minutes'] as num?)?.toInt() ?? 0;
                 final regularMinutes = (t['regular_minutes'] as num?)?.toInt();
                 final overtimeMinutes = (t['overtime_minutes'] as num?)?.toInt() ?? 0;
+                final ptoHours = (t['pto_hours'] as num?)?.toDouble() ?? 0;
                 final count   = (t['entry_count'] as num?)?.toInt() ?? 0;
                 final pay     = _computePay(t);
                 final initials = name.trim().split(' ')
@@ -2766,6 +3021,9 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
                             style: TextStyle(fontSize: 13, fontWeight: overtimeMinutes > 0 ? FontWeight.w700 : FontWeight.w400,
                                 color: overtimeMinutes > 0 ? Colors.orange : AppTheme.textSecondary))),
                       ],
+                      Expanded(flex: 2, child: Text(
+                          ptoHours > 0 ? '${ptoHours.toStringAsFixed(1)}h' : '—',
+                          style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary))),
                       Expanded(flex: 2, child: Text('$count',
                           style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary))),
                       if (_canViewPayRates)
@@ -2787,6 +3045,7 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
     final totalMinutes = _periodTotals.fold<int>(0, (sum, t) => sum + ((t['total_minutes'] as num?)?.toInt() ?? 0));
     final totalOvertimeMinutes = _periodTotals.fold<int>(0, (sum, t) => sum + ((t['overtime_minutes'] as num?)?.toInt() ?? 0));
     final totalRegularMinutes = _periodTotals.fold<int>(0, (sum, t) => sum + ((t['regular_minutes'] as num?)?.toInt() ?? (t['total_minutes'] as num?)?.toInt() ?? 0));
+    final totalPtoHours = _periodTotals.fold<double>(0, (sum, t) => sum + ((t['pto_hours'] as num?)?.toDouble() ?? 0));
     final totalEntries = _periodTotals.fold<int>(0, (sum, t) => sum + ((t['entry_count'] as num?)?.toInt() ?? 0));
     final totalPay = _periodTotals.fold<double>(0, (sum, t) => sum + (_computePay(t) ?? 0));
     return Container(
@@ -2807,6 +3066,9 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
               style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700,
                   color: totalOvertimeMinutes > 0 ? Colors.orange : AppTheme.textSecondary))),
         ],
+        Expanded(flex: 2, child: Text(
+            totalPtoHours > 0 ? '${totalPtoHours.toStringAsFixed(1)}h' : '—',
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textSecondary))),
         Expanded(flex: 2, child: Text('$totalEntries',
             style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
         Expanded(flex: 2, child: Text(_formatCurrency(totalPay),

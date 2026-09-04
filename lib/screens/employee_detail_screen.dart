@@ -716,6 +716,17 @@ class _EditPayRateSheetState extends State<_EditPayRateSheet> {
       final annualSalary = _payType == 'salary' ? double.tryParse(_annualSalaryCtrl.text.trim()) : null;
       final effectiveDateStr = _effectiveDate.toUtc().toIso8601String().split('T').first;
 
+      // pto_balances.accrual_rate means something different depending on
+      // pay_type (flat hours/period for salary vs hours-earned-per-hour-
+      // worked for hourly) and nothing here updates that meaning when it
+      // changes. A silent flip already caused one real incident during
+      // TS-10 testing — warn whoever's changing it, since this widget has
+      // no way to know what the "equivalent" rate should be under the new
+      // pay type. Only applies to a live change (existingRow == null), not
+      // editing an old historical entry.
+      final previousPayType = widget.profile['pay_type'] as String? ?? 'hourly';
+      final payTypeChanged = widget.existingRow == null && _payType != previousPayType;
+
       final historyRow = {
         'business_id': widget.profile['business_id'],
         'profile_id': widget.profile['id'],
@@ -744,6 +755,40 @@ class _EditPayRateSheetState extends State<_EditPayRateSheet> {
       }
 
       await recomputeCurrentPayRate(_db, widget.profile['id'] as int);
+
+      if (payTypeChanged && mounted) {
+        final goToPtoPolicy = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: AppTheme.cardBg,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            title: const Text('Check PTO Accrual Rate',
+                style: TextStyle(color: AppTheme.textPrimary, fontWeight: FontWeight.w700)),
+            content: const Text(
+              'Pay type just changed. If this person has a PTO accrual rate set, it may no longer mean what it used to — salaried rates are flat hours per pay period, while hourly rates are hours earned per hour worked. Review their rate in PTO Policy before the next pay period locks.',
+              style: TextStyle(color: AppTheme.textSecondary, fontSize: 13, height: 1.5),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(false),
+                child: const Text('Not Now', style: TextStyle(color: AppTheme.textSecondary)),
+              ),
+              ElevatedButton(
+                onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(true),
+                style: ElevatedButton.styleFrom(
+                    backgroundColor: AppTheme.brand, foregroundColor: Colors.white, elevation: 0),
+                child: const Text('Go to PTO Policy'),
+              ),
+            ],
+          ),
+        );
+        // Navigating away replaces the route stack, which takes the still-open
+        // bottom sheet with it — no separate pop needed for that case.
+        if (goToPtoPolicy == true && mounted) {
+          context.go('/settings/pto-policy');
+          return;
+        }
+      }
 
       widget.onSaved();
     } catch (e) {

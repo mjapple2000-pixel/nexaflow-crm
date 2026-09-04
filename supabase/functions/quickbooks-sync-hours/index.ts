@@ -303,6 +303,39 @@ Deno.serve(async (req) => {
       payableMinutesByUserId[e.user_id] = (payableMinutesByUserId[e.user_id] ?? 0) + payable;
     }
 
+    // ── Fetch this business's team once — used both to resolve approved
+    // PTO (profile_id → user_id) below, and later to map user_id → QB
+    // employee for every team member with payable time this period.
+    const { data: allProfiles } = await supabase
+      .from("profiles")
+      .select("id, user_id, full_name")
+      .eq("business_id", payPeriod.business_id);
+
+    const userIdByProfileId: Record<number, string> = {};
+    for (const p of allProfiles ?? []) {
+      if (p.user_id) userIdByProfileId[p.id] = p.user_id;
+    }
+
+    // ── Fold approved PTO hours for this locked period into the same
+    // payable minutes sent to QuickBooks — same treatment PTO already
+    // gets everywhere else in this app (get-timesheets, CSV/PDF export):
+    // folded into payable time, not synced as a separate line item.
+    const { data: approvedPto } = await supabase
+      .from("pto_requests")
+      .select("profile_id, hours_requested")
+      .eq("business_id", payPeriod.business_id)
+      .eq("status", "approved")
+      .is("deleted_at", null)
+      .lte("start_date", payPeriod.week_end)
+      .gte("end_date", payPeriod.week_start);
+
+    for (const r of approvedPto ?? []) {
+      const uid = userIdByProfileId[r.profile_id];
+      if (!uid) continue;
+      const ptoMinutes = Math.round(Number(r.hours_requested ?? 0) * 60);
+      payableMinutesByUserId[uid] = (payableMinutesByUserId[uid] ?? 0) + ptoMinutes;
+    }
+
     const userIds = Object.keys(payableMinutesByUserId).filter((uid) => payableMinutesByUserId[uid] > 0);
 
     if (userIds.length === 0) {
@@ -315,15 +348,11 @@ Deno.serve(async (req) => {
       });
     }
 
-    const { data: profiles } = await supabase
-      .from("profiles")
-      .select("id, user_id, full_name")
-      .eq("business_id", payPeriod.business_id)
-      .in("user_id", userIds);
-
     const profileByUserId: Record<string, { id: number; full_name: string }> = {};
-    for (const p of profiles ?? []) {
-      profileByUserId[p.user_id] = { id: p.id, full_name: p.full_name ?? "Unknown" };
+    for (const p of allProfiles ?? []) {
+      if (userIds.includes(p.user_id)) {
+        profileByUserId[p.user_id] = { id: p.id, full_name: p.full_name ?? "Unknown" };
+      }
     }
 
     const { data: mappings } = await supabase

@@ -4,6 +4,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme/app_theme.dart';
 import '../widgets/clickable.dart';
 import '../utils/business_utils.dart';
+import '../navigation/app_router.dart';
 
 class PtoPolicyScreen extends StatefulWidget {
   const PtoPolicyScreen({super.key});
@@ -20,9 +21,12 @@ class _PtoPolicyScreenState extends State<PtoPolicyScreen> {
   int? _businessId;
   int? _myProfileId;
   bool _planAllows = false;
+  bool _hasAccess = false;
   String _currentPlan = '';
   bool _ptoEnabled = false;
   bool _savingToggle = false;
+  String _accrualMethod = 'hours_worked';
+  bool _savingMethod = false;
 
   List<Map<String, dynamic>> _teamMembers = [];
   // profile_id -> balance row as last loaded from the server (id,
@@ -59,25 +63,37 @@ class _PtoPolicyScreenState extends State<PtoPolicyScreen> {
       _businessId = await getActiveBusinessId();
       if (_businessId == null) throw Exception('No business found.');
 
-      final userId = _db.auth.currentUser?.id;
-      if (userId != null) {
-        final me = await _db
-            .from('profiles')
-            .select('id')
-            .eq('user_id', userId)
-            .eq('business_id', _businessId!)
-            .maybeSingle();
+      // Same permission gate pto_requests_screen.dart already has — this
+      // screen previously only checked the business's plan, with no check
+      // on role or manage_pto at all, meaning any logged-in team member
+      // could reach it by typing the URL directly.
+      if (AppRouter.cachedIsSuperuser == true) {
+        _hasAccess = true;
+      } else {
+        final userId = _db.auth.currentUser?.id;
+        final me = userId == null
+            ? null
+            : await _db
+                .from('profiles')
+                .select('id, role, permissions')
+                .eq('user_id', userId)
+                .eq('business_id', _businessId!)
+                .maybeSingle();
         _myProfileId = me != null ? (me['id'] as num).toInt() : null;
+        final role = me?['role'] as String?;
+        final perms = me?['permissions'] as Map<String, dynamic>?;
+        _hasAccess = role == 'owner' || role == 'admin' || (perms?['manage_pto'] == true);
       }
 
       final biz = await _db
           .from('businesses')
-          .select('plan, is_beta, pto_enabled')
+          .select('plan, is_beta, pto_enabled, pto_accrual_method')
           .eq('id', _businessId!)
           .maybeSingle();
       _currentPlan = biz?['plan'] as String? ?? '';
       final isBeta = biz?['is_beta'] as bool? ?? false;
       _ptoEnabled = biz?['pto_enabled'] as bool? ?? false;
+      _accrualMethod = biz?['pto_accrual_method'] as String? ?? 'hours_worked';
 
       bool planAllows = isBeta;
       if (!planAllows) {
@@ -89,7 +105,7 @@ class _PtoPolicyScreenState extends State<PtoPolicyScreen> {
       }
       _planAllows = planAllows;
 
-      if (_planAllows) {
+      if (_hasAccess && _planAllows) {
         final members = await _db
             .from('profiles')
             .select('id, full_name, email, status, pay_type')
@@ -170,6 +186,166 @@ class _PtoPolicyScreenState extends State<PtoPolicyScreen> {
     } finally {
       if (mounted) setState(() => _savingToggle = false);
     }
+  }
+
+  Future<void> _setAccrualMethod(String method) async {
+    if (_businessId == null || method == _accrualMethod) return;
+    final previous = _accrualMethod;
+    setState(() {
+      _accrualMethod = method;
+      _savingMethod = true;
+    });
+    try {
+      await _db.from('businesses').update({'pto_accrual_method': method}).eq('id', _businessId!);
+    } catch (e) {
+      if (mounted) {
+        setState(() => _accrualMethod = previous);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), behavior: SnackBarBehavior.floating),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _savingMethod = false);
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> _fetchBalanceHistory(int profileId) async {
+    try {
+      final rows = await _db
+          .from('pto_balance_adjustments')
+          .select('source, previous_balance, new_balance, delta, adjusted_by_profile_id, note, created_at')
+          .eq('profile_id', profileId)
+          .order('created_at', ascending: false)
+          .limit(50);
+      return List<Map<String, dynamic>>.from(rows as List);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error loading history: $e'), behavior: SnackBarBehavior.floating),
+        );
+      }
+      return [];
+    }
+  }
+
+  String _formatAuditDate(String? iso) {
+    if (iso == null) return '—';
+    final dt = DateTime.tryParse(iso)?.toLocal();
+    if (dt == null) return '—';
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    final h = dt.hour == 0 ? 12 : dt.hour > 12 ? dt.hour - 12 : dt.hour;
+    final m = dt.minute.toString().padLeft(2, '0');
+    final ampm = dt.hour < 12 ? 'AM' : 'PM';
+    return '${months[dt.month - 1]} ${dt.day} · $h:$m $ampm';
+  }
+
+  void _showBalanceHistory(int profileId, String name) {
+    final nameByProfileId = {
+      for (final m in _teamMembers) (m['id'] as int): m['full_name'] as String? ?? 'Unknown',
+    };
+    showDialog(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        backgroundColor: AppTheme.cardBg,
+        title: Text('$name — Balance History', style: const TextStyle(color: AppTheme.textPrimary)),
+        content: SizedBox(
+          width: 420,
+          child: FutureBuilder<List<Map<String, dynamic>>>(
+            future: _fetchBalanceHistory(profileId),
+            builder: (context, snapshot) {
+              if (snapshot.connectionState != ConnectionState.done) {
+                return const SizedBox(
+                  height: 80,
+                  child: Center(child: CircularProgressIndicator()),
+                );
+              }
+              final history = snapshot.data ?? [];
+              if (history.isEmpty) {
+                return const Text('No balance changes recorded yet.',
+                    style: TextStyle(fontSize: 13, color: AppTheme.textSecondary));
+              }
+              return SizedBox(
+                width: double.maxFinite,
+                child: ListView.separated(
+                  shrinkWrap: true,
+                  itemCount: history.length,
+                  separatorBuilder: (_, __) => const Divider(height: 1, color: AppTheme.borderColor),
+                  itemBuilder: (_, i) {
+                    final h = history[i];
+                    final source = h['source'] as String? ?? 'unknown';
+                    final delta = (h['delta'] as num?)?.toDouble() ?? 0;
+                    final previousBalance = (h['previous_balance'] as num?)?.toDouble() ?? 0;
+                    final newBalance = (h['new_balance'] as num?)?.toDouble() ?? 0;
+                    final adjustedBy = h['adjusted_by_profile_id'] as int?;
+                    final adjustedByName = adjustedBy != null
+                        ? (nameByProfileId[adjustedBy] ?? 'Unknown')
+                        : (source == 'accrual' ? 'NexaFlow (automatic)' : 'NexaFlow Support');
+                    final note = h['note'] as String?;
+                    final at = _formatAuditDate(h['created_at'] as String?);
+
+                    String sourceLabel;
+                    IconData sourceIcon;
+                    Color sourceColor;
+                    switch (source) {
+                      case 'accrual':
+                        sourceLabel = 'Accrual';
+                        sourceIcon = Icons.trending_up_rounded;
+                        sourceColor = AppTheme.success;
+                        break;
+                      case 'request_approval':
+                        sourceLabel = 'Request Approved';
+                        sourceIcon = Icons.event_available_outlined;
+                        sourceColor = AppTheme.brand;
+                        break;
+                      default:
+                        sourceLabel = 'Manual Edit';
+                        sourceIcon = Icons.edit_outlined;
+                        sourceColor = Colors.orange;
+                    }
+
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        Icon(sourceIcon, size: 16, color: sourceColor),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                            Row(children: [
+                              Text(sourceLabel,
+                                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+                              const SizedBox(width: 8),
+                              Text(
+                                '${delta >= 0 ? '+' : ''}${delta.toStringAsFixed(2)} hrs',
+                                style: TextStyle(
+                                    fontSize: 13, fontWeight: FontWeight.w700,
+                                    color: delta >= 0 ? AppTheme.success : AppTheme.error),
+                              ),
+                            ]),
+                            Text('${previousBalance.toStringAsFixed(2)} → ${newBalance.toStringAsFixed(2)} hrs · by $adjustedByName · $at',
+                                style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                            if (note != null && note.trim().isNotEmpty)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 2),
+                                child: Text(note, style: const TextStyle(fontSize: 11, color: AppTheme.textMuted)),
+                              ),
+                          ]),
+                        ),
+                      ]),
+                    );
+                  },
+                ),
+              );
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogCtx, rootNavigator: true).pop(),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _saveMember(int profileId) async {
@@ -331,10 +507,14 @@ class _PtoPolicyScreenState extends State<PtoPolicyScreen> {
               ? const Center(child: CircularProgressIndicator())
               : _error != null
                   ? Center(child: Text(_error!, style: const TextStyle(color: AppTheme.error)))
-                  : SingleChildScrollView(
-                      padding: const EdgeInsets.all(32),
-                      child: _planAllows ? _buildContent() : _buildLockedTeaser(),
-                    ),
+                  : !_hasAccess
+                      ? const Center(
+                          child: Text('You do not have access to PTO Policy.',
+                              style: TextStyle(fontSize: 13, color: AppTheme.textSecondary)))
+                      : SingleChildScrollView(
+                          padding: const EdgeInsets.all(32),
+                          child: _planAllows ? _buildContent() : _buildLockedTeaser(),
+                        ),
         ),
       ]),
     );
@@ -357,7 +537,7 @@ class _PtoPolicyScreenState extends State<PtoPolicyScreen> {
         const Text('PTO Policy',
             style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
         const Spacer(),
-        if (_planAllows)
+        if (_planAllows && _hasAccess)
           MouseRegion(
             cursor: SystemMouseCursors.click,
             child: IconButton(
@@ -475,6 +655,32 @@ class _PtoPolicyScreenState extends State<PtoPolicyScreen> {
     );
   }
 
+  Widget _methodOption({required String label, required String value}) {
+    final selected = _accrualMethod == value;
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: Clickable(
+        onTap: () => _setAccrualMethod(value),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          decoration: BoxDecoration(
+            color: selected ? AppTheme.brand.withValues(alpha: 0.12) : AppTheme.pageBg,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: selected ? AppTheme.brand : AppTheme.borderColor),
+          ),
+          child: Text(
+            label,
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: selected ? AppTheme.brand : AppTheme.textSecondary,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildContent() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -518,7 +724,7 @@ class _PtoPolicyScreenState extends State<PtoPolicyScreen> {
                     style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
                 const SizedBox(height: 2),
                 const Text(
-                  'When on, PTO hours accrue automatically each time a pay period is locked. Hourly team members earn PTO proportional to hours actually worked that period; salaried team members get the flat number below regardless of hours logged.',
+                  'When on, PTO hours accrue automatically each time a pay period is locked. Salaried team members always get the flat number below regardless of hours logged; hourly team members follow the accrual method chosen below.',
                   style: TextStyle(fontSize: 12, color: AppTheme.textSecondary, height: 1.4),
                 ),
               ]),
@@ -531,6 +737,45 @@ class _PtoPolicyScreenState extends State<PtoPolicyScreen> {
                     onChanged: _togglePtoEnabled,
                     activeThumbColor: AppTheme.brand,
                   ),
+          ]),
+        ),
+        const SizedBox(height: 16),
+        Container(
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: AppTheme.cardBg,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: AppTheme.borderColor),
+          ),
+          child: Row(children: [
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Text('Hourly Accrual Method',
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+                const SizedBox(height: 2),
+                const Text(
+                  'Governs hourly team members only. Salaried team members always accrue the flat rate below regardless of this setting.',
+                  style: TextStyle(fontSize: 12, color: AppTheme.textSecondary, height: 1.4),
+                ),
+                const SizedBox(height: 12),
+                Row(children: [
+                  _methodOption(
+                    label: 'Hours Worked',
+                    value: 'hours_worked',
+                  ),
+                  const SizedBox(width: 10),
+                  _methodOption(
+                    label: 'Flat Rate',
+                    value: 'flat',
+                  ),
+                ]),
+              ]),
+            ),
+            if (_savingMethod)
+              const Padding(
+                padding: EdgeInsets.only(left: 12),
+                child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+              ),
           ]),
         ),
         const SizedBox(height: 24),
@@ -609,10 +854,27 @@ class _PtoPolicyScreenState extends State<PtoPolicyScreen> {
                     child: Row(children: [
                       Expanded(
                         flex: 3,
-                        child: Text(name,
-                            style: const TextStyle(
-                                fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary),
-                            overflow: TextOverflow.ellipsis),
+                        child: Row(children: [
+                          Expanded(
+                            child: Text(name,
+                                style: const TextStyle(
+                                    fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary),
+                                overflow: TextOverflow.ellipsis),
+                          ),
+                          MouseRegion(
+                            cursor: SystemMouseCursors.click,
+                            child: Tooltip(
+                              message: 'Balance history',
+                              child: GestureDetector(
+                                onTap: () => _showBalanceHistory(profileId, name),
+                                child: const Padding(
+                                  padding: EdgeInsets.only(left: 6),
+                                  child: Icon(Icons.history_rounded, size: 15, color: AppTheme.textSecondary),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ]),
                       ),
                       Expanded(
                         flex: 2,
@@ -641,8 +903,13 @@ class _PtoPolicyScreenState extends State<PtoPolicyScreen> {
                             ),
                             const SizedBox(height: 3),
                             Text(
-                              isSalary ? 'hrs added per pay period (flat)' : 'PTO hrs earned per hr worked',
-                              style: const TextStyle(fontSize: 10, color: AppTheme.textMuted),
+                              (isSalary || _accrualMethod == 'flat')
+                                  ? 'hrs added per pay period (flat)'
+                                  : 'PTO hrs earned per hr worked',
+                              // AppTheme.textMuted was effectively invisible here
+                              // (confirmed on screen, not just a screenshot artifact)
+                              // — using an explicit, guaranteed-visible gray instead.
+                              style: const TextStyle(fontSize: 11, color: Color(0xFF6B7280)),
                             ),
                           ]),
                         ),

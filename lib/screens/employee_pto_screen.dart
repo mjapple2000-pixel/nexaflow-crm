@@ -1,5 +1,8 @@
+import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme/app_theme.dart';
 import '../widgets/clickable.dart';
@@ -359,7 +362,7 @@ class _RequestTimeOffDialogState extends State<_RequestTimeOffDialog> {
       _error = null;
     });
     try {
-      await _db.from('pto_requests').insert({
+      final rows = await _db.from('pto_requests').insert({
         'business_id': widget.businessId,
         'profile_id': widget.profileId,
         'start_date': _fmt(_startDate!),
@@ -367,7 +370,14 @@ class _RequestTimeOffDialogState extends State<_RequestTimeOffDialog> {
         'hours_requested': hours,
         'status': 'pending',
         'note': _noteCtrl.text.trim().isEmpty ? null : _noteCtrl.text.trim(),
-      });
+      }).select('id');
+      final requestId = (rows as List).isNotEmpty ? (rows.first['id'] as num).toInt() : null;
+      if (requestId != null) {
+        // Best-effort — the request itself is already saved regardless of
+        // whether the owner's email notification succeeds, so this never
+        // blocks or fails the submission the employee is waiting on.
+        unawaited(_notifyOwner(requestId));
+      }
       widget.onSaved();
     } catch (e) {
       if (mounted) {
@@ -376,6 +386,24 @@ class _RequestTimeOffDialogState extends State<_RequestTimeOffDialog> {
           _saving = false;
         });
       }
+    }
+  }
+
+  Future<void> _notifyOwner(int requestId) async {
+    try {
+      await _db.auth.refreshSession();
+      final token = _db.auth.currentSession?.accessToken;
+      if (token == null) return;
+      await http.post(
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/notify-pto-request'),
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({'pto_request_id': requestId}),
+      );
+    } catch (e) {
+      debugPrint('PTO owner notification failed (non-blocking): $e');
     }
   }
 

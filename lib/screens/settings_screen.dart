@@ -6867,32 +6867,6 @@ class _MyProfileSectionState extends State<_MyProfileSection> {
           ),
           const SizedBox(height: 24),
 
-          // ── My PTO ─────────────────────────────────────────────────
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: AppTheme.brand.withValues(alpha: 0.05),
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: AppTheme.brand.withValues(alpha: 0.2)),
-            ),
-            child: Row(children: [
-              const Icon(Icons.beach_access_outlined, size: 18, color: AppTheme.brand),
-              const SizedBox(width: 10),
-              const Expanded(
-                child: Text('View your PTO balance and request time off.',
-                    style: TextStyle(fontSize: 12, color: AppTheme.brand, height: 1.4)),
-              ),
-              MouseRegion(
-                cursor: SystemMouseCursors.click,
-                child: TextButton(
-                  onPressed: () => context.go('/settings/my-pto'),
-                  child: const Text('My PTO'),
-                ),
-              ),
-            ]),
-          ),
-          const SizedBox(height: 24),
-
           // ── Personal Info ─────────────────────────────────────────
           _SettingsGroup(title: 'Personal Information', children: [
             _TwoCol(

@@ -294,7 +294,7 @@ Deno.serve(async (req) => {
 
       const { data: deleted, error: deleteError } = await supabase
         .from("time_entries")
-        .update({ deleted_at: nowIso, edited_by: callerUserId, edited_at: nowIso })
+        .update({ deleted_at: nowIso, edited_by: editedByUserId, edited_at: nowIso })
         .eq("id", entry_id)
         .select()
         .maybeSingle();
