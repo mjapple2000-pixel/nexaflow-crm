@@ -227,6 +227,7 @@ Deno.serve(async (req) => {
         .from("pay_rate_history")
         .select("profile_id, pay_type, hourly_rate, annual_salary, effective_date, created_at")
         .in("profile_id", profileIds)
+        .is("deleted_at", null)
         .lte("effective_date", rateTargetDate)
         .order("effective_date", { ascending: false })
         .order("created_at", { ascending: false });
