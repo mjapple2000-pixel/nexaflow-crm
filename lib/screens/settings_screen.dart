@@ -10743,6 +10743,11 @@ class _PayrollSettingsSectionState extends State<_PayrollSettingsSection> {
   bool _weeklyOtEnabled = true;
   final _weeklyThresholdCtrl = TextEditingController(text: '40');
   bool _loadingOvertimeRules = true;
+  bool _loadingPendingChange = true;
+  Map<String, dynamic>? _pendingChange;
+  int? _editingPendingChangeId;
+  String _effectiveDateOption = 'next_period';
+  DateTime? _customEffectiveDate;
   bool _saving = false;
   String? _successMsg;
   String? _error;
@@ -10775,6 +10780,7 @@ class _PayrollSettingsSectionState extends State<_PayrollSettingsSection> {
     _semiDayTwo = (config['day_two'] as num?)?.toInt() ?? 16;
     _defaultBreakPaid = b['default_break_paid'] as bool? ?? false;
     _loadOvertimeRules();
+    _loadPendingChange();
   }
 
   @override
@@ -10818,6 +10824,236 @@ class _PayrollSettingsSectionState extends State<_PayrollSettingsSection> {
     }
   }
 
+  // ── business_pay_period_config_history ──────────────────────────────
+  // Cadence/week-start changes never overwrite businesses directly —
+  // they schedule a new history row with a future effective_date. Past
+  // periods keep computing under whatever was active when they happened
+  // (Gusto/QuickBooks Time precedent: these changes are future-effective
+  // only). businesses.week_start_day/pay_period_type/pay_period_config
+  // remain a denormalized "current" cache, kept in sync by a daily cron
+  // calling sync_pay_period_config_from_history().
+
+  Future<void> _loadPendingChange() async {
+    final businessId = widget.business['id'] as int?;
+    if (businessId == null) {
+      if (mounted) setState(() => _loadingPendingChange = false);
+      return;
+    }
+    try {
+      final todayStr = DateTime.now().toUtc().toIso8601String().substring(0, 10);
+      final row = await Supabase.instance.client
+          .from('business_pay_period_config_history')
+          .select('id, week_start_day, pay_period_type, pay_period_config, effective_date')
+          .eq('business_id', businessId)
+          .filter('deleted_at', 'is', null)
+          .gt('effective_date', todayStr)
+          .order('effective_date', ascending: true)
+          .limit(1)
+          .maybeSingle();
+      if (mounted) setState(() { _pendingChange = row; _loadingPendingChange = false; });
+    } catch (e) {
+      debugPrint('Pending pay period change load error: $e');
+      if (mounted) setState(() => _loadingPendingChange = false);
+    }
+  }
+
+  Future<int?> _resolveCreatedByProfileId() async {
+    final currentUserId = Supabase.instance.client.auth.currentUser?.id;
+    if (currentUserId == null) return null;
+    final myProfile = await Supabase.instance.client
+        .from('profiles')
+        .select('id')
+        .eq('user_id', currentUserId)
+        .maybeSingle();
+    return myProfile != null ? myProfile['id'] as int : null;
+  }
+
+  DateTime _startOfWeekContainingForPeriodMath(DateTime date, String startDayName) {
+    const order = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+    final startIdx = order.indexOf(startDayName);
+    final safeStartIdx = startIdx == -1 ? 0 : startIdx;
+    final dateIdx = date.weekday - 1;
+    final diff = (dateIdx - safeStartIdx + 7) % 7;
+    final d = DateTime(date.year, date.month, date.day);
+    return d.subtract(Duration(days: diff));
+  }
+
+  int _daysInMonthForPeriodMath(int year, int month) => DateTime(year, month + 1, 0).day;
+
+  // Returns [start, end] of the CURRENT period under the currently-active
+  // config (widget.business — not the new dropdown selections), so "next
+  // period" always lines up with what Timesheets/Hub will actually
+  // compute. Ported from timesheets_screen.dart's _currentPayPeriod.
+  List<DateTime> _currentActivePeriod(DateTime date) {
+    final activeType = widget.business['pay_period_type'] as String? ?? 'weekly';
+    final activeWeekStart = widget.business['week_start_day'] as String? ?? 'monday';
+    final rawConfig = widget.business['pay_period_config'];
+    final activeConfig = rawConfig is Map ? Map<String, dynamic>.from(rawConfig) : <String, dynamic>{};
+
+    if (activeType == 'biweekly') {
+      final anchorStr = activeConfig['anchor_date'] as String?;
+      final anchor = anchorStr != null ? DateTime.tryParse(anchorStr) : null;
+      if (anchor == null) return [date, date.add(const Duration(days: 13))];
+      final anchorDate = DateTime(anchor.year, anchor.month, anchor.day);
+      final dateOnly = DateTime(date.year, date.month, date.day);
+      final daysSince = dateOnly.difference(anchorDate).inDays;
+      final periodIndex = daysSince >= 0 ? daysSince ~/ 14 : -(((-daysSince) + 13) ~/ 14);
+      final start = anchorDate.add(Duration(days: periodIndex * 14));
+      return [start, start.add(const Duration(days: 13))];
+    }
+
+    if (activeType == 'semimonthly') {
+      final dayOneRaw = (activeConfig['day_one'] as num?)?.toInt() ?? 1;
+      final dayTwoRaw = (activeConfig['day_two'] as num?)?.toInt() ?? 16;
+      final maxDay = _daysInMonthForPeriodMath(date.year, date.month);
+      final dayOne = dayOneRaw > maxDay ? maxDay : dayOneRaw;
+      final dayTwo = dayTwoRaw > maxDay ? maxDay : dayTwoRaw;
+      if (date.day < dayOne) {
+        final prevMonth = DateTime(date.year, date.month - 1, 1);
+        final prevMax = _daysInMonthForPeriodMath(prevMonth.year, prevMonth.month);
+        final prevDayTwoRaw = (activeConfig['day_two'] as num?)?.toInt() ?? 16;
+        final prevDayTwo = prevDayTwoRaw > prevMax ? prevMax : prevDayTwoRaw;
+        return [
+          DateTime(prevMonth.year, prevMonth.month, prevDayTwo),
+          DateTime(date.year, date.month, dayOne).subtract(const Duration(days: 1)),
+        ];
+      } else if (date.day < dayTwo) {
+        return [
+          DateTime(date.year, date.month, dayOne),
+          DateTime(date.year, date.month, dayTwo).subtract(const Duration(days: 1)),
+        ];
+      } else {
+        return [DateTime(date.year, date.month, dayTwo), DateTime(date.year, date.month, maxDay)];
+      }
+    }
+
+    final start = _startOfWeekContainingForPeriodMath(date, activeWeekStart);
+    return [start, start.add(const Duration(days: 6))];
+  }
+
+  DateTime _nextPeriodStartDate() {
+    final bounds = _currentActivePeriod(DateTime.now());
+    return bounds[1].add(const Duration(days: 1));
+  }
+
+  String _ordinalSuffixForPeriodMath(int n) {
+    if (n >= 11 && n <= 13) return 'th';
+    switch (n % 10) {
+      case 1: return 'st';
+      case 2: return 'nd';
+      case 3: return 'rd';
+      default: return 'th';
+    }
+  }
+
+  String _describePendingChange(Map<String, dynamic> pending) {
+    final type = pending['pay_period_type'] as String? ?? 'weekly';
+    final weekStart = pending['week_start_day'] as String? ?? 'monday';
+    final rawConfig = pending['pay_period_config'];
+    final config = rawConfig is Map ? Map<String, dynamic>.from(rawConfig) : <String, dynamic>{};
+    final weekStartLabel = weekStart[0].toUpperCase() + weekStart.substring(1);
+    switch (type) {
+      case 'biweekly':
+        final anchorStr = config['anchor_date'] as String?;
+        final anchor = anchorStr != null ? DateTime.tryParse(anchorStr) : null;
+        return 'Biweekly (anchor ${anchor != null ? _formatAnchorDate(anchor) : '—'}), week starts $weekStartLabel';
+      case 'semimonthly':
+        final dayOne = (config['day_one'] as num?)?.toInt() ?? 1;
+        final dayTwo = (config['day_two'] as num?)?.toInt() ?? 16;
+        return 'Semimonthly ($dayOne${_ordinalSuffixForPeriodMath(dayOne)} & $dayTwo${_ordinalSuffixForPeriodMath(dayTwo)}), week starts $weekStartLabel';
+      default:
+        return 'Weekly, starts $weekStartLabel';
+    }
+  }
+
+  void _editPendingChange() {
+    final pending = _pendingChange;
+    if (pending == null) return;
+    final rawConfig = pending['pay_period_config'];
+    final config = rawConfig is Map ? Map<String, dynamic>.from(rawConfig) : <String, dynamic>{};
+    setState(() {
+      _editingPendingChangeId = pending['id'] as int;
+      _weekStartDay = pending['week_start_day'] as String? ?? _weekStartDay;
+      _payPeriodType = pending['pay_period_type'] as String? ?? _payPeriodType;
+      if (_payPeriodType == 'biweekly') {
+        final anchorStr = config['anchor_date'] as String?;
+        _biweeklyAnchor = anchorStr != null ? DateTime.tryParse(anchorStr) : null;
+      } else if (_payPeriodType == 'semimonthly') {
+        _semiDayOne = (config['day_one'] as num?)?.toInt() ?? _semiDayOne;
+        _semiDayTwo = (config['day_two'] as num?)?.toInt() ?? _semiDayTwo;
+      }
+      final effDate = DateTime.tryParse(pending['effective_date'] as String? ?? '');
+      final nextStart = _nextPeriodStartDate();
+      if (effDate != null &&
+          effDate.year == nextStart.year &&
+          effDate.month == nextStart.month &&
+          effDate.day == nextStart.day) {
+        _effectiveDateOption = 'next_period';
+      } else {
+        _effectiveDateOption = 'custom';
+        _customEffectiveDate = effDate;
+      }
+    });
+  }
+
+  Future<void> _cancelPendingChange() async {
+    final pending = _pendingChange;
+    if (pending == null) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.cardBg,
+        title: const Text('Cancel scheduled change?', style: TextStyle(color: AppTheme.textPrimary)),
+        content: const Text(
+            'This removes the pending cadence change. The current settings stay in effect.',
+            style: TextStyle(color: AppTheme.textSecondary)),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(false),
+              child: const Text('Keep It')),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(true),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red, foregroundColor: Colors.white, elevation: 0),
+            child: const Text('Cancel Change'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    try {
+      await Supabase.instance.client
+          .from('business_pay_period_config_history')
+          .update({'deleted_at': DateTime.now().toUtc().toIso8601String()})
+          .eq('id', pending['id']);
+      if (mounted) {
+        setState(() => _pendingChange = null);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Scheduled change cancelled.')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  Future<void> _pickCustomEffectiveDate() async {
+    final today = DateTime.now();
+    final firstSelectable = DateTime(today.year, today.month, today.day).add(const Duration(days: 1));
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _customEffectiveDate ?? firstSelectable,
+      firstDate: firstSelectable,
+      lastDate: DateTime.now().add(const Duration(days: 3650)),
+    );
+    if (!mounted || picked == null) return;
+    setState(() => _customEffectiveDate = picked);
+  }
+
   Future<void> _pickAnchorDate() async {
     final picked = await showDatePicker(
       context: context,
@@ -10833,6 +11069,14 @@ class _PayrollSettingsSectionState extends State<_PayrollSettingsSection> {
     if (_payPeriodType == 'biweekly' && _biweeklyAnchor == null) {
       setState(() => _error = 'Pick an anchor date for biweekly pay periods.');
       return;
+    }
+    if (_effectiveDateOption == 'custom') {
+      final today = DateTime.now();
+      final todayOnly = DateTime(today.year, today.month, today.day);
+      if (_customEffectiveDate == null || !_customEffectiveDate!.isAfter(todayOnly)) {
+        setState(() => _error = 'Pick a future date for the effective date.');
+        return;
+      }
     }
     double? dailyThresholdValue;
     if (_hasOvertimeAccess && _dailyOtEnabled) {
@@ -10858,15 +11102,6 @@ class _PayrollSettingsSectionState extends State<_PayrollSettingsSection> {
       // business_id is partial (WHERE deleted_at IS NULL), and Postgres
       // ON CONFLICT can't target a partial index via supabase-js's plain
       // column-name onConflict, so this does the update-or-insert by hand.
-      //
-      // This runs BEFORE widget.onSave() below, deliberately. widget.onSave
-      // triggers the parent Settings screen's _loadBusiness(), which briefly
-      // swaps this whole section out for a full-page spinner while it
-      // re-fetches — tearing down and rebuilding this widget's State mid-save.
-      // Anything sequenced after that await (including the success setState)
-      // can silently no-op once that happens, which is why the save looked
-      // like it needed two tries: the write was landing, but the
-      // confirmation never had a live widget left to show it.
       if (_hasOvertimeAccess) {
         final businessId = widget.business['id'] as int?;
         if (businessId != null) {
@@ -10902,18 +11137,60 @@ class _PayrollSettingsSectionState extends State<_PayrollSettingsSection> {
         config = {'day_one': _semiDayOne, 'day_two': _semiDayTwo};
       }
 
+      // Cadence/week-start settings never overwrite businesses directly —
+      // see business_pay_period_config_history. Only schedule a new
+      // history row when something actually changed vs. the currently
+      // active config, or an existing pending change is being edited.
+      // default_break_paid is unrelated to cadence and still goes
+      // straight to businesses via widget.onSave below.
+      final activeType = widget.business['pay_period_type'] as String? ?? 'weekly';
+      final activeWeekStart = widget.business['week_start_day'] as String? ?? 'monday';
+      final rawActiveConfig = widget.business['pay_period_config'];
+      final activeConfig = rawActiveConfig is Map ? Map<String, dynamic>.from(rawActiveConfig) : <String, dynamic>{};
+      final cadenceChanged = _payPeriodType != activeType ||
+          _weekStartDay != activeWeekStart ||
+          jsonEncode(config) != jsonEncode(activeConfig);
+
+      String scheduledMsg = '';
+      if (cadenceChanged || _editingPendingChangeId != null) {
+        final businessId = widget.business['id'] as int?;
+        if (businessId != null) {
+          final effectiveDate = _effectiveDateOption == 'custom'
+              ? _customEffectiveDate!
+              : _nextPeriodStartDate();
+          if (_editingPendingChangeId != null) {
+            await Supabase.instance.client
+                .from('business_pay_period_config_history')
+                .update({'deleted_at': DateTime.now().toUtc().toIso8601String()})
+                .eq('id', _editingPendingChangeId!);
+          }
+          final createdByProfileId = await _resolveCreatedByProfileId();
+          await Supabase.instance.client.from('business_pay_period_config_history').insert({
+            'business_id': businessId,
+            'week_start_day': _weekStartDay,
+            'pay_period_type': _payPeriodType,
+            'pay_period_config': config,
+            'effective_date': effectiveDate.toIso8601String().substring(0, 10),
+            'created_by_profile_id': createdByProfileId,
+          });
+          scheduledMsg = ' Cadence change scheduled for ${_formatAnchorDate(effectiveDate)}.';
+          _editingPendingChangeId = null;
+        }
+      }
+
       // Show confirmation now, while this widget is still guaranteed to be
       // mounted, before handing off to the parent's disruptive reload.
       if (mounted) {
-        setState(() { _successMsg = 'Payroll settings saved.'; _saving = false; });
+        setState(() {
+          _successMsg = 'Payroll settings saved.$scheduledMsg';
+          _saving = false;
+        });
       }
 
       await widget.onSave({
-        'week_start_day': _weekStartDay,
-        'pay_period_type': _payPeriodType,
-        'pay_period_config': config,
         'default_break_paid': _defaultBreakPaid,
       });
+      await _loadPendingChange();
     } catch (e) {
       if (mounted) setState(() { _error = e.toString(); _saving = false; });
     }
@@ -11062,6 +11339,36 @@ class _PayrollSettingsSectionState extends State<_PayrollSettingsSection> {
         ]),
         const SizedBox(height: 24),
         _SettingsGroup(title: 'Pay Period', children: [
+          if (!_loadingPendingChange && _pendingChange != null) ...[
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              decoration: BoxDecoration(
+                color: Colors.orange.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.orange.withValues(alpha: 0.3)),
+              ),
+              child: Row(children: [
+                const Icon(Icons.schedule_outlined, size: 16, color: Colors.orange),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text('Scheduled: ${_describePendingChange(_pendingChange!)}',
+                        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.orange)),
+                    Text(
+                        'Effective ${_formatAnchorDate(DateTime.parse(_pendingChange!['effective_date'] as String))} — past periods keep computing under the current settings.',
+                        style: const TextStyle(fontSize: 11, color: Colors.orange)),
+                  ]),
+                ),
+                TextButton(onPressed: _editPendingChange, child: const Text('Edit')),
+                TextButton(
+                  onPressed: _cancelPendingChange,
+                  style: TextButton.styleFrom(foregroundColor: Colors.red),
+                  child: const Text('Cancel'),
+                ),
+              ]),
+            ),
+            const SizedBox(height: 16),
+          ],
           const Text('Pay Period Type',
               style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
           const SizedBox(height: 4),
@@ -11122,6 +11429,42 @@ class _PayrollSettingsSectionState extends State<_PayrollSettingsSection> {
               const SizedBox(width: 12),
               Expanded(child: _dayOfMonthDropdown(_semiDayTwo, (v) => setState(() => _semiDayTwo = v))),
             ]),
+          ],
+
+          const SizedBox(height: 20),
+          const Text('When Should This Take Effect?',
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
+          const SizedBox(height: 4),
+          const Text(
+            'Cadence and week-start changes never apply retroactively — whatever was in effect stays in effect for past periods.',
+            style: TextStyle(fontSize: 11, color: AppTheme.textSecondary, height: 1.4),
+          ),
+          const SizedBox(height: 10),
+          _choicePills([
+            ('next_period', 'Next Period (${_formatAnchorDate(_nextPeriodStartDate())})'),
+            ('custom', 'Custom Date'),
+          ], _effectiveDateOption, (v) => setState(() => _effectiveDateOption = v)),
+          if (_effectiveDateOption == 'custom') ...[
+            const SizedBox(height: 10),
+            Clickable(
+              onTap: _pickCustomEffectiveDate,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+                decoration: BoxDecoration(
+                  color: AppTheme.pageBg,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppTheme.borderColor),
+                ),
+                child: Row(children: [
+                  const Icon(Icons.calendar_today_outlined, size: 14, color: AppTheme.textSecondary),
+                  const SizedBox(width: 8),
+                  Text(
+                    _customEffectiveDate == null ? 'Select a date' : _formatAnchorDate(_customEffectiveDate!),
+                    style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                  ),
+                ]),
+              ),
+            ),
           ],
         ]),
         const SizedBox(height: 24),
