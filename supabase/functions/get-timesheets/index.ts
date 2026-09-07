@@ -200,10 +200,56 @@ Deno.serve(async (req) => {
 
     const profileMap: Record<string, string> = {};
     const profileIdByUserId: Record<string, number> = {};
-    const payRateByUserId: Record<string, { pay_type: string; hourly_rate: number | null; annual_salary: number | null }> = {};
     for (const p of (teamProfiles ?? [])) {
       profileMap[p.user_id] = p.full_name ?? "Unknown";
       if (typeof p.id === "number") profileIdByUserId[p.user_id] = p.id;
+    }
+
+    const userIdByProfileIdForRates: Record<number, string> = {};
+    for (const [uid, pid] of Object.entries(profileIdByUserId)) {
+      userIdByProfileIdForRates[Number(pid)] = uid;
+    }
+
+    // ── Resolve each team member's pay rate from pay_rate_history — the
+    // canonical source of truth since TS-07 — rather than the legacy
+    // profiles.pay_type/hourly_rate/annual_salary columns, which are
+    // never updated after a rate change and can silently go stale (e.g.
+    // a promotion to salary, or a raise, that never touched profiles).
+    // Resolved as of the requested range's end date (or today if none),
+    // so historical periods reflect whatever rate was actually in effect
+    // then. Same two-level tiebreak as pay_rate_history's other
+    // consumers: latest effective_date <= target, ties by created_at DESC.
+    const rateTargetDate = end_date ?? new Date().toISOString().substring(0, 10);
+    const profileIds = (teamProfiles ?? []).map((p) => p.id).filter((id) => typeof id === "number");
+    const payRateByUserId: Record<string, { pay_type: string; hourly_rate: number | null; annual_salary: number | null }> = {};
+    if (profileIds.length > 0) {
+      const { data: rateHistoryRows, error: rateHistoryError } = await supabase
+        .from("pay_rate_history")
+        .select("profile_id, pay_type, hourly_rate, annual_salary, effective_date, created_at")
+        .in("profile_id", profileIds)
+        .lte("effective_date", rateTargetDate)
+        .order("effective_date", { ascending: false })
+        .order("created_at", { ascending: false });
+      if (rateHistoryError) {
+        console.error("get-timesheets pay_rate_history lookup error:", rateHistoryError);
+      }
+      const seenProfileIds = new Set<number>();
+      for (const r of (rateHistoryRows ?? [])) {
+        if (seenProfileIds.has(r.profile_id)) continue; // already-sorted, first hit per profile wins
+        seenProfileIds.add(r.profile_id);
+        const uid = userIdByProfileIdForRates[r.profile_id];
+        if (!uid) continue;
+        payRateByUserId[uid] = {
+          pay_type: r.pay_type ?? "hourly",
+          hourly_rate: r.hourly_rate != null ? Number(r.hourly_rate) : null,
+          annual_salary: r.annual_salary != null ? Number(r.annual_salary) : null,
+        };
+      }
+    }
+    // Fallback to the legacy profiles columns for anyone with no
+    // pay_rate_history row at all (never had a rate set through that flow).
+    for (const p of (teamProfiles ?? [])) {
+      if (payRateByUserId[p.user_id]) continue;
       payRateByUserId[p.user_id] = {
         pay_type: p.pay_type ?? "hourly",
         hourly_rate: p.hourly_rate ?? null,
@@ -578,9 +624,10 @@ Deno.serve(async (req) => {
           entry_count: 0,
         };
         if (canManagePayRates) {
-          totals[p.user_id].pay_type = p.pay_type ?? "hourly";
-          totals[p.user_id].hourly_rate = p.hourly_rate ?? null;
-          totals[p.user_id].annual_salary = p.annual_salary ?? null;
+          const payInfo = payRateByUserId[p.user_id];
+          totals[p.user_id].pay_type = payInfo?.pay_type ?? "hourly";
+          totals[p.user_id].hourly_rate = payInfo?.hourly_rate ?? null;
+          totals[p.user_id].annual_salary = payInfo?.annual_salary ?? null;
         }
       }
     }
