@@ -195,7 +195,7 @@ Deno.serve(async (req) => {
     // ── Fetch all profiles for this business (for name lookup) ────────
     const { data: teamProfiles } = await supabase
       .from("profiles")
-      .select("id, user_id, full_name, role, pay_type, hourly_rate, annual_salary")
+      .select("id, user_id, full_name, role, pay_type, hourly_rate, annual_salary, status")
       .eq("business_id", businessId);
 
     const profileMap: Record<string, string> = {};
@@ -557,6 +557,30 @@ Deno.serve(async (req) => {
           }
         } else {
           totals[uid].pto_hours = hours;
+        }
+      }
+
+      // Every active, paid team member appears in the summary even with
+      // zero activity this period — critical for salaried staff (the
+      // owner included), whose pay isn't tied to clock-ins at all. Without
+      // this, a salaried employee who simply never clocks in would
+      // silently vanish from payroll with no row and no warning, rather
+      // than surfacing so the owner can see and act on it.
+      for (const p of (teamProfiles ?? [])) {
+        if (!p.user_id) continue; // pending invite, no real account yet
+        if (p.status !== "active") continue;
+        if (totals[p.user_id]) continue;
+        totals[p.user_id] = {
+          user_id: p.user_id,
+          full_name: p.full_name ?? "Unknown",
+          total_minutes: 0,
+          total_break_minutes: 0,
+          entry_count: 0,
+        };
+        if (canManagePayRates) {
+          totals[p.user_id].pay_type = p.pay_type ?? "hourly";
+          totals[p.user_id].hourly_rate = p.hourly_rate ?? null;
+          totals[p.user_id].annual_salary = p.annual_salary ?? null;
         }
       }
     }

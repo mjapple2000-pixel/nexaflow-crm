@@ -482,6 +482,13 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
         _employeePayPeriodStatuses = List<Map<String, dynamic>>.from(data['employee_pay_period_statuses'] as List? ?? []);
       });
       _startOrStopTicker();
+
+      // Non-owners have no team to summarize — land them on Day view
+      // (their own entries only) instead of an empty Pay Period screen.
+      if (!_isOwner) {
+        _viewMode = 'day';
+        await _load();
+      }
     } catch (e) {
       if (mounted) setState(() => _periodError = e.toString());
     } finally {
@@ -2205,6 +2212,13 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
                   const Expanded(flex: 2, child: Text('TOTAL PAY',
                       style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
                           color: AppTheme.textSecondary, letterSpacing: 1))),
+                const SizedBox(
+                  width: 160,
+                  child: Text('APPROVAL',
+                      textAlign: TextAlign.right,
+                      style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                          color: AppTheme.textSecondary, letterSpacing: 1)),
+                ),
                 const SizedBox(width: 24),
               ]),
             ),
@@ -2273,7 +2287,13 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
                       if (_canViewPayRates)
                         Expanded(flex: 2, child: Text(_formatCurrency(pay),
                             style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
-                      _buildApprovalCell(userId, _weekStart, _weekStart.add(const Duration(days: 6)), _payPeriodForWeek(_weekStart)?['id'] as int?),
+                      SizedBox(
+                        width: 160,
+                        child: Align(
+                          alignment: Alignment.centerRight,
+                          child: _buildApprovalCell(userId, _weekStart, _weekStart.add(const Duration(days: 6)), _payPeriodForWeek(_weekStart)?['id'] as int?),
+                        ),
+                      ),
                       const SizedBox(width: 8),
                       const Icon(Icons.chevron_right, size: 16, color: AppTheme.textMuted),
                     ]),
@@ -2323,6 +2343,7 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
             style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
         Expanded(flex: 2, child: Text(_formatCurrency(totalPay),
             style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
+        const SizedBox(width: 160),
         const SizedBox(width: 24),
       ]),
     );
@@ -3187,6 +3208,13 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
                   const Expanded(flex: 2, child: Text('TOTAL PAY',
                       style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
                           color: AppTheme.textSecondary, letterSpacing: 1))),
+                const SizedBox(
+                  width: 160,
+                  child: Text('APPROVAL',
+                      textAlign: TextAlign.right,
+                      style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                          color: AppTheme.textSecondary, letterSpacing: 1)),
+                ),
                 const SizedBox(width: 24),
               ]),
             ),
@@ -3247,7 +3275,13 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
                       if (_canViewPayRates)
                         Expanded(flex: 2, child: Text(_formatCurrency(pay),
                             style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
-                      _buildApprovalCell(userId, bounds[0], bounds[1], _payPeriodForRange(bounds[0], bounds[1])?['id'] as int?),
+                      SizedBox(
+                        width: 160,
+                        child: Align(
+                          alignment: Alignment.centerRight,
+                          child: _buildApprovalCell(userId, bounds[0], bounds[1], _payPeriodForRange(bounds[0], bounds[1])?['id'] as int?),
+                        ),
+                      ),
                       const SizedBox(width: 8),
                       const Icon(Icons.chevron_right, size: 16, color: AppTheme.textMuted),
                     ]),
@@ -3293,6 +3327,7 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
             style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
         Expanded(flex: 2, child: Text(_formatCurrency(totalPay),
             style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textPrimary))),
+        const SizedBox(width: 160),
         const SizedBox(width: 24),
       ]),
     );
