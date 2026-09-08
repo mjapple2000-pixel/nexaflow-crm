@@ -254,6 +254,50 @@ Future<void> _sendNotificationEmail(String subject, String body) async {
   }
 }
 
+// Shown before any Resend Hub Link send — offers only the channels that
+// actually have a contact field on file, per Mike's spec: always show
+// the choice (never guess), but never offer a channel that would just
+// fail server-side for lack of an email/phone.
+Future<String?> _pickHubLinkChannel(BuildContext context, {required bool hasEmail, required bool hasPhone}) {
+  return showDialog<String>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      backgroundColor: AppTheme.cardBg,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      title: const Text('Send Hub Link',
+          style: TextStyle(color: AppTheme.textPrimary, fontWeight: FontWeight.w700)),
+      content: Text(
+        hasEmail && hasPhone
+            ? 'Choose how to send the clock in/out link.'
+            : 'Send the clock in/out link.',
+        style: const TextStyle(color: AppTheme.textSecondary, fontSize: 13),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(),
+          child: const Text('Cancel'),
+        ),
+        if (hasEmail)
+          ElevatedButton.icon(
+            onPressed: () => Navigator.of(ctx, rootNavigator: true).pop('email'),
+            icon: const Icon(Icons.email_outlined, size: 15),
+            label: const Text('Email'),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.brand, foregroundColor: Colors.white, elevation: 0),
+          ),
+        if (hasPhone)
+          ElevatedButton.icon(
+            onPressed: () => Navigator.of(ctx, rootNavigator: true).pop('sms'),
+            icon: const Icon(Icons.sms_outlined, size: 15),
+            label: const Text('SMS'),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.brand, foregroundColor: Colors.white, elevation: 0),
+          ),
+      ],
+    ),
+  );
+}
+
 // ─────────────────────────────────────────────
 //  SETTINGS SCREEN
 // ─────────────────────────────────────────────
@@ -2484,6 +2528,18 @@ class _MyStaffSectionState extends State<_MyStaffSection> {
   }
 
   Future<void> _resendHubLink(Map<String, dynamic> member) async {
+    final hasEmail = (member['email'] as String?)?.isNotEmpty == true;
+    final hasPhone = (member['phone'] as String?)?.isNotEmpty == true;
+    if (!hasEmail && !hasPhone) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('This team member has no email or phone number on file.'),
+            behavior: SnackBarBehavior.floating),
+      );
+      return;
+    }
+    final channel = await _pickHubLinkChannel(context, hasEmail: hasEmail, hasPhone: hasPhone);
+    if (channel == null || !mounted) return;
     try {
       final session = _supabase.auth.currentSession;
       final response = await http.post(
@@ -2493,7 +2549,7 @@ class _MyStaffSectionState extends State<_MyStaffSection> {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer ${session?.accessToken}',
         },
-        body: jsonEncode({'profile_id': member['id']}),
+        body: jsonEncode({'profile_id': member['id'], 'channel': channel}),
       );
 
       final body = jsonDecode(response.body);
@@ -2501,8 +2557,8 @@ class _MyStaffSectionState extends State<_MyStaffSection> {
       if (mounted) {
         if (response.statusCode == 200) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-                content: Text('Hub link resent.'),
+            SnackBar(
+                content: Text('Hub link sent via ${channel == 'email' ? 'email' : 'SMS'}.'),
                 behavior: SnackBarBehavior.floating),
           );
         } else {

@@ -66,9 +66,15 @@ Deno.serve(async (req) => {
       callerBusinessId = callerProfile.business_id;
     }
 
-    const { profile_id } = await req.json();
+    const { profile_id, channel } = await req.json();
     if (!profile_id) {
       return new Response(JSON.stringify({ error: "profile_id is required" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+    if (channel !== "sms" && channel !== "email") {
+      return new Response(JSON.stringify({ error: "channel must be 'sms' or 'email'" }), {
         status: 400,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
@@ -76,7 +82,7 @@ Deno.serve(async (req) => {
 
     const { data: targetProfile, error: targetError } = await supabase
       .from("profiles")
-      .select("id, business_id, phone, full_name")
+      .select("id, business_id, phone, email, full_name")
       .eq("id", profile_id)
       .single();
 
@@ -91,8 +97,14 @@ Deno.serve(async (req) => {
       });
     }
 
-    if (!targetProfile.phone) {
+    if (channel === "sms" && !targetProfile.phone) {
       return new Response(JSON.stringify({ error: "This team member has no phone number on file." }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+    if (channel === "email" && !targetProfile.email) {
+      return new Response(JSON.stringify({ error: "This team member has no email address on file." }), {
         status: 400,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
@@ -121,32 +133,79 @@ Deno.serve(async (req) => {
 
     const hubLink = `https://nexaflow-crm.web.app/hub/${hubToken}`;
 
-    const accountSid = Deno.env.get("TWILIO_ACCOUNT_SID")!;
-    const authToken = Deno.env.get("TWILIO_AUTH_TOKEN")!;
-    const fromPhone = "+18135500158";
+    if (channel === "sms") {
+      const accountSid = Deno.env.get("TWILIO_ACCOUNT_SID")!;
+      const authToken = Deno.env.get("TWILIO_AUTH_TOKEN")!;
+      const fromPhone = "+18135500158";
 
-    const twilioRes = await fetch(
-      `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages.json`,
-      {
+      const twilioRes = await fetch(
+        `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages.json`,
+        {
+          method: "POST",
+          headers: {
+            "Authorization": "Basic " + btoa(`${accountSid}:${authToken}`),
+            "Content-Type": "application/x-www-form-urlencoded",
+          },
+          body: new URLSearchParams({
+            From: fromPhone,
+            To: targetProfile.phone,
+            Body: `Here's your updated clock in/out link: ${hubLink}`,
+          }).toString(),
+        }
+      );
+
+      if (!twilioRes.ok) {
+        const twilioErr = await twilioRes.text();
+        return new Response(
+          JSON.stringify({ error: "SMS failed to send: " + twilioErr }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+    } else {
+      // channel === "email" — same Mailgun pattern as invite-member.
+      const mailgunApiKey = Deno.env.get("MAILGUN_API_KEY") ?? "";
+      const mailgunDomain = Deno.env.get("MAILGUN_DOMAIN") ?? "mail.vantagecaretech.com";
+
+      if (!mailgunApiKey) {
+        return new Response(
+          JSON.stringify({ error: "Email sending is not configured." }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      const { data: businessRow } = await supabase
+        .from("businesses")
+        .select("business_name")
+        .eq("id", targetProfile.business_id)
+        .maybeSingle();
+      const businessName = businessRow?.business_name ?? "NexaFlow";
+
+      const mgForm = new URLSearchParams();
+      mgForm.append("from", `${businessName} <no-reply@${mailgunDomain}>`);
+      mgForm.append("to", targetProfile.email);
+      mgForm.append("subject", `Your clock in/out link for ${businessName}`);
+      mgForm.append("html", `
+        <p>Hi ${targetProfile.full_name ?? "there"},</p>
+        <p>Here's your updated clock in/out link for <strong>${businessName}</strong>:</p>
+        <p><a href="${hubLink}">${hubLink}</a></p>
+      `);
+
+      const mgRes = await fetch(`https://api.mailgun.net/v3/${mailgunDomain}/messages`, {
         method: "POST",
         headers: {
-          "Authorization": "Basic " + btoa(`${accountSid}:${authToken}`),
+          "Authorization": "Basic " + btoa(`api:${mailgunApiKey}`),
           "Content-Type": "application/x-www-form-urlencoded",
         },
-        body: new URLSearchParams({
-          From: fromPhone,
-          To: targetProfile.phone,
-          Body: `Here's your updated clock in/out link: ${hubLink}`,
-        }).toString(),
-      }
-    );
+        body: mgForm.toString(),
+      });
 
-    if (!twilioRes.ok) {
-      const twilioErr = await twilioRes.text();
-      return new Response(
-        JSON.stringify({ error: "SMS failed to send: " + twilioErr }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      if (!mgRes.ok) {
+        const mgErr = await mgRes.text();
+        return new Response(
+          JSON.stringify({ error: "Email failed to send: " + mgErr }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
     }
 
     return new Response(JSON.stringify({ success: true }), {

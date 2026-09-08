@@ -142,7 +142,15 @@ Deno.serve(async (req) => {
       weekly_threshold_hours: 40,
       weekly_ot_enabled: true,
     };
-    let weekStartIndex = 1; // Monday, matches businesses.week_start_day default
+    let defaultWeekStartIndex = 1; // Monday, matches businesses.week_start_day default
+    // Sorted business_pay_period_config_history rows (effective_date DESC,
+    // created_at DESC — same tiebreak get_pay_period_config_as_of uses in
+    // SQL), used to resolve week_start_day as-of any individual date in
+    // the requested range. A cadence change is always future-effective
+    // only, so a Week/Month/Period request spanning dates from before one
+    // must bucket those older dates under the old week_start_day, not
+    // today's.
+    let weekStartConfigHistory: Array<{ week_start_day: string; effective_date: string }> = [];
 
     if (hasOvertimeTracking) {
       const { data: businessRow } = await supabase
@@ -151,8 +159,20 @@ Deno.serve(async (req) => {
         .eq("id", businessId)
         .maybeSingle();
       if (businessRow?.week_start_day && WEEKDAY_INDEX[businessRow.week_start_day] !== undefined) {
-        weekStartIndex = WEEKDAY_INDEX[businessRow.week_start_day];
+        defaultWeekStartIndex = WEEKDAY_INDEX[businessRow.week_start_day];
       }
+
+      const { data: historyRows, error: historyError } = await supabase
+        .from("business_pay_period_config_history")
+        .select("week_start_day, effective_date, created_at")
+        .eq("business_id", businessId)
+        .is("deleted_at", null)
+        .order("effective_date", { ascending: false })
+        .order("created_at", { ascending: false });
+      if (historyError) {
+        console.error("get-timesheets business_pay_period_config_history lookup error:", historyError);
+      }
+      weekStartConfigHistory = historyRows ?? [];
 
       const { data: rulesRow } = await supabase
         .from("overtime_rules")
@@ -170,12 +190,30 @@ Deno.serve(async (req) => {
       }
     }
 
+    // Resolves week_start_day as-of `dateOnly` from the sorted history —
+    // first row whose effective_date <= dateOnly wins (list is already
+    // sorted effective_date DESC, created_at DESC, matching the same
+    // tiebreak get_pay_period_config_as_of uses in SQL). Falls back to
+    // today's businesses.week_start_day if history has nothing that old.
+    function weekStartIndexAsOf(dateOnly: string): number {
+      for (const row of weekStartConfigHistory) {
+        if (row.effective_date <= dateOnly) {
+          const idx = WEEKDAY_INDEX[row.week_start_day];
+          if (idx !== undefined) return idx;
+          break;
+        }
+      }
+      return defaultWeekStartIndex;
+    }
+
     // Given a "YYYY-MM-DD" date-only string, returns the date-only string
-    // of that week's start, per the business's configured week_start_day.
-    // Mirrors the existing convention in this function of treating
-    // clocked_in_at's UTC date substring as "the day" (see dailyTotals,
-    // findLockedPeriod below) — not introducing a new timezone concept.
+    // of that week's start, per whichever week_start_day was actually in
+    // effect on that date. Mirrors the existing convention in this
+    // function of treating clocked_in_at's UTC date substring as "the
+    // day" (see dailyTotals, findLockedPeriod below) — not introducing a
+    // new timezone concept.
     function weekStartKeyFor(dateOnly: string): string {
+      const weekStartIndex = weekStartIndexAsOf(dateOnly);
       const d = new Date(`${dateOnly}T00:00:00.000Z`);
       const dow = d.getUTCDay();
       const diff = (dow - weekStartIndex + 7) % 7;
