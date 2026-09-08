@@ -118,6 +118,27 @@ Deno.serve(async (req: Request) => {
       const customerId = session.customer as string
       const subscriptionId = session.subscription as string
 
+      // Beta card-on-file setup (create-beta-card-setup) — a metered-only
+      // subscription with no flat plan price. Save the subscription and
+      // flip beta_card_added, but skip everything else below (no is_paid,
+      // no plan change, no welcome email — this business is still beta).
+      if (session.metadata?.is_beta_card_setup === 'true') {
+        const betaBusinessId = session.metadata?.business_id
+        if (betaBusinessId) {
+          await supabase
+            .from('businesses')
+            .update({
+              client_id: customerId,
+              subscription_id: subscriptionId,
+              beta_card_added: true,
+            })
+            .eq('id', Number(betaBusinessId))
+        }
+        return new Response(JSON.stringify({ received: true }), {
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+
       const { data: business } = await supabase
         .from('businesses')
         .select('id, owner_name')
