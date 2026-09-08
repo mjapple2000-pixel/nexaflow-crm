@@ -496,6 +496,42 @@ Deno.serve(async (req) => {
       }).eq("id", conversationId);
     }
 
+    // ── Beta usage cap — pause AI if this beta business has used up its
+    // Pro-equivalent allowance (2,500/mo) and hasn't added a card to cover
+    // overage yet. Independent of the abuse breaker above: a business can
+    // hit this cap through completely normal usage.
+    let isBetaCapBlocked = false;
+    if (!isAbuseBlocked && biz!.is_beta && !biz!.beta_card_added) {
+      const capPeriod = new Date();
+      capPeriod.setUTCDate(1);
+      const capPeriodStart = capPeriod.toISOString().slice(0, 10);
+      const { data: usageRow } = await supabase
+        .from("business_usage_live")
+        .select("ai_messages_used, ai_messages_included")
+        .eq("business_id", businessId)
+        .eq("period_start", capPeriodStart)
+        .maybeSingle();
+      if (usageRow && usageRow.ai_messages_used >= usageRow.ai_messages_included) {
+        isBetaCapBlocked = true;
+      }
+    }
+
+    const isBlocked = isAbuseBlocked || isBetaCapBlocked;
+
+    if (isBetaCapBlocked) {
+      aiReply = `Thanks for your patience — our AI assistant has reached its monthly message limit for now. A team member will follow up with you directly.`;
+      await supabase.from("conversations").update({
+        ai_enabled: false,
+        flagged_for_beta_cap: true,
+      }).eq("id", conversationId);
+
+      fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/notify-beta-cap-reached`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ business_id: businessId }),
+      }).catch((e) => console.error("notify-beta-cap-reached error:", e));
+    }
+
     console.log(`ci.waiting_for="${ci.waiting_for}" | ci.name_collected=${ci.name_collected} | verifiedName="${verifiedName}" | name_verified=${conv!.name_verified}`);
 
     // ═══════════════════════════════════════════════════════════════════════════════
@@ -503,7 +539,7 @@ Deno.serve(async (req) => {
     // ═══════════════════════════════════════════════════════════════════════════════
 
     // ── WAITING FOR NAME ──────────────────────────────────────
-    if (!isAbuseBlocked && ci.waiting_for === "name") {
+    if (!isBlocked && ci.waiting_for === "name") {
       // If we suggested a name, check for ANY affirmative first — don't use AI for this
       // because AI struggles to connect "Yes!" or "Yep!" back to the suggested name
       const suggested = ci.suggested_name as string | null;
@@ -542,7 +578,7 @@ Deno.serve(async (req) => {
       }
 
     // ── WAITING FOR LAST NAME ────────────────────────────────
-    } else if (!isAbuseBlocked && ci.waiting_for === "last_name") {
+    } else if (!isBlocked && ci.waiting_for === "last_name") {
       const existingFirst = firstName(verifiedName ?? "");
       const firstLine     = userMessage.split(/\n/)[0].trim();
 
@@ -586,7 +622,7 @@ Deno.serve(async (req) => {
       }
 
     // ── WAITING FOR PHONE ───────────────────────────────────
-    } else if (!isAbuseBlocked && ci.waiting_for === "phone") {
+    } else if (!isBlocked && ci.waiting_for === "phone") {
       if (looksLikePhone(userMessage)) {
         const phone = "+" + userMessage.split(/\n/)[0].replace(/\D/g, "");
         ci = { ...ci, waiting_for: null, phone_collected: true };
@@ -600,7 +636,7 @@ Deno.serve(async (req) => {
       // Fall through to normal flow
 
     // ── WAITING FOR ADDRESS ────────────────────────────────────
-    } else if (!isAbuseBlocked && ci.waiting_for === "address") {
+    } else if (!isBlocked && ci.waiting_for === "address") {
       if (looksLikeAddress(userMessage)) {
         const addr = userMessage.split(/\n/).slice(0, 3).join(", ");
         ci = { ...ci, waiting_for: null, address_collected: true };
