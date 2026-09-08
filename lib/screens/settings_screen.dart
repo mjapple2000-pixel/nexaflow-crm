@@ -461,8 +461,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  Future<void> _loadBusiness() async {
-    setState(() { _loading = true; _error = null; });
+  // silent=true skips the full-page spinner. Toggling _loading removes
+  // _buildContent() from the tree entirely for a frame, which destroys
+  // and recreates whatever section widget is showing (e.g.
+  // _PayrollSettingsSection), wiping local field selections right after
+  // a successful save even though nothing actually went wrong. Every
+  // post-save refresh should be silent; only the very first load on
+  // screen entry needs the spinner.
+  Future<void> _loadBusiness({bool silent = false}) async {
+    setState(() { if (!silent) _loading = true; _error = null; });
     try {
       final userId = _supabase.auth.currentUser?.id;
       _businessId = await getActiveBusinessId();
@@ -472,16 +479,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
           .select()
           .eq('id', _businessId!)
           .maybeSingle();
-      setState(() { _business = res ?? {}; _loading = false; });
+      setState(() { _business = res ?? {}; if (!silent) _loading = false; });
     } catch (e) {
-      setState(() { _error = e.toString(); _loading = false; });
+      setState(() { _error = e.toString(); if (!silent) _loading = false; });
     }
   }
 
   Future<void> _updateBusiness(Map<String, dynamic> updates) async {
     if (_businessId == null) return;
     await _supabase.from('businesses').update(updates).eq('id', _businessId!);
-    await _loadBusiness();
+    await _loadBusiness(silent: true);
   }
 
   Future<void> _logout() async {
@@ -10850,7 +10857,17 @@ class _PayrollSettingsSectionState extends State<_PayrollSettingsSection> {
           .order('effective_date', ascending: true)
           .limit(1)
           .maybeSingle();
-      if (mounted) setState(() { _pendingChange = row; _loadingPendingChange = false; });
+      if (mounted) {
+        setState(() {
+          _pendingChange = row;
+          _loadingPendingChange = false;
+          // Show the scheduled values by default instead of the still-
+          // active ones — matches Gusto/QuickBooks Time, where the
+          // pending change is what the form displays, not a stale
+          // "current" value you have to know to go click Edit for.
+          if (row != null) _applyPendingValuesToForm(row);
+        });
+      }
     } catch (e) {
       debugPrint('Pending pay period change load error: $e');
       if (mounted) setState(() => _loadingPendingChange = false);
@@ -10966,33 +10983,84 @@ class _PayrollSettingsSectionState extends State<_PayrollSettingsSection> {
     }
   }
 
+  // Shared by the auto-populate-on-load path and the explicit "Edit"
+  // button, so a pending change renders the same way regardless of
+  // which path put it on screen. Caller wraps in setState.
+  void _applyPendingValuesToForm(Map<String, dynamic> pending) {
+    final rawConfig = pending['pay_period_config'];
+    final config = rawConfig is Map ? Map<String, dynamic>.from(rawConfig) : <String, dynamic>{};
+    _weekStartDay = pending['week_start_day'] as String? ?? _weekStartDay;
+    _payPeriodType = pending['pay_period_type'] as String? ?? _payPeriodType;
+    if (_payPeriodType == 'biweekly') {
+      final anchorStr = config['anchor_date'] as String?;
+      _biweeklyAnchor = anchorStr != null ? DateTime.tryParse(anchorStr) : null;
+    } else if (_payPeriodType == 'semimonthly') {
+      _semiDayOne = (config['day_one'] as num?)?.toInt() ?? _semiDayOne;
+      _semiDayTwo = (config['day_two'] as num?)?.toInt() ?? _semiDayTwo;
+    }
+    final effDate = DateTime.tryParse(pending['effective_date'] as String? ?? '');
+    final nextStart = _nextPeriodStartDate();
+    if (effDate != null &&
+        effDate.year == nextStart.year &&
+        effDate.month == nextStart.month &&
+        effDate.day == nextStart.day) {
+      _effectiveDateOption = 'next_period';
+    } else {
+      _effectiveDateOption = 'custom';
+      _customEffectiveDate = effDate;
+    }
+  }
+
+  // Resets the form to whatever is currently active on `businesses` —
+  // used after cancelling a pending change, so the pills don't keep
+  // showing the just-cancelled scheduled values.
+  void _resetFormToActiveSettings() {
+    final b = widget.business;
+    _weekStartDay = b['week_start_day'] as String? ?? 'monday';
+    if (!_weekDays.any((d) => d.$1 == _weekStartDay)) _weekStartDay = 'monday';
+    _payPeriodType = b['pay_period_type'] as String? ?? 'weekly';
+    if (!['weekly', 'biweekly', 'semimonthly'].contains(_payPeriodType)) {
+      _payPeriodType = 'weekly';
+    }
+    final rawConfig = b['pay_period_config'];
+    final config = rawConfig is Map ? Map<String, dynamic>.from(rawConfig) : <String, dynamic>{};
+    final anchorStr = config['anchor_date'] as String?;
+    _biweeklyAnchor = anchorStr != null ? DateTime.tryParse(anchorStr) : null;
+    _semiDayOne = (config['day_one'] as num?)?.toInt() ?? 1;
+    _semiDayTwo = (config['day_two'] as num?)?.toInt() ?? 16;
+    _effectiveDateOption = 'next_period';
+    _customEffectiveDate = null;
+  }
+
+  // Describes what's active right now on `businesses` — shown alongside
+  // the pending banner so past-period context isn't lost once the pills
+  // below switch to showing the scheduled values instead.
+  String _describeActiveConfig() {
+    final activeType = widget.business['pay_period_type'] as String? ?? 'weekly';
+    final activeWeekStart = widget.business['week_start_day'] as String? ?? 'monday';
+    final rawConfig = widget.business['pay_period_config'];
+    final config = rawConfig is Map ? Map<String, dynamic>.from(rawConfig) : <String, dynamic>{};
+    final weekStartLabel = activeWeekStart[0].toUpperCase() + activeWeekStart.substring(1);
+    switch (activeType) {
+      case 'biweekly':
+        final anchorStr = config['anchor_date'] as String?;
+        final anchor = anchorStr != null ? DateTime.tryParse(anchorStr) : null;
+        return 'Biweekly (anchor ${anchor != null ? _formatAnchorDate(anchor) : '—'}), week starts $weekStartLabel';
+      case 'semimonthly':
+        final dayOne = (config['day_one'] as num?)?.toInt() ?? 1;
+        final dayTwo = (config['day_two'] as num?)?.toInt() ?? 16;
+        return 'Semimonthly ($dayOne${_ordinalSuffixForPeriodMath(dayOne)} & $dayTwo${_ordinalSuffixForPeriodMath(dayTwo)}), week starts $weekStartLabel';
+      default:
+        return 'Weekly, starts $weekStartLabel';
+    }
+  }
+
   void _editPendingChange() {
     final pending = _pendingChange;
     if (pending == null) return;
-    final rawConfig = pending['pay_period_config'];
-    final config = rawConfig is Map ? Map<String, dynamic>.from(rawConfig) : <String, dynamic>{};
     setState(() {
       _editingPendingChangeId = pending['id'] as int;
-      _weekStartDay = pending['week_start_day'] as String? ?? _weekStartDay;
-      _payPeriodType = pending['pay_period_type'] as String? ?? _payPeriodType;
-      if (_payPeriodType == 'biweekly') {
-        final anchorStr = config['anchor_date'] as String?;
-        _biweeklyAnchor = anchorStr != null ? DateTime.tryParse(anchorStr) : null;
-      } else if (_payPeriodType == 'semimonthly') {
-        _semiDayOne = (config['day_one'] as num?)?.toInt() ?? _semiDayOne;
-        _semiDayTwo = (config['day_two'] as num?)?.toInt() ?? _semiDayTwo;
-      }
-      final effDate = DateTime.tryParse(pending['effective_date'] as String? ?? '');
-      final nextStart = _nextPeriodStartDate();
-      if (effDate != null &&
-          effDate.year == nextStart.year &&
-          effDate.month == nextStart.month &&
-          effDate.day == nextStart.day) {
-        _effectiveDateOption = 'next_period';
-      } else {
-        _effectiveDateOption = 'custom';
-        _customEffectiveDate = effDate;
-      }
+      _applyPendingValuesToForm(pending);
     });
   }
 
@@ -11027,7 +11095,11 @@ class _PayrollSettingsSectionState extends State<_PayrollSettingsSection> {
           .update({'deleted_at': DateTime.now().toUtc().toIso8601String()})
           .eq('id', pending['id']);
       if (mounted) {
-        setState(() => _pendingChange = null);
+        setState(() {
+          _pendingChange = null;
+          _editingPendingChangeId = null;
+          _resetFormToActiveSettings();
+        });
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Scheduled change cancelled.')),
         );
@@ -11152,27 +11224,68 @@ class _PayrollSettingsSectionState extends State<_PayrollSettingsSection> {
           jsonEncode(config) != jsonEncode(activeConfig);
 
       String scheduledMsg = '';
-      if (cadenceChanged || _editingPendingChangeId != null) {
+      // Replace whatever pending row is currently loaded, not just one
+      // explicitly opened via "Edit" — otherwise changing the dropdown
+      // and saving again (without clicking Edit first) tries to insert
+      // a second row for the same effective_date and hits the unique
+      // constraint, since the still-live pending row was never touched.
+      final pendingIdToReplace = _editingPendingChangeId ?? (_pendingChange?['id'] as int?);
+      if (cadenceChanged || pendingIdToReplace != null) {
         final businessId = widget.business['id'] as int?;
         if (businessId != null) {
           final effectiveDate = _effectiveDateOption == 'custom'
               ? _customEffectiveDate!
               : _nextPeriodStartDate();
-          if (_editingPendingChangeId != null) {
+          if (pendingIdToReplace != null) {
             await Supabase.instance.client
                 .from('business_pay_period_config_history')
                 .update({'deleted_at': DateTime.now().toUtc().toIso8601String()})
-                .eq('id', _editingPendingChangeId!);
+                .eq('id', pendingIdToReplace);
           }
           final createdByProfileId = await _resolveCreatedByProfileId();
-          await Supabase.instance.client.from('business_pay_period_config_history').insert({
+          final effectiveDateStr = effectiveDate.toIso8601String().substring(0, 10);
+          final insertPayload = {
             'business_id': businessId,
             'week_start_day': _weekStartDay,
             'pay_period_type': _payPeriodType,
             'pay_period_config': config,
-            'effective_date': effectiveDate.toIso8601String().substring(0, 10),
+            'effective_date': effectiveDateStr,
             'created_by_profile_id': createdByProfileId,
-          });
+          };
+          try {
+            await Supabase.instance.client
+                .from('business_pay_period_config_history')
+                .insert(insertPayload);
+          } on PostgrestException catch (e) {
+            // Defensive fallback for the (business_id, effective_date)
+            // unique index: if a still-live row for this exact date
+            // slipped past the pendingIdToReplace check above — e.g. a
+            // second save landing before this one's own reload finished
+            // — look up whichever row is actually live for that date
+            // right now, soft-delete it, and retry once.
+            if (e.code == '23505') {
+              final conflicting = await Supabase.instance.client
+                  .from('business_pay_period_config_history')
+                  .select('id')
+                  .eq('business_id', businessId)
+                  .eq('effective_date', effectiveDateStr)
+                  .filter('deleted_at', 'is', null)
+                  .maybeSingle();
+              if (conflicting != null) {
+                await Supabase.instance.client
+                    .from('business_pay_period_config_history')
+                    .update({'deleted_at': DateTime.now().toUtc().toIso8601String()})
+                    .eq('id', conflicting['id']);
+                await Supabase.instance.client
+                    .from('business_pay_period_config_history')
+                    .insert(insertPayload);
+              } else {
+                rethrow;
+              }
+            } else {
+              rethrow;
+            }
+          }
           scheduledMsg = ' Cadence change scheduled for ${_formatAnchorDate(effectiveDate)}.';
           _editingPendingChangeId = null;
         }
@@ -11262,7 +11375,7 @@ class _PayrollSettingsSectionState extends State<_PayrollSettingsSection> {
       saving: _saving,
       successMsg: _successMsg,
       error: _error,
-      child: Column(children: [
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Container(
           padding: const EdgeInsets.all(20),
           decoration: BoxDecoration(
@@ -11355,7 +11468,10 @@ class _PayrollSettingsSectionState extends State<_PayrollSettingsSection> {
                     Text('Scheduled: ${_describePendingChange(_pendingChange!)}',
                         style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.orange)),
                     Text(
-                        'Effective ${_formatAnchorDate(DateTime.parse(_pendingChange!['effective_date'] as String))} — past periods keep computing under the current settings.',
+                        'Effective ${_formatAnchorDate(DateTime.parse(_pendingChange!['effective_date'] as String))} — the fields below show this scheduled change.',
+                        style: const TextStyle(fontSize: 11, color: Colors.orange)),
+                    Text(
+                        'Currently active for past periods: ${_describeActiveConfig()}',
                         style: const TextStyle(fontSize: 11, color: Colors.orange)),
                   ]),
                 ),

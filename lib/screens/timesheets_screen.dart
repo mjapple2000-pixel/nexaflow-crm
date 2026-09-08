@@ -87,6 +87,16 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
   List<Map<String, dynamic>> _periodTotals = [];
   bool _exportingPdf = false;
 
+  // As-of-date resolution for the Pay Period view — _payPeriodType/
+  // _weekStartDay/_payPeriodConfig above are loaded once from `businesses`
+  // and only reflect whatever cadence is active *today*, which is wrong
+  // for a period that predates a cadence change (business_pay_period_
+  // config_history is always future-effective only). _currentPayPeriod
+  // resolves against this instead whenever it's populated for the
+  // _periodCursor currently on screen.
+  Map<String, dynamic>? _periodCursorConfig;
+  DateTime? _periodCursorConfigDate;
+
   // TS-11: per-employee submit/approve/reject status, scoped to whichever
   // pay_periods rows the current view loaded. Populated by both
   // _loadWeekTotals and _loadPeriodTotals — never Month, since a
@@ -381,9 +391,29 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
   // Returns [periodStart, periodEnd] for the pay period containing `date`.
   // Confirmed semimonthly rule: [day_one, day_two-1] and
   // [day_two, last day of month] — the standard 1st–15th / 16th–end split.
+  // Resolves against _periodCursorConfig (the as-of-`date` config fetched
+  // via get_pay_period_config_as_of) when it's available for this exact
+  // date, falling back to the today's-cadence fields loaded at screen
+  // entry otherwise — e.g. on the very first frame before the async
+  // resolution has returned, so this never has to await inside build().
   List<DateTime> _currentPayPeriod(DateTime date) {
-    if (_payPeriodType == 'biweekly') {
-      final anchorStr = _payPeriodConfig['anchor_date'] as String?;
+    final resolvedForThisDate = _periodCursorConfigDate != null &&
+        _periodCursorConfigDate!.year == date.year &&
+        _periodCursorConfigDate!.month == date.month &&
+        _periodCursorConfigDate!.day == date.day;
+    final cfg = resolvedForThisDate ? _periodCursorConfig : null;
+    final type = cfg?['pay_period_type'] as String? ?? _payPeriodType;
+    final weekStart = cfg?['week_start_day'] as String? ?? _weekStartDay;
+    final rawConfig = cfg?['pay_period_config'] ?? _payPeriodConfig;
+    final config = rawConfig is Map ? Map<String, dynamic>.from(rawConfig as Map) : <String, dynamic>{};
+
+    if (type == 'weekly') {
+      final start = _startOfWeekContaining(date, weekStart);
+      return [start, start.add(const Duration(days: 6))];
+    }
+
+    if (type == 'biweekly') {
+      final anchorStr = config['anchor_date'] as String?;
       final anchor = anchorStr != null ? DateTime.tryParse(anchorStr) : null;
       if (anchor == null) {
         // No anchor configured yet — fall back to a 14-day window starting
@@ -401,8 +431,8 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
     }
 
     // semimonthly
-    final dayOneRaw = (_payPeriodConfig['day_one'] as num?)?.toInt() ?? 1;
-    final dayTwoRaw = (_payPeriodConfig['day_two'] as num?)?.toInt() ?? 16;
+    final dayOneRaw = (config['day_one'] as num?)?.toInt() ?? 1;
+    final dayTwoRaw = (config['day_two'] as num?)?.toInt() ?? 16;
     final maxDay = _daysInMonth(date.year, date.month);
     final dayOne = dayOneRaw > maxDay ? maxDay : dayOneRaw;
     final dayTwo = dayTwoRaw > maxDay ? maxDay : dayTwoRaw;
@@ -410,7 +440,7 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
     if (date.day < dayOne) {
       final prevMonth = DateTime(date.year, date.month - 1, 1);
       final prevMax = _daysInMonth(prevMonth.year, prevMonth.month);
-      final prevDayTwoRaw = (_payPeriodConfig['day_two'] as num?)?.toInt() ?? 16;
+      final prevDayTwoRaw = (config['day_two'] as num?)?.toInt() ?? 16;
       final prevDayTwo = prevDayTwoRaw > prevMax ? prevMax : prevDayTwoRaw;
       return [
         DateTime(prevMonth.year, prevMonth.month, prevDayTwo),
@@ -429,6 +459,35 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
     }
   }
 
+  // Fetches the pay-period config that was actually in effect on `date`
+  // via the get_pay_period_config_as_of SQL function, and caches it
+  // against that exact date so _currentPayPeriod can resolve synchronously
+  // during build. Called before computing bounds for whichever date the
+  // Pay Period view's cursor currently points at.
+  Future<void> _resolvePeriodCursorConfig(DateTime date) async {
+    final alreadyResolved = _periodCursorConfigDate != null &&
+        _periodCursorConfigDate!.year == date.year &&
+        _periodCursorConfigDate!.month == date.month &&
+        _periodCursorConfigDate!.day == date.day;
+    if (alreadyResolved) return;
+    try {
+      final activeBusinessId = await getActiveBusinessId();
+      if (activeBusinessId == null) return;
+      final dateStr = date.toIso8601String().substring(0, 10);
+      final row = await _db.rpc('get_pay_period_config_as_of', params: {
+        'p_business_id': activeBusinessId,
+        'p_target_date': dateStr,
+      }).maybeSingle();
+      if (!mounted || row == null) return;
+      setState(() {
+        _periodCursorConfig = Map<String, dynamic>.from(row);
+        _periodCursorConfigDate = date;
+      });
+    } catch (e) {
+      debugPrint('Resolve pay period config as-of error: $e');
+    }
+  }
+
   String _periodRangeLabel(DateTime start, DateTime end) {
     const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
     if (start.month == end.month && start.year == end.year) {
@@ -441,6 +500,8 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
     if (!mounted) return;
     setState(() { _periodLoading = true; _periodError = null; });
     try {
+      await _resolvePeriodCursorConfig(_periodCursor);
+      if (!mounted) return;
       await _db.auth.refreshSession();
       final token = _db.auth.currentSession?.accessToken;
       if (token == null) throw Exception('Not authenticated');

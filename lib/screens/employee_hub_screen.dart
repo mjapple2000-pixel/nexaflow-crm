@@ -53,22 +53,19 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
   bool _jobCostingEnabled = false;
   List<Map<String, dynamic>> _expenseCategories = [];
 
-  // TS-11: submit-for-approval. Boundaries computed client-side with the
-  // same math timesheets_screen.dart uses for the office Pay Period view,
-  // so a submission always lands on the exact same pay_periods row the
-  // office locks/approves against, regardless of weekly/biweekly/
-  // semimonthly cadence.
-  String _payPeriodType = 'weekly';
-  Map<String, dynamic> _payPeriodConfig = {};
-  String _weekStartDay = 'monday';
+  // TS-11: submit-for-approval. Period boundaries are now resolved
+  // server-side by get-employee-hub-data (via get_pay_period_config_as_of,
+  // the same SQL function the office Pay Period view uses) instead of
+  // computed here from a locally-cached, always-"today" cadence — that
+  // was wrong whenever a cadence change landed between today and the
+  // last completed period. _load() populates these two directly from the
+  // server's resolution.
+  DateTime? _lastCompletedPeriodStart;
+  DateTime? _lastCompletedPeriodEnd;
   Map<String, dynamic>? _periodSummary;
   bool _submittingTimesheet = false;
   List<Map<String, dynamic>> _submissionHistory = [];
   bool _timesheetApprovalEnabled = false;
-
-  static const _dayOrder = [
-    'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
-  ];
 
   final _jobSearchCtrl = TextEditingController();
   bool _showJobResults = false;
@@ -135,9 +132,8 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
         _jobCostingEnabled = data['job_costing_enabled'] as bool? ?? false;
         _expenseCategories =
             List<Map<String, dynamic>>.from(data['expense_categories'] ?? []);
-        _payPeriodType = data['pay_period_type'] as String? ?? 'weekly';
-        _payPeriodConfig = Map<String, dynamic>.from(data['pay_period_config'] as Map? ?? {});
-        _weekStartDay = data['week_start_day'] as String? ?? 'monday';
+        _lastCompletedPeriodStart = DateTime.tryParse(data['last_completed_period_start'] as String? ?? '');
+        _lastCompletedPeriodEnd = DateTime.tryParse(data['last_completed_period_end'] as String? ?? '');
         _submissionHistory = List<Map<String, dynamic>>.from(data['submission_history'] as List? ?? []);
         _timesheetApprovalEnabled = data['timesheet_approval_enabled'] as bool? ?? false;
         _loading = false;
@@ -155,85 +151,13 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
     }
   }
 
-  DateTime _startOfWeekContaining(DateTime date, String startDayName) {
-    final startIdx = _dayOrder.indexOf(startDayName);
-    final safeStartIdx = startIdx == -1 ? 0 : startIdx;
-    final dateIdx = date.weekday - 1;
-    final diff = (dateIdx - safeStartIdx + 7) % 7;
-    final d = DateTime(date.year, date.month, date.day);
-    return d.subtract(Duration(days: diff));
-  }
-
-  int _daysInMonth(int year, int month) => DateTime(year, month + 1, 0).day;
-
-  // Ported verbatim from timesheets_screen.dart's _currentPayPeriod so a
-  // Hub submission always lands on the exact same pay_periods row the
-  // office side locks/approves against.
-  List<DateTime> _currentPayPeriod(DateTime date) {
-    if (_payPeriodType == 'biweekly') {
-      final anchorStr = _payPeriodConfig['anchor_date'] as String?;
-      final anchor = anchorStr != null ? DateTime.tryParse(anchorStr) : null;
-      if (anchor == null) {
-        return [date, date.add(const Duration(days: 13))];
-      }
-      final anchorDate = DateTime(anchor.year, anchor.month, anchor.day);
-      final dateOnly = DateTime(date.year, date.month, date.day);
-      final daysSince = dateOnly.difference(anchorDate).inDays;
-      final periodIndex = daysSince >= 0
-          ? daysSince ~/ 14
-          : -(((-daysSince) + 13) ~/ 14);
-      final start = anchorDate.add(Duration(days: periodIndex * 14));
-      return [start, start.add(const Duration(days: 13))];
-    }
-
-    if (_payPeriodType == 'semimonthly') {
-      final dayOneRaw = (_payPeriodConfig['day_one'] as num?)?.toInt() ?? 1;
-      final dayTwoRaw = (_payPeriodConfig['day_two'] as num?)?.toInt() ?? 16;
-      final maxDay = _daysInMonth(date.year, date.month);
-      final dayOne = dayOneRaw > maxDay ? maxDay : dayOneRaw;
-      final dayTwo = dayTwoRaw > maxDay ? maxDay : dayTwoRaw;
-
-      if (date.day < dayOne) {
-        final prevMonth = DateTime(date.year, date.month - 1, 1);
-        final prevMax = _daysInMonth(prevMonth.year, prevMonth.month);
-        final prevDayTwoRaw = (_payPeriodConfig['day_two'] as num?)?.toInt() ?? 16;
-        final prevDayTwo = prevDayTwoRaw > prevMax ? prevMax : prevDayTwoRaw;
-        return [
-          DateTime(prevMonth.year, prevMonth.month, prevDayTwo),
-          DateTime(date.year, date.month, dayOne).subtract(const Duration(days: 1)),
-        ];
-      } else if (date.day < dayTwo) {
-        return [
-          DateTime(date.year, date.month, dayOne),
-          DateTime(date.year, date.month, dayTwo).subtract(const Duration(days: 1)),
-        ];
-      } else {
-        return [
-          DateTime(date.year, date.month, dayTwo),
-          DateTime(date.year, date.month, maxDay),
-        ];
-      }
-    }
-
-    // weekly
-    final start = _startOfWeekContaining(date, _weekStartDay);
-    return [start, start.add(const Duration(days: 6))];
-  }
-
-  // The most recently *completed* period — never the one still in
-  // progress, matching "available once the period has ended." Found by
-  // asking for the period containing the day right before the current
-  // one starts, which works identically for all three cadences.
-  List<DateTime> _lastCompletedPeriod() {
-    final current = _currentPayPeriod(DateTime.now());
-    return _currentPayPeriod(current[0].subtract(const Duration(days: 1)));
-  }
-
   Future<void> _loadPeriodSummary() async {
+    final start = _lastCompletedPeriodStart;
+    final end = _lastCompletedPeriodEnd;
+    if (start == null || end == null) return;
     try {
-      final bounds = _lastCompletedPeriod();
-      final startStr = bounds[0].toIso8601String().substring(0, 10);
-      final endStr = bounds[1].toIso8601String().substring(0, 10);
+      final startStr = start.toIso8601String().substring(0, 10);
+      final endStr = end.toIso8601String().substring(0, 10);
       final res = await http.get(
         Uri.parse('$_fnBase/get-employee-hub-data?token=${widget.token}&period_start=$startStr&period_end=$endStr'),
       );
@@ -248,17 +172,19 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
   }
 
   Future<void> _submitTimesheet() async {
+    final start = _lastCompletedPeriodStart;
+    final end = _lastCompletedPeriodEnd;
+    if (start == null || end == null) return;
     setState(() => _submittingTimesheet = true);
     try {
-      final bounds = _lastCompletedPeriod();
       final res = await http.post(
         Uri.parse('$_fnBase/employee-hub-action'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
           'token': widget.token,
           'action': 'submit_timesheet',
-          'week_start': bounds[0].toIso8601String().substring(0, 10),
-          'week_end': bounds[1].toIso8601String().substring(0, 10),
+          'week_start': start.toIso8601String().substring(0, 10),
+          'week_end': end.toIso8601String().substring(0, 10),
         }),
       );
       if (!mounted) return;
@@ -454,7 +380,9 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
   Widget _buildTimesheetCard() {
     if (!_timesheetApprovalEnabled) return _buildTimesheetLockedTeaser();
     if (_periodSummary == null) return const SizedBox.shrink();
-    final bounds = _lastCompletedPeriod();
+    final start = _lastCompletedPeriodStart;
+    final end = _lastCompletedPeriodEnd;
+    if (start == null || end == null) return const SizedBox.shrink();
     final status = _periodSummary!['status'] as String? ?? 'draft';
     final totalMinutes = (_periodSummary!['total_minutes'] as num?)?.toInt() ?? 0;
     final rejectionReason = _periodSummary!['rejection_reason'] as String?;
@@ -477,7 +405,7 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(children: [
           Expanded(
-            child: Text('Timesheet: ${_formatPeriodRange(bounds[0], bounds[1])}',
+            child: Text('Timesheet: ${_formatPeriodRange(start, end)}',
                 style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
           ),
           Container(

@@ -10,6 +10,116 @@ const supabase = createClient(
   JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") ?? "{}").nexaflow_service_role_2026_08
 );
 
+const DAY_ORDER = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+
+function startOfWeekContaining(date: Date, startDayName: string): Date {
+  const startIdx = DAY_ORDER.indexOf(startDayName);
+  const safeStartIdx = startIdx === -1 ? 0 : startIdx;
+  const jsDay = date.getUTCDay(); // 0=Sun..6=Sat
+  const dateIdx = (jsDay + 6) % 7; // convert to Mon=0..Sun=6, matches Dart's weekday-1
+  const diff = (dateIdx - safeStartIdx + 7) % 7;
+  const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  d.setUTCDate(d.getUTCDate() - diff);
+  return d;
+}
+
+function daysInMonth(year: number, monthIndex0: number): number {
+  return new Date(Date.UTC(year, monthIndex0 + 1, 0)).getUTCDate();
+}
+
+function addDays(date: Date, days: number): Date {
+  const d = new Date(date.getTime());
+  d.setUTCDate(d.getUTCDate() + days);
+  return d;
+}
+
+function toDateOnly(date: Date): Date {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+}
+
+function fmtDate(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+// Ported from timesheets_screen.dart / employee_hub_screen.dart's
+// _currentPayPeriod, so office and Hub always agree on period
+// boundaries for a given (type, weekStartDay, config, date).
+function currentPayPeriodBounds(
+  type: string,
+  weekStartDay: string,
+  config: Record<string, any>,
+  date: Date
+): [Date, Date] {
+  const dateOnly = toDateOnly(date);
+
+  if (type === "biweekly") {
+    const anchorStr = config?.anchor_date as string | undefined;
+    const anchor = anchorStr ? new Date(anchorStr + "T00:00:00.000Z") : null;
+    if (!anchor) {
+      return [dateOnly, addDays(dateOnly, 13)];
+    }
+    const anchorDate = toDateOnly(anchor);
+    const daysSince = Math.round((dateOnly.getTime() - anchorDate.getTime()) / 86400000);
+    const periodIndex = daysSince >= 0
+      ? Math.floor(daysSince / 14)
+      : -Math.floor((-daysSince + 13) / 14);
+    const start = addDays(anchorDate, periodIndex * 14);
+    return [start, addDays(start, 13)];
+  }
+
+  if (type === "semimonthly") {
+    const dayOneRaw = Number(config?.day_one ?? 1);
+    const dayTwoRaw = Number(config?.day_two ?? 16);
+    const maxDay = daysInMonth(dateOnly.getUTCFullYear(), dateOnly.getUTCMonth());
+    const dayOne = dayOneRaw > maxDay ? maxDay : dayOneRaw;
+    const dayTwo = dayTwoRaw > maxDay ? maxDay : dayTwoRaw;
+    const day = dateOnly.getUTCDate();
+
+    if (day < dayOne) {
+      const prevMonthDate = new Date(Date.UTC(dateOnly.getUTCFullYear(), dateOnly.getUTCMonth() - 1, 1));
+      const prevMax = daysInMonth(prevMonthDate.getUTCFullYear(), prevMonthDate.getUTCMonth());
+      const prevDayTwoRaw = Number(config?.day_two ?? 16);
+      const prevDayTwo = prevDayTwoRaw > prevMax ? prevMax : prevDayTwoRaw;
+      return [
+        new Date(Date.UTC(prevMonthDate.getUTCFullYear(), prevMonthDate.getUTCMonth(), prevDayTwo)),
+        addDays(new Date(Date.UTC(dateOnly.getUTCFullYear(), dateOnly.getUTCMonth(), dayOne)), -1),
+      ];
+    } else if (day < dayTwo) {
+      return [
+        new Date(Date.UTC(dateOnly.getUTCFullYear(), dateOnly.getUTCMonth(), dayOne)),
+        addDays(new Date(Date.UTC(dateOnly.getUTCFullYear(), dateOnly.getUTCMonth(), dayTwo)), -1),
+      ];
+    } else {
+      return [
+        new Date(Date.UTC(dateOnly.getUTCFullYear(), dateOnly.getUTCMonth(), dayTwo)),
+        new Date(Date.UTC(dateOnly.getUTCFullYear(), dateOnly.getUTCMonth(), maxDay)),
+      ];
+    }
+  }
+
+  // weekly
+  const start = startOfWeekContaining(dateOnly, weekStartDay);
+  return [start, addDays(start, 6)];
+}
+
+// Resolves whichever pay-period config was actually in effect on
+// `dateStr`, via the same SQL function the office side's Pay Period
+// view uses. Runs with the service role, so this is safe to call for
+// an unauthenticated Hub token — business_id is already resolved from
+// the token above, never taken from the request.
+async function resolvePayPeriodConfigAsOf(businessId: number, dateStr: string) {
+  const { data, error } = await supabase
+    .rpc("get_pay_period_config_as_of", { p_business_id: businessId, p_target_date: dateStr })
+    .maybeSingle();
+  if (error) {
+    console.error("get-employee-hub-data get_pay_period_config_as_of error:", error);
+    return null;
+  }
+  return data as
+    | { week_start_day: string; pay_period_type: string; pay_period_config: Record<string, any>; effective_date: string }
+    | null;
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -86,6 +196,38 @@ Deno.serve(async (req) => {
     // submission history) — this must stay above both of those blocks.
     const { data: approvalWorkflowAllowed } = await supabase
       .rpc("check_plan_feature", { p_business_id: hubToken.business_id, p_feature: "timesheet_approval_workflow" });
+
+    // ── As-of-date period resolution — the "last completed period" the
+    // Hub shows for submission must be computed against whatever cadence
+    // was actually in effect on that period's dates, not today's cadence
+    // (business_pay_period_config_history changes are always future-
+    // effective only). Two resolutions because the cadence could have
+    // changed in between: once for today (to find where the current
+    // period starts), and once for the day before that (the last day of
+    // the previous period), in case that day fell under a different
+    // cadence than today.
+    let lastCompletedPeriodStart: string | null = null;
+    let lastCompletedPeriodEnd: string | null = null;
+    if (approvalWorkflowAllowed) {
+      const todayStr = new Date().toISOString().slice(0, 10);
+      const todayResolved = await resolvePayPeriodConfigAsOf(hubToken.business_id, todayStr);
+      const todayType = todayResolved?.pay_period_type ?? business?.pay_period_type ?? "weekly";
+      const todayWeekStart = todayResolved?.week_start_day ?? business?.week_start_day ?? "monday";
+      const todayConfig = todayResolved?.pay_period_config ?? business?.pay_period_config ?? {};
+
+      const [currentPeriodStart] = currentPayPeriodBounds(todayType, todayWeekStart, todayConfig, new Date());
+      const dayBeforeCurrent = addDays(currentPeriodStart, -1);
+      const dayBeforeCurrentStr = fmtDate(dayBeforeCurrent);
+
+      const lastResolved = await resolvePayPeriodConfigAsOf(hubToken.business_id, dayBeforeCurrentStr);
+      const lastType = lastResolved?.pay_period_type ?? todayType;
+      const lastWeekStart = lastResolved?.week_start_day ?? todayWeekStart;
+      const lastConfig = lastResolved?.pay_period_config ?? todayConfig;
+
+      const [lastStart, lastEnd] = currentPayPeriodBounds(lastType, lastWeekStart, lastConfig, dayBeforeCurrent);
+      lastCompletedPeriodStart = fmtDate(lastStart);
+      lastCompletedPeriodEnd = fmtDate(lastEnd);
+    }
 
     // ── TS-11: employee's own hours + submission status for a specific
     // period, when the client asks for one. Boundaries are computed
@@ -530,6 +672,8 @@ Deno.serve(async (req) => {
         pay_period_config: business?.pay_period_config ?? {},
         week_start_day: business?.week_start_day ?? "monday",
         timesheet_approval_enabled: approvalWorkflowAllowed === true,
+        last_completed_period_start: lastCompletedPeriodStart,
+        last_completed_period_end: lastCompletedPeriodEnd,
         period_summary: periodSummary,
         submission_history: submissionHistory,
         expense_categories: expenseCategories,
