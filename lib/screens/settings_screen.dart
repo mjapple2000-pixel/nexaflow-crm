@@ -5076,11 +5076,64 @@ class _BillingSectionState extends State<_BillingSection> {
                               height: 18,
                               child: CircularProgressIndicator(strokeWidth: 2))),
                     )
-                  else if (_isBeta)
-                    const _InfoRow(
-                        label: 'Team Seats',
-                        value: 'Unlimited (Beta)')
                   else ...[
+                    if (_isBeta) ...[
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                        margin: const EdgeInsets.only(bottom: 14),
+                        decoration: BoxDecoration(
+                          color: AppTheme.brand.withValues(alpha: 0.06),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: AppTheme.brand.withValues(alpha: 0.2)),
+                        ),
+                        child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                          const Icon(Icons.info_outline, size: 14, color: AppTheme.brand),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              _betaCardAdded
+                                  ? "You're on Beta — free up to 15 team seats (Pro's limit). You've added a payment method, so extra seats are billed at \$29/mo each, same as a Pro customer."
+                                  : "You're on Beta — free up to 15 team seats (Pro's limit). Extra seats beyond that need a payment method on file — add one below (or in AI Usage above, it's the same card) to unlock more, billed at \$29/mo each, same as a Pro customer.",
+                              style: const TextStyle(fontSize: 12, color: AppTheme.brand, height: 1.4),
+                            ),
+                          ),
+                        ]),
+                      ),
+                      if (!_betaCardAdded) ...[
+                        MouseRegion(
+                          cursor: SystemMouseCursors.click,
+                          child: OutlinedButton.icon(
+                            onPressed: _addingCard ? null : _addPaymentMethod,
+                            icon: _addingCard
+                                ? const SizedBox(
+                                    width: 14, height: 14,
+                                    child: CircularProgressIndicator(strokeWidth: 2, color: AppTheme.brand))
+                                : const Icon(Icons.credit_card_outlined, size: 15),
+                            label: const Text('Add Payment Method'),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: AppTheme.brand,
+                              side: BorderSide(color: AppTheme.brand),
+                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+                            ),
+                          ),
+                        ),
+                      ] else ...[
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF10B981).withValues(alpha: 0.1),
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                            Icon(Icons.check_circle, size: 12, color: Color(0xFF10B981)),
+                            SizedBox(width: 5),
+                            Text('Payment method on file',
+                                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFF10B981))),
+                          ]),
+                        ),
+                      ],
+                      const SizedBox(height: 14),
+                    ],
                     _InfoRow(
                         label: 'Seats Used',
                         value: '$_seatsUsed'),
@@ -5107,13 +5160,15 @@ class _BillingSectionState extends State<_BillingSection> {
                           borderRadius: BorderRadius.circular(8),
                           border: Border.all(color: Colors.orange.withValues(alpha: 0.3)),
                         ),
-                        child: const Row(children: [
-                          Icon(Icons.info_outline, size: 14, color: Colors.orange),
-                          SizedBox(width: 8),
+                        child: Row(children: [
+                          const Icon(Icons.info_outline, size: 14, color: Colors.orange),
+                          const SizedBox(width: 8),
                           Expanded(
                             child: Text(
-                              "You're over your included team seats this month. Extra seats are billed automatically at \$29/mo each — your team keeps working without interruption.",
-                              style: TextStyle(fontSize: 12, color: Colors.orange, height: 1.4),
+                              _isBeta && !_betaCardAdded
+                                  ? "You're over your included team seats. Add a payment method above to keep extra seats active."
+                                  : "You're over your included team seats this month. Extra seats are billed automatically at \$29/mo each — your team keeps working without interruption.",
+                              style: const TextStyle(fontSize: 12, color: Colors.orange, height: 1.4),
                             ),
                           ),
                         ]),

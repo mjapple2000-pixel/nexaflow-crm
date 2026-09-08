@@ -25,6 +25,37 @@ Deno.serve(async (req) => {
     const secretKeys = JSON.parse(Deno.env.get('SUPABASE_SECRET_KEYS') ?? '{}')
     const serviceRoleKey = secretKeys.nexaflow_service_role_2026_08 ?? ''
 
+    // ── Seat hard-stop for beta accounts with no card on file ──────
+    // Beta is capped at Pro's 15 seats, same as their AI message cap.
+    // Paid plans never block here — they just get billed overage via
+    // sync-seat-overage — but a beta business with no card would get
+    // unlimited free seats otherwise, which is the abuse case a card
+    // requirement exists to prevent.
+    const bizCheckRes = await fetch(
+      `${supabaseUrl}/rest/v1/businesses?id=eq.${business_id}&select=is_beta,beta_card_added`,
+      { headers: { apikey: serviceRoleKey, 'Content-Type': 'application/json' } },
+    )
+    const bizCheckRows = await bizCheckRes.json()
+    const bizCheck = Array.isArray(bizCheckRows) && bizCheckRows.length > 0 ? bizCheckRows[0] : null
+
+    if (bizCheck?.is_beta && !bizCheck?.beta_card_added) {
+      const seatCountRes = await fetch(
+        `${supabaseUrl}/rest/v1/profiles?business_id=eq.${business_id}&status=neq.inactive&deleted_at=is.null&select=id`,
+        { headers: { apikey: serviceRoleKey, 'Content-Type': 'application/json', Prefer: 'count=exact' } },
+      )
+      const seatRows = await seatCountRes.json()
+      const currentSeats = Array.isArray(seatRows) ? seatRows.length : 0
+
+      if (currentSeats >= 15) {
+        return new Response(
+          JSON.stringify({
+            error: 'Beta accounts are capped at 15 team seats (Pro\'s limit). Add a payment method in Settings → Billing to invite more.',
+          }),
+          { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        )
+      }
+    }
+
     // ── Step 1: Generate magic invite link ────────────────────────
     const linkRes = await fetch(`${supabaseUrl}/auth/v1/admin/generate_link`, {
       method: 'POST',
