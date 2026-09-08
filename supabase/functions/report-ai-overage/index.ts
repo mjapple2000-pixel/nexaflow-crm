@@ -14,8 +14,9 @@ Deno.serve(async (req) => {
 
     const { data: rows, error } = await supabase
       .from('business_usage_live')
-      .select('id, business_id, ai_messages_used, ai_messages_included, overage_units_reported, client_id')
+      .select('id, business_id, ai_messages_used, ai_messages_included, overage_units_reported, client_id, is_beta')
       .eq('period_start', periodStart)
+      .eq('is_beta', false)
       .gt('ai_messages_used', 0)
 
     if (error) throw error
