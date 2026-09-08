@@ -512,10 +512,47 @@ Deno.serve(async (req) => {
       skipNormalFlow = true;
     }
 
+    // ── Beta usage cap — pause AI if this beta business has used up its
+    // Pro-equivalent allowance (2,500/mo) and hasn't added a card to cover
+    // overage yet. Independent of the abuse breaker above: a business can
+    // hit this cap through completely normal usage.
+    let isBetaCapBlocked = false;
+    if (!isAbuseBlocked && business.is_beta && !business.beta_card_added) {
+      const capPeriod = new Date();
+      capPeriod.setUTCDate(1);
+      const capPeriodStart = capPeriod.toISOString().slice(0, 10);
+      const { data: usageRow } = await supabase
+        .from("business_usage_live")
+        .select("ai_messages_used, ai_messages_included")
+        .eq("business_id", businessId)
+        .eq("period_start", capPeriodStart)
+        .maybeSingle();
+      if (usageRow && usageRow.ai_messages_used >= usageRow.ai_messages_included) {
+        isBetaCapBlocked = true;
+      }
+    }
+
+    const isBlocked = isAbuseBlocked || isBetaCapBlocked;
+
+    if (isBetaCapBlocked) {
+      aiReply = `Thanks for your patience — our AI assistant has reached its monthly message limit for now. A team member will follow up with you directly.`;
+      await supabase.from("conversations").update({
+        ai_enabled: false,
+        flagged_for_beta_cap: true,
+      }).eq("id", conversationId);
+      skipNormalFlow = true;
+
+      fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/notify-beta-cap-reached`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ business_id: businessId }),
+      }).catch((e) => console.error("notify-beta-cap-reached error:", e));
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════════
     //  STEP A: If we were waiting for a specific piece of info, capture it
     // ═══════════════════════════════════════════════════════════════════════════════
-    if (!isAbuseBlocked && collectingInfo.waiting_for === "name") {
+    if (!isBlocked && collectingInfo.waiting_for === "name") {
       // Their reply is their name
       if (looksLikeName(body)) {
         const capturedName = body.trim();
@@ -557,7 +594,7 @@ Deno.serve(async (req) => {
         skipNormalFlow = true;
       }
 
-    } else if (!isAbuseBlocked && collectingInfo.waiting_for === "email") {
+    } else if (!isBlocked && collectingInfo.waiting_for === "email") {
       if (looksLikeEmail(body)) {
         const capturedEmail = body.trim().toLowerCase();
         await supabase.from("conversations").update({
@@ -623,7 +660,7 @@ Deno.serve(async (req) => {
         skipNormalFlow = true;
       }
     }
-      else if (!isAbuseBlocked && collectingInfo.waiting_for === "address") {
+      else if (!isBlocked && collectingInfo.waiting_for === "address") {
       if (looksLikeAddress(body)) {
         const capturedAddress = body.trim();
         await supabase.from("conversations").update({
@@ -682,7 +719,7 @@ Deno.serve(async (req) => {
     //  STEP B: Normal flow (if not already handled above)
     // ═══════════════════════════════════════════════════════════════════════════════
 
-    if (!isAbuseBlocked && !skipNormalFlow) {
+    if (!isBlocked && !skipNormalFlow) {
 
       // ── B1: If we don't know their name yet, ask for it first ────
       const currentName = collectingInfo.name_collected
