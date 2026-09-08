@@ -29,7 +29,7 @@ Deno.serve(async (req) => {
       const delta = overageTotal - row.overage_units_reported
       if (delta <= 0) continue
 
-      const stripeCustomerId = (row as any).businesses?.client_id
+      const stripeCustomerId = row.client_id
       if (!stripeCustomerId) {
         errors.push(`business ${row.business_id}: no Stripe client_id`)
         continue
