@@ -4555,6 +4555,7 @@ class _BillingSection extends StatefulWidget {
 
 class _BillingSectionState extends State<_BillingSection> {
   bool _cancelling = false;
+  bool _addingCard = false;
 
   bool _usageLoading = true;
   int _aiMessagesUsed = 0;
@@ -4631,6 +4632,8 @@ class _BillingSectionState extends State<_BillingSection> {
     widget.business['plan'] as String? ?? '';
   bool get _isBeta =>
       widget.business['is_beta'] as bool? ?? false;
+  bool get _betaCardAdded =>
+      widget.business['beta_card_added'] as bool? ?? false;
   bool get _isPaid =>
       _isBeta || (widget.business['is_paid'] as bool? ?? false);
   String get _subscriptionId =>
@@ -4742,6 +4745,60 @@ class _BillingSectionState extends State<_BillingSection> {
     }
   }
 
+  // Beta-only: starts a Stripe Checkout session (metered overage price
+  // only, no flat fee) to collect a card on file so AI usage can continue
+  // past the Pro-equivalent cap. See create-beta-card-setup edge function.
+  Future<void> _addPaymentMethod() async {
+    final businessId = widget.business['id'] as int?;
+    if (businessId == null) return;
+    setState(() => _addingCard = true);
+    try {
+      final session = Supabase.instance.client.auth.currentSession;
+      final res = await http.post(
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/create-beta-card-setup'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ${session?.accessToken ?? ''}',
+        },
+        body: jsonEncode({'business_id': businessId}),
+      );
+      if (!mounted) return;
+      final body = jsonDecode(res.body) as Map<String, dynamic>;
+      if (res.statusCode == 200 && body['url'] != null) {
+        final uri = Uri.parse(body['url'] as String);
+        if (await canLaunchUrl(uri)) {
+          await launchUrl(uri, mode: LaunchMode.externalApplication);
+        }
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: const Text(
+                'Complete your card details in Stripe — this refreshes automatically once done.'),
+            backgroundColor: AppTheme.brand,
+            duration: const Duration(seconds: 6),
+            action: SnackBarAction(
+                label: 'Refresh',
+                textColor: Colors.white,
+                onPressed: _refreshAll),
+          ));
+        }
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(body['error']?.toString() ?? 'Failed to start card setup.'),
+          backgroundColor: Colors.red,
+        ));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Error: $e'),
+          backgroundColor: Colors.red,
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _addingCard = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final clientId =
@@ -4795,7 +4852,7 @@ class _BillingSectionState extends State<_BillingSection> {
                                   : Colors.red)),
                       Text(
                           _isBeta
-                              ? 'Beta Access — Full Feature Unlock'
+                              ? 'Beta Access — Pro-equivalent features & limits, free'
                               : _isPaid && _currentPlan.isNotEmpty
                                   ? '${_currentPlan[0].toUpperCase()}${_currentPlan.substring(1)} Plan'
                                   : 'Subscribe below to get started',
@@ -4906,11 +4963,64 @@ class _BillingSectionState extends State<_BillingSection> {
                               height: 18,
                               child: CircularProgressIndicator(strokeWidth: 2))),
                     )
-                  else if (_isBeta)
-                    const _InfoRow(
-                        label: 'AI Messages',
-                        value: 'Unlimited (Beta)')
                   else ...[
+                    if (_isBeta) ...[
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                        margin: const EdgeInsets.only(bottom: 14),
+                        decoration: BoxDecoration(
+                          color: AppTheme.brand.withValues(alpha: 0.06),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: AppTheme.brand.withValues(alpha: 0.2)),
+                        ),
+                        child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                          const Icon(Icons.info_outline, size: 14, color: AppTheme.brand),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              _betaCardAdded
+                                  ? "You're on Beta — free up to 2,500 AI messages/mo. You've added a payment method, so messages beyond that are billed at \$0.15 each, same as a Pro customer."
+                                  : "You're on Beta — free up to 2,500 AI messages/mo (Pro's limit). Past that, your AI pauses until you add a payment method. Once added, extra messages are billed at \$0.15 each, same as a Pro customer.",
+                              style: const TextStyle(fontSize: 12, color: AppTheme.brand, height: 1.4),
+                            ),
+                          ),
+                        ]),
+                      ),
+                      if (!_betaCardAdded) ...[
+                        MouseRegion(
+                          cursor: SystemMouseCursors.click,
+                          child: OutlinedButton.icon(
+                            onPressed: _addingCard ? null : _addPaymentMethod,
+                            icon: _addingCard
+                                ? const SizedBox(
+                                    width: 14, height: 14,
+                                    child: CircularProgressIndicator(strokeWidth: 2, color: AppTheme.brand))
+                                : const Icon(Icons.credit_card_outlined, size: 15),
+                            label: const Text('Add Payment Method'),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: AppTheme.brand,
+                              side: BorderSide(color: AppTheme.brand),
+                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+                            ),
+                          ),
+                        ),
+                      ] else ...[
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF10B981).withValues(alpha: 0.1),
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                            Icon(Icons.check_circle, size: 12, color: Color(0xFF10B981)),
+                            SizedBox(width: 5),
+                            Text('Payment method on file',
+                                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFF10B981))),
+                          ]),
+                        ),
+                      ],
+                      const SizedBox(height: 14),
+                    ],
                     _InfoRow(
                         label: 'AI Messages Used',
                         value: '$_aiMessagesUsed'),
@@ -4937,13 +5047,15 @@ class _BillingSectionState extends State<_BillingSection> {
                           borderRadius: BorderRadius.circular(8),
                           border: Border.all(color: Colors.orange.withValues(alpha: 0.3)),
                         ),
-                        child: const Row(children: [
-                          Icon(Icons.info_outline, size: 14, color: Colors.orange),
-                          SizedBox(width: 8),
+                        child: Row(children: [
+                          const Icon(Icons.info_outline, size: 14, color: Colors.orange),
+                          const SizedBox(width: 8),
                           Expanded(
                             child: Text(
-                              "You're over your included AI messages this month. Extra messages are billed automatically at the overage rate — your AI keeps working without interruption.",
-                              style: TextStyle(fontSize: 12, color: Colors.orange, height: 1.4),
+                              _isBeta && !_betaCardAdded
+                                  ? "You've used all your included AI messages this month. Your AI has paused — add a payment method above to keep it running."
+                                  : "You're over your included AI messages this month. Extra messages are billed automatically at the overage rate — your AI keeps working without interruption.",
+                              style: const TextStyle(fontSize: 12, color: Colors.orange, height: 1.4),
                             ),
                           ),
                         ]),

@@ -24,8 +24,8 @@ Deno.serve(async (req) => {
 
     let query = supabase
       .from('business_seats_live')
-      .select('business_id, seats_used, seats_included, seat_overage_reported, stripe_seat_item_id, subscription_id, client_id, is_beta')
-      .eq('is_beta', false)
+      .select('business_id, seats_used, seats_included, seat_overage_reported, stripe_seat_item_id, subscription_id, client_id, is_beta, beta_card_added')
+      .or('is_beta.eq.false,beta_card_added.eq.true')
       .not('subscription_id', 'is', null)
 
     if (targetBusinessId) {
