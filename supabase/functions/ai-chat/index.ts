@@ -34,7 +34,7 @@ serve(async (req) => {
 
     // Fetch business
     const businessRes = await fetch(
-      `${supabaseUrl}/rest/v1/businesses?id=eq.${business_id}&select=business_name,business_phone,ai_persona,services_and_pricing,company_faqs,booking_link,primary_goal,forbidden_words,is_beta,widget_ai_replies_today,widget_ai_replies_day`,
+      `${supabaseUrl}/rest/v1/businesses?id=eq.${business_id}&select=business_name,business_phone,ai_persona,services_and_pricing,company_faqs,booking_link,primary_goal,forbidden_words,is_beta,beta_card_added,widget_ai_replies_today,widget_ai_replies_day`,
       {
         headers: {
           'apikey': supabaseKey,
@@ -51,11 +51,43 @@ serve(async (req) => {
     const todayStr = new Date().toISOString().slice(0, 10)
     const isNewDay = business.widget_ai_replies_day !== todayStr
     const widgetRepliesToday = isNewDay ? 0 : (business.widget_ai_replies_today ?? 0)
-    const isWidgetAbuseBlocked = !business.is_beta && widgetRepliesToday >= 100
+    const isWidgetAbuseBlocked = widgetRepliesToday >= 100
 
     if (isWidgetAbuseBlocked) {
       return new Response(
         JSON.stringify({ reply: "Thanks for reaching out — our team will follow up with you directly shortly." }),
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      )
+    }
+
+    // ── Beta usage cap — pause AI if this beta business has used up its
+    // Pro-equivalent allowance (2,500/mo) and hasn't added a card to cover
+    // overage yet. Independent of the 100/day widget abuse backstop above.
+    let isBetaCapBlocked = false
+    if (business.is_beta && !business.beta_card_added) {
+      const capPeriod = new Date()
+      capPeriod.setUTCDate(1)
+      const capPeriodStart = capPeriod.toISOString().slice(0, 10)
+      const usageRes = await fetch(
+        `${supabaseUrl}/rest/v1/business_usage_live?business_id=eq.${business_id}&period_start=eq.${capPeriodStart}&select=ai_messages_used,ai_messages_included`,
+        { headers: { 'apikey': supabaseKey, 'Content-Type': 'application/json' } }
+      )
+      const usageRows = await usageRes.json()
+      const usageRow = Array.isArray(usageRows) && usageRows.length > 0 ? usageRows[0] : null
+      if (usageRow && usageRow.ai_messages_used >= usageRow.ai_messages_included) {
+        isBetaCapBlocked = true
+      }
+    }
+
+    if (isBetaCapBlocked) {
+      fetch(`${supabaseUrl}/functions/v1/notify-beta-cap-reached`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ business_id }),
+      }).catch((e) => console.error('notify-beta-cap-reached error:', e))
+
+      return new Response(
+        JSON.stringify({ reply: "Thanks for your patience — our AI assistant has reached its monthly message limit for now. A team member will follow up with you directly." }),
         { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       )
     }
