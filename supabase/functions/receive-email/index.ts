@@ -372,6 +372,13 @@ Deno.serve(async (req) => {
 
     if (bizLookupErr || !biz) {
       console.error(`No business matches dedicated_email "${normalizedTo}" — dropping to avoid cross-tenant misroute`);
+      await supabase.from("unmatched_inbound_emails").insert({
+        business_id: null,
+        raw_to_address: rawTo,
+        raw_from_address: rawFrom,
+        subject: subject,
+        received_at: new Date().toISOString(),
+      });
       return new Response("ok", { status: 200 });
     }
     const businessId = biz.id as number;

@@ -870,6 +870,12 @@ class _AppNavBarState extends State<AppNavBar> {
                       route: '/beta-testers',
                       active: location.startsWith('/beta-testers'),
                     ),
+                    _NavItem(
+                      icon: Icons.mail_outline_rounded,
+                      label: 'Unmatched Emails',
+                      route: '/unmatched-emails',
+                      active: location.startsWith('/unmatched-emails'),
+                    ),
                   ],
                 ],
               ),

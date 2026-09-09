@@ -31,6 +31,7 @@ import 'package:http/http.dart' as http;
 import '../screens/tickets_screen.dart';
 import '../screens/reset_password_screen.dart';
 import '../screens/beta_testers_screen.dart';
+import '../screens/unmatched_emails_screen.dart';
 import '../screens/beta_signup_screen.dart';
 import '../screens/snippets_screen.dart';
 import '../screens/reviews_screen.dart';
@@ -680,6 +681,11 @@ class AppRouter {
             path: '/beta-testers',
             name: 'beta-testers',
             builder: (context, state) => const BetaTestersScreen(),
+          ),
+          GoRoute(
+            path: '/unmatched-emails',
+            name: 'unmatched-emails',
+            builder: (context, state) => const UnmatchedEmailsScreen(),
           ),
           GoRoute(
             path: '/snippets',
