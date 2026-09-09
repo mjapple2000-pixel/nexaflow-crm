@@ -1338,9 +1338,60 @@ class _SuperuserBanner extends StatelessWidget {
 // ─────────────────────────────────────────────
 //  LOGO AREA
 // ─────────────────────────────────────────────
-class _LogoArea extends StatelessWidget {
+class _LogoArea extends StatefulWidget {
+  @override
+  State<_LogoArea> createState() => _LogoAreaState();
+}
+
+class _LogoAreaState extends State<_LogoArea> {
+  String? _businessName;
+  String? _logoUrl;
+  Color? _brandColor;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadBusiness();
+  }
+
+  Future<void> _loadBusiness() async {
+    try {
+      final bizId = await getActiveBusinessId();
+      if (bizId == null) return;
+      final db = Supabase.instance.client;
+      final biz = await db
+          .from('businesses')
+          .select('business_name, company_logo_url, pdf_settings')
+          .eq('id', bizId)
+          .maybeSingle();
+      if (biz != null && mounted) {
+        final pdfSettings = biz['pdf_settings'] as Map<String, dynamic>? ?? {};
+        setState(() {
+          _businessName = biz['business_name'] as String?;
+          _logoUrl = biz['company_logo_url'] as String?;
+          _brandColor = _parseHexColor(pdfSettings['brand_color'] as String?);
+        });
+      }
+    } catch (e) {
+      debugPrint('Sidebar business load error: $e');
+    }
+  }
+
+  Color? _parseHexColor(String? hex) {
+    if (hex == null || hex.isEmpty) return null;
+    var h = hex.replaceAll('#', '');
+    if (h.length == 6) h = 'FF$h';
+    final value = int.tryParse(h, radix: 16);
+    return value != null ? Color(value) : null;
+  }
+
   @override
   Widget build(BuildContext context) {
+    final name = (_businessName != null && _businessName!.isNotEmpty) ? _businessName! : 'NexaFlow';
+    final color = _brandColor ?? AppTheme.brand;
+    final hasLogo = _logoUrl != null && _logoUrl!.isNotEmpty;
+    final initial = name.isNotEmpty ? name[0].toUpperCase() : 'N';
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
       decoration: const BoxDecoration(
@@ -1352,30 +1403,38 @@ class _LogoArea extends StatelessWidget {
             width: 32,
             height: 32,
             decoration: BoxDecoration(
-              color: AppTheme.brand,
+              color: color,
               borderRadius: BorderRadius.circular(8),
+              image: hasLogo
+                  ? DecorationImage(image: NetworkImage(_logoUrl!), fit: BoxFit.cover)
+                  : null,
             ),
             alignment: Alignment.center,
-            child: const Text('N',
-                style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold)),
+            child: hasLogo
+                ? null
+                : Text(initial,
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold)),
           ),
           const SizedBox(width: 10),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: const [
-              Text('NexaFlow',
-                  style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 14,
-                      fontWeight: FontWeight.w500)),
-              SizedBox(height: 2),
-              Text('Marketing Suite',
-                  style: TextStyle(
-                      color: AppTheme.textMuted, fontSize: 10)),
-            ],
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(name,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w500)),
+                const SizedBox(height: 2),
+                const Text('Marketing Suite',
+                    style: TextStyle(
+                        color: AppTheme.textMuted, fontSize: 10)),
+              ],
+            ),
           ),
         ],
       ),
