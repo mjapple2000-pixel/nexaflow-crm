@@ -113,8 +113,12 @@ class _UnmatchedEmailsScreenState extends State<UnmatchedEmailsScreen> {
                                       ],
                                     ),
                                   ),
-                                  Text(_formatDate(r['received_at'] as String?),
-                                      style: const TextStyle(fontSize: 11, color: AppTheme.textMuted)),
+                                  SizedBox(
+                                    width: 150,
+                                    child: Text(_formatDate(r['received_at'] as String?),
+                                        textAlign: TextAlign.right,
+                                        style: const TextStyle(fontSize: 11, color: AppTheme.textMuted)),
+                                  ),
                                 ],
                               ),
                             );
