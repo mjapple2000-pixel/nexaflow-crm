@@ -32,6 +32,7 @@ import '../screens/tickets_screen.dart';
 import '../screens/reset_password_screen.dart';
 import '../screens/beta_testers_screen.dart';
 import '../screens/unmatched_emails_screen.dart';
+import '../screens/platform_settings_screen.dart';
 import '../screens/beta_signup_screen.dart';
 import '../screens/snippets_screen.dart';
 import '../screens/reviews_screen.dart';
@@ -686,6 +687,11 @@ class AppRouter {
             path: '/unmatched-emails',
             name: 'unmatched-emails',
             builder: (context, state) => const UnmatchedEmailsScreen(),
+          ),
+          GoRoute(
+            path: '/platform-settings',
+            name: 'platform-settings',
+            builder: (context, state) => const PlatformSettingsScreen(),
           ),
           GoRoute(
             path: '/snippets',

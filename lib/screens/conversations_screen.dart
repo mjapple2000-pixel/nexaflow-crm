@@ -30,6 +30,7 @@ class Conversation {
   final bool starred;
   final List<String> tags;
   final bool dnd;
+  final double? relevanceScore;
 
   const Conversation({
     required this.id,
@@ -48,6 +49,7 @@ class Conversation {
     this.starred = false,
     this.tags = const [],
     this.dnd = false,
+    this.relevanceScore,
   });
 
   factory Conversation.fromJson(Map<String, dynamic> j) {
@@ -70,8 +72,14 @@ class Conversation {
       starred: j['starred'] as bool? ?? false,
       tags: (j['tags'] as List?)?.map((e) => e.toString()).toList() ?? [],
       dnd: j['dnd'] as bool? ?? false,
+      relevanceScore: (j['relevance_score'] as num?)?.toDouble(),
     );
   }
+
+  // EM-03: conversations scored below this look automated/notification-only
+  // (bank alerts, marketing, etc.) rather than a real customer inquiry —
+  // segregated into their own tab so they don't clutter real lead threads.
+  bool get isAutomated => relevanceScore != null && relevanceScore! < 0.9;
 
   Conversation copyWith({
     String? status,
@@ -100,6 +108,7 @@ class Conversation {
       starred: starred ?? this.starred,
       tags: tags ?? this.tags,
       dnd: dnd ?? this.dnd,
+      relevanceScore: relevanceScore,
     );
   }
 
@@ -1018,6 +1027,37 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
     }
   }
 
+  // EM-03: pulls a conversation back into normal Conversations by resetting
+  // its relevance_score above the automated threshold. Simplest possible
+  // "restore" — no separate flag needed since relevance_score is exactly
+  // what both the tab filter and the 7-day auto-delete cron key off of.
+  Future<void> _restoreFromAutomated(Conversation c) async {
+    try {
+      await _supabase.from('conversations').update({
+        'relevance_score': 1,
+        'relevance_checked_at': DateTime.now().toUtc().toIso8601String(),
+      }).eq('id', c.id);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(children: [
+              const Icon(Icons.move_up_rounded, color: Colors.white, size: 16),
+              const SizedBox(width: 8),
+              const Text('Moved back to Conversations'),
+            ]),
+            backgroundColor: AppTheme.brand,
+            behavior: SnackBarBehavior.floating,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+      if (_selected?.id == c.id && mounted) setState(() => _selected = null);
+      await _loadConversations();
+    } catch (e) {
+      debugPrint('Restore from automated error: $e');
+    }
+  }
+
   Future<void> _loadSnippets() async {
     try {
       final businessId = await getActiveBusinessId();
@@ -1396,6 +1436,64 @@ Future<void> _updateTags(Conversation c, List<String> newTags) async {
     if (_selected?.id == c.id && mounted) {
       setState(() => _selected = _selected!.copyWith(status: newStatus));
     }
+  }
+
+  // General delete capability for any conversation — soft-delete via
+  // deleted_at, matching the convention used everywhere else in the app
+  // (leads, appointments, etc never hard-delete from the UI). Separate
+  // from EM-03's Automated-bucket hard-delete cron, which only ever
+  // touches relevance_score < 0.9 rows on its own 7-day schedule.
+  Future<void> _deleteConversation(Conversation c) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete Conversation', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+        content: Text('Delete the conversation with ${c.contactName}? It will be removed from your inbox.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Delete', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+    await _supabase.from('conversations').update({
+      'deleted_at': DateTime.now().toUtc().toIso8601String(),
+    }).eq('id', c.id);
+    if (mounted) setState(() => _selected = null);
+    await _loadConversations();
+  }
+
+  // EM-03: reverse of the "Move to Conversations" restore action — lets the
+  // owner manually flag a conversation as automated/junk when the relevance
+  // filter missed it. Same mechanism as the automatic gate: relevance_score
+  // below the threshold moves it into the Automated tab and puts it on the
+  // 7-day auto-delete clock.
+  Future<void> _markAsAutomated(Conversation c) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Mark as Automated', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+        content: Text(
+            'Move the conversation with ${c.contactName} to the Automated tab? AI will stop replying here, and it will be auto-deleted after 7 days of inactivity.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Move'),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+    await _supabase.from('conversations').update({
+      'relevance_score': 0.1,
+      'relevance_checked_at': DateTime.now().toUtc().toIso8601String(),
+    }).eq('id', c.id);
+    if (mounted) setState(() => _selected = null);
+    await _loadConversations();
   }
 
   // ── Build ─────────────────────────────────────────────────────────────────
@@ -2601,7 +2699,16 @@ Future<void> _updateTags(Conversation c, List<String> newTags) async {
   
 
   Widget _buildConversationList() {
-    final totalUnread = _conversations.fold(0, (s, c) => s + c.unreadCount);
+    // Scoped to exclude Automated conversations so this badge always matches
+    // what's actually unread in the "All" tab's own list — Automated has its
+    // own separate unread badge below, computed the same way (sum of
+    // unreadCount, not a total conversation count, so it clears on read).
+    final totalUnread = _conversations
+        .where((c) => !c.isAutomated)
+        .fold(0, (s, c) => s + c.unreadCount);
+    final automatedUnread = _conversations
+        .where((c) => c.isAutomated)
+        .fold(0, (s, c) => s + c.unreadCount);
 
     return Container(
       width: 340,
@@ -2708,6 +2815,17 @@ Future<void> _updateTags(Conversation c, List<String> newTags) async {
                 _subTabItem('SMS', 'sms'),
                 _subTabItem('Email', 'email'),
                 _subTabItem('★', 'starred'),
+              ],
+            ),
+          ),
+          // ── Automated / Archived tabs (secondary row) ──
+          Container(
+            decoration: const BoxDecoration(
+              border: Border(bottom: BorderSide(color: AppTheme.borderColor)),
+            ),
+            child: Row(
+              children: [
+                _subTabItem('Automated', 'automated', badge: automatedUnread > 0 ? automatedUnread : null),
                 _subTabItem('Archived', 'archived'),
               ],
             ),
@@ -2753,6 +2871,11 @@ Future<void> _updateTags(Conversation c, List<String> newTags) async {
             var filtered = _subTab == 'archived'
                 ? _conversations.where((c) => c.status == 'archived').toList()
                 : _conversations.where((c) => c.status != 'archived').toList();
+            // EM-03: Automated tab shows ONLY low-relevance conversations;
+            // every other tab excludes them so they never clutter real leads.
+            filtered = _subTab == 'automated'
+                ? filtered.where((c) => c.isAutomated).toList()
+                : filtered.where((c) => !c.isAutomated).toList();
             if (_subTab == 'unread')  filtered = filtered.where((c) => c.unreadCount > 0).toList();
             if (_subTab == 'sms')     filtered = filtered.where((c) => c.channel == 'sms').toList();
             if (_subTab == 'email')   filtered = filtered.where((c) => c.channel == 'email').toList();
@@ -2830,6 +2953,11 @@ Future<void> _updateTags(Conversation c, List<String> newTags) async {
                         var filtered = _subTab == 'archived'
                     ? _conversations.where((c) => c.status == 'archived').toList()
                     : _conversations.where((c) => c.status != 'archived').toList();
+                        // EM-03: Automated tab shows ONLY low-relevance conversations;
+                        // every other tab excludes them so they never clutter real leads.
+                        filtered = _subTab == 'automated'
+                            ? filtered.where((c) => c.isAutomated).toList()
+                            : filtered.where((c) => !c.isAutomated).toList();
                         if (_subTab == 'unread')  filtered = filtered.where((c) => c.unreadCount > 0).toList();
                         if (_subTab == 'sms')     filtered = filtered.where((c) => c.channel == 'sms').toList();
                         if (_subTab == 'email')   filtered = filtered.where((c) => c.channel == 'email').toList();
@@ -2884,44 +3012,43 @@ Future<void> _updateTags(Conversation c, List<String> newTags) async {
 
   Widget _subTabItem(String label, String value, {int? badge}) {
     final active = _subTab == value;
-    return Expanded(
-      child: Clickable(
-        onTap: () => setState(() => _subTab = value),
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 10),
-          decoration: BoxDecoration(
-            border: Border(
-              bottom: BorderSide(
-                color: active ? AppTheme.brand : Colors.transparent,
-                width: 2,
-              ),
+    return Clickable(
+      onTap: () => setState(() => _subTab = value),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          border: Border(
+            bottom: BorderSide(
+              color: active ? AppTheme.brand : Colors.transparent,
+              width: 2,
             ),
           ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Text(
-                label,
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: active ? FontWeight.w600 : FontWeight.w400,
-                  color: active ? AppTheme.brand : AppTheme.textSecondary,
-                ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: active ? FontWeight.w600 : FontWeight.w400,
+                color: active ? AppTheme.brand : AppTheme.textSecondary,
               ),
-              if (badge != null) ...[
-                const SizedBox(width: 4),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                  decoration: BoxDecoration(
-                    color: AppTheme.brand,
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Text('$badge',
-                      style: const TextStyle(fontSize: 9, color: Colors.white, fontWeight: FontWeight.w700)),
+            ),
+            if (badge != null) ...[
+              const SizedBox(width: 4),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                decoration: BoxDecoration(
+                  color: AppTheme.brand,
+                  borderRadius: BorderRadius.circular(10),
                 ),
-              ],
+                child: Text('$badge',
+                    style: const TextStyle(fontSize: 9, color: Colors.white, fontWeight: FontWeight.w700)),
+              ),
             ],
-          ),
+          ],
         ),
       ),
     );
@@ -3212,11 +3339,60 @@ Future<void> _updateTags(Conversation c, List<String> newTags) async {
     return Column(
       children: [
         _buildMessageHeader(),
+        if (_selected!.isAutomated) _buildAutomatedBanner(),
         if (_selected!.dnd) _buildDndBanner(),
         if (_selected!.channel == 'sms') _buildAiBanner(),
         Expanded(child: _buildMessageList()),
         _buildReplyBox(),
       ],
+    );
+  }
+
+  Widget _buildAutomatedBanner() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFF6366F1).withValues(alpha: 0.08),
+        border: Border(
+          bottom: BorderSide(color: const Color(0xFF6366F1).withValues(alpha: 0.2)),
+        ),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.mark_email_unread_outlined, size: 15, color: Color(0xFF6366F1)),
+          const SizedBox(width: 8),
+          const Expanded(
+            child: Text(
+              'This looks like an automated or notification email — AI did not reply. '
+              'It will be removed from NexaFlow after 7 days of inactivity (the original stays in your email inbox).',
+              style: TextStyle(fontSize: 12, color: Color(0xFF6366F1)),
+            ),
+          ),
+          const SizedBox(width: 8),
+          MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: GestureDetector(
+              onTap: () => _restoreFromAutomated(_selected!),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF6366F1),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.move_up_rounded, size: 13, color: Colors.white),
+                    SizedBox(width: 4),
+                    Text('Move to Conversations',
+                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.white)),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -3358,182 +3534,224 @@ Future<void> _updateTags(Conversation c, List<String> newTags) async {
         color: AppTheme.cardBg,
         border: Border(bottom: BorderSide(color: AppTheme.borderColor)),
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            width: 36,
-            height: 36,
-            decoration: BoxDecoration(
-                color: AppTheme.brand.withValues(alpha: 0.15),
-                shape: BoxShape.circle),
-            child: Center(
-              child: Text(c.initials,
-                  style: const TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w700,
-                      color: AppTheme.brand)),
-            ),
-          ),
-          const SizedBox(width: 12),
-          SizedBox(
-            width: 200,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(c.contactName,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w700,
-                        color: AppTheme.textPrimary)),
-                Text(c.contactPhone,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                        fontSize: 12, color: AppTheme.textSecondary)),
-              ],
-            ),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  _channelBadge(c.channel),
-                  const SizedBox(width: 8),
-                  _statusDot(c.status),
-                  const SizedBox(width: 8),
-                  // ── DND toggle ──
-                  MouseRegion(
-                    cursor: SystemMouseCursors.click,
-                    child: OutlinedButton.icon(
-                      onPressed: () => _toggleDnd(c),
-                      icon: Icon(
-                        c.dnd ? Icons.block_rounded : Icons.notifications_active_outlined,
-                        size: 14,
-                        color: c.dnd ? Colors.red : null,
-                      ),
-                      label: Text(
-                        c.dnd ? 'DND On' : 'DND',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: c.dnd ? Colors.red : null,
+          Row(
+            children: [
+              Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                    color: AppTheme.brand.withValues(alpha: 0.15),
+                    shape: BoxShape.circle),
+                child: Center(
+                  child: Text(c.initials,
+                      style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                          color: AppTheme.brand)),
+                ),
+              ),
+              const SizedBox(width: 12),
+              SizedBox(
+                width: 200,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(c.contactName,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                            color: AppTheme.textPrimary)),
+                    Text(c.contactPhone,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontSize: 12, color: AppTheme.textSecondary)),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      _channelBadge(c.channel),
+                      const SizedBox(width: 8),
+                      _statusDot(c.status),
+                      const SizedBox(width: 8),
+                      // ── DND toggle ──
+                      MouseRegion(
+                        cursor: SystemMouseCursors.click,
+                        child: OutlinedButton.icon(
+                          onPressed: () => _toggleDnd(c),
+                          icon: Icon(
+                            c.dnd ? Icons.block_rounded : Icons.notifications_active_outlined,
+                            size: 14,
+                            color: c.dnd ? Colors.red : null,
+                          ),
+                          label: Text(
+                            c.dnd ? 'DND On' : 'DND',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: c.dnd ? Colors.red : null,
+                            ),
+                          ),
+                          style: OutlinedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            minimumSize: Size.zero,
+                            side: c.dnd ? const BorderSide(color: Colors.red) : null,
+                          ),
                         ),
                       ),
-                      style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                        minimumSize: Size.zero,
-                        side: c.dnd ? const BorderSide(color: Colors.red) : null,
+                      const SizedBox(width: 8),
+                      // ── Tags button ──
+                      MouseRegion(
+                        cursor: SystemMouseCursors.click,
+                        child: OutlinedButton.icon(
+                          onPressed: () => _showTagEditor(c),
+                          icon: const Icon(Icons.label_outline_rounded, size: 14),
+                          label: const Text('Tags', style: TextStyle(fontSize: 12)),
+                          style: OutlinedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            minimumSize: Size.zero,
+                          ),
+                        ),
                       ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  // ── Tags button ──
-                  MouseRegion(
-                    cursor: SystemMouseCursors.click,
-                    child: OutlinedButton.icon(
-                      onPressed: () => _showTagEditor(c),
-                      icon: const Icon(Icons.label_outline_rounded, size: 14),
-                      label: const Text('Tags', style: TextStyle(fontSize: 12)),
-                      style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                        minimumSize: Size.zero,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  // ── Assign to dropdown ──
-                  if (_teamMembers.isNotEmpty)
-                    Container(
-                      height: 28,
-                      padding: const EdgeInsets.symmetric(horizontal: 8),
-                      decoration: BoxDecoration(
-                        border: Border.all(color: AppTheme.borderColor),
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      child: _assigningConvo
-                          ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
-                          : DropdownButtonHideUnderline(
-                              child: DropdownButton<String?>(
-                                value: c.assignedTo,
-                                hint: const Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Icon(Icons.person_outline_rounded, size: 14, color: AppTheme.textSecondary),
-                                    SizedBox(width: 4),
-                                    Text('Assign', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
-                                  ],
-                                ),
-                                icon: const Icon(Icons.keyboard_arrow_down_rounded, size: 14, color: AppTheme.textSecondary),
-                                style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary),
-                                isDense: true,
-                                items: [
-                                  const DropdownMenuItem<String?>(
-                                    value: null,
-                                    child: Text('Unassigned', style: TextStyle(fontSize: 12)),
+                      const SizedBox(width: 8),
+                      // ── Assign to dropdown ──
+                      if (_teamMembers.isNotEmpty)
+                        Container(
+                          height: 28,
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                          decoration: BoxDecoration(
+                            border: Border.all(color: AppTheme.borderColor),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: _assigningConvo
+                              ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                              : DropdownButtonHideUnderline(
+                                  child: DropdownButton<String?>(
+                                    value: c.assignedTo,
+                                    hint: const Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(Icons.person_outline_rounded, size: 14, color: AppTheme.textSecondary),
+                                        SizedBox(width: 4),
+                                        Text('Assign', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+                                      ],
+                                    ),
+                                    icon: const Icon(Icons.keyboard_arrow_down_rounded, size: 14, color: AppTheme.textSecondary),
+                                    style: const TextStyle(fontSize: 12, color: AppTheme.textPrimary),
+                                    isDense: true,
+                                    items: [
+                                      const DropdownMenuItem<String?>(
+                                        value: null,
+                                        child: Text('Unassigned', style: TextStyle(fontSize: 12)),
+                                      ),
+                                      ..._teamMembers.map((m) => DropdownMenuItem<String?>(
+                                            value: m['full_name'] as String?,
+                                            child: Text(m['full_name'] as String? ?? '', style: const TextStyle(fontSize: 12)),
+                                          )),
+                                    ],
+                                    onChanged: (val) => _assignConversation(c, val),
                                   ),
-                                  ..._teamMembers.map((m) => DropdownMenuItem<String?>(
-                                        value: m['full_name'] as String?,
-                                        child: Text(m['full_name'] as String? ?? '', style: const TextStyle(fontSize: 12)),
-                                      )),
-                                ],
-                                onChanged: (val) => _assignConversation(c, val),
-                              ),
-                            ),
-                    ),
-                  const SizedBox(width: 8),
-                  MouseRegion(
-                    cursor: SystemMouseCursors.click,
-                    child: OutlinedButton.icon(
-                      onPressed: () => _markAsUnread(c),
-                      icon: const Icon(Icons.mark_chat_unread_outlined, size: 14),
-                      label: const Text('Unread', style: TextStyle(fontSize: 12)),
-                      style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                        minimumSize: Size.zero,
+                                ),
+                        ),
+                      const SizedBox(width: 8),
+                      MouseRegion(
+                        cursor: SystemMouseCursors.click,
+                        child: OutlinedButton.icon(
+                          onPressed: () => _markAsUnread(c),
+                          icon: const Icon(Icons.mark_chat_unread_outlined, size: 14),
+                          label: const Text('Unread', style: TextStyle(fontSize: 12)),
+                          style: OutlinedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            minimumSize: Size.zero,
+                          ),
+                        ),
                       ),
-                    ),
+                    ],
                   ),
-                  const SizedBox(width: 8),
-                  MouseRegion(
-                    cursor: SystemMouseCursors.click,
-                    child: OutlinedButton.icon(
-                      onPressed: c.status == 'archived'
-                          ? () => _unarchiveConversation(c)
-                          : () => _archiveConversation(c),
-                      icon: Icon(c.status == 'archived'
-                          ? Icons.unarchive_outlined
-                          : Icons.archive_outlined, size: 14),
-                      label: Text(c.status == 'archived' ? 'Unarchive' : 'Archive',
-                          style: const TextStyle(fontSize: 12)),
-                      style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                        minimumSize: Size.zero,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  MouseRegion(
-                    cursor: SystemMouseCursors.click,
-                    child: OutlinedButton.icon(
-                      onPressed: () => _toggleStatus(c),
-                      icon: Icon(
-                        c.status == 'open'
-                            ? Icons.check_circle_outline
-                            : Icons.refresh_rounded,
-                        size: 14,
-                      ),
-                      label: Text(c.status == 'open' ? 'Close' : 'Reopen',
-                          style: const TextStyle(fontSize: 12)),
-                      style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                        minimumSize: Size.zero,
-                      ),
-                    ),
-                  ),
-                ],
+                ),
               ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          // ── Second row: Archive / Close / Mark as Automated / Delete ──
+          // Wraps instead of scrolling, so nothing can ever end up hidden
+          // off-screen behind the right panel's collapse toggle again.
+          Padding(
+            padding: const EdgeInsets.only(left: 256),
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 6,
+              children: [
+                MouseRegion(
+                  cursor: SystemMouseCursors.click,
+                  child: OutlinedButton.icon(
+                    onPressed: c.status == 'archived'
+                        ? () => _unarchiveConversation(c)
+                        : () => _archiveConversation(c),
+                    icon: Icon(c.status == 'archived'
+                        ? Icons.unarchive_outlined
+                        : Icons.archive_outlined, size: 14),
+                    label: Text(c.status == 'archived' ? 'Unarchive' : 'Archive',
+                        style: const TextStyle(fontSize: 12)),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      minimumSize: Size.zero,
+                    ),
+                  ),
+                ),
+                MouseRegion(
+                  cursor: SystemMouseCursors.click,
+                  child: OutlinedButton.icon(
+                    onPressed: () => _toggleStatus(c),
+                    icon: Icon(
+                      c.status == 'open'
+                          ? Icons.check_circle_outline
+                          : Icons.refresh_rounded,
+                      size: 14,
+                    ),
+                    label: Text(c.status == 'open' ? 'Close' : 'Reopen',
+                        style: const TextStyle(fontSize: 12)),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      minimumSize: Size.zero,
+                    ),
+                  ),
+                ),
+                if (!c.isAutomated)
+                  MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    child: OutlinedButton.icon(
+                      onPressed: () => _markAsAutomated(c),
+                      icon: const Icon(Icons.mark_email_unread_outlined, size: 14),
+                      label: const Text('Mark as Automated', style: TextStyle(fontSize: 12)),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        minimumSize: Size.zero,
+                      ),
+                    ),
+                  ),
+                MouseRegion(
+                  cursor: SystemMouseCursors.click,
+                  child: OutlinedButton.icon(
+                    onPressed: () => _deleteConversation(c),
+                    icon: const Icon(Icons.delete_outline_rounded, size: 14, color: Colors.red),
+                    label: const Text('Delete', style: TextStyle(fontSize: 12, color: Colors.red)),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      minimumSize: Size.zero,
+                      side: const BorderSide(color: Colors.red),
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
         ],

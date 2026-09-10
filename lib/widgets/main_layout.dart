@@ -247,22 +247,27 @@ class _AppNavBarState extends State<AppNavBar> {
 
   Future<void> _loadUnreadCount() async {
     try {
-      final userId = _supabase.auth.currentUser?.id;
-      if (userId == null) return;
-      final profileRes = await _supabase
-          .from('profiles')
-          .select('business_id')
-          .eq('user_id', userId)
-          .maybeSingle();
-      final businessId = profileRes?['business_id'] as int?;
+      // Uses getActiveBusinessId() (not a direct profiles lookup) so this
+      // resolves correctly for superuser sessions impersonating a business —
+      // the superuser account has no profiles row by design, so the old
+      // profiles-based lookup always returned null and silently zeroed the
+      // badge while impersonating.
+      final businessId = await getActiveBusinessId();
       if (businessId == null) return;
       final res = await _supabase
           .from('conversations')
-          .select('unread_count')
+          .select('unread_count, relevance_score')
           .eq('business_id', businessId)
           .filter('deleted_at', 'is', null);
-      final total = (res as List)
-          .fold(0, (s, c) => s + ((c['unread_count'] as int?) ?? 0));
+      // EM-03: exclude Automated conversations from the sidebar count —
+      // they have their own separate unread badge inside the Conversations
+      // screen and shouldn't inflate the top-level nav badge.
+      final total = (res as List).fold(0, (s, c) {
+        final score = (c['relevance_score'] as num?)?.toDouble();
+        final isAutomated = score != null && score < 0.9;
+        if (isAutomated) return s;
+        return s + ((c['unread_count'] as int?) ?? 0);
+      });
       if (mounted) setState(() => _unreadCount = total);
     } catch (e) {
       debugPrint('Unread badge error: $e');
@@ -876,6 +881,12 @@ class _AppNavBarState extends State<AppNavBar> {
                       label: 'Unmatched Emails',
                       route: '/unmatched-emails',
                       active: location.startsWith('/unmatched-emails'),
+                    ),
+                    _NavItem(
+                      icon: Icons.tune_rounded,
+                      label: 'Platform Settings',
+                      route: '/platform-settings',
+                      active: location.startsWith('/platform-settings'),
                     ),
                   ],
                 ],

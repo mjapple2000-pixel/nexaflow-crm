@@ -89,6 +89,66 @@ function replySubject(subject: string): string {
   return `Re: ${subject.replace(/^(re:\s*)+/i, "").trim()}`;
 }
 
+// ── EM-03: heuristic relevance check for automated/notification senders ──
+// Distinguishes "bank alert / Google notification / spam" from "a real
+// person asking about our services" using cheap signal checks — no OpenAI
+// call needed. Returns a 0–1 score where 1 = looks like a genuine human
+// inquiry and 0 = looks fully automated. Writes to relevance_score /
+// relevance_checked_at on the conversation so EM-09's future classifier can
+// refine or replace the scoring logic without touching where it's stored.
+function computeRelevanceScore(fields: Record<string, string>, senderEmail: string): number {
+  let score = 1.0;
+
+  const local = senderEmail.split("@")[0] ?? "";
+  const automatedLocalPattern = /(noreply|no-reply|donotreply|do-not-reply|notification|notifications|alert|alerts|mailer-daemon|automated|digest|newsletter)/i;
+  if (automatedLocalPattern.test(local)) score -= 0.6;
+
+  // Mailgun forwards MIME headers as a JSON array of [name, value] pairs
+  // in "message-headers" — not as individual top-level fields.
+  let headers: Array<[string, string]> = [];
+  try {
+    const raw = fields["message-headers"];
+    if (raw) headers = JSON.parse(raw);
+  } catch {
+    headers = [];
+  }
+  const headerMap: Record<string, string> = {};
+  for (const [name, value] of headers) {
+    if (typeof name === "string") headerMap[name.toLowerCase()] = String(value ?? "");
+  }
+
+  // List-Unsubscribe is near-universal on bulk/marketing/notification mail,
+  // essentially never present on a genuine one-off human email.
+  if (headerMap["list-unsubscribe"]) score -= 0.5;
+
+  // Precedence: bulk/list/junk — standard automated-mail signal.
+  if (/\b(bulk|list|junk)\b/i.test(headerMap["precedence"] ?? "")) score -= 0.3;
+
+  // Auto-Submitted != "no" per RFC 3834 — explicit auto-generated marker.
+  const autoSubmitted = (headerMap["auto-submitted"] ?? "").trim();
+  if (autoSubmitted && !/^no$/i.test(autoSubmitted)) score -= 0.4;
+
+  return Math.max(0, Math.min(1, score));
+}
+
+// EM-03: threshold now lives in platform_settings, editable by superusers
+// without a redeploy. Falls back to 0.9 if the row is ever missing or the
+// read fails, so a config problem never silently disables the whole gate.
+async function getRelevanceThreshold(): Promise<number> {
+  try {
+    const { data } = await supabase
+      .from("platform_settings")
+      .select("value")
+      .eq("key", "email_relevance_threshold")
+      .maybeSingle();
+    const v = data?.value;
+    if (typeof v === "number" && v >= 0 && v <= 1) return v;
+  } catch (e) {
+    console.error("getRelevanceThreshold: read failed, falling back to 0.9:", e);
+  }
+  return 0.9;
+}
+
 // ── Strip quoted email reply chains ─────────────────────────────
 function stripQuotedText(body: string): string {
   const lines = body.split("\n");
@@ -362,6 +422,14 @@ Deno.serve(async (req) => {
       return new Response("ok", { status: 200 });
     }
 
+    // ── EM-03: relevance score for automated/notification senders ──────
+    // Not a known-sender lookup — a brand-new real customer is just as
+    // "unmatched" in the database as a bank alert, so database membership
+    // can't distinguish them. This checks the email's own signals instead.
+    const relevanceScore = computeRelevanceScore(fields, senderEmail);
+    const relevanceThreshold = await getRelevanceThreshold();
+    const isLowRelevance = relevanceScore < relevanceThreshold;
+
     // ── 1. Match business ───────────────────────────────────────────
     // CRITICAL: never fall back to "any business" on a miss — that was
     // routing every unmatched inbound email to an arbitrary, unrelated
@@ -460,7 +528,8 @@ Deno.serve(async (req) => {
         lead_id: lead?.id ?? null, channel: "email", status: "open", ai_enabled: true,
         last_message: bodyForStorage.slice(0, 200), last_message_at: new Date().toISOString(),
         unread_count: 1, collecting_info: {}, pending_booking_slots: null,
-        name_verified: !!verifiedName,
+        name_verified: !!verifiedName, relevance_score: relevanceScore,
+        relevance_checked_at: new Date().toISOString(),
       }).select().maybeSingle();
       if (err) throw new Error(`Create conversation: ${err.message}`);
       conv = newConv;
@@ -469,7 +538,8 @@ Deno.serve(async (req) => {
       await supabase.from("conversations").update({
         last_message: bodyForStorage.slice(0, 200), last_message_at: new Date().toISOString(),
         unread_count: (conv.unread_count ?? 0) + 1, status: "open",
-        lead_id: conv.lead_id ?? lead?.id ?? null,
+        lead_id: conv.lead_id ?? lead?.id ?? null, relevance_score: relevanceScore,
+        relevance_checked_at: new Date().toISOString(),
       }).eq("id", conv.id);
     }
 
@@ -481,6 +551,19 @@ Deno.serve(async (req) => {
       body: bodyForStorage, direction: "inbound", channel: "email", subject: subject,
       status: "delivered", sender_name: verifiedName ?? senderEmail, twilio_sid: messageId || null,
     });
+
+    // ── EM-03: low-relevance short-circuit ──────────────────────────
+    // The message is saved (above) and the conversation is tagged with its
+    // relevance_score regardless — but nothing past this point runs for
+    // senders that look automated (bank/Google/YouTube alerts, spam, bulk
+    // mail): no AI reply, no name-collection state machine, no lead
+    // auto-creation. Genuine new customers score high here since real,
+    // one-off human emails don't carry List-Unsubscribe/Precedence/Auto-
+    // Submitted signals, so they pass through untouched.
+    if (isLowRelevance) {
+      console.log(`Low relevance sender ${senderEmail} (score ${relevanceScore}) — saved message, no AI reply`);
+      return new Response("ok", { status: 200 });
+    }
 
     if (!(conv!.ai_enabled ?? true)) {
       console.log("AI paused"); return new Response("ok", { status: 200 });

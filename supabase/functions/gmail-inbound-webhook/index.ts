@@ -49,6 +49,52 @@ function replySubject(subject: string): string {
   return `Re: ${subject.replace(/^(re:\s*)+/i, "").trim()}`;
 }
 
+// ── EM-03: heuristic relevance check for automated/notification senders ──
+// Same approach as receive-email's copy — cheap signal checks, no OpenAI
+// call needed. Returns a 0–1 score where 1 = looks like a genuine human
+// inquiry and 0 = looks fully automated. Takes the already-lowercased
+// header map this file builds from msg.payload.headers (Gmail's format),
+// unlike receive-email's version which parses Mailgun's message-headers
+// JSON string — same scoring logic, different header source.
+function computeRelevanceScore(headerMap: Record<string, string>, senderEmail: string): number {
+  let score = 1.0;
+
+  const local = senderEmail.split("@")[0] ?? "";
+  const automatedLocalPattern = /(noreply|no-reply|donotreply|do-not-reply|notification|notifications|alert|alerts|mailer-daemon|automated|digest|newsletter)/i;
+  if (automatedLocalPattern.test(local)) score -= 0.6;
+
+  // List-Unsubscribe is near-universal on bulk/marketing/notification mail,
+  // essentially never present on a genuine one-off human email.
+  if (headerMap["list-unsubscribe"]) score -= 0.5;
+
+  // Precedence: bulk/list/junk — standard automated-mail signal.
+  if (/\b(bulk|list|junk)\b/i.test(headerMap["precedence"] ?? "")) score -= 0.3;
+
+  // Auto-Submitted != "no" per RFC 3834 — explicit auto-generated marker.
+  const autoSubmitted = (headerMap["auto-submitted"] ?? "").trim();
+  if (autoSubmitted && !/^no$/i.test(autoSubmitted)) score -= 0.4;
+
+  return Math.max(0, Math.min(1, score));
+}
+
+// EM-03: threshold now lives in platform_settings, editable by superusers
+// without a redeploy. Falls back to 0.9 if the row is ever missing or the
+// read fails, so a config problem never silently disables the whole gate.
+async function getRelevanceThreshold(): Promise<number> {
+  try {
+    const { data } = await supabase
+      .from("platform_settings")
+      .select("value")
+      .eq("key", "email_relevance_threshold")
+      .maybeSingle();
+    const v = data?.value;
+    if (typeof v === "number" && v >= 0 && v <= 1) return v;
+  } catch (e) {
+    console.error("getRelevanceThreshold: read failed, falling back to 0.9:", e);
+  }
+  return 0.9;
+}
+
 // Gmail's plain-text quoting wraps "On <date> ... wrote:" across two lines
 // (the email address often pushes it past one line), unlike Mailgun's
 // single-line version in receive-email's stripQuotedText - checks both.
@@ -435,6 +481,11 @@ Deno.serve(async (req) => {
       if (!senderEmail || senderEmail === emailAddress) continue;
       if (senderEmail.includes("noreply") || senderEmail.includes("no-reply") || senderEmail.includes("mailer-daemon")) continue;
 
+      // ── EM-03: relevance score for automated/notification senders ──────
+      const relevanceScore = computeRelevanceScore(headers, senderEmail);
+      const relevanceThreshold = await getRelevanceThreshold();
+      const isLowRelevance = relevanceScore < relevanceThreshold;
+
       const subject = headers["subject"] ?? "(no subject)";
       const originalMessageIdHeader = headers["message-id"] ?? "";
       const rawBody = extractBody(msg.payload) || msg.snippet || "";
@@ -473,6 +524,7 @@ Deno.serve(async (req) => {
           contact_phone: lead?.lead_phone ?? null, lead_id: lead?.id ?? null, channel: "email", status: "open",
           ai_enabled: true, last_message: bodyForStorage.slice(0, 200), last_message_at: new Date().toISOString(),
           unread_count: 1, collecting_info: {}, pending_booking_slots: null, name_verified: !!verifiedName,
+          relevance_score: relevanceScore, relevance_checked_at: new Date().toISOString(),
         }).select().maybeSingle();
         if (convErr) { console.error(`gmail-inbound-webhook: conversation insert failed:`, convErr); continue; }
         conv = newConv;
@@ -481,6 +533,7 @@ Deno.serve(async (req) => {
         await supabase.from("conversations").update({
           last_message: bodyForStorage.slice(0, 200), last_message_at: new Date().toISOString(),
           unread_count: (conv.unread_count ?? 0) + 1, status: "open", lead_id: conv.lead_id ?? lead?.id ?? null,
+          relevance_score: relevanceScore, relevance_checked_at: new Date().toISOString(),
         }).eq("id", conv.id);
       }
       const conversationId = conv!.id as number;
@@ -490,6 +543,19 @@ Deno.serve(async (req) => {
         channel: "email", status: "delivered", sender_name: verifiedName ?? senderEmail, subject: subject,
         email_source: "gmail", external_message_id: gmailMessageId, external_thread_id: msg.threadId ?? null,
       });
+
+      // ── EM-03: low-relevance short-circuit ──────────────────────────
+      // Message is saved and the conversation is tagged with its
+      // relevance_score regardless — but no AI reply, no name-collection
+      // state machine, no lead auto-creation for senders that look
+      // automated (bank/Google/YouTube alerts, spam, bulk mail). Uses
+      // `continue` rather than `return` since this sits inside the
+      // per-message loop — other messages in the same batch still need
+      // to be processed.
+      if (isLowRelevance) {
+        console.log(`gmail-inbound-webhook: low relevance sender ${senderEmail} (score ${relevanceScore}) — saved message, no AI reply`);
+        continue;
+      }
 
       if (!(conv!.ai_enabled ?? true)) continue; // AI paused on this conversation - leave for human
 
