@@ -129,6 +129,10 @@ ${suggestedName ? `Suggested name to confirm: "${suggestedName}"` : ""}`,
       temperature: 0,
     }),
   });
+  if (!res.ok) {
+    console.error("extractNameFromMessage: OpenAI error:", await res.text());
+    return null;
+  }
   const json = await res.json();
   const result = json.choices?.[0]?.message?.content?.trim() ?? "null";
   console.log(`extractName | message="${message.slice(0,60)}" | result="${result}"`);
@@ -141,7 +145,7 @@ async function ensureLeadExists(businessId: number, email: string, name: string,
     await supabase.from("leads").update({ lead_name: name }).eq("id", existingId);
     return existingId;
   }
-  const { data: existing } = await supabase.from("leads").select("id").eq("business_id", businessId).eq("lead_email", email).maybeSingle();
+  const { data: existing } = await supabase.from("leads").select("id").eq("business_id", businessId).eq("lead_email", email).is("deleted_at", null).maybeSingle();
   if (existing) {
     await supabase.from("leads").update({ lead_name: name }).eq("id", existing.id);
     return existing.id;
@@ -307,6 +311,10 @@ async function detectIntent(message: string, history: Array<{ role: string; cont
       max_tokens: 60, temperature: 0,
     }),
   });
+  if (!res.ok) {
+    console.error("detectIntent: OpenAI error:", await res.text());
+    return { wantsBooking: false, isPickingSlot: false, slotChoice: null };
+  }
   const json = await res.json();
   try { return JSON.parse(json.choices?.[0]?.message?.content?.trim() ?? "{}"); }
   catch { return { wantsBooking: false, isPickingSlot: false, slotChoice: null }; }
@@ -418,7 +426,7 @@ Deno.serve(async (req) => {
     // ── 3. Look up lead ────────────────────────────────────
     const { data: lead } = await supabase.from("leads")
       .select("id, lead_name, lead_phone, lead_email, lead_address, lead_status")
-      .eq("business_id", businessId).eq("lead_email", senderEmail).maybeSingle();
+      .eq("business_id", businessId).eq("lead_email", senderEmail).is("deleted_at", null).maybeSingle();
 
     // ── 4. Find or create conversation ───────────────────────
     // Same-day rule: if a conversation exists for this email today, reuse it
@@ -430,6 +438,7 @@ Deno.serve(async (req) => {
       .eq("business_id", businessId)
       .eq("contact_email", senderEmail)
       .eq("channel", "email")
+      .is("deleted_at", null)
       .order("last_message_at", { ascending: false })
       .limit(1)
       .maybeSingle();
@@ -469,7 +478,7 @@ Deno.serve(async (req) => {
     // ── 5. Save inbound message ────────────────────────────
     await supabase.from("messages").insert({
       conversation_id: conversationId, business_id: businessId,
-      body: bodyForStorage, direction: "inbound", channel: "email",
+      body: bodyForStorage, direction: "inbound", channel: "email", subject: subject,
       status: "delivered", sender_name: verifiedName ?? senderEmail, twilio_sid: messageId || null,
     });
 
@@ -551,7 +560,7 @@ Deno.serve(async (req) => {
       // because AI struggles to connect "Yes!" or "Yep!" back to the suggested name
       const suggested = ci.suggested_name as string | null;
       const firstLine = userMessage.split(/\n/)[0].trim();
-      const isAffirmative = /^(yes|yep|yeah|correct|sure|yup|right|ok|okay|affirmative|that'?s? ?(me|right|correct)?)[.!,?]?$/i.test(firstLine);
+      const isAffirmative = /^(yes|yep|yeah|correct|sure|yup|right|ok|okay|affirmative|that'?s? ?(me|right|correct)?)\b/i.test(firstLine);
 
       let capturedName: string | null = null;
       if (suggested && isAffirmative) {
@@ -636,7 +645,7 @@ Deno.serve(async (req) => {
         await supabase.from("conversations").update({ contact_phone: phone, collecting_info: ci }).eq("id", conversationId);
         if (lead) await supabase.from("leads").update({ lead_phone: phone }).eq("id", lead.id);
         else {
-          const { data: fl } = await supabase.from("leads").select("id").eq("business_id", businessId).eq("lead_email", senderEmail).maybeSingle();
+          const { data: fl } = await supabase.from("leads").select("id").eq("business_id", businessId).eq("lead_email", senderEmail).is("deleted_at", null).maybeSingle();
           if (fl) await supabase.from("leads").update({ lead_phone: phone }).eq("id", fl.id);
         }
       }
@@ -650,7 +659,7 @@ Deno.serve(async (req) => {
         await supabase.from("conversations").update({ collecting_info: ci }).eq("id", conversationId);
         if (lead) await supabase.from("leads").update({ lead_address: addr }).eq("id", lead.id);
         else {
-          const { data: fl } = await supabase.from("leads").select("id").eq("business_id", businessId).eq("lead_email", senderEmail).maybeSingle();
+          const { data: fl } = await supabase.from("leads").select("id").eq("business_id", businessId).eq("lead_email", senderEmail).is("deleted_at", null).maybeSingle();
           if (fl) await supabase.from("leads").update({ lead_address: addr }).eq("id", fl.id);
         }
       }
@@ -686,7 +695,7 @@ Deno.serve(async (req) => {
           if (!chosen) {
             aiReply = `Sorry ${first}, please reply with 1, 2, or 3 to pick a time.`;
           } else {
-            const { data: fl } = await supabase.from("leads").select("*").eq("business_id", businessId).eq("lead_email", senderEmail).maybeSingle();
+            const { data: fl } = await supabase.from("leads").select("*").eq("business_id", businessId).eq("lead_email", senderEmail).is("deleted_at", null).maybeSingle();
             const hasPhone = fl?.lead_phone   || ci.phone_collected;
             const hasAddr  = fl?.lead_address || ci.address_collected;
 
@@ -705,25 +714,30 @@ Deno.serve(async (req) => {
                 ci = { ...ci, waiting_for: "last_name", pending_slot_choice: intent.slotChoice };
                 await supabase.from("conversations").update({ collecting_info: ci }).eq("id", conversationId);
               } else {
-                const { data: newAppt } = await supabase.from("appointments").insert({
+                const { data: newAppt, error: apptErr } = await supabase.from("appointments").insert({
                   business_id: businessId, calendar_id: bookingCalendarId ?? null,
                   appointment_name: `Appointment – ${currentName}`,
                   appointment_type: "Consultation", status: "New",
                   start_date_time: chosen.start, end_date_time: chosen.end,
-                  lead_name: currentName, lead_phone: fl?.lead_phone ?? "",
+                  lead_id: fl?.id ?? lead?.id ?? null, lead_name: currentName, lead_phone: fl?.lead_phone ?? "",
                   lead_email: senderEmail, notes: fl?.lead_address ? `Address: ${fl.lead_address}` : "",
                   confirmation_sent: false,
                 }).select().maybeSingle();
 
-                await supabase.from("conversations").update({ pending_booking_slots: null, collecting_info: { ...ci, waiting_for: null } }).eq("id", conversationId);
-                if (fl) await supabase.from("leads").update({ lead_status: "In Conversation", converted_to_appointment: true, appointment_scheduled_at: chosen.start }).eq("id", fl.id);
+                if (apptErr) {
+                  console.error(`receive-email: appointment insert failed for conversation ${conversationId}:`, apptErr);
+                  aiReply = `Sorry ${first}, something went wrong confirming that time. Someone from our team will reach out shortly to get you booked.`;
+                } else {
+                  await supabase.from("conversations").update({ pending_booking_slots: null, collecting_info: { ...ci, waiting_for: null } }).eq("id", conversationId);
+                  if (fl) await supabase.from("leads").update({ lead_status: "In Conversation", converted_to_appointment: true, appointment_scheduled_at: chosen.start }).eq("id", fl.id);
 
-                if (NOTIFY_OWNER_WEBHOOK) {
-                  fetch(NOTIFY_OWNER_WEBHOOK, { method: "POST", headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ appointment_id: newAppt?.id, lead_name: currentName, lead_email: senderEmail, lead_phone: fl?.lead_phone ?? "", lead_address: fl?.lead_address ?? "", appointment_time: chosen.label, business_id: businessId, channel: "email" }),
-                  }).catch((e) => console.error("Webhook:", e));
+                  if (NOTIFY_OWNER_WEBHOOK) {
+                    fetch(NOTIFY_OWNER_WEBHOOK, { method: "POST", headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ appointment_id: newAppt?.id, lead_name: currentName, lead_email: senderEmail, lead_phone: fl?.lead_phone ?? "", lead_address: fl?.lead_address ?? "", appointment_time: chosen.label, business_id: businessId, channel: "email" }),
+                    }).catch((e) => console.error("Webhook:", e));
+                  }
+                  aiReply = `You're all set, ${first}! Booked for ${chosen.label}. We look forward to seeing you!`;
                 }
-                aiReply = `You're all set, ${first}! Booked for ${chosen.label}. We look forward to seeing you!`;
               }
             }
           }
@@ -736,7 +750,7 @@ Deno.serve(async (req) => {
             ci = { ...ci, waiting_for: "last_name", booking_requested: true };
             await supabase.from("conversations").update({ collecting_info: ci }).eq("id", conversationId);
           } else {
-            const { data: fl } = await supabase.from("leads").select("*").eq("business_id", businessId).eq("lead_email", senderEmail).maybeSingle();
+            const { data: fl } = await supabase.from("leads").select("*").eq("business_id", businessId).eq("lead_email", senderEmail).is("deleted_at", null).maybeSingle();
             const hasPhone = fl?.lead_phone   || ci.phone_collected;
             const hasAddr  = fl?.lead_address || ci.address_collected;
 

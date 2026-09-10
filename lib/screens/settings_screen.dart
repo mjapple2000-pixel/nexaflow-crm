@@ -4403,6 +4403,11 @@ class _EmailConfigSectionState
   bool _saving = false;
   String? _successMsg, _error;
 
+  bool _gmailLoading = true;
+  bool _gmailConnected = false;
+  String? _gmailAccountEmail;
+  bool _gmailConnecting = false;
+
   @override
   void initState() {
     super.initState();
@@ -4410,6 +4415,166 @@ class _EmailConfigSectionState
         text: widget.business['admin_email'] ?? '');
     _forwardingCtrl = TextEditingController(
         text: widget.business['clean_forwarding_email'] ?? '');
+    _loadGmailConnect();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final uri = GoRouterState.of(context).uri;
+    final gmailParam = uri.queryParameters['gmail'];
+    if (gmailParam == 'connected' || gmailParam == 'error') {
+      _loadGmailConnect();
+    }
+    if (gmailParam == 'error' && uri.queryParameters['reason'] == 'missing_gmail_scope') {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text(
+              "Gmail wasn't fully connected — on Google's permission screen, "
+              "you need to check the box next to \"Read, compose, and send emails "
+              "from your Gmail account\" before clicking Continue. Try Connect Gmail again."),
+          behavior: SnackBarBehavior.floating,
+          duration: Duration(seconds: 8),
+        ));
+      });
+    }
+  }
+
+  Future<void> _loadGmailConnect() async {
+    setState(() => _gmailLoading = true);
+    try {
+      final businessId = widget.business['id'] as int?;
+      if (businessId == null) return;
+      final conn = await Supabase.instance.client
+          .from('oauth_connections')
+          .select('connection_status, connected_account_email')
+          .eq('business_id', businessId)
+          .eq('provider', 'gmail')
+          .filter('deleted_at', 'is', null)
+          .maybeSingle();
+      _gmailConnected = conn != null && conn['connection_status'] == 'active';
+      _gmailAccountEmail = conn?['connected_account_email'] as String?;
+    } catch (e) {
+      debugPrint('Gmail connect load error: $e');
+    } finally {
+      if (mounted) setState(() => _gmailLoading = false);
+    }
+  }
+
+  bool get _gmailPlanAllowed {
+    final plan = widget.business['plan'] as String? ?? '';
+    final isBeta = widget.business['is_beta'] as bool? ?? false;
+    return isBeta || plan == 'growth' || plan == 'pro';
+  }
+
+  Future<void> _connectGmail() async {
+    setState(() => _gmailConnecting = true);
+    try {
+      final session = Supabase.instance.client.auth.currentSession;
+      final res = await http.post(
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/gmail-oauth-connect'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ${session?.accessToken ?? ''}',
+        },
+        body: jsonEncode({'business_id': widget.business['id']}),
+      );
+      if (!mounted) return;
+      final body = jsonDecode(res.body) as Map<String, dynamic>;
+      if (res.statusCode == 200 && body['authorize_url'] != null) {
+        final uri = Uri.parse(body['authorize_url'] as String);
+        if (await canLaunchUrl(uri)) {
+          await launchUrl(uri, mode: LaunchMode.externalApplication);
+        }
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(body['error']?.toString() ?? 'Failed to start Gmail connection.'),
+          behavior: SnackBarBehavior.floating,
+        ));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Error: $e'),
+          behavior: SnackBarBehavior.floating,
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _gmailConnecting = false);
+    }
+  }
+
+  Future<void> _disconnectGmail() async {
+    bool confirmed = false;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.cardBg,
+        title: const Text('Disconnect Gmail?',
+            style: TextStyle(color: AppTheme.textPrimary)),
+        content: Text(
+          _gmailAccountEmail != null
+              ? 'This disconnects $_gmailAccountEmail. Replies will fall back to your dedicated NexaFlow address, and inbound mail to your Gmail will stop syncing.'
+              : 'This disconnects Gmail. Replies will fall back to your dedicated NexaFlow address.',
+          style: const TextStyle(color: AppTheme.textSecondary, height: 1.5),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(),
+              child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () {
+              confirmed = true;
+              Navigator.of(ctx, rootNavigator: true).pop();
+            },
+            style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red,
+                foregroundColor: Colors.white,
+                elevation: 0),
+            child: const Text('Disconnect'),
+          ),
+        ],
+      ),
+    );
+    if (!confirmed || !mounted) return;
+
+    setState(() => _gmailConnecting = true);
+    try {
+      final session = Supabase.instance.client.auth.currentSession;
+      final res = await http.delete(
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/gmail-oauth-connect'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ${session?.accessToken ?? ''}',
+        },
+        body: jsonEncode({'business_id': widget.business['id']}),
+      );
+      if (!mounted) return;
+      if (res.statusCode == 200) {
+        await _loadGmailConnect();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text('Gmail disconnected.'),
+              behavior: SnackBarBehavior.floating),
+        );
+      } else {
+        final body = jsonDecode(res.body) as Map<String, dynamic>;
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(body['error']?.toString() ?? 'Failed to disconnect Gmail.'),
+          behavior: SnackBarBehavior.floating,
+        ));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Error: $e'),
+          behavior: SnackBarBehavior.floating,
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _gmailConnecting = false);
+    }
   }
 
   @override
@@ -4446,15 +4611,40 @@ class _EmailConfigSectionState
       saving: _saving,
       successMsg: _successMsg,
       error: _error,
-      child: _SettingsGroup(title: 'Email Settings', children: [
-        _SettingsField(
-            label: 'Admin Email',
-            controller: _emailCtrl,
-            hint: 'admin@yourbusiness.com'),
-        _SettingsField(
-            label: 'Forwarding Email',
-            controller: _forwardingCtrl,
-            hint: 'forwarding@yourbusiness.com'),
+      child: Column(children: [
+        _SettingsGroup(title: 'Email Settings', children: [
+          _SettingsField(
+              label: 'Admin Email',
+              controller: _emailCtrl,
+              hint: 'admin@yourbusiness.com'),
+          _SettingsField(
+              label: 'Forwarding Email',
+              controller: _forwardingCtrl,
+              hint: 'forwarding@yourbusiness.com'),
+        ]),
+        const SizedBox(height: 24),
+        const Text('Connect Email',
+            style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: AppTheme.textSecondary)),
+        const SizedBox(height: 4),
+        const Text(
+            'Your dedicated NexaFlow address above always works with zero setup. Connecting Gmail is optional — it lets replies send from your real inbox instead.',
+            style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+        const SizedBox(height: 12),
+        _GmailConnectCard(
+          loading: _gmailLoading,
+          connecting: _gmailConnecting,
+          connected: _gmailConnected,
+          accountEmail: _gmailAccountEmail,
+          planAllowed: _gmailPlanAllowed,
+          currentPlan: widget.business['plan'] as String? ?? '',
+          onConnect: _connectGmail,
+          onDisconnect: _disconnectGmail,
+          onRefresh: _loadGmailConnect,
+          onUpgrade: () => context.go('/settings?section=billing'),
+        ),
       ]),
     );
   }
@@ -6574,6 +6764,168 @@ class _QuickBooksCard extends StatelessWidget {
                   tooltip: 'Refresh status',
                 ),
               ),
+            ]),
+    );
+  }
+}
+
+// ── Gmail Connect Card ────────────────────────────────────────────────────────
+
+class _GmailConnectCard extends StatelessWidget {
+  final bool loading;
+  final bool connecting;
+  final bool connected;
+  final String? accountEmail;
+  final bool planAllowed;
+  final String currentPlan;
+  final VoidCallback onConnect;
+  final VoidCallback onDisconnect;
+  final VoidCallback onRefresh;
+  final VoidCallback onUpgrade;
+
+  const _GmailConnectCard({
+    required this.loading,
+    required this.connecting,
+    required this.connected,
+    required this.accountEmail,
+    required this.planAllowed,
+    required this.currentPlan,
+    required this.onConnect,
+    required this.onDisconnect,
+    required this.onRefresh,
+    required this.onUpgrade,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    const gmailColor = Color(0xFFEA4335);
+
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 200),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: AppTheme.cardBg,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: connected ? gmailColor.withValues(alpha: 0.4) : AppTheme.borderColor,
+          width: connected ? 1.5 : 1,
+        ),
+        boxShadow: connected
+            ? [BoxShadow(color: gmailColor.withValues(alpha: 0.08), blurRadius: 12)]
+            : null,
+      ),
+      child: loading
+          ? const Center(
+              child: Padding(
+                padding: EdgeInsets.all(16),
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ))
+          : Row(children: [
+              Container(
+                width: 52, height: 52,
+                decoration: BoxDecoration(
+                  color: gmailColor.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: gmailColor.withValues(alpha: 0.15)),
+                ),
+                child: const Center(
+                  child: Icon(Icons.mail_outline, color: gmailColor, size: 24),
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Row(children: [
+                    const Text('Gmail',
+                        style: TextStyle(fontSize: 15,
+                            fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+                    const SizedBox(width: 10),
+                    if (connected)
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF10B981).withValues(alpha: 0.1),
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                          Icon(Icons.check_circle, size: 11, color: Color(0xFF10B981)),
+                          SizedBox(width: 4),
+                          Text('Connected', style: TextStyle(
+                              fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFF10B981))),
+                        ]),
+                      ),
+                  ]),
+                  const SizedBox(height: 3),
+                  Text(
+                    connected
+                        ? 'Syncing with $accountEmail. Replies send through Gmail and appear in the customer\'s real inbox thread.'
+                        : planAllowed
+                            ? 'Connect your Gmail so replies send from your real inbox and inbound mail lands in Conversations, same as your dedicated address.'
+                            : 'Available on Growth and Pro plans. Your dedicated NexaFlow email address works on every plan with zero setup.',
+                    style: const TextStyle(
+                        fontSize: 12, color: AppTheme.textSecondary, height: 1.4),
+                  ),
+                ]),
+              ),
+              const SizedBox(width: 16),
+              if (connected)
+                Row(mainAxisSize: MainAxisSize.min, children: [
+                  MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    child: OutlinedButton(
+                      onPressed: connecting ? null : onDisconnect,
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.red,
+                        side: const BorderSide(color: Colors.red),
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      ),
+                      child: connecting
+                          ? const SizedBox(
+                              width: 14, height: 14,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.red))
+                          : const Text('Disconnect', style: TextStyle(fontSize: 12)),
+                    ),
+                  ),
+                  MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    child: IconButton(
+                      onPressed: onRefresh,
+                      icon: const Icon(Icons.refresh_rounded,
+                          size: 18, color: AppTheme.textSecondary),
+                      tooltip: 'Refresh status',
+                    ),
+                  ),
+                ])
+              else
+                MouseRegion(
+                  cursor: SystemMouseCursors.click,
+                  child: GestureDetector(
+                    onTap: connecting ? null : (planAllowed ? onConnect : onUpgrade),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: planAllowed
+                            ? gmailColor.withValues(alpha: 0.1)
+                            : AppTheme.brand.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(
+                            color: planAllowed
+                                ? gmailColor.withValues(alpha: 0.3)
+                                : AppTheme.brand.withValues(alpha: 0.3)),
+                      ),
+                      child: connecting
+                          ? SizedBox(
+                              width: 14, height: 14,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: gmailColor))
+                          : Text(
+                              planAllowed ? 'Connect Gmail' : 'Upgrade to Connect',
+                              style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                  color: planAllowed ? gmailColor : AppTheme.brand)),
+                    ),
+                  ),
+                ),
             ]),
     );
   }

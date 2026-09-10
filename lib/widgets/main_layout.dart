@@ -259,7 +259,8 @@ class _AppNavBarState extends State<AppNavBar> {
       final res = await _supabase
           .from('conversations')
           .select('unread_count')
-          .eq('business_id', businessId);
+          .eq('business_id', businessId)
+          .filter('deleted_at', 'is', null);
       final total = (res as List)
           .fold(0, (s, c) => s + ((c['unread_count'] as int?) ?? 0));
       if (mounted) setState(() => _unreadCount = total);

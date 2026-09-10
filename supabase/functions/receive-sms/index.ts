@@ -319,6 +319,10 @@ No explanation. JSON only.`,
       temperature: 0,
     }),
   });
+  if (!res.ok) {
+    console.error("detectIntent: OpenAI error:", await res.text());
+    return { wantsBooking: false, isPickingSlot: false, slotChoice: null };
+  }
   const json = await res.json();
   try {
     const text = json.choices?.[0]?.message?.content?.trim() ?? "{}";
@@ -782,7 +786,7 @@ Deno.serve(async (req) => {
               const addressText = freshLead?.lead_address ?? "";
               const geo = addressText ? await geocodeAddress(addressText) : null;
 
-              const { data: newAppt } = await supabase.from("appointments").insert({
+              const { data: newAppt, error: apptErr } = await supabase.from("appointments").insert({
                 business_id:      businessId,
                 calendar_id:      bookingCalendarId ?? null,
                 appointment_name: `Appointment – ${currentName}`,
@@ -790,6 +794,7 @@ Deno.serve(async (req) => {
                 status:           "New",
                 start_date_time:  chosenSlot.start,
                 end_date_time:    chosenSlot.end,
+                lead_id:          freshLead?.id ?? lead?.id ?? null,
                 lead_name:        currentName,
                 lead_phone:       from,
                 lead_email:       freshLead?.lead_email ?? "",
@@ -799,39 +804,44 @@ Deno.serve(async (req) => {
                 confirmation_sent: false,
               }).select().maybeSingle();
 
-              // Clear pending slots
-              await supabase.from("conversations").update({
-                pending_booking_slots: null,
-                collecting_info: { ...collectingInfo, waiting_for: null },
-              }).eq("id", conversationId);
+              if (apptErr) {
+                console.error(`receive-sms: appointment insert failed for conversation ${conversationId}:`, apptErr);
+                aiReply = `Sorry ${first}, something went wrong confirming that time. Someone from our team will reach out shortly to get you booked.`;
+              } else {
+                // Clear pending slots
+                await supabase.from("conversations").update({
+                  pending_booking_slots: null,
+                  collecting_info: { ...collectingInfo, waiting_for: null },
+                }).eq("id", conversationId);
 
-              // Update lead
-              if (freshLead) {
-                await supabase.from("leads").update({
-                  lead_status:              "In Conversation",
-                  converted_to_appointment: true,
-                  appointment_scheduled_at: chosenSlot.start,
-                }).eq("id", freshLead.id);
+                // Update lead
+                if (freshLead) {
+                  await supabase.from("leads").update({
+                    lead_status:              "In Conversation",
+                    converted_to_appointment: true,
+                    appointment_scheduled_at: chosenSlot.start,
+                  }).eq("id", freshLead.id);
+                }
+
+                // Notify owner via Make webhook
+                if (NOTIFY_OWNER_WEBHOOK) {
+                  fetch(NOTIFY_OWNER_WEBHOOK, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      appointment_id:   newAppt?.id,
+                      lead_name:        currentName,
+                      lead_phone:       from,
+                      lead_email:       freshLead?.lead_email ?? "",
+                      lead_address:     freshLead?.lead_address ?? "",
+                      appointment_time: chosenSlot.label,
+                      business_id:      businessId,
+                    }),
+                  }).catch((e) => console.error("Webhook error:", e));
+                }
+
+                aiReply = `You're all set, ${first}! I've booked you for ${chosenSlot.label}. We'll see you then — feel free to text us if anything changes.`;
               }
-
-              // Notify owner via Make webhook
-              if (NOTIFY_OWNER_WEBHOOK) {
-                fetch(NOTIFY_OWNER_WEBHOOK, {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({
-                    appointment_id:   newAppt?.id,
-                    lead_name:        currentName,
-                    lead_phone:       from,
-                    lead_email:       freshLead?.lead_email ?? "",
-                    lead_address:     freshLead?.lead_address ?? "",
-                    appointment_time: chosenSlot.label,
-                    business_id:      businessId,
-                  }),
-                }).catch((e) => console.error("Webhook error:", e));
-              }
-
-              aiReply = `You're all set, ${first}! I've booked you for ${chosenSlot.label}. We'll see you then — feel free to text us if anything changes.`;
             }
           }
 

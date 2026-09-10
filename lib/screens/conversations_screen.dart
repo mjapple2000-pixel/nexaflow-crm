@@ -287,10 +287,12 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
               .from('conversations')
               .select()
               .eq('business_id', businessId)
+              .filter('deleted_at', 'is', null)
               .order('last_message_at', ascending: false)
           : await _supabase
               .from('conversations')
               .select()
+              .filter('deleted_at', 'is', null)
               .order('last_message_at', ascending: false);
 
       var convos = (res as List).map((e) => Conversation.fromJson(e)).toList();
@@ -658,14 +660,25 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
         final phone = lead['lead_phone'] as String? ?? convo.contactPhone;
         final now = DateTime.now().toUtc().toIso8601String();
 
-        // Load upcoming appointments by lead_phone
-        final apptRes = await _supabase
-            .from('appointments')
-            .select()
-            .eq('lead_phone', phone)
-            .gte('start_date_time', now)
-            .order('start_date_time', ascending: true)
-            .limit(3);
+        // Prefer the real lead_id link — exact, no guessing. Fall back to
+        // phone matching only for older appointments that predate lead_id
+        // being set on insert.
+        final leadIdForAppts = lead['id'] as int?;
+        final apptRes = leadIdForAppts != null
+            ? await _supabase
+                .from('appointments')
+                .select()
+                .eq('lead_id', leadIdForAppts)
+                .gte('start_date_time', now)
+                .order('start_date_time', ascending: true)
+                .limit(3)
+            : await _supabase
+                .from('appointments')
+                .select()
+                .eq('lead_phone', phone)
+                .gte('start_date_time', now)
+                .order('start_date_time', ascending: true)
+                .limit(3);
         if (!mounted) return;
 
         // Load open deals by lead_id
@@ -854,7 +867,6 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({
               'to': contactEmail,
-              'subject': 'Message from NexaFlow',
               'body': body,
               'conversation_id': _selected!.id,
             }),
@@ -1737,7 +1749,7 @@ Future<void> _updateTags(Conversation c, List<String> newTags) async {
           if (start != null) ...[
             const SizedBox(height: 3),
             Text(
-              '${_fmtDate(start)} · ${start.hour.toString().padLeft(2, '0')}:${start.minute.toString().padLeft(2, '0')}',
+              '${_fmtDate(start)} · ${_fmtHourMinute(start)}',
               style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
             ),
           ],
@@ -4251,6 +4263,13 @@ void _showComingSoon(String feature) {
       ];
       return '${months[dt.month - 1]} ${dt.day}';
     }
+  }
+
+  String _fmtHourMinute(DateTime dt) {
+    final hour12 = dt.hour % 12 == 0 ? 12 : dt.hour % 12;
+    final minute = dt.minute.toString().padLeft(2, '0');
+    final period = dt.hour < 12 ? 'AM' : 'PM';
+    return '$hour12:$minute $period';
   }
 
   String _fmtDate(DateTime dt) {
