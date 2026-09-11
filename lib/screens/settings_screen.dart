@@ -4645,6 +4645,55 @@ class _EmailConfigSectionState
           onRefresh: _loadGmailConnect,
           onUpgrade: () => context.go('/settings?section=billing'),
         ),
+        const SizedBox(height: 24),
+        const Text('Blocked & Allowed Senders',
+            style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: AppTheme.textSecondary)),
+        const SizedBox(height: 4),
+        const Text(
+            'Manually control which senders and topics reach Conversations, on top of the automatic spam/notification filter.',
+            style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+        const SizedBox(height: 12),
+        if (_gmailPlanAllowed) ...[
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              color: AppTheme.pageBg,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: AppTheme.borderColor),
+            ),
+            child: Row(children: [
+              const Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Filter automated and unverified emails',
+                        style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+                    SizedBox(height: 2),
+                    Text(
+                      'Turns off the entire spam/notification filter below, including your block and allow lists. Off means every inbound email reaches Conversations untouched.',
+                      style: TextStyle(fontSize: 11, color: AppTheme.textSecondary),
+                    ),
+                  ],
+                ),
+              ),
+              Switch(
+                value: widget.business['email_trust_filtering_enabled'] as bool? ?? true,
+                onChanged: (v) => widget.onSave({'email_trust_filtering_enabled': v}),
+                activeColor: AppTheme.brand,
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+            ]),
+          ),
+          const SizedBox(height: 12),
+        ],
+        _EmailSenderRulesSection(
+          businessId: widget.business['id'] as int,
+          planAllowed: _gmailPlanAllowed,
+          onUpgrade: () => context.go('/settings?section=billing'),
+        ),
       ]),
     );
   }
@@ -6927,6 +6976,357 @@ class _GmailConnectCard extends StatelessWidget {
                   ),
                 ),
             ]),
+    );
+  }
+}
+
+// ── Email Sender Rules (EM-05) ────────────────────────────────────────────────
+// Manages email_sender_rules: block/allow senders (domain or email — scope is
+// auto-detected from whether the input contains '@', so there's no dropdown
+// to configure) and blocked keywords/topics (subject + body substring match).
+// Allow always wins over block, including keyword blocks, matching the
+// "exceptions list" precedence built into receive-email/gmail-inbound-webhook.
+
+class _EmailSenderRulesSection extends StatefulWidget {
+  final int businessId;
+  final bool planAllowed;
+  final VoidCallback onUpgrade;
+
+  const _EmailSenderRulesSection({
+    required this.businessId,
+    required this.planAllowed,
+    required this.onUpgrade,
+  });
+
+  @override
+  State<_EmailSenderRulesSection> createState() => _EmailSenderRulesSectionState();
+}
+
+class _EmailSenderRulesSectionState extends State<_EmailSenderRulesSection> {
+  final _supabase = Supabase.instance.client;
+  bool _loading = true;
+  List<Map<String, dynamic>> _rules = [];
+
+  final _blockCtrl = TextEditingController();
+  final _allowCtrl = TextEditingController();
+  final _keywordCtrl = TextEditingController();
+  bool _addingBlock = false;
+  bool _addingAllow = false;
+  bool _addingKeyword = false;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.planAllowed) _loadRules();
+  }
+
+  @override
+  void didUpdateWidget(covariant _EmailSenderRulesSection oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.planAllowed && !oldWidget.planAllowed) _loadRules();
+  }
+
+  @override
+  void dispose() {
+    _blockCtrl.dispose();
+    _allowCtrl.dispose();
+    _keywordCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadRules() async {
+    setState(() => _loading = true);
+    try {
+      final res = await _supabase
+          .from('email_sender_rules')
+          .select()
+          .eq('business_id', widget.businessId)
+          .filter('deleted_at', 'is', null)
+          .order('created_at');
+      if (mounted) setState(() => _rules = List<Map<String, dynamic>>.from(res as List));
+    } catch (e) {
+      debugPrint('Email sender rules load error: $e');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _addRule({
+    required TextEditingController controller,
+    required String ruleType,
+    required bool isKeyword,
+    required ValueChanged<bool> setAdding,
+  }) async {
+    final raw = controller.text.trim();
+    if (raw.isEmpty) return;
+    setAdding(true);
+    try {
+      final value = raw.toLowerCase();
+      final scope = isKeyword ? 'keyword' : (value.contains('@') ? 'email' : 'domain');
+      await _supabase.from('email_sender_rules').insert({
+        'business_id': widget.businessId,
+        'rule_type': ruleType,
+        'match_value': value,
+        'match_scope': scope,
+      });
+      controller.clear();
+      await _loadRules();
+    } on PostgrestException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(e.code == '23505' ? 'That entry is already on the list.' : 'Error: ${e.message}'),
+          behavior: SnackBarBehavior.floating,
+        ));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Error: $e'),
+          behavior: SnackBarBehavior.floating,
+        ));
+      }
+    } finally {
+      if (mounted) setAdding(false);
+    }
+  }
+
+  Future<void> _deleteRule(int id) async {
+    try {
+      await _supabase
+          .from('email_sender_rules')
+          .update({'deleted_at': DateTime.now().toUtc().toIso8601String()})
+          .eq('id', id);
+      await _loadRules();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Error: $e'),
+          behavior: SnackBarBehavior.floating,
+        ));
+      }
+    }
+  }
+
+  Widget _ruleChip(Map<String, dynamic> rule, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: color.withValues(alpha: 0.3)),
+      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Text(rule['match_value'] as String,
+            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: color)),
+        const SizedBox(width: 6),
+        Clickable(
+          onTap: () => _deleteRule(rule['id'] as int),
+          child: Icon(Icons.close_rounded, size: 13, color: color),
+        ),
+      ]),
+    );
+  }
+
+  Widget _addRow({
+    required TextEditingController controller,
+    required String hint,
+    required bool adding,
+    required VoidCallback onAdd,
+    required Color color,
+  }) {
+    return Row(children: [
+      Expanded(
+        child: SizedBox(
+          height: 38,
+          child: TextField(
+            controller: controller,
+            onSubmitted: (_) => onAdd(),
+            style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+            decoration: InputDecoration(
+              hintText: hint,
+              hintStyle: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+              filled: true,
+              fillColor: AppTheme.pageBg,
+              isDense: true,
+              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                  borderSide: const BorderSide(color: AppTheme.borderColor)),
+              enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                  borderSide: const BorderSide(color: AppTheme.borderColor)),
+              focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8),
+                  borderSide: BorderSide(color: color, width: 1.5)),
+            ),
+          ),
+        ),
+      ),
+      const SizedBox(width: 8),
+      MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: ElevatedButton(
+          onPressed: adding ? null : onAdd,
+          style: ElevatedButton.styleFrom(
+            backgroundColor: color,
+            foregroundColor: Colors.white,
+            elevation: 0,
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          ),
+          child: adding
+              ? const SizedBox(width: 14, height: 14,
+                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+              : const Text('Add', style: TextStyle(fontSize: 12)),
+        ),
+      ),
+    ]);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!widget.planAllowed) {
+      return Container(
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          color: AppTheme.cardBg,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: AppTheme.borderColor),
+        ),
+        child: Row(children: [
+          Container(
+            width: 44, height: 44,
+            decoration: BoxDecoration(
+              color: AppTheme.brand.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            alignment: Alignment.center,
+            child: const Icon(Icons.block_rounded, size: 20, color: AppTheme.brand),
+          ),
+          const SizedBox(width: 14),
+          const Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('Blocked & Allowed Senders',
+                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+              SizedBox(height: 3),
+              Text('Available on Growth and Pro plans.',
+                  style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+            ]),
+          ),
+          const SizedBox(width: 12),
+          MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: ElevatedButton(
+              onPressed: widget.onUpgrade,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.brand,
+                foregroundColor: Colors.white,
+                elevation: 0,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              child: const Text('Upgrade'),
+            ),
+          ),
+        ]),
+      );
+    }
+
+    if (_loading) {
+      return Container(
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          color: AppTheme.cardBg,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: AppTheme.borderColor),
+        ),
+        child: const Center(child: CircularProgressIndicator(strokeWidth: 2)),
+      );
+    }
+
+    final blockRules = _rules.where((r) => r['rule_type'] == 'block' && r['match_scope'] != 'keyword').toList();
+    final allowRules = _rules.where((r) => r['rule_type'] == 'allow').toList();
+    final keywordRules = _rules.where((r) => r['match_scope'] == 'keyword').toList();
+
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: AppTheme.cardBg,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppTheme.borderColor),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Text('Blocked Senders',
+            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+        const SizedBox(height: 3),
+        const Text('Emails from these addresses or domains never create a conversation — just a quiet record you can review.',
+            style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+        const SizedBox(height: 10),
+        _addRow(
+          controller: _blockCtrl,
+          hint: 'spam@example.com or spam-domain.com',
+          adding: _addingBlock,
+          color: Colors.red,
+          onAdd: () => _addRule(
+            controller: _blockCtrl,
+            ruleType: 'block',
+            isKeyword: false,
+            setAdding: (v) => setState(() => _addingBlock = v),
+          ),
+        ),
+        if (blockRules.isNotEmpty) ...[
+          const SizedBox(height: 10),
+          Wrap(spacing: 8, runSpacing: 8, children: blockRules.map((r) => _ruleChip(r, Colors.red)).toList()),
+        ],
+        const SizedBox(height: 20),
+        const Divider(color: AppTheme.borderColor, height: 1),
+        const SizedBox(height: 20),
+
+        const Text('Allowed Senders (Exceptions)',
+            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+        const SizedBox(height: 3),
+        const Text('These senders always reach Conversations, even if they\'d otherwise be caught by a block rule above, a blocked keyword below, or the automatic spam/notification filter.',
+            style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+        const SizedBox(height: 10),
+        _addRow(
+          controller: _allowCtrl,
+          hint: 'customer@example.com or trusted-domain.com',
+          adding: _addingAllow,
+          color: const Color(0xFF10B981),
+          onAdd: () => _addRule(
+            controller: _allowCtrl,
+            ruleType: 'allow',
+            isKeyword: false,
+            setAdding: (v) => setState(() => _addingAllow = v),
+          ),
+        ),
+        if (allowRules.isNotEmpty) ...[
+          const SizedBox(height: 10),
+          Wrap(spacing: 8, runSpacing: 8, children: allowRules.map((r) => _ruleChip(r, const Color(0xFF10B981))).toList()),
+        ],
+        const SizedBox(height: 20),
+        const Divider(color: AppTheme.borderColor, height: 1),
+        const SizedBox(height: 20),
+
+        const Text('Blocked Keywords & Topics',
+            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+        const SizedBox(height: 3),
+        const Text('Any email whose subject or body contains one of these words or phrases is blocked — unless the sender is on the Allowed list above.',
+            style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+        const SizedBox(height: 10),
+        _addRow(
+          controller: _keywordCtrl,
+          hint: 'e.g. limited time offer, unsubscribe',
+          adding: _addingKeyword,
+          color: const Color(0xFFF59E0B),
+          onAdd: () => _addRule(
+            controller: _keywordCtrl,
+            ruleType: 'block',
+            isKeyword: true,
+            setAdding: (v) => setState(() => _addingKeyword = v),
+          ),
+        ),
+        if (keywordRules.isNotEmpty) ...[
+          const SizedBox(height: 10),
+          Wrap(spacing: 8, runSpacing: 8, children: keywordRules.map((r) => _ruleChip(r, const Color(0xFFF59E0B))).toList()),
+        ],
+      ]),
     );
   }
 }

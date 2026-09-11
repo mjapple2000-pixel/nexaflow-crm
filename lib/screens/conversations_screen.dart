@@ -328,7 +328,17 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
           setState(() => _selected = updated.first);
         }
       } else if (convos.isNotEmpty) {
-        _selectConversation(convos.first);
+        // Auto-select must respect the active subtab — otherwise the most
+        // recently-updated conversation across the WHOLE business gets
+        // opened by default even when it's Noise/archived and would never
+        // show up under the currently selected tab (e.g. "All").
+        var defaultCandidates = _subTab == 'archived'
+            ? convos.where((c) => c.status == 'archived').toList()
+            : convos.where((c) => c.status != 'archived').toList();
+        defaultCandidates = _subTab == 'automated'
+            ? defaultCandidates.where((c) => c.isAutomated).toList()
+            : defaultCandidates.where((c) => !c.isAutomated).toList();
+        if (defaultCandidates.isNotEmpty) _selectConversation(defaultCandidates.first);
       }
     } catch (e) {
       setState(() => _error = e.toString());
@@ -1475,9 +1485,9 @@ Future<void> _updateTags(Conversation c, List<String> newTags) async {
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Mark as Automated', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+        title: const Text('Mark as Noise', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
         content: Text(
-            'Move the conversation with ${c.contactName} to the Automated tab? AI will stop replying here, and it will be auto-deleted after 7 days of inactivity.'),
+            'Move the conversation with ${c.contactName} to Noise? AI will stop replying here, and it will be auto-deleted after 7 days of inactivity.'),
         actions: [
           TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
           TextButton(
@@ -2825,7 +2835,7 @@ Future<void> _updateTags(Conversation c, List<String> newTags) async {
             ),
             child: Row(
               children: [
-                _subTabItem('Automated', 'automated', badge: automatedUnread > 0 ? automatedUnread : null),
+                _subTabItem('Noise', 'automated', badge: automatedUnread > 0 ? automatedUnread : null),
                 _subTabItem('Archived', 'archived'),
               ],
             ),
@@ -3363,7 +3373,7 @@ Future<void> _updateTags(Conversation c, List<String> newTags) async {
           const SizedBox(width: 8),
           const Expanded(
             child: Text(
-              'This looks like an automated or notification email — AI did not reply. '
+              'This landed in Noise — AI did not reply. '
               'It will be removed from NexaFlow after 7 days of inactivity (the original stays in your email inbox).',
               style: TextStyle(fontSize: 12, color: Color(0xFF6366F1)),
             ),
@@ -3731,7 +3741,7 @@ Future<void> _updateTags(Conversation c, List<String> newTags) async {
                     child: OutlinedButton.icon(
                       onPressed: () => _markAsAutomated(c),
                       icon: const Icon(Icons.mark_email_unread_outlined, size: 14),
-                      label: const Text('Mark as Automated', style: TextStyle(fontSize: 12)),
+                      label: const Text('Mark as Noise', style: TextStyle(fontSize: 12)),
                       style: OutlinedButton.styleFrom(
                         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                         minimumSize: Size.zero,

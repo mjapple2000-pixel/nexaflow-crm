@@ -95,6 +95,62 @@ async function getRelevanceThreshold(): Promise<number> {
   return 0.9;
 }
 
+// ── EM-05: business-scoped sender allow/block/keyword rule check ──────
+// Same as receive-email's copy — returns 'block' | 'allow' | null. Allow
+// is checked first and always wins (the business's exceptions list),
+// overriding even a broader block or a keyword block for that sender.
+async function checkSenderRules(businessId: number, senderEmail: string, subject: string, bodyText: string): Promise<{ verdict: "allow" | "block" | null; matchedValue: string | null; matchedScope: string | null }> {
+  const domain = senderEmail.split("@")[1]?.toLowerCase() ?? "";
+  const subjectLower = (subject ?? "").toLowerCase();
+  const bodyLower = (bodyText ?? "").toLowerCase();
+  const { data: rules } = await supabase
+    .from("email_sender_rules")
+    .select("rule_type, match_value, match_scope")
+    .eq("business_id", businessId)
+    .is("deleted_at", null);
+
+  if (!rules || !rules.length) return { verdict: null, matchedValue: null, matchedScope: null };
+
+  const matches = (r: { match_scope: string; match_value: string }) => {
+    const v = r.match_value.toLowerCase();
+    if (r.match_scope === "email") return v === senderEmail;
+    if (r.match_scope === "domain") return v === domain;
+    if (r.match_scope === "keyword") return subjectLower.includes(v) || bodyLower.includes(v);
+    return false;
+  };
+
+  const allowRule = rules.find((r) => r.rule_type === "allow" && matches(r));
+  if (allowRule) return { verdict: "allow", matchedValue: allowRule.match_value, matchedScope: allowRule.match_scope };
+
+  // Sender-level blocks (email/domain) are reported before keyword blocks
+  // when a message matches both — same reasoning as receive-email's copy.
+  const blockRule =
+    rules.find((r) => r.rule_type === "block" && r.match_scope !== "keyword" && matches(r)) ??
+    rules.find((r) => r.rule_type === "block" && r.match_scope === "keyword" && matches(r));
+  if (blockRule) return { verdict: "block", matchedValue: blockRule.match_value, matchedScope: blockRule.match_scope };
+
+  return { verdict: null, matchedValue: null, matchedScope: null };
+}
+
+// ── EM-05: header-based trust check — same signals as receive-email's copy,
+// but reads from this file's already-lowercased headerMap (built from
+// msg.payload.headers) instead of parsing Mailgun's message-headers string.
+function checkTrustHeaders(headerMap: Record<string, string>): { trusted: boolean; reason: string | null } {
+  const authResults = (headerMap["authentication-results"] ?? "").toLowerCase();
+  if (/\bspf=fail\b/.test(authResults))   return { trusted: false, reason: "spf_fail" };
+  if (/\bdkim=fail\b/.test(authResults))  return { trusted: false, reason: "dkim_fail" };
+  if (/\bdmarc=fail\b/.test(authResults)) return { trusted: false, reason: "dmarc_fail" };
+
+  const autoSubmitted = (headerMap["auto-submitted"] ?? "").trim();
+  if (autoSubmitted && !/^no$/i.test(autoSubmitted)) return { trusted: false, reason: "auto_submitted" };
+
+  if (headerMap["list-id"]) return { trusted: false, reason: "list_id" };
+
+  if (/\bbulk\b/i.test(headerMap["precedence"] ?? "")) return { trusted: false, reason: "precedence_bulk" };
+
+  return { trusted: true, reason: null };
+}
+
 // Gmail's plain-text quoting wraps "On <date> ... wrote:" across two lines
 // (the email address often pushes it past one line), unlike Mailgun's
 // single-line version in receive-email's stripQuotedText - checks both.
@@ -482,14 +538,89 @@ Deno.serve(async (req) => {
       if (senderEmail.includes("noreply") || senderEmail.includes("no-reply") || senderEmail.includes("mailer-daemon")) continue;
 
       // ── EM-03: relevance score for automated/notification senders ──────
-      const relevanceScore = computeRelevanceScore(headers, senderEmail);
+      let relevanceScore = computeRelevanceScore(headers, senderEmail);
       const relevanceThreshold = await getRelevanceThreshold();
-      const isLowRelevance = relevanceScore < relevanceThreshold;
+      let isLowRelevance = relevanceScore < relevanceThreshold;
+
+      // ── EM-05: header-based trust filtering (Growth+ only) ──────────────
+      // businessId/biz are already resolved above this loop, so — unlike
+      // receive-email — there's no ordering conflict here. Same order as
+      // receive-email: allow list wins FIRST and short-circuits everything
+      // (the business's exceptions list — overrides even a broader block
+      // or a keyword block), then block rules (email/domain/keyword), then
+      // SPF/DKIM/DMARC + bulk headers. A block hit uses `continue` (not
+      // `return`) since other messages in this batch still need
+      // processing. A heuristic-fail folds into the same Noise bucket
+      // EM-03 already built by forcing relevanceScore to 0.
+      let trustStatus: string | null = null;
+      let trustReason: string | null = null;
+
+      // Body needs to be extracted here (moved up from its original spot
+      // below) so EM-05's keyword check has text to search — the rest of
+      // this file still uses the same `rawBody`/`userMessage` values
+      // further down, nothing else changes.
+      const rawBody = extractBody(msg.payload) || msg.snippet || "";
+      const userMessage = (stripQuotedText(rawBody) || rawBody).trim().slice(0, 800);
+
+      const { data: trustFilteringEnabled } = await supabase.rpc("check_plan_feature", {
+        p_business_id: businessId,
+        p_feature: "email_trust_filtering",
+      });
+
+      // Independent of the plan gate above — an owner can turn this off
+      // entirely even while staying on Growth/Pro.
+      const emailFilteringEnabledForBiz = biz.email_trust_filtering_enabled ?? true;
+
+      if (trustFilteringEnabled && emailFilteringEnabledForBiz) {
+        const senderRuleResult = await checkSenderRules(businessId, senderEmail, headers["subject"] ?? "", userMessage);
+
+        if (senderRuleResult.verdict === "block") {
+          // Dedup by Gmail message id — the existing dedup check earlier in
+          // this loop only looks at the messages table, which a blocked
+          // email never writes to, so a retried webhook delivery for the
+          // same email would otherwise create a duplicate audit row.
+          const { data: existingFiltered } = await supabase
+            .from("filtered_emails")
+            .select("id")
+            .eq("business_id", businessId)
+            .eq("external_message_id", gmailMessageId)
+            .maybeSingle();
+          if (existingFiltered) {
+            console.log(`gmail-inbound-webhook: EM-05 duplicate blocklist delivery for ${gmailMessageId} — skipping duplicate audit row`);
+            continue;
+          }
+          console.log(`gmail-inbound-webhook: EM-05 blocklist hit for ${senderEmail} (rule: ${senderRuleResult.matchedScope}:${senderRuleResult.matchedValue}) — no message/conversation created`);
+          await supabase.from("filtered_emails").insert({
+            business_id: businessId,
+            raw_to_address: emailAddress,
+            raw_from_address: fromHeader,
+            subject: headers["subject"] ?? "(no subject)",
+            rule_matched: `block:${senderRuleResult.matchedScope}:${senderRuleResult.matchedValue}`,
+            external_message_id: gmailMessageId,
+          });
+          continue;
+        }
+
+        if (senderRuleResult.verdict === "allow") {
+          trustStatus = "trusted";
+          trustReason = `allowlisted:${senderRuleResult.matchedScope}:${senderRuleResult.matchedValue}`;
+        } else {
+          const trustHeaderResult = checkTrustHeaders(headers);
+          if (!trustHeaderResult.trusted) {
+            const isBulkReason = trustHeaderResult.reason === "auto_submitted" || trustHeaderResult.reason === "list_id" || trustHeaderResult.reason === "precedence_bulk";
+            trustStatus = isBulkReason ? "filtered_bulk" : "filtered_auth_fail";
+            trustReason = trustHeaderResult.reason;
+            relevanceScore = 0;
+            isLowRelevance = true;
+            console.log(`gmail-inbound-webhook: EM-05 heuristic fail for ${senderEmail} (${trustReason}) — folding into Noise bucket`);
+          } else {
+            trustStatus = "trusted";
+          }
+        }
+      }
 
       const subject = headers["subject"] ?? "(no subject)";
       const originalMessageIdHeader = headers["message-id"] ?? "";
-      const rawBody = extractBody(msg.payload) || msg.snippet || "";
-      const userMessage = (stripQuotedText(rawBody) || rawBody).trim().slice(0, 800);
       const bodyForStorage = userMessage;
 
       // ── Lead lookup ──
@@ -542,6 +673,7 @@ Deno.serve(async (req) => {
         conversation_id: conversationId, business_id: businessId, body: bodyForStorage, direction: "inbound",
         channel: "email", status: "delivered", sender_name: verifiedName ?? senderEmail, subject: subject,
         email_source: "gmail", external_message_id: gmailMessageId, external_thread_id: msg.threadId ?? null,
+        trust_status: trustStatus, trust_reason: trustReason,
       });
 
       // ── EM-03: low-relevance short-circuit ──────────────────────────

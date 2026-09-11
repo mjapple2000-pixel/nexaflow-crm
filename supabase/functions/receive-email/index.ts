@@ -149,6 +149,88 @@ async function getRelevanceThreshold(): Promise<number> {
   return 0.9;
 }
 
+// ── EM-05: business-scoped sender allow/block/keyword rule check ──────
+// Returns 'block' | 'allow' | null. Allow is checked first and always
+// wins — it's the business's exceptions list, so a specific allowed
+// sender overrides even a broader block (e.g. block a whole domain, allow
+// one address on it) and overrides keyword blocks too.
+async function checkSenderRules(businessId: number, senderEmail: string, subject: string, bodyText: string): Promise<{ verdict: "allow" | "block" | null; matchedValue: string | null; matchedScope: string | null }> {
+  const domain = senderEmail.split("@")[1]?.toLowerCase() ?? "";
+  const subjectLower = (subject ?? "").toLowerCase();
+  const bodyLower = (bodyText ?? "").toLowerCase();
+  const { data: rules } = await supabase
+    .from("email_sender_rules")
+    .select("rule_type, match_value, match_scope")
+    .eq("business_id", businessId)
+    .is("deleted_at", null);
+
+  if (!rules || !rules.length) return { verdict: null, matchedValue: null, matchedScope: null };
+
+  const matches = (r: { match_scope: string; match_value: string }) => {
+    const v = r.match_value.toLowerCase();
+    if (r.match_scope === "email") return v === senderEmail;
+    if (r.match_scope === "domain") return v === domain;
+    if (r.match_scope === "keyword") return subjectLower.includes(v) || bodyLower.includes(v);
+    return false;
+  };
+
+  // Allow is checked FIRST and short-circuits everything below — this is
+  // the business's exceptions list. An allowlisted sender is exempt from
+  // every block rule (email, domain, AND keyword) and the header-heuristic
+  // check that runs after this function returns. Allow only applies at
+  // email/domain scope — the DB constraint enforces that 'keyword' can
+  // only pair with rule_type 'block', since an "allowed keyword" has no
+  // defined meaning here.
+  const allowRule = rules.find((r) => r.rule_type === "allow" && matches(r));
+  if (allowRule) return { verdict: "allow", matchedValue: allowRule.match_value, matchedScope: allowRule.match_scope };
+
+  // Sender-level blocks (email/domain) are reported before keyword blocks
+  // when a message matches both, so the audit trail shows the more
+  // specific, more useful reason — a fully blocked sender shouldn't get
+  // logged as "blocked for a keyword" just because it also happens to
+  // contain one.
+  const blockRule =
+    rules.find((r) => r.rule_type === "block" && r.match_scope !== "keyword" && matches(r)) ??
+    rules.find((r) => r.rule_type === "block" && r.match_scope === "keyword" && matches(r));
+  if (blockRule) return { verdict: "block", matchedValue: blockRule.match_value, matchedScope: blockRule.match_scope };
+
+  return { verdict: null, matchedValue: null, matchedScope: null };
+}
+
+// ── EM-05: header-based trust check — SPF/DKIM/DMARC hard fail, or bulk/
+// auto-submitted headers. Distinct from EM-03's continuous relevance score
+// above: this is a binary trust signal with a specific, diagnosable reason,
+// used to fold a message into the Noise bucket for a documented cause
+// rather than a heuristic guess. Runs only for senders with no explicit
+// allow/block rule match.
+function checkTrustHeaders(fields: Record<string, string>): { trusted: boolean; reason: string | null } {
+  let headers: Array<[string, string]> = [];
+  try {
+    const raw = fields["message-headers"];
+    if (raw) headers = JSON.parse(raw);
+  } catch {
+    headers = [];
+  }
+  const headerMap: Record<string, string> = {};
+  for (const [name, value] of headers) {
+    if (typeof name === "string") headerMap[name.toLowerCase()] = String(value ?? "");
+  }
+
+  const authResults = (headerMap["authentication-results"] ?? "").toLowerCase();
+  if (/\bspf=fail\b/.test(authResults))   return { trusted: false, reason: "spf_fail" };
+  if (/\bdkim=fail\b/.test(authResults))  return { trusted: false, reason: "dkim_fail" };
+  if (/\bdmarc=fail\b/.test(authResults)) return { trusted: false, reason: "dmarc_fail" };
+
+  const autoSubmitted = (headerMap["auto-submitted"] ?? "").trim();
+  if (autoSubmitted && !/^no$/i.test(autoSubmitted)) return { trusted: false, reason: "auto_submitted" };
+
+  if (headerMap["list-id"]) return { trusted: false, reason: "list_id" };
+
+  if (/\bbulk\b/i.test(headerMap["precedence"] ?? "")) return { trusted: false, reason: "precedence_bulk" };
+
+  return { trusted: true, reason: null };
+}
+
 // ── Strip quoted email reply chains ─────────────────────────────
 function stripQuotedText(body: string): string {
   const lines = body.split("\n");
@@ -426,9 +508,15 @@ Deno.serve(async (req) => {
     // Not a known-sender lookup — a brand-new real customer is just as
     // "unmatched" in the database as a bank alert, so database membership
     // can't distinguish them. This checks the email's own signals instead.
-    const relevanceScore = computeRelevanceScore(fields, senderEmail);
+    let relevanceScore = computeRelevanceScore(fields, senderEmail);
     const relevanceThreshold = await getRelevanceThreshold();
-    const isLowRelevance = relevanceScore < relevanceThreshold;
+    let isLowRelevance = relevanceScore < relevanceThreshold;
+
+    // EM-05 fields, populated after business match below once businessId is
+    // known — declared here (not const) so they're in scope for the message
+    // insert further down regardless of which branch sets them.
+    let trustStatus: string | null = null;
+    let trustReason: string | null = null;
 
     // ── 1. Match business ───────────────────────────────────────────
     // CRITICAL: never fall back to "any business" on a miss — that was
@@ -458,6 +546,83 @@ Deno.serve(async (req) => {
       return new Response("ok", { status: 200 });
     }
     const businessId = biz.id as number;
+
+    // ── EM-05: header-based trust filtering (Growth+ only) ──────────────
+    // Runs as early as possible once businessId is known — the per-business
+    // allow/block list and the plan gate both require it, which is why this
+    // can't run any earlier than the substring/EM-03 checks above (those
+    // don't need a resolved business at all). Order: allow list wins FIRST
+    // and short-circuits everything else — this is the business's
+    // exceptions list, so an allowlisted sender skips block rules (email,
+    // domain, AND keyword) and the header-heuristic check entirely. Then
+    // block rules (email/domain/keyword), then SPF/DKIM/DMARC + bulk
+    // headers. A block hit — sender or keyword — exits immediately with no
+    // message or conversation created at all, just an audit row in
+    // filtered_emails, since these are deliberate owner-configured rules.
+    // A heuristic-fail (no explicit rule, but headers look untrusted) is
+    // NOT dropped — it folds into the same Noise bucket EM-03 already built
+    // by forcing relevanceScore to 0, so it's still reversible and still
+    // gets swept by the 7-day auto-delete cron, just tagged with a specific
+    // trust_reason instead of a generic low relevance score.
+    const { data: trustFilteringEnabled } = await supabase.rpc("check_plan_feature", {
+      p_business_id: businessId,
+      p_feature: "email_trust_filtering",
+    });
+
+    // Independent of the plan gate above — an owner can turn this off
+    // entirely even while staying on Growth/Pro. Defaults to true so
+    // existing businesses keep current behavior with no action needed.
+    const emailFilteringEnabledForBiz = biz.email_trust_filtering_enabled ?? true;
+
+    if (trustFilteringEnabled && emailFilteringEnabledForBiz) {
+      const senderRuleResult = await checkSenderRules(businessId, senderEmail, subject, userMessage);
+
+      if (senderRuleResult.verdict === "block") {
+        // Dedup by Message-Id, mirroring the messages-table dedup further
+        // below (step 2) — this block path exits before reaching that
+        // check, so without this a retried webhook delivery for the same
+        // email creates a duplicate audit row every time.
+        if (messageId) {
+          const { data: existingFiltered } = await supabase
+            .from("filtered_emails")
+            .select("id")
+            .eq("business_id", businessId)
+            .eq("external_message_id", messageId)
+            .maybeSingle();
+          if (existingFiltered) {
+            console.log(`EM-05: duplicate blocklist delivery for Message-Id ${messageId} — skipping duplicate audit row`);
+            return new Response("ok", { status: 200 });
+          }
+        }
+        console.log(`EM-05: blocklist hit for ${senderEmail} (rule: ${senderRuleResult.matchedScope}:${senderRuleResult.matchedValue}) — no message/conversation created`);
+        await supabase.from("filtered_emails").insert({
+          business_id: businessId,
+          raw_to_address: rawTo,
+          raw_from_address: rawFrom,
+          subject: subject,
+          rule_matched: `block:${senderRuleResult.matchedScope}:${senderRuleResult.matchedValue}`,
+          external_message_id: messageId || null,
+        });
+        return new Response("ok", { status: 200 });
+      }
+
+      if (senderRuleResult.verdict === "allow") {
+        trustStatus = "trusted";
+        trustReason = `allowlisted:${senderRuleResult.matchedScope}:${senderRuleResult.matchedValue}`;
+      } else {
+        const trustHeaderResult = checkTrustHeaders(fields);
+        if (!trustHeaderResult.trusted) {
+          const isBulkReason = trustHeaderResult.reason === "auto_submitted" || trustHeaderResult.reason === "list_id" || trustHeaderResult.reason === "precedence_bulk";
+          trustStatus = isBulkReason ? "filtered_bulk" : "filtered_auth_fail";
+          trustReason = trustHeaderResult.reason;
+          relevanceScore = 0;
+          isLowRelevance = true;
+          console.log(`EM-05: heuristic fail for ${senderEmail} (${trustReason}) — folding into Noise bucket`);
+        } else {
+          trustStatus = "trusted";
+        }
+      }
+    }
 
     // ── Resolve the calendar this business books AI/email appointments into ──
     // receive-sms already does this; receive-email never did, so every
@@ -550,6 +715,7 @@ Deno.serve(async (req) => {
       conversation_id: conversationId, business_id: businessId,
       body: bodyForStorage, direction: "inbound", channel: "email", subject: subject,
       status: "delivered", sender_name: verifiedName ?? senderEmail, twilio_sid: messageId || null,
+      trust_status: trustStatus, trust_reason: trustReason,
     });
 
     // ── EM-03: low-relevance short-circuit ──────────────────────────
