@@ -1051,6 +1051,9 @@ Deno.serve(async (req) => {
     console.log(`Sending reply: "${aiReply.slice(0, 100)}"`);
 
     // ── Usage metering (AI Message Overage tracking) ─────────────
+    // Counted regardless of draft vs. autopilot — the OpenAI cost was
+    // already incurred generating aiReply above, independent of whether
+    // a human later approves, edits, or discards it.
     await supabase.rpc("increment_ai_usage", { p_business_id: businessId });
     if (!isAbuseBlocked) {
       await supabase.from("conversations").update({
@@ -1059,18 +1062,42 @@ Deno.serve(async (req) => {
       }).eq("id", conversationId);
     }
 
-    await sendEmail({ to: senderEmail, from: `${biz!.business_name ?? "Support"} <${replyFrom}>`, replyTo: replyFrom, subject: replySubj, text: aiReply });
-    await supabase.from("messages").insert({
-      conversation_id: conversationId, business_id: businessId, body: aiReply,
-      direction: "outbound", channel: "email", status: "delivered", sender_name: "AI Assistant", sent_via_twiml: true,
-    });
-    await supabase.from("conversations").update({ last_message: aiReply.slice(0, 200), last_message_at: new Date().toISOString() }).eq("id", conversationId);
-    
-    // Update lead last_message_at
-    if (lead?.id) {
-      await supabase.from("leads").update({
-        last_message_at: new Date().toISOString(),
-      }).eq("id", lead.id);
+    // ── EM-06: draft vs. autopilot ──────────────────────────────────
+    // Per-conversation override wins when set; otherwise falls back to
+    // the business-wide default. Deliberately does NOT apply to the
+    // abuse-breaker / beta-cap canned messages above (isBlocked) — those
+    // are operational notices telling the customer AI is stepping back,
+    // not a model-generated reply that benefits from human review, so
+    // they always send immediately regardless of the business's mode.
+    const effectiveReplyMode = !isBlocked
+      ? (conv!.ai_reply_mode_override as string | null) ?? (biz!.email_ai_reply_mode as string | null) ?? "autopilot"
+      : "autopilot";
+
+    if (effectiveReplyMode === "draft") {
+      console.log(`EM-06: draft mode — holding AI reply for review, conversation ${conversationId}`);
+      await supabase.from("messages").insert({
+        conversation_id: conversationId, business_id: businessId, body: aiReply,
+        direction: "outbound", channel: "email", status: "pending_review",
+        sender_name: "AI Assistant", sent_via_twiml: true, original_ai_body: aiReply,
+      });
+      // last_message / last_message_at intentionally NOT updated here —
+      // nothing has actually gone out to the customer yet, so the inbox
+      // preview should keep showing their own last message, not a draft
+      // only the business can see.
+    } else {
+      await sendEmail({ to: senderEmail, from: `${biz!.business_name ?? "Support"} <${replyFrom}>`, replyTo: replyFrom, subject: replySubj, text: aiReply });
+      await supabase.from("messages").insert({
+        conversation_id: conversationId, business_id: businessId, body: aiReply,
+        direction: "outbound", channel: "email", status: "delivered", sender_name: "AI Assistant", sent_via_twiml: true,
+      });
+      await supabase.from("conversations").update({ last_message: aiReply.slice(0, 200), last_message_at: new Date().toISOString() }).eq("id", conversationId);
+
+      // Update lead last_message_at
+      if (lead?.id) {
+        await supabase.from("leads").update({
+          last_message_at: new Date().toISOString(),
+        }).eq("id", lead.id);
+      }
     }
 
     if (isNewConvo) {

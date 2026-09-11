@@ -31,6 +31,7 @@ class Conversation {
   final List<String> tags;
   final bool dnd;
   final double? relevanceScore;
+  final String? aiReplyModeOverride;
 
   const Conversation({
     required this.id,
@@ -50,6 +51,7 @@ class Conversation {
     this.tags = const [],
     this.dnd = false,
     this.relevanceScore,
+    this.aiReplyModeOverride,
   });
 
   factory Conversation.fromJson(Map<String, dynamic> j) {
@@ -73,6 +75,7 @@ class Conversation {
       tags: (j['tags'] as List?)?.map((e) => e.toString()).toList() ?? [],
       dnd: j['dnd'] as bool? ?? false,
       relevanceScore: (j['relevance_score'] as num?)?.toDouble(),
+      aiReplyModeOverride: j['ai_reply_mode_override'] as String?,
     );
   }
 
@@ -91,10 +94,12 @@ class Conversation {
     bool? starred,
     List<String>? tags,
     bool? dnd,
+    String? aiReplyModeOverride,
   }) {
     return Conversation(
       id: id,
       contactId: contactId,
+      leadId: leadId,
       contactName: contactName,
       contactPhone: contactPhone,
       contactEmail: contactEmail,
@@ -109,6 +114,7 @@ class Conversation {
       tags: tags ?? this.tags,
       dnd: dnd ?? this.dnd,
       relevanceScore: relevanceScore,
+      aiReplyModeOverride: aiReplyModeOverride ?? this.aiReplyModeOverride,
     );
   }
 
@@ -149,6 +155,7 @@ class Message {
   bool get isOutbound => direction == 'outbound';
   bool get isAi => senderName == 'AI Assistant';
   bool get isPrivate => direction == 'internal';
+  bool get isPendingReview => status == 'pending_review';
 
   factory Message.fromJson(Map<String, dynamic> j) {
     String body = j['body'] as String? ?? '';
@@ -252,6 +259,12 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
   RealtimeChannel? _conversationChannel;
   final Set<int> _seenMessageIds = {};
 
+  // EM-06: business-wide default reply mode, loaded once. Effective mode
+  // for a given conversation is ai_reply_mode_override ?? this default.
+  String _businessEmailAiReplyMode = 'autopilot';
+  bool _approvingDraft = false;
+  Set<int> _conversationsWithPendingDraft = {};
+
   @override
   void initState() {
     super.initState();
@@ -259,6 +272,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
     _loadSavedViews();
     _loadConversations();
     _loadSnippets();
+    _loadBusinessReplyMode();
     _subscribeToConversations();
   }
 
@@ -321,6 +335,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
       }
 
       setState(() => _conversations = convos);
+      _loadPendingDraftConversations();
 
       if (_selected != null) {
         final updated = convos.where((c) => c.id == _selected!.id).toList();
@@ -345,6 +360,227 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
     } finally {
       if (mounted) setState(() => _loadingConvos = false);
     }
+  }
+
+  // EM-06: business-wide default — loaded once since it rarely changes
+  // mid-session; the Settings toggle is the source of truth going forward.
+  Future<void> _loadBusinessReplyMode() async {
+    try {
+      final businessId = await getActiveBusinessId();
+      if (businessId == null) return;
+      final res = await _supabase
+          .from('businesses')
+          .select('email_ai_reply_mode')
+          .eq('id', businessId)
+          .maybeSingle();
+      if (!mounted) return;
+      setState(() {
+        _businessEmailAiReplyMode = res?['email_ai_reply_mode'] as String? ?? 'autopilot';
+      });
+    } catch (e) {
+      debugPrint('Load business reply mode error: $e');
+    }
+  }
+
+  // EM-06: which conversations currently have a held AI draft awaiting
+  // review — drives the "Awaiting your review" badge in the conversation
+  // list. A lightweight second query rather than joining onto every
+  // conversation load, since pending drafts are the exception, not the norm.
+  Future<void> _loadPendingDraftConversations() async {
+    try {
+      final businessId = await getActiveBusinessId();
+      if (businessId == null) return;
+      final res = await _supabase
+          .from('messages')
+          .select('conversation_id')
+          .eq('business_id', businessId)
+          .eq('status', 'pending_review')
+          .filter('deleted_at', 'is', null);
+      if (!mounted) return;
+      setState(() {
+        _conversationsWithPendingDraft =
+            (res as List).map((r) => r['conversation_id'] as int).toSet();
+      });
+    } catch (e) {
+      debugPrint('Load pending draft conversations error: $e');
+    }
+  }
+
+  // EM-06: effective reply mode for a conversation — per-conversation
+  // override wins when set, otherwise the business-wide default.
+  String _effectiveReplyMode(Conversation c) =>
+      c.aiReplyModeOverride ?? _businessEmailAiReplyMode;
+
+  Future<void> _setReplyModeOverride(Conversation c, String? mode) async {
+    try {
+      await _supabase
+          .from('conversations')
+          .update({'ai_reply_mode_override': mode})
+          .eq('id', c.id);
+      // Built directly rather than via copyWith — copyWith's `?? this.x`
+      // pattern can't tell "didn't pass this param" from "explicitly
+      // passed null", so clearing the override (mode: null, "use business
+      // default") would silently keep the old value in local state until
+      // the next full reload instead of clearing it immediately.
+      final updated = Conversation(
+        id: c.id,
+        contactId: c.contactId,
+        leadId: c.leadId,
+        contactName: c.contactName,
+        contactPhone: c.contactPhone,
+        contactEmail: c.contactEmail,
+        channel: c.channel,
+        status: c.status,
+        lastMessage: c.lastMessage,
+        lastMessageAt: c.lastMessageAt,
+        unreadCount: c.unreadCount,
+        aiEnabled: c.aiEnabled,
+        assignedTo: c.assignedTo,
+        starred: c.starred,
+        tags: c.tags,
+        dnd: c.dnd,
+        relevanceScore: c.relevanceScore,
+        aiReplyModeOverride: mode,
+      );
+      final idx = _conversations.indexWhere((x) => x.id == c.id);
+      if (idx != -1 && mounted) {
+        setState(() {
+          _conversations[idx] = updated;
+          if (_selected?.id == c.id) _selected = updated;
+        });
+      }
+    } catch (e) {
+      debugPrint('Set reply mode override error: $e');
+    }
+  }
+
+  Future<void> _approveDraft(Message msg, {String? editedBody}) async {
+    if (_approvingDraft) return;
+    setState(() => _approvingDraft = true);
+    try {
+      final session = _supabase.auth.currentSession;
+      final res = await http.post(
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/approve-draft-reply'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ${session?.accessToken ?? ''}',
+        },
+        body: jsonEncode({
+          'message_id': msg.id,
+          if (editedBody != null) 'edited_body': editedBody,
+        }),
+      );
+      if (!mounted) return;
+      if (res.statusCode == 200) {
+        await _selectConversation(_selected!);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text('Reply sent.'),
+              behavior: SnackBarBehavior.floating,
+              duration: Duration(seconds: 2)),
+        );
+      } else {
+        final body = jsonDecode(res.body) as Map<String, dynamic>;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              content: Text('Failed to send: ${body['error'] ?? 'Unknown error'}'),
+              backgroundColor: Colors.red,
+              behavior: SnackBarBehavior.floating),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _approvingDraft = false);
+    }
+  }
+
+  Future<void> _discardDraft(Message msg) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Discard Draft', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+        content: const Text('Discard this AI-drafted reply? Nothing will be sent to the customer.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(false), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(true),
+            child: const Text('Discard', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+    try {
+      final session = _supabase.auth.currentSession;
+      final res = await http.post(
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/discard-draft-reply'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ${session?.accessToken ?? ''}',
+        },
+        body: jsonEncode({'message_id': msg.id}),
+      );
+      if (!mounted) return;
+      if (res.statusCode == 200) {
+        await _selectConversation(_selected!);
+      } else {
+        final body = jsonDecode(res.body) as Map<String, dynamic>;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              content: Text('Failed to discard: ${body['error'] ?? 'Unknown error'}'),
+              backgroundColor: Colors.red,
+              behavior: SnackBarBehavior.floating),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  void _showEditDraftDialog(Message msg) {
+    final ctrl = TextEditingController(text: msg.body);
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Edit & Send', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+        content: SizedBox(
+          width: 420,
+          child: TextField(
+            controller: ctrl,
+            maxLines: 6,
+            autofocus: true,
+            style: const TextStyle(fontSize: 13),
+            decoration: InputDecoration(
+              filled: true,
+              fillColor: AppTheme.pageBg,
+              contentPadding: const EdgeInsets.all(12),
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () {
+              final edited = ctrl.text.trim();
+              Navigator.of(ctx, rootNavigator: true).pop();
+              if (edited.isNotEmpty) _approveDraft(msg, editedBody: edited);
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.brand, foregroundColor: Colors.white),
+            child: const Text('Send'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _selectConversation(Conversation convo) async {
@@ -404,6 +640,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
           .from('messages')
           .select()
           .eq('conversation_id', convo.id)
+          .filter('deleted_at', 'is', null)
           .order('inserted_at', ascending: true);
       if (mounted) {
         final msgs = (res as List).map((e) => Message.fromJson(e)).toList();
@@ -417,6 +654,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
             .from('messages')
             .select()
             .eq('conversation_id', convo.id)
+            .filter('deleted_at', 'is', null)
             .order('created_at', ascending: true);
         if (mounted) {
           final msgs = (res as List).map((e) => Message.fromJson(e)).toList();
@@ -3139,7 +3377,7 @@ Future<void> _updateTags(Conversation c, List<String> newTags) async {
                             color: Colors.white)),
                   ),
                 ),
-                if (convo.aiEnabled && convo.channel == 'sms')
+                if (convo.aiEnabled)
                   Positioned(
                     right: 0,
                     bottom: 0,
@@ -3225,6 +3463,19 @@ Future<void> _updateTags(Conversation c, List<String> newTags) async {
                       _channelBadge(convo.channel),
                       const SizedBox(width: 6),
                       _statusDot(convo.status),
+                      if (_conversationsWithPendingDraft.contains(convo.id)) ...[
+                        const SizedBox(width: 6),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFF59E0B).withValues(alpha: 0.12),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: const Color(0xFFF59E0B).withValues(alpha: 0.4)),
+                          ),
+                          child: const Text('Awaiting review',
+                              style: TextStyle(fontSize: 9, fontWeight: FontWeight.w700, color: Color(0xFFF59E0B))),
+                        ),
+                      ],
                       const Spacer(),
                       GestureDetector(
                         onTap: () => _toggleStar(convo),
@@ -3351,7 +3602,11 @@ Future<void> _updateTags(Conversation c, List<String> newTags) async {
         _buildMessageHeader(),
         if (_selected!.isAutomated) _buildAutomatedBanner(),
         if (_selected!.dnd) _buildDndBanner(),
-        if (_selected!.channel == 'sms') _buildAiBanner(),
+        _buildAiBanner(),
+        // EM-06: only email has draft-mode wired up on the backend so far —
+        // shown only for that channel so the control doesn't imply SMS/chat
+        // support that doesn't exist yet.
+        if (_selected!.channel == 'email' && _selected!.aiEnabled) _buildReplyModeBanner(),
         Expanded(child: _buildMessageList()),
         _buildReplyBox(),
       ],
@@ -3488,6 +3743,63 @@ Future<void> _updateTags(Conversation c, List<String> newTags) async {
                           ),
                         ],
                       ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildReplyModeBanner() {
+    final effective = _effectiveReplyMode(_selected!);
+    final isDraft = effective == 'draft';
+    final isOverridden = _selected!.aiReplyModeOverride != null;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFF8B5CF6).withValues(alpha: 0.06),
+        border: Border(bottom: BorderSide(color: const Color(0xFF8B5CF6).withValues(alpha: 0.2))),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.rate_review_outlined, size: 14, color: Color(0xFF8B5CF6)),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              isDraft
+                  ? 'This conversation is in Draft mode — AI replies wait for approval before sending.${isOverridden ? ' (overridden for this conversation)' : ''}'
+                  : 'This conversation is in Autopilot — AI replies send automatically.${isOverridden ? ' (overridden for this conversation)' : ''}',
+              style: const TextStyle(fontSize: 11, color: Color(0xFF6D28D9)),
+            ),
+          ),
+          const SizedBox(width: 8),
+          MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: PopupMenuButton<String?>(
+              tooltip: 'Change reply mode for this conversation',
+              color: AppTheme.cardBg,
+              itemBuilder: (_) => [
+                const PopupMenuItem(value: 'autopilot', child: Text('Autopilot', style: TextStyle(fontSize: 12))),
+                const PopupMenuItem(value: 'draft', child: Text('Draft (review first)', style: TextStyle(fontSize: 12))),
+                if (isOverridden)
+                  const PopupMenuItem(value: null, child: Text('Use business default', style: TextStyle(fontSize: 12))),
+              ],
+              onSelected: (mode) => _setReplyModeOverride(_selected!, mode),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF8B5CF6),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text('Change', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.white)),
+                    SizedBox(width: 2),
+                    Icon(Icons.keyboard_arrow_down_rounded, size: 14, color: Colors.white),
+                  ],
+                ),
               ),
             ),
           ),
@@ -3898,6 +4210,7 @@ Future<void> _updateTags(Conversation c, List<String> newTags) async {
     final isNote = msg.isPrivate;
 
     if (isNote) return _buildNoteBubble(msg);
+    if (msg.isPendingReview) return _buildPendingReviewBubble(msg);
 
     final bubbleColor = isOut
         ? isAi
@@ -4083,6 +4396,102 @@ Future<void> _updateTags(Conversation c, List<String> newTags) async {
     );
   }
 
+  Widget _buildPendingReviewBubble(Message msg) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.end,
+        children: [
+          Flexible(
+            child: Container(
+              constraints: const BoxConstraints(maxWidth: 420),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF59E0B).withValues(alpha: 0.10),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: const Color(0xFFF59E0B).withValues(alpha: 0.5), width: 1.5),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.smart_toy_outlined, size: 11, color: Color(0xFFB45309)),
+                      const SizedBox(width: 4),
+                      const Text('AI Draft — awaiting your review',
+                          style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: Color(0xFFB45309))),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  Text(msg.body, style: const TextStyle(fontSize: 13, color: Color(0xFF78350F), height: 1.4)),
+                  const SizedBox(height: 10),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      MouseRegion(
+                        cursor: SystemMouseCursors.click,
+                        child: GestureDetector(
+                          onTap: _approvingDraft ? null : () => _approveDraft(msg),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF10B981),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: _approvingDraft
+                                ? const SizedBox(
+                                    width: 12, height: 12,
+                                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                                : const Text('Approve & Send',
+                                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.white)),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      MouseRegion(
+                        cursor: SystemMouseCursors.click,
+                        child: GestureDetector(
+                          onTap: () => _showEditDraftDialog(msg),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: AppTheme.brand,
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: const Text('Edit then Send',
+                                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.white)),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      MouseRegion(
+                        cursor: SystemMouseCursors.click,
+                        child: GestureDetector(
+                          onTap: () => _discardDraft(msg),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: Colors.transparent,
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(color: Colors.red.withValues(alpha: 0.5)),
+                            ),
+                            child: const Text('Discard',
+                                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.red)),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildNoteBubble(Message msg) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
@@ -4216,8 +4625,7 @@ Future<void> _updateTags(Conversation c, List<String> newTags) async {
                           style: TextStyle(
                               fontSize: 11, color: Color(0xFFF59E0B))),
                     ],
-                    if (_selected?.aiEnabled == true &&
-                        _sendChannel == 'sms') ...[
+                    if (_selected?.aiEnabled == true) ...[
                       const Spacer(),
                       const Icon(Icons.info_outline,
                           size: 12, color: AppTheme.textMuted),

@@ -4646,6 +4646,90 @@ class _EmailConfigSectionState
           onUpgrade: () => context.go('/settings?section=billing'),
         ),
         const SizedBox(height: 24),
+        const Text('AI Reply Behavior',
+            style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: AppTheme.textSecondary)),
+        const SizedBox(height: 4),
+        const Text(
+            'Controls whether AI-drafted email replies send automatically or wait for someone on your team to approve them first.',
+            style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+        const SizedBox(height: 12),
+        if (_gmailPlanAllowed)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              color: AppTheme.pageBg,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: AppTheme.borderColor),
+            ),
+            child: Row(children: [
+              const Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Review AI replies before sending',
+                        style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+                    SizedBox(height: 2),
+                    Text(
+                      'When on, AI writes a draft and waits for approval, edits, or discard before anything sends. When off, AI sends replies automatically as it always has.',
+                      style: TextStyle(fontSize: 11, color: AppTheme.textSecondary),
+                    ),
+                  ],
+                ),
+              ),
+              Switch(
+                value: (widget.business['email_ai_reply_mode'] as String? ?? 'autopilot') == 'draft',
+                onChanged: (v) => widget.onSave({'email_ai_reply_mode': v ? 'draft' : 'autopilot'}),
+                activeColor: AppTheme.brand,
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+            ]),
+          )
+        else
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: AppTheme.pageBg,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: AppTheme.borderColor),
+            ),
+            child: Row(children: [
+              Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: AppTheme.brand.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                alignment: Alignment.center,
+                child: const Icon(Icons.lock_outline_rounded, size: 16, color: AppTheme.brand),
+              ),
+              const SizedBox(width: 12),
+              const Expanded(
+                child: Text(
+                  'Draft-mode review is available on Growth and Pro plans. AI sends replies automatically on your current plan.',
+                  style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+                ),
+              ),
+              const SizedBox(width: 12),
+              MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: ElevatedButton(
+                  onPressed: () => context.go('/settings?section=billing'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppTheme.brand,
+                    foregroundColor: Colors.white,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  child: const Text('Upgrade'),
+                ),
+              ),
+            ]),
+          ),
+        const SizedBox(height: 24),
         const Text('Blocked & Allowed Senders',
             style: TextStyle(
                 fontSize: 13,
