@@ -557,6 +557,17 @@ Deno.serve(async (req) => {
         continue;
       }
 
+      // ── EM-04: email_received automation trigger ──────────────────────
+      // Same as receive-email's copy: fires on EVERY qualifying email,
+      // independent of new_lead below which only fires on a brand-new
+      // conversation. Placed before the AI-paused check so it still fires
+      // even when a human has paused AI on this conversation.
+      fetch(`${SUPABASE_URL}/functions/v1/run-automation`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${Deno.env.get("SUPABASE_ANON_KEY")}` },
+        body: JSON.stringify({ trigger_type: "email_received", business_id: businessId, payload: { lead_name: verifiedName ?? senderEmail, email: senderEmail, lead_id: lead?.id ?? null } }),
+      }).catch((e) => console.error("Automation (email_received):", e));
+
       if (!(conv!.ai_enabled ?? true)) continue; // AI paused on this conversation - leave for human
 
       const { data: recentMsgs } = await supabase.from("messages").select("body, direction")

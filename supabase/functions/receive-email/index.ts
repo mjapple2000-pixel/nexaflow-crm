@@ -565,6 +565,18 @@ Deno.serve(async (req) => {
       return new Response("ok", { status: 200 });
     }
 
+    // ── EM-04: email_received automation trigger ──────────────────────
+    // Fires on EVERY qualifying email (first one or the fiftieth one),
+    // independent of the new_lead trigger below which only fires on a
+    // brand-new conversation. Placed here — before the AI-paused check —
+    // so it still fires even when a human has paused the AI on this
+    // conversation; the email still arrived, that's what this reports.
+    fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/run-automation`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${Deno.env.get("SUPABASE_ANON_KEY")}` },
+      body: JSON.stringify({ trigger_type: "email_received", business_id: businessId, payload: { lead_name: verifiedName ?? senderEmail, email: senderEmail, lead_id: lead?.id ?? null } }),
+    }).catch((e) => console.error("Automation (email_received):", e));
+
     if (!(conv!.ai_enabled ?? true)) {
       console.log("AI paused"); return new Response("ok", { status: 200 });
     }

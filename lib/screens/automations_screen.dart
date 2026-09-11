@@ -319,6 +319,7 @@ class _AutomationCard extends StatelessWidget {
   String _triggerLabel(String type) {
     switch (type) {
       case 'new_lead': return 'New Lead';
+      case 'email_received': return 'Email Received';
       case 'form_submitted': return 'Form Submitted';
       case 'appointment_booked': return 'Appointment Booked';
       case 'status_changed': return 'Status Changed';
@@ -333,6 +334,7 @@ class _AutomationCard extends StatelessWidget {
   IconData _triggerIcon(String type) {
     switch (type) {
       case 'new_lead': return Icons.person_add_outlined;
+      case 'email_received': return Icons.mail_outline;
       case 'form_submitted': return Icons.dynamic_form_outlined;
       case 'appointment_booked': return Icons.calendar_today_outlined;
       case 'status_changed': return Icons.swap_horiz_outlined;
@@ -724,6 +726,8 @@ class _AutomationBuilderViewState extends State<_AutomationBuilderView> {
                         ('form_submitted', Icons.dynamic_form_outlined,
                             'Form Submitted'),
                         ('new_lead', Icons.person_add_outlined, 'New Lead'),
+                        ('email_received', Icons.mail_outline,
+                            'Email Received'),
                         ('status_changed', Icons.swap_horiz_outlined,
                             'Status Changed'),
                         ('referral_converted', Icons.card_giftcard_outlined,
@@ -961,6 +965,7 @@ class _TriggerNode extends StatelessWidget {
   String _label(String type) {
     switch (type) {
       case 'new_lead': return 'New Lead Created';
+      case 'email_received': return 'Email Received';
       case 'form_submitted': return 'Form Submitted';
       case 'appointment_booked': return 'Appointment Booked';
       case 'status_changed': return 'Lead Status Changed';
@@ -975,6 +980,7 @@ class _TriggerNode extends StatelessWidget {
   IconData _icon(String type) {
     switch (type) {
       case 'new_lead': return Icons.person_add_outlined;
+      case 'email_received': return Icons.mail_outline;
       case 'form_submitted': return Icons.dynamic_form_outlined;
       case 'appointment_booked': return Icons.calendar_today_outlined;
       case 'status_changed': return Icons.swap_horiz_outlined;

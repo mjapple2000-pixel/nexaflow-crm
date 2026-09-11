@@ -61,6 +61,11 @@ function buildOwnerNotification(triggerType: string, payload: any, business: any
         subject: `✅ Job Form Completed: ${payload.completed_by_name || "A technician"}`,
         message: `${payload.completed_by_name || "A technician"} just completed a job form${name !== "Someone" ? ` for ${name}` : ""} at ${bizName}.`,
       };
+    case "email_received":
+      return {
+        subject: `📧 New Email: ${name}`,
+        message: `${name} just emailed ${bizName}.`,
+      };
     default:
       return {
         subject: `⚡ Automation Triggered`,

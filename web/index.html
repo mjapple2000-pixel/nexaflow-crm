@@ -26,5 +26,114 @@
   }
   </script>
   <script src="flutter_bootstrap.js" async></script>
+
+  <!-- Auto-update detection: firebase.json already forces flutter_service_worker.js
+       to always be fetched fresh (no-cache). This compares that file's actual
+       content against what this browser last saw. On a fresh page load (e.g.
+       signing in), a mismatch is cleared and reloaded silently — safe, since
+       nothing was in progress. If a mismatch is found WHILE the app is already
+       open and running (the 60s interval check), it does NOT reload out from
+       under someone mid-form — it shows a dismissible banner instead, so
+       nobody loses unsaved work. -->
+  <script>
+    (function () {
+      if (!('serviceWorker' in navigator)) return;
+
+      var SW_URL = 'flutter_service_worker.js';
+      var STORAGE_KEY = 'nexaflow_sw_snapshot';
+      var isFirstCheck = true;
+
+      function clearOldCachesAndReload() {
+        caches.keys()
+          .then(function (keys) {
+            return Promise.all(keys.map(function (k) { return caches.delete(k); }));
+          })
+          .then(function () {
+            return navigator.serviceWorker.getRegistrations();
+          })
+          .then(function (regs) {
+            return Promise.all(regs.map(function (r) { return r.unregister(); }));
+          })
+          .then(function () {
+            window.location.reload();
+          });
+      }
+
+      function showUpdateBanner() {
+        if (document.getElementById('nexaflow-update-banner')) return; // already showing
+
+        var banner = document.createElement('div');
+        banner.id = 'nexaflow-update-banner';
+        banner.style.cssText =
+          'position:fixed;top:0;left:0;right:0;z-index:999999;' +
+          'background:#1A1A2E;color:#fff;font-family:sans-serif;font-size:13px;' +
+          'padding:10px 16px;display:flex;align-items:center;justify-content:center;' +
+          'gap:14px;flex-wrap:wrap;box-shadow:0 2px 8px rgba(0,0,0,0.2);';
+
+        var text = document.createElement('span');
+        text.textContent =
+          'A new version of NexaFlow is available. Refresh when you\u2019re ' +
+          'ready \u2014 if the button doesn\u2019t work, press Ctrl+Shift+R ' +
+          '(Windows) or Cmd+Shift+R (Mac) to refresh manually.';
+
+        var refreshBtn = document.createElement('button');
+        refreshBtn.textContent = 'Refresh Now';
+        refreshBtn.style.cssText =
+          'background:#6C63FF;color:#fff;border:none;border-radius:6px;' +
+          'padding:6px 14px;font-size:13px;font-weight:600;cursor:pointer;' +
+          'white-space:nowrap;';
+        refreshBtn.onclick = clearOldCachesAndReload;
+
+        var dismissBtn = document.createElement('button');
+        dismissBtn.textContent = 'Dismiss';
+        dismissBtn.style.cssText =
+          'background:transparent;color:#ccc;border:1px solid #555;' +
+          'border-radius:6px;padding:6px 14px;font-size:13px;cursor:pointer;' +
+          'white-space:nowrap;';
+        dismissBtn.onclick = function () { banner.remove(); };
+
+        banner.appendChild(text);
+        banner.appendChild(refreshBtn);
+        banner.appendChild(dismissBtn);
+        document.body.appendChild(banner);
+      }
+
+      function checkForNewVersion() {
+        fetch(SW_URL, { cache: 'no-store' })
+          .then(function (res) { return res.text(); })
+          .then(function (text) {
+            var previous = window.localStorage.getItem(STORAGE_KEY);
+
+            if (previous === null) {
+              window.localStorage.setItem(STORAGE_KEY, text);
+              isFirstCheck = false;
+              return;
+            }
+
+            if (previous !== text) {
+              window.localStorage.setItem(STORAGE_KEY, text);
+              if (isFirstCheck) {
+                // A fresh page load (e.g. signing in) landed on stale files.
+                // Nothing is in progress yet — safe to clear and reload silently.
+                clearOldCachesAndReload();
+              } else {
+                // The app was already open and running when a deploy happened.
+                // Don't reload out from under someone — just let them know.
+                showUpdateBanner();
+              }
+            }
+            isFirstCheck = false;
+          })
+          .catch(function () {
+            // Offline, or the request was blocked — just try again next interval.
+          });
+      }
+
+      window.addEventListener('load', function () {
+        checkForNewVersion();
+        setInterval(checkForNewVersion, 60000);
+      });
+    })();
+  </script>
 </body>
 </html>
