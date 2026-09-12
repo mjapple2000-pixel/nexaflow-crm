@@ -43,11 +43,23 @@ Deno.serve(async (req) => {
       .eq("user_id", userData.user.id)
       .maybeSingle();
 
-    // Superuser has no profiles row by design — approving/discarding a
-    // draft is a business-operator action, so this intentionally requires
-    // a real profile rather than special-casing the superuser bypass.
+    // Superuser has no profiles row by design. Per standing convention,
+    // every profile-gated action must have an explicit superuser bypass
+    // so Mike can always act on any business to help troubleshoot —
+    // checked against the superusers table by user_id, never a
+    // hardcoded email, so future superusers work automatically.
+    let isSuperuser = false;
     if (!profile) {
-      return new Response(JSON.stringify({ error: "No profile found for this account" }), {
+      const { data: su } = await supabase
+        .from("superusers")
+        .select("user_id")
+        .eq("user_id", userData.user.id)
+        .maybeSingle();
+      isSuperuser = !!su;
+    }
+
+    if (!profile && !isSuperuser) {
+      return new Response(JSON.stringify({ error: "No profile or superuser access found for this account" }), {
         status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
@@ -72,8 +84,9 @@ Deno.serve(async (req) => {
     }
 
     // Cross-tenant guard — the approving profile must belong to the same
-    // business the draft belongs to.
-    if (message.business_id !== profile.business_id) {
+    // business the draft belongs to. Superuser bypasses this entirely —
+    // they're allowed on any business by design.
+    if (!isSuperuser && message.business_id !== profile!.business_id) {
       return new Response(JSON.stringify({ error: "Not authorized for this business" }), {
         status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
@@ -124,7 +137,8 @@ Deno.serve(async (req) => {
     await supabase.from("messages").update({
       body: finalBody,
       status: "delivered",
-      approved_by: profile.id,
+      approved_by: isSuperuser ? null : profile!.id,
+      approved_by_superuser_email: isSuperuser ? userData.user.email ?? null : null,
       approved_at: nowIso,
     }).eq("id", message.id);
 

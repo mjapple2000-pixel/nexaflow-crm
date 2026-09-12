@@ -405,23 +405,26 @@ Deno.serve(async (req) => {
       .maybeSingle();
 
     // ── 3. Find or create conversation ────────────────────────
-    let { data: conversation } = lead?.id
-      ? await supabase
-          .from("conversations")
-          .select("*")
-          .eq("business_id", businessId)
-          .eq("lead_id", lead.id)
-          .eq("channel", "sms")
-          .maybeSingle()
-      : await supabase
-          .from("conversations")
-          .select("*")
-          .eq("business_id", businessId)
-          .eq("contact_phone", from)
-          .eq("channel", "sms")
-          .maybeSingle();
+    // Atomic RPC (advisory-lock guarded, channel-agnostic by lead) — one
+    // conversation per lead across every channel going forward. If a lead
+    // is already known, this looks for ANY existing conversation for that
+    // lead (regardless of channel) before falling back to an SMS-scoped
+    // anonymous lookup. See find_or_create_conversation in the DB.
+    const { data: convJson, error: convErr } = await supabase.rpc("find_or_create_conversation", {
+      p_business_id: businessId,
+      p_channel: "sms",
+      p_contact_email: lead?.lead_email ?? null,
+      p_contact_phone: from,
+      p_contact_name: lead?.lead_name ?? from,
+      p_lead_id: lead?.id ?? null,
+      p_last_message: body,
+      p_relevance_score: null,
+      p_name_verified: !!lead?.lead_name,
+    });
+    if (convErr || !convJson) throw new Error(`Find or create conversation: ${convErr?.message}`);
 
-    const isNewConvo = !conversation;
+    const isNewConvo = !!convJson.was_created;
+    let conversation: Record<string, any> | null = convJson;
 
     // Determine what name we currently know
     const knownName: string | null = conversation?.contact_name && conversation.contact_name !== from
@@ -431,35 +434,14 @@ Deno.serve(async (req) => {
     // collecting_info tracks what we're waiting for: { waiting_for: "name"|"email"|"address"|null }
     let collectingInfo: Record<string, any> = conversation?.collecting_info ?? {};
 
-    if (!conversation) {
-      const { data: newConvo, error: err } = await supabase
-        .from("conversations")
-        .insert({
-          business_id:     businessId,
-          contact_name:    knownName ?? from,
-          contact_phone:   from,
-          contact_email:   lead?.lead_email ?? null,
-          lead_id:         lead?.id ?? null,
-          channel:         "sms",
-          status:          "open",
-          ai_enabled:      true,
-          last_message:    body,
-          last_message_at: new Date().toISOString(),
-          unread_count:    1,
-          collecting_info: {},
-          pending_booking_slots: null,
-        })
-        .select().maybeSingle();
-      if (err) throw new Error(`Create conversation: ${err.message}`);
-      conversation = newConvo;
-    } else {
+    if (!isNewConvo) {
       await supabase.from("conversations").update({
         last_message:    body,
         last_message_at: new Date().toISOString(),
-        unread_count:    (conversation.unread_count ?? 0) + 1,
+        unread_count:    (conversation!.unread_count ?? 0) + 1,
         status:          "open",
-        lead_id:         conversation.lead_id ?? lead?.id ?? null,
-      }).eq("id", conversation.id);
+        lead_id:         conversation!.lead_id ?? lead?.id ?? null,
+      }).eq("id", conversation!.id);
     }
 
     const conversationId = conversation!.id as number;

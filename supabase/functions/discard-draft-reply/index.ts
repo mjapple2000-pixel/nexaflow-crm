@@ -36,8 +36,23 @@ Deno.serve(async (req) => {
       .eq("user_id", userData.user.id)
       .maybeSingle();
 
+    // Superuser has no profiles row by design. Per standing convention,
+    // every profile-gated action must have an explicit superuser bypass
+    // so Mike can always act on any business to help troubleshoot —
+    // checked against the superusers table by user_id, never a
+    // hardcoded email, so future superusers work automatically.
+    let isSuperuser = false;
     if (!profile) {
-      return new Response(JSON.stringify({ error: "No profile found for this account" }), {
+      const { data: su } = await supabase
+        .from("superusers")
+        .select("user_id")
+        .eq("user_id", userData.user.id)
+        .maybeSingle();
+      isSuperuser = !!su;
+    }
+
+    if (!profile && !isSuperuser) {
+      return new Response(JSON.stringify({ error: "No profile or superuser access found for this account" }), {
         status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
@@ -61,7 +76,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    if (message.business_id !== profile.business_id) {
+    if (!isSuperuser && message.business_id !== profile!.business_id) {
       return new Response(JSON.stringify({ error: "Not authorized for this business" }), {
         status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
@@ -75,14 +90,16 @@ Deno.serve(async (req) => {
 
     // Soft delete, matching the app-wide convention — the draft's content
     // stays queryable for audit purposes, just filtered out of the UI.
-    // Reuses approved_by/approved_at (see note in chat) to record who
-    // resolved the draft, since no separate discarded_by/at columns exist.
+    // Uses dedicated discarded_by/discarded_at columns (added 9/12) instead
+    // of reusing approve's approved_by/approved_at, so reporting can tell
+    // "who discards the most drafts" apart from "who approves them".
     const nowIso = new Date().toISOString();
     await supabase.from("messages").update({
       status: "discarded",
       deleted_at: nowIso,
-      approved_by: profile.id,
-      approved_at: nowIso,
+      discarded_by: isSuperuser ? null : profile!.id,
+      discarded_by_superuser_email: isSuperuser ? userData.user.email ?? null : null,
+      discarded_at: nowIso,
     }).eq("id", message.id);
 
     return new Response(JSON.stringify({ success: true }), {

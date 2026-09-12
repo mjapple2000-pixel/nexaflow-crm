@@ -4730,6 +4730,21 @@ class _EmailConfigSectionState
             ]),
           ),
         const SizedBox(height: 24),
+        const Text('Draft Review Alerts',
+            style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: AppTheme.textSecondary)),
+        const SizedBox(height: 4),
+        const Text(
+            'If an AI-drafted reply sits unreviewed for over an hour, NexaFlow can notify you so nothing gets missed.',
+            style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+        const SizedBox(height: 12),
+        _DraftAlertPreferences(
+          business: widget.business,
+          onSave: widget.onSave,
+        ),
+        const SizedBox(height: 24),
         const Text('Blocked & Allowed Senders',
             style: TextStyle(
                 fontSize: 13,
@@ -7060,6 +7075,130 @@ class _GmailConnectCard extends StatelessWidget {
                   ),
                 ),
             ]),
+    );
+  }
+}
+
+// ── Draft Review Alerts (EM-06 stale-draft notification prefs) ────────────────
+
+class _DraftAlertPreferences extends StatefulWidget {
+  final Map<String, dynamic> business;
+  final Future<void> Function(Map<String, dynamic>) onSave;
+  const _DraftAlertPreferences({required this.business, required this.onSave});
+
+  @override
+  State<_DraftAlertPreferences> createState() => _DraftAlertPreferencesState();
+}
+
+class _DraftAlertPreferencesState extends State<_DraftAlertPreferences> {
+  late final TextEditingController _phoneCtrl;
+  late final TextEditingController _emailCtrl;
+  bool _saving = false;
+  String? _successMsg;
+
+  @override
+  void initState() {
+    super.initState();
+    _phoneCtrl = TextEditingController(text: widget.business['draft_alert_phone'] ?? '');
+    _emailCtrl = TextEditingController(text: widget.business['draft_alert_email'] ?? '');
+  }
+
+  @override
+  void dispose() {
+    _phoneCtrl.dispose();
+    _emailCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _saveOverrides() async {
+    setState(() { _saving = true; _successMsg = null; });
+    try {
+      await widget.onSave({
+        'draft_alert_phone': _phoneCtrl.text.trim().isEmpty ? null : _phoneCtrl.text.trim(),
+        'draft_alert_email': _emailCtrl.text.trim().isEmpty ? null : _emailCtrl.text.trim(),
+      });
+      if (mounted) setState(() { _successMsg = 'Saved.'; _saving = false; });
+    } catch (e) {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final smsEnabled = widget.business['draft_alert_sms_enabled'] as bool? ?? true;
+    final emailEnabled = widget.business['draft_alert_email_enabled'] as bool? ?? true;
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppTheme.pageBg,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: AppTheme.borderColor),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          const Expanded(
+            child: Text('Text me (SMS)',
+                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+          ),
+          Switch(
+            value: smsEnabled,
+            onChanged: (v) => widget.onSave({'draft_alert_sms_enabled': v}),
+            activeColor: AppTheme.brand,
+            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+        ]),
+        const Divider(color: AppTheme.borderColor, height: 20),
+        Row(children: [
+          const Expanded(
+            child: Text('Email me',
+                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppTheme.textPrimary)),
+          ),
+          Switch(
+            value: emailEnabled,
+            onChanged: (v) => widget.onSave({'draft_alert_email_enabled': v}),
+            activeColor: AppTheme.brand,
+            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+        ]),
+        const SizedBox(height: 16),
+        const Divider(color: AppTheme.borderColor, height: 1),
+        const SizedBox(height: 16),
+        const Text('Send alerts to someone else (optional)',
+            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.textSecondary)),
+        const SizedBox(height: 4),
+        const Text(
+            'Leave blank to use the Owner Phone/Email from Business Profile.',
+            style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+        const SizedBox(height: 10),
+        _TwoCol(
+          left: _SettingsField(label: 'Alert Phone', controller: _phoneCtrl, hint: '(555) 555-5555'),
+          right: _SettingsField(label: 'Alert Email', controller: _emailCtrl, hint: 'manager@yourbusiness.com'),
+        ),
+        Row(children: [
+          MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: OutlinedButton(
+              onPressed: _saving ? null : _saveOverrides,
+              style: OutlinedButton.styleFrom(
+                foregroundColor: AppTheme.brand,
+                side: BorderSide(color: AppTheme.brand),
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+              ),
+              child: _saving
+                  ? const SizedBox(width: 14, height: 14,
+                      child: CircularProgressIndicator(strokeWidth: 2, color: AppTheme.brand))
+                  : const Text('Save'),
+            ),
+          ),
+          if (_successMsg != null) ...[
+            const SizedBox(width: 12),
+            const Icon(Icons.check_circle, color: Color(0xFF10B981), size: 16),
+            const SizedBox(width: 4),
+            Text(_successMsg!, style: const TextStyle(color: Color(0xFF10B981), fontSize: 13)),
+          ],
+        ]),
+      ]),
     );
   }
 }

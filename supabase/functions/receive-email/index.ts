@@ -496,7 +496,12 @@ Deno.serve(async (req) => {
 
     // userMessage = only what the person typed this turn, stripped of quoted history
     const userMessage    = (strippedText || stripQuotedText(bodyRaw) || bodyRaw).trim().slice(0, 800);
-    const bodyForStorage = bodyRaw || strippedText;
+    // Same extraction priority as userMessage — the display body must be the
+    // quote-stripped text, not the raw email with the whole reply chain
+    // attached. Found 9/12: replying to a threaded email showed the entire
+    // "On ... wrote:" block in the conversation bubble because this
+    // previously preferred bodyRaw (unstripped) over strippedText.
+    const bodyForStorage = (strippedText || stripQuotedText(bodyRaw) || bodyRaw).trim();
 
     console.log(`Inbound | from:${senderEmail} | userMessage:"${userMessage.slice(0, 120)}"`);
 
@@ -662,23 +667,28 @@ Deno.serve(async (req) => {
       .eq("business_id", businessId).eq("lead_email", senderEmail).is("deleted_at", null).maybeSingle();
 
     // ── 4. Find or create conversation ───────────────────────
-    // Same-day rule: if a conversation exists for this email today, reuse it
-    // regardless of Message-Id threading (handles email clients that break threads)
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
+    // Atomic RPC (advisory-lock guarded) — replaces a plain SELECT-then-
+    // INSERT to close a race where two near-simultaneous inbound emails
+    // from the same sender could both see "no existing conversation" and
+    // both insert, producing an empty duplicate (found + fixed 9/12 on
+    // Test Roofer, conv #39). See find_or_create_email_conversation in the DB.
+    const initialVerifiedForCreate = lead?.lead_name ?? null;
 
-    let { data: conv } = await supabase.from("conversations").select("*")
-      .eq("business_id", businessId)
-      .eq("contact_email", senderEmail)
-      .eq("channel", "email")
-      .is("deleted_at", null)
-      .order("last_message_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    const { data: convJson, error: convErr } = await supabase.rpc("find_or_create_conversation", {
+      p_business_id: businessId,
+      p_channel: "email",
+      p_contact_email: senderEmail,
+      p_contact_phone: lead?.lead_phone ?? null,
+      p_contact_name: initialVerifiedForCreate ?? senderEmail,
+      p_lead_id: lead?.id ?? null,
+      p_last_message: bodyForStorage.slice(0, 200),
+      p_relevance_score: relevanceScore,
+      p_name_verified: !!initialVerifiedForCreate,
+    });
+    if (convErr || !convJson) throw new Error(`Find or create conversation: ${convErr?.message}`);
 
-    // Reuse if: no conv at all creates new, OR existing conv updated today = reuse it
-    // If existing conv is from a previous day and name is verified, still reuse (same person)
-    const isNewConvo = !conv;
+    const isNewConvo = !!convJson.was_created;
+    let conv: Record<string, any> | null = convJson;
 
     // Local mutable state — never re-read conv after this point
     let ci: Record<string, any> = conv?.collecting_info ?? {};
@@ -686,26 +696,13 @@ Deno.serve(async (req) => {
     // verifiedName: only trust the lead table or name_verified flag on conversation
     let verifiedName: string | null = lead?.lead_name ?? (conv?.name_verified ? conv?.contact_name : null) ?? null;
 
-    if (!conv) {
-      const { data: newConv, error: err } = await supabase.from("conversations").insert({
-        business_id: businessId, contact_name: verifiedName ?? senderEmail,
-        contact_email: senderEmail, contact_phone: lead?.lead_phone ?? null,
-        lead_id: lead?.id ?? null, channel: "email", status: "open", ai_enabled: true,
-        last_message: bodyForStorage.slice(0, 200), last_message_at: new Date().toISOString(),
-        unread_count: 1, collecting_info: {}, pending_booking_slots: null,
-        name_verified: !!verifiedName, relevance_score: relevanceScore,
-        relevance_checked_at: new Date().toISOString(),
-      }).select().maybeSingle();
-      if (err) throw new Error(`Create conversation: ${err.message}`);
-      conv = newConv;
-      ci = {};
-    } else {
+    if (!isNewConvo) {
       await supabase.from("conversations").update({
         last_message: bodyForStorage.slice(0, 200), last_message_at: new Date().toISOString(),
-        unread_count: (conv.unread_count ?? 0) + 1, status: "open",
-        lead_id: conv.lead_id ?? lead?.id ?? null, relevance_score: relevanceScore,
+        unread_count: (conv!.unread_count ?? 0) + 1, status: "open",
+        lead_id: conv!.lead_id ?? lead?.id ?? null, relevance_score: relevanceScore,
         relevance_checked_at: new Date().toISOString(),
-      }).eq("id", conv.id);
+      }).eq("id", conv!.id);
     }
 
     const conversationId = conv!.id as number;

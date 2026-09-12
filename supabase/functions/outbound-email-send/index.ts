@@ -129,11 +129,18 @@ Deno.serve(async (req) => {
 
         if (businessId) {
           const bizRes = await fetch(
-            `${SUPABASE_URL}/rest/v1/businesses?id=eq.${businessId}&select=owner_email,business_name`,
+            `${SUPABASE_URL}/rest/v1/businesses?id=eq.${businessId}&select=owner_email,dedicated_email,business_name`,
             { headers: { 'apikey': SERVICE_ROLE_KEY } }
           )
           const bizRows = await bizRes.json()
-          if (bizRows?.[0]?.owner_email) replyTo = bizRows[0].owner_email
+          // Reply-To must be the business's dedicated inbound address, not
+          // owner_email — a customer hitting "reply" needs to land back in
+          // Mailgun's inbound pipeline (receive-email) so the thread stays
+          // in Conversations. Found 9/12: an approved EM-06 draft reply set
+          // Reply-To to owner_email, so the customer's reply silently landed
+          // in the business owner's personal inbox instead of NexaFlow.
+          if (bizRows?.[0]?.dedicated_email) replyTo = bizRows[0].dedicated_email
+          else if (bizRows?.[0]?.owner_email) replyTo = bizRows[0].owner_email
           if (bizRows?.[0]?.business_name) fromName = bizRows[0].business_name
         }
       } catch (lookupErr) {
