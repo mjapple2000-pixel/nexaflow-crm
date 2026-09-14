@@ -69,7 +69,7 @@ Deno.serve(async (req) => {
 
     const { data: targetProfile, error: targetError } = await supabase
       .from("profiles")
-      .select("id, email, full_name, business_id")
+      .select("id, email, full_name, business_id, businesses(business_name)")
       .eq("id", profile_id)
       .single();
 
@@ -117,10 +117,14 @@ Deno.serve(async (req) => {
 
     const mailgunKey = Deno.env.get("MAILGUN_API_KEY") ?? "";
     const mailgunDomain = Deno.env.get("MAILGUN_DOMAIN") ?? "mail.vantagecaretech.com";
+    // Matches invite-member's pattern — the actual business name, not a
+    // hardcoded product name, since the recipient is joining that
+    // business's account, not "Marjoru" as a company.
+    const resendBusinessName = (targetProfile as any).businesses?.business_name ?? "Marjoru";
 
     if (mailgunKey) {
       const mgForm = new URLSearchParams();
-      mgForm.append("from", `NexaFlow <no-reply@${mailgunDomain}>`);
+      mgForm.append("from", `${resendBusinessName} <no-reply@${mailgunDomain}>`);
       mgForm.append("to", targetProfile.email);
       mgForm.append("subject", "Your invite link (resent)");
       mgForm.append(

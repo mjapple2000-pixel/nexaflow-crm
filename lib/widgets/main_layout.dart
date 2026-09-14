@@ -65,14 +65,14 @@ class _DesktopOnlyScreen extends StatelessWidget {
                   borderRadius: BorderRadius.circular(18),
                 ),
                 alignment: Alignment.center,
-                child: const Text('N',
+                child: const Text('M',
                     style: TextStyle(
                         color: Colors.white,
                         fontSize: 36,
                         fontWeight: FontWeight.bold)),
               ),
               const SizedBox(height: 24),
-              const Text('NexaFlow',
+              const Text('Marjoru',
                   style: TextStyle(
                       fontSize: 22,
                       fontWeight: FontWeight.w700,
@@ -91,7 +91,7 @@ class _DesktopOnlyScreen extends StatelessWidget {
               ),
               const SizedBox(height: 10),
               const Text(
-                'NexaFlow is optimised for desktop.\nFor the best experience, open it on a larger screen.',
+                'Marjoru is optimised for desktop.\nFor the best experience, open it on a larger screen.',
                 style: TextStyle(
                     fontSize: 14,
                     color: AppTheme.textSecondary,
@@ -1405,10 +1405,10 @@ class _LogoAreaState extends State<_LogoArea> {
 
   @override
   Widget build(BuildContext context) {
-    final name = (_businessName != null && _businessName!.isNotEmpty) ? _businessName! : 'NexaFlow';
+    final name = (_businessName != null && _businessName!.isNotEmpty) ? _businessName! : 'Marjoru';
     final color = _brandColor ?? AppTheme.brand;
     final hasLogo = _logoUrl != null && _logoUrl!.isNotEmpty;
-    final initial = name.isNotEmpty ? name[0].toUpperCase() : 'N';
+    final initial = name.isNotEmpty ? name[0].toUpperCase() : 'M';
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),

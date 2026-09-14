@@ -105,7 +105,7 @@ Deno.serve(async (req) => {
       `Hours: ${hours.toFixed(1)}`,
     ];
     if (request.note) lines.push(`Note: ${request.note}`);
-    lines.push("", "Review it in NexaFlow under Settings → PTO Policy → Time Off Requests.", "", `— ${businessName}`);
+    lines.push("", "Review it in Marjoru under Settings → PTO Policy → Time Off Requests.", "", `— ${businessName}`);
 
     const form = new URLSearchParams();
     form.append("from", `${businessName} <no-reply@${MAILGUN_DOMAIN}>`);

@@ -193,12 +193,12 @@ Deno.serve(async (req) => {
     if (MAILGUN_API_KEY && inviteLink) {
       try {
         const mgForm = new URLSearchParams()
-        mgForm.append('from', `${business_name ?? 'NexaFlow'} <no-reply@${MAILGUN_DOMAIN}>`)
+        mgForm.append('from', `${business_name ?? 'Marjoru'} <no-reply@${MAILGUN_DOMAIN}>`)
         mgForm.append('to', email)
-        mgForm.append('subject', `You've been invited to join ${business_name ?? 'NexaFlow'}`)
+        mgForm.append('subject', `You've been invited to join ${business_name ?? 'Marjoru'}`)
         mgForm.append('html', `
           <p>Hi ${full_name ?? 'there'},</p>
-          <p>You've been invited to join <strong>${business_name ?? 'NexaFlow'}</strong> as a ${role ?? 'member'}.</p>
+          <p>You've been invited to join <strong>${business_name ?? 'Marjoru'}</strong> as a ${role ?? 'member'}.</p>
           <p><a href="${inviteLink}">Click here to set up your account</a></p>
         `)
 

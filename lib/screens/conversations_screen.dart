@@ -1104,7 +1104,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
       final isNote = _composeMode == 'note';
 
       // Insert to DB
-      await _supabase.from('messages').insert({
+      final insertedMessage = await _supabase.from('messages').insert({
         'conversation_id': _selected!.id,
         'business_id': businessId,
         'body': body,
@@ -1114,7 +1114,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
         'sender_name': _currentUserFullName ?? 'You',
         'sent_via_twiml': isNote ? true : false,
         'private': isNote,
-      });
+      }).select('id').single();
 
       if (!isNote && _sendChannel == 'email') {
         final contactEmail = _selected!.contactEmail ?? '';
@@ -1126,6 +1126,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
               'to': contactEmail,
               'body': body,
               'conversation_id': _selected!.id,
+              'message_id': insertedMessage['id'],
             }),
           );
         }
@@ -4538,6 +4539,24 @@ Future<void> _updateTags(Conversation c, List<String> newTags) async {
     final isClosed = _selected?.status == 'closed';
     final isDnd = _selected?.dnd == true;
     final isNote = _composeMode == 'note';
+    // Gate SMS/Email by what's actually on file for this lead — prefer the
+    // loaded lead record (source of truth) and fall back to the
+    // conversation's own contact fields for conversations with no linked
+    // lead yet. Previously both buttons always showed regardless of
+    // whether the lead had a phone or email on file.
+    final hasPhone = ((_contactDetails?['lead_phone'] as String?)?.isNotEmpty ?? false) ||
+        (_selected?.contactPhone.isNotEmpty ?? false);
+    final hasEmail = ((_contactDetails?['lead_email'] as String?)?.isNotEmpty ?? false) ||
+        (_selected?.contactEmail?.isNotEmpty ?? false);
+    if (_sendChannel == 'email' && !hasEmail && hasPhone) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) setState(() => _sendChannel = 'sms');
+      });
+    } else if (_sendChannel == 'sms' && !hasPhone && hasEmail) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) setState(() => _sendChannel = 'email');
+      });
+    }
 
     return Container(
       decoration: const BoxDecoration(
@@ -4593,7 +4612,7 @@ Future<void> _updateTags(Conversation c, List<String> newTags) async {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                if (!isNote) Row(
+                if (!isNote && (hasPhone || hasEmail)) Row(
                   children: [
                     const Text('Send via:',
                         style: TextStyle(
@@ -4601,19 +4620,21 @@ Future<void> _updateTags(Conversation c, List<String> newTags) async {
                             color: AppTheme.textSecondary,
                             fontWeight: FontWeight.w500)),
                     const SizedBox(width: 8),
-                    _ChannelToggleButton(
-                      label: 'SMS',
-                      icon: Icons.sms_outlined,
-                      selected: _sendChannel == 'sms',
-                      onTap: () => setState(() => _sendChannel = 'sms'),
-                    ),
-                    const SizedBox(width: 6),
-                    _ChannelToggleButton(
-                      label: 'Email',
-                      icon: Icons.email_outlined,
-                      selected: _sendChannel == 'email',
-                      onTap: () => setState(() => _sendChannel = 'email'),
-                    ),
+                    if (hasPhone)
+                      _ChannelToggleButton(
+                        label: 'SMS',
+                        icon: Icons.sms_outlined,
+                        selected: _sendChannel == 'sms',
+                        onTap: () => setState(() => _sendChannel = 'sms'),
+                      ),
+                    if (hasPhone) const SizedBox(width: 6),
+                    if (hasEmail)
+                      _ChannelToggleButton(
+                        label: 'Email',
+                        icon: Icons.email_outlined,
+                        selected: _sendChannel == 'email',
+                        onTap: () => setState(() => _sendChannel = 'email'),
+                      ),
                     if (_sendChannel == 'email' &&
                         (_selected?.contactEmail == null ||
                             _selected!.contactEmail!.isEmpty)) ...[

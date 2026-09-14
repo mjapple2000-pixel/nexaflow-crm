@@ -121,6 +121,7 @@ Deno.serve(async (req) => {
         to: conversation.contact_email,
         body: finalBody,
         conversation_id: conversation.id,
+        message_id: message.id,
       }),
     });
 

@@ -394,9 +394,24 @@ class _PublicBookingScreenState extends State<PublicBookingScreen> {
                 if (_step == 0) _buildStepSelectSlot(),
                 if (_step == 1) _buildStepCollectInfo(),
                 if (_step == 2) _buildStepConfirmation(),
+                const SizedBox(height: 24),
+                _buildPoweredByFooter(),
               ],
             ),
           ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPoweredByFooter() {
+    return const Center(
+      child: Text(
+        'Powered by Marjoru',
+        style: TextStyle(
+          fontSize: 11,
+          color: Color(0xFF9CA3AF),
+          letterSpacing: 0.3,
         ),
       ),
     );

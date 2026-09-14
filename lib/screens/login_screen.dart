@@ -182,14 +182,14 @@ class _LoginScreenState extends State<LoginScreen> {
                       borderRadius: BorderRadius.circular(16),
                     ),
                     alignment: Alignment.center,
-                    child: const Text('N',
+                    child: const Text('M',
                         style: TextStyle(
                             color: Colors.white,
                             fontSize: 32,
                             fontWeight: FontWeight.bold)),
                   ),
                   const SizedBox(height: 20),
-                  const Text('NexaFlow',
+                  const Text('Marjoru',
                       style: TextStyle(
                           color: Colors.white,
                           fontSize: 28,
@@ -247,7 +247,7 @@ class _LoginScreenState extends State<LoginScreen> {
                             fontWeight: FontWeight.bold,
                             color: AppTheme.textPrimary)),
                     const SizedBox(height: 8),
-                    const Text('Sign in to your NexaFlow account',
+                    const Text('Sign in to your Marjoru account',
                         style: TextStyle(
                             fontSize: 14,
                             color: AppTheme.textSecondary)),
@@ -473,7 +473,7 @@ class _LoginScreenState extends State<LoginScreen> {
                         Padding(
                           padding:
                               const EdgeInsets.symmetric(horizontal: 12),
-                          child: Text('New to NexaFlow?',
+                          child: Text('New to Marjoru?',
                               style: TextStyle(
                                   fontSize: 12,
                                   color: AppTheme.textSecondary)),

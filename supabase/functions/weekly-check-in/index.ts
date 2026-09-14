@@ -29,7 +29,7 @@ function buildEmailHtml(ownerName: string) {
 
 <p>💬 <strong>How has VantageCareTech been working for your business so far?</strong><br>
 💡 <strong>Is there anything that's been confusing, frustrating, or could work better?</strong><br>
-⭐ <strong>Are there any features or tools you wish NexaFlow had?</strong></p>
+⭐ <strong>Are there any features or tools you wish Marjoru had?</strong></p>
 
 <p>Your feedback directly shapes what we build next. We're a small, dedicated team and every piece of feedback we receive goes straight into our roadmap. No suggestion is too big or too small.</p>
 

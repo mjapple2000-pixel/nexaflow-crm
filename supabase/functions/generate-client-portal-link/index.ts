@@ -143,7 +143,7 @@ Deno.serve(async (req) => {
       if (MAILGUN_API_KEY) {
         try {
           const mgForm = new URLSearchParams()
-          mgForm.append('from', `${business?.business_name ?? 'NexaFlow'} <no-reply@${MAILGUN_DOMAIN}>`)
+          mgForm.append('from', `${business?.business_name ?? 'Marjoru'} <no-reply@${MAILGUN_DOMAIN}>`)
           mgForm.append('to', lead.lead_email)
           mgForm.append('subject', `Your client portal from ${business?.business_name ?? 'your service provider'}`)
           mgForm.append('html', `

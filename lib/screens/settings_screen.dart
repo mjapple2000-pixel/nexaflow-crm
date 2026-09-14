@@ -833,7 +833,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         return _MyStaffSection(
           businessId: _businessId!,
           businessName:
-              _business['business_name'] as String? ?? 'NexaFlow',
+              _business['business_name'] as String? ?? 'Marjoru',
         );
       case 7:
         return _NotificationsSection(
@@ -2422,7 +2422,7 @@ class _MyStaffSection extends StatefulWidget {
   final int businessId;
   final String businessName;
   const _MyStaffSection(
-      {required this.businessId, this.businessName = 'NexaFlow'});
+      {required this.businessId, this.businessName = 'Marjoru'});
 
   @override
   State<_MyStaffSection> createState() =>
@@ -4305,7 +4305,7 @@ class _AIPhoneSectionState extends State<_AIPhoneSection> {
     return _SectionShell(
       title: 'AI Phone Number',
       subtitle:
-          'A dedicated number used by NexaFlow to send and receive SMS.',
+          'A dedicated number used by Marjoru to send and receive SMS.',
       onSave: _save,
       saving: _saving,
       successMsg: _successMsg,
@@ -4406,7 +4406,14 @@ class _EmailConfigSectionState
   bool _gmailLoading = true;
   bool _gmailConnected = false;
   String? _gmailAccountEmail;
+  String? _gmailConnectionStatus;
   bool _gmailConnecting = false;
+
+  bool _outlookLoading = true;
+  bool _outlookConnected = false;
+  String? _outlookAccountEmail;
+  String? _outlookConnectionStatus;
+  bool _outlookConnecting = false;
 
   @override
   void initState() {
@@ -4416,6 +4423,7 @@ class _EmailConfigSectionState
     _forwardingCtrl = TextEditingController(
         text: widget.business['clean_forwarding_email'] ?? '');
     _loadGmailConnect();
+    _loadOutlookConnect();
   }
 
   @override
@@ -4439,6 +4447,23 @@ class _EmailConfigSectionState
         ));
       });
     }
+    final outlookParam = uri.queryParameters['outlook'];
+    if (outlookParam == 'connected' || outlookParam == 'error') {
+      _loadOutlookConnect();
+    }
+    if (outlookParam == 'error' && uri.queryParameters['reason'] == 'missing_mail_scope') {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text(
+              "Outlook wasn't fully connected — on Microsoft's permission screen, "
+              "make sure mail read/send access is granted before clicking Accept. "
+              "Try Connect Outlook again."),
+          behavior: SnackBarBehavior.floating,
+          duration: Duration(seconds: 8),
+        ));
+      });
+    }
   }
 
   Future<void> _loadGmailConnect() async {
@@ -4455,6 +4480,7 @@ class _EmailConfigSectionState
           .maybeSingle();
       _gmailConnected = conn != null && conn['connection_status'] == 'active';
       _gmailAccountEmail = conn?['connected_account_email'] as String?;
+      _gmailConnectionStatus = conn?['connection_status'] as String?;
     } catch (e) {
       debugPrint('Gmail connect load error: $e');
     } finally {
@@ -4462,10 +4488,40 @@ class _EmailConfigSectionState
     }
   }
 
+  Future<void> _loadOutlookConnect() async {
+    setState(() => _outlookLoading = true);
+    try {
+      final businessId = widget.business['id'] as int?;
+      if (businessId == null) return;
+      final conn = await Supabase.instance.client
+          .from('oauth_connections')
+          .select('connection_status, connected_account_email')
+          .eq('business_id', businessId)
+          .eq('provider', 'microsoft')
+          .filter('deleted_at', 'is', null)
+          .maybeSingle();
+      _outlookConnected = conn != null && conn['connection_status'] == 'active';
+      _outlookAccountEmail = conn?['connected_account_email'] as String?;
+      _outlookConnectionStatus = conn?['connection_status'] as String?;
+    } catch (e) {
+      debugPrint('Outlook connect load error: $e');
+    } finally {
+      if (mounted) setState(() => _outlookLoading = false);
+    }
+  }
+
   bool get _gmailPlanAllowed {
     final plan = widget.business['plan'] as String? ?? '';
     final isBeta = widget.business['is_beta'] as bool? ?? false;
     return isBeta || plan == 'growth' || plan == 'pro';
+  }
+
+  // Outlook is Pro-only, matching check_plan_feature('outlook_sync') exactly —
+  // stricter than Gmail's Growth+Pro gate.
+  bool get _outlookPlanAllowed {
+    final plan = widget.business['plan'] as String? ?? '';
+    final isBeta = widget.business['is_beta'] as bool? ?? false;
+    return isBeta || plan == 'pro';
   }
 
   Future<void> _connectGmail() async {
@@ -4515,8 +4571,8 @@ class _EmailConfigSectionState
             style: TextStyle(color: AppTheme.textPrimary)),
         content: Text(
           _gmailAccountEmail != null
-              ? 'This disconnects $_gmailAccountEmail. Replies will fall back to your dedicated NexaFlow address, and inbound mail to your Gmail will stop syncing.'
-              : 'This disconnects Gmail. Replies will fall back to your dedicated NexaFlow address.',
+              ? 'This disconnects $_gmailAccountEmail. Replies will fall back to your dedicated Marjoru address, and inbound mail to your Gmail will stop syncing.'
+              : 'This disconnects Gmail. Replies will fall back to your dedicated Marjoru address.',
           style: const TextStyle(color: AppTheme.textSecondary, height: 1.5),
         ),
         actions: [
@@ -4577,6 +4633,205 @@ class _EmailConfigSectionState
     }
   }
 
+  // Lightweight reconnect for the 'Needs reconnect' state — tries a
+  // silent token refresh first via reconnect-oauth-connection, only
+  // falling back to the full OAuth handshake (_connectGmail) when the
+  // function reports it's actually necessary (e.g. access was revoked).
+  Future<void> _reconnectGmail() async {
+    setState(() => _gmailConnecting = true);
+    try {
+      final session = Supabase.instance.client.auth.currentSession;
+      final res = await http.post(
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/reconnect-oauth-connection'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ${session?.accessToken ?? ''}',
+        },
+        body: jsonEncode({'provider': 'gmail', 'business_id': widget.business['id']}),
+      );
+      if (!mounted) return;
+      final body = jsonDecode(res.body) as Map<String, dynamic>;
+      if (res.statusCode == 200 && body['success'] == true) {
+        await _loadGmailConnect();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Gmail reconnected.'), behavior: SnackBarBehavior.floating),
+          );
+        }
+      } else if (body['needs_full_reconnect'] == true) {
+        setState(() => _gmailConnecting = false);
+        await _connectGmail();
+        return;
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Reconnect failed: ${body['error']?.toString() ?? 'Unknown error'}. Try again in a moment.'),
+          behavior: SnackBarBehavior.floating,
+        ));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Error: $e'),
+          behavior: SnackBarBehavior.floating,
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _gmailConnecting = false);
+    }
+  }
+
+  Future<void> _connectOutlook() async {
+    setState(() => _outlookConnecting = true);
+    try {
+      final session = Supabase.instance.client.auth.currentSession;
+      final res = await http.post(
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/microsoft-oauth-callback'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ${session?.accessToken ?? ''}',
+        },
+        body: jsonEncode({'business_id': widget.business['id']}),
+      );
+      if (!mounted) return;
+      final body = jsonDecode(res.body) as Map<String, dynamic>;
+      if (res.statusCode == 200 && body['authorize_url'] != null) {
+        final uri = Uri.parse(body['authorize_url'] as String);
+        if (await canLaunchUrl(uri)) {
+          await launchUrl(uri, mode: LaunchMode.externalApplication);
+        }
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(body['error']?.toString() ?? 'Failed to start Outlook connection.'),
+          behavior: SnackBarBehavior.floating,
+        ));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Error: $e'),
+          behavior: SnackBarBehavior.floating,
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _outlookConnecting = false);
+    }
+  }
+
+  Future<void> _disconnectOutlook() async {
+    bool confirmed = false;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.cardBg,
+        title: const Text('Disconnect Outlook?',
+            style: TextStyle(color: AppTheme.textPrimary)),
+        content: Text(
+          _outlookAccountEmail != null
+              ? 'This disconnects $_outlookAccountEmail. Replies will fall back to your dedicated Marjoru address, and inbound mail to your Outlook will stop syncing.'
+              : 'This disconnects Outlook. Replies will fall back to your dedicated Marjoru address.',
+          style: const TextStyle(color: AppTheme.textSecondary, height: 1.5),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(),
+              child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () {
+              confirmed = true;
+              Navigator.of(ctx, rootNavigator: true).pop();
+            },
+            style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red,
+                foregroundColor: Colors.white,
+                elevation: 0),
+            child: const Text('Disconnect'),
+          ),
+        ],
+      ),
+    );
+    if (!confirmed || !mounted) return;
+
+    setState(() => _outlookConnecting = true);
+    try {
+      final session = Supabase.instance.client.auth.currentSession;
+      final res = await http.delete(
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/microsoft-oauth-callback'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ${session?.accessToken ?? ''}',
+        },
+        body: jsonEncode({'business_id': widget.business['id']}),
+      );
+      if (!mounted) return;
+      if (res.statusCode == 200) {
+        await _loadOutlookConnect();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text('Outlook disconnected.'),
+              behavior: SnackBarBehavior.floating),
+        );
+      } else {
+        final body = jsonDecode(res.body) as Map<String, dynamic>;
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(body['error']?.toString() ?? 'Failed to disconnect Outlook.'),
+          behavior: SnackBarBehavior.floating,
+        ));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Error: $e'),
+          behavior: SnackBarBehavior.floating,
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _outlookConnecting = false);
+    }
+  }
+
+  Future<void> _reconnectOutlook() async {
+    setState(() => _outlookConnecting = true);
+    try {
+      final session = Supabase.instance.client.auth.currentSession;
+      final res = await http.post(
+        Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/reconnect-oauth-connection'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ${session?.accessToken ?? ''}',
+        },
+        body: jsonEncode({'provider': 'microsoft', 'business_id': widget.business['id']}),
+      );
+      if (!mounted) return;
+      final body = jsonDecode(res.body) as Map<String, dynamic>;
+      if (res.statusCode == 200 && body['success'] == true) {
+        await _loadOutlookConnect();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Outlook reconnected.'), behavior: SnackBarBehavior.floating),
+          );
+        }
+      } else if (body['needs_full_reconnect'] == true) {
+        setState(() => _outlookConnecting = false);
+        await _connectOutlook();
+        return;
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Reconnect failed: ${body['error']?.toString() ?? 'Unknown error'}. Try again in a moment.'),
+          behavior: SnackBarBehavior.floating,
+        ));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Error: $e'),
+          behavior: SnackBarBehavior.floating,
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _outlookConnecting = false);
+    }
+  }
+
   @override
   void dispose() {
     _emailCtrl.dispose();
@@ -4630,19 +4885,38 @@ class _EmailConfigSectionState
                 color: AppTheme.textSecondary)),
         const SizedBox(height: 4),
         const Text(
-            'Your dedicated NexaFlow address above always works with zero setup. Connecting Gmail is optional — it lets replies send from your real inbox instead.',
+            'Your dedicated Marjoru address above always works with zero setup. Connecting Gmail is optional — it lets replies send from your real inbox instead.',
             style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
         const SizedBox(height: 12),
         _GmailConnectCard(
           loading: _gmailLoading,
           connecting: _gmailConnecting,
           connected: _gmailConnected,
+          needsReconnect: _gmailConnectionStatus == 'token_error' || _gmailConnectionStatus == 'revoked',
+          connectionStatus: _gmailConnectionStatus,
           accountEmail: _gmailAccountEmail,
           planAllowed: _gmailPlanAllowed,
           currentPlan: widget.business['plan'] as String? ?? '',
           onConnect: _connectGmail,
+          onReconnect: _reconnectGmail,
           onDisconnect: _disconnectGmail,
           onRefresh: _loadGmailConnect,
+          onUpgrade: () => context.go('/settings?section=billing'),
+        ),
+        const SizedBox(height: 12),
+        _OutlookConnectCard(
+          loading: _outlookLoading,
+          connecting: _outlookConnecting,
+          connected: _outlookConnected,
+          needsReconnect: _outlookConnectionStatus == 'token_error' || _outlookConnectionStatus == 'revoked',
+          connectionStatus: _outlookConnectionStatus,
+          accountEmail: _outlookAccountEmail,
+          planAllowed: _outlookPlanAllowed,
+          currentPlan: widget.business['plan'] as String? ?? '',
+          onConnect: _connectOutlook,
+          onReconnect: _reconnectOutlook,
+          onDisconnect: _disconnectOutlook,
+          onRefresh: _loadOutlookConnect,
           onUpgrade: () => context.go('/settings?section=billing'),
         ),
         const SizedBox(height: 24),
@@ -6923,10 +7197,13 @@ class _GmailConnectCard extends StatelessWidget {
   final bool loading;
   final bool connecting;
   final bool connected;
+  final bool needsReconnect;
+  final String? connectionStatus;
   final String? accountEmail;
   final bool planAllowed;
   final String currentPlan;
   final VoidCallback onConnect;
+  final VoidCallback onReconnect;
   final VoidCallback onDisconnect;
   final VoidCallback onRefresh;
   final VoidCallback onUpgrade;
@@ -6935,10 +7212,13 @@ class _GmailConnectCard extends StatelessWidget {
     required this.loading,
     required this.connecting,
     required this.connected,
+    required this.needsReconnect,
+    required this.connectionStatus,
     required this.accountEmail,
     required this.planAllowed,
     required this.currentPlan,
     required this.onConnect,
+    required this.onReconnect,
     required this.onDisconnect,
     required this.onRefresh,
     required this.onUpgrade,
@@ -6947,6 +7227,7 @@ class _GmailConnectCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     const gmailColor = Color(0xFFEA4335);
+    const warnColor = Colors.orange;
 
     return AnimatedContainer(
       duration: const Duration(milliseconds: 200),
@@ -6955,12 +7236,18 @@ class _GmailConnectCard extends StatelessWidget {
         color: AppTheme.cardBg,
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
-          color: connected ? gmailColor.withValues(alpha: 0.4) : AppTheme.borderColor,
-          width: connected ? 1.5 : 1,
+          color: connected
+              ? gmailColor.withValues(alpha: 0.4)
+              : needsReconnect
+                  ? warnColor.withValues(alpha: 0.4)
+                  : AppTheme.borderColor,
+          width: (connected || needsReconnect) ? 1.5 : 1,
         ),
         boxShadow: connected
             ? [BoxShadow(color: gmailColor.withValues(alpha: 0.08), blurRadius: 12)]
-            : null,
+            : needsReconnect
+                ? [BoxShadow(color: warnColor.withValues(alpha: 0.08), blurRadius: 12)]
+                : null,
       ),
       child: loading
           ? const Center(
@@ -7001,15 +7288,31 @@ class _GmailConnectCard extends StatelessWidget {
                           Text('Connected', style: TextStyle(
                               fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFF10B981))),
                         ]),
+                      )
+                    else if (needsReconnect)
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: warnColor.withValues(alpha: 0.1),
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                          Icon(Icons.error_outline, size: 11, color: warnColor),
+                          SizedBox(width: 4),
+                          Text('Needs reconnect', style: TextStyle(
+                              fontSize: 11, fontWeight: FontWeight.w600, color: warnColor)),
+                        ]),
                       ),
                   ]),
                   const SizedBox(height: 3),
                   Text(
                     connected
                         ? 'Syncing with $accountEmail. Replies send through Gmail and appear in the customer\'s real inbox thread.'
-                        : planAllowed
-                            ? 'Connect your Gmail so replies send from your real inbox and inbound mail lands in Conversations, same as your dedicated address.'
-                            : 'Available on Growth and Pro plans. Your dedicated NexaFlow email address works on every plan with zero setup.',
+                        : needsReconnect
+                            ? '${accountEmail ?? 'Your Gmail connection'} ${connectionStatus == 'revoked' ? 'had access revoked' : 'is having trouble staying connected'}. Reconnect to resume syncing.'
+                            : planAllowed
+                                ? 'Connect your Gmail so replies send from your real inbox and inbound mail lands in Conversations, same as your dedicated address.'
+                                : 'Available on Growth and Pro plans. Your dedicated Marjoru email address works on every plan with zero setup.',
                     style: const TextStyle(
                         fontSize: 12, color: AppTheme.textSecondary, height: 1.4),
                   ),
@@ -7032,6 +7335,35 @@ class _GmailConnectCard extends StatelessWidget {
                               width: 14, height: 14,
                               child: CircularProgressIndicator(strokeWidth: 2, color: Colors.red))
                           : const Text('Disconnect', style: TextStyle(fontSize: 12)),
+                    ),
+                  ),
+                  MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    child: IconButton(
+                      onPressed: onRefresh,
+                      icon: const Icon(Icons.refresh_rounded,
+                          size: 18, color: AppTheme.textSecondary),
+                      tooltip: 'Refresh status',
+                    ),
+                  ),
+                ])
+              else if (needsReconnect)
+                Row(mainAxisSize: MainAxisSize.min, children: [
+                  MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    child: ElevatedButton(
+                      onPressed: connecting ? null : onReconnect,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: warnColor,
+                        foregroundColor: Colors.white,
+                        elevation: 0,
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                      ),
+                      child: connecting
+                          ? const SizedBox(
+                              width: 14, height: 14,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                          : const Text('Reconnect', style: TextStyle(fontSize: 12)),
                     ),
                   ),
                   MouseRegion(
@@ -7071,6 +7403,226 @@ class _GmailConnectCard extends StatelessWidget {
                                   fontSize: 12,
                                   fontWeight: FontWeight.w600,
                                   color: planAllowed ? gmailColor : AppTheme.brand)),
+                    ),
+                  ),
+                ),
+            ]),
+    );
+  }
+}
+
+// ── Outlook Connect Card (EM-07) ──────────────────────────────────────────────
+
+class _OutlookConnectCard extends StatelessWidget {
+  final bool loading;
+  final bool connecting;
+  final bool connected;
+  final bool needsReconnect;
+  final String? connectionStatus;
+  final String? accountEmail;
+  final bool planAllowed;
+  final String currentPlan;
+  final VoidCallback onConnect;
+  final VoidCallback onReconnect;
+  final VoidCallback onDisconnect;
+  final VoidCallback onRefresh;
+  final VoidCallback onUpgrade;
+
+  const _OutlookConnectCard({
+    required this.loading,
+    required this.connecting,
+    required this.connected,
+    required this.needsReconnect,
+    required this.connectionStatus,
+    required this.accountEmail,
+    required this.planAllowed,
+    required this.currentPlan,
+    required this.onConnect,
+    required this.onReconnect,
+    required this.onDisconnect,
+    required this.onRefresh,
+    required this.onUpgrade,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    const outlookColor = Color(0xFF0078D4);
+    const warnColor = Colors.orange;
+
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 200),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: AppTheme.cardBg,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: connected
+              ? outlookColor.withValues(alpha: 0.4)
+              : needsReconnect
+                  ? warnColor.withValues(alpha: 0.4)
+                  : AppTheme.borderColor,
+          width: (connected || needsReconnect) ? 1.5 : 1,
+        ),
+        boxShadow: connected
+            ? [BoxShadow(color: outlookColor.withValues(alpha: 0.08), blurRadius: 12)]
+            : needsReconnect
+                ? [BoxShadow(color: warnColor.withValues(alpha: 0.08), blurRadius: 12)]
+                : null,
+      ),
+      child: loading
+          ? const Center(
+              child: Padding(
+                padding: EdgeInsets.all(16),
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ))
+          : Row(children: [
+              Container(
+                width: 52, height: 52,
+                decoration: BoxDecoration(
+                  color: outlookColor.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: outlookColor.withValues(alpha: 0.15)),
+                ),
+                child: const Center(
+                  child: Icon(Icons.mail_outline, color: outlookColor, size: 24),
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Row(children: [
+                    const Text('Outlook / Microsoft 365',
+                        style: TextStyle(fontSize: 15,
+                            fontWeight: FontWeight.w700, color: AppTheme.textPrimary)),
+                    const SizedBox(width: 10),
+                    if (connected)
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF10B981).withValues(alpha: 0.1),
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                          Icon(Icons.check_circle, size: 11, color: Color(0xFF10B981)),
+                          SizedBox(width: 4),
+                          Text('Connected', style: TextStyle(
+                              fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFF10B981))),
+                        ]),
+                      )
+                    else if (needsReconnect)
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: warnColor.withValues(alpha: 0.1),
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                          Icon(Icons.error_outline, size: 11, color: warnColor),
+                          SizedBox(width: 4),
+                          Text('Needs reconnect', style: TextStyle(
+                              fontSize: 11, fontWeight: FontWeight.w600, color: warnColor)),
+                        ]),
+                      ),
+                  ]),
+                  const SizedBox(height: 3),
+                  Text(
+                    connected
+                        ? 'Syncing with $accountEmail. Replies send through Outlook and appear in the customer\'s real inbox thread.'
+                        : needsReconnect
+                            ? '${accountEmail ?? 'Your Outlook connection'} ${connectionStatus == 'revoked' ? 'had access revoked' : 'is having trouble staying connected'}. Reconnect to resume syncing.'
+                            : planAllowed
+                                ? 'Connect your Outlook or Microsoft 365 mailbox so replies send from your real inbox and inbound mail — including from senders who\'ve never emailed you before — lands in Conversations automatically.'
+                                : 'Available on the Pro plan. Your dedicated Marjoru email address works on every plan with zero setup.',
+                    style: const TextStyle(
+                        fontSize: 12, color: AppTheme.textSecondary, height: 1.4),
+                  ),
+                ]),
+              ),
+              const SizedBox(width: 16),
+              if (connected)
+                Row(mainAxisSize: MainAxisSize.min, children: [
+                  MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    child: OutlinedButton(
+                      onPressed: connecting ? null : onDisconnect,
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.red,
+                        side: const BorderSide(color: Colors.red),
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      ),
+                      child: connecting
+                          ? const SizedBox(
+                              width: 14, height: 14,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.red))
+                          : const Text('Disconnect', style: TextStyle(fontSize: 12)),
+                    ),
+                  ),
+                  MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    child: IconButton(
+                      onPressed: onRefresh,
+                      icon: const Icon(Icons.refresh_rounded,
+                          size: 18, color: AppTheme.textSecondary),
+                      tooltip: 'Refresh status',
+                    ),
+                  ),
+                ])
+              else if (needsReconnect)
+                Row(mainAxisSize: MainAxisSize.min, children: [
+                  MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    child: ElevatedButton(
+                      onPressed: connecting ? null : onReconnect,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: warnColor,
+                        foregroundColor: Colors.white,
+                        elevation: 0,
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                      ),
+                      child: connecting
+                          ? const SizedBox(
+                              width: 14, height: 14,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                          : const Text('Reconnect', style: TextStyle(fontSize: 12)),
+                    ),
+                  ),
+                  MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    child: IconButton(
+                      onPressed: onRefresh,
+                      icon: const Icon(Icons.refresh_rounded,
+                          size: 18, color: AppTheme.textSecondary),
+                      tooltip: 'Refresh status',
+                    ),
+                  ),
+                ])
+              else
+                MouseRegion(
+                  cursor: SystemMouseCursors.click,
+                  child: GestureDetector(
+                    onTap: connecting ? null : (planAllowed ? onConnect : onUpgrade),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: planAllowed
+                            ? outlookColor.withValues(alpha: 0.1)
+                            : AppTheme.brand.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(
+                            color: planAllowed
+                                ? outlookColor.withValues(alpha: 0.3)
+                                : AppTheme.brand.withValues(alpha: 0.3)),
+                      ),
+                      child: connecting
+                          ? SizedBox(
+                              width: 14, height: 14,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: outlookColor))
+                          : Text(
+                              planAllowed ? 'Connect Outlook' : 'Upgrade to Connect',
+                              style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                  color: planAllowed ? outlookColor : AppTheme.brand)),
                     ),
                   ),
                 ),

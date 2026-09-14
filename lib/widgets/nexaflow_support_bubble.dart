@@ -342,7 +342,7 @@ class _NexaFlowSupportBubbleState extends State<NexaFlowSupportBubble>
   Widget _buildHeader() {
     final showBack = _view != _SupportView.menu;
     String subtitle = 'How can we help you today?';
-    if (_view == _SupportView.chat)      subtitle = 'Ask me anything about NexaFlow';
+    if (_view == _SupportView.chat)      subtitle = 'Ask me anything about Marjoru';
     if (_view == _SupportView.knowledge) subtitle = 'Browse help articles';
     if (_view == _SupportView.ticket)    subtitle = 'Report a problem';
 
@@ -391,7 +391,7 @@ class _NexaFlowSupportBubbleState extends State<NexaFlowSupportBubble>
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('NexaFlow Support',
+                const Text('Marjoru Support',
                     style: TextStyle(
                         color: Colors.white,
                         fontSize: 14,
@@ -567,7 +567,7 @@ class _NexaFlowSupportBubbleState extends State<NexaFlowSupportBubble>
                 SizedBox(width: 10),
                 Expanded(
                   child: Text(
-                    'Hi! I\'m your NexaFlow assistant. Ask me anything about the platform.',
+                    'Hi! I\'m your Marjoru assistant. Ask me anything about the platform.',
                     style: TextStyle(
                         fontSize: 13,
                         color:    AppTheme.textPrimary,
@@ -638,7 +638,7 @@ class _NexaFlowSupportBubbleState extends State<NexaFlowSupportBubble>
               style: const TextStyle(
                   fontSize: 13, color: AppTheme.textPrimary),
               decoration: InputDecoration(
-                hintText:  'Ask anything about NexaFlow...',
+                hintText:  'Ask anything about Marjoru...',
                 hintStyle: const TextStyle(
                     fontSize: 13, color: AppTheme.textMuted),
                 filled:      true,

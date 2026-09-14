@@ -25,7 +25,18 @@ Deno.serve(async (req) => {
 
     const mailgunApiKey = Deno.env.get('MAILGUN_API_KEY')!
     const mailgunDomain = Deno.env.get('MAILGUN_DOMAIN')!
-    const fromAddress   = `Vantagecaretech <vantagecaretech@gmail.com>`
+    // Sender must be the actual business's own name, not a fixed
+    // company name — every other outbound email path (notify-owner,
+    // send-invoice, receive-email) already does this; this one and
+    // bulk-email were the two exceptions, silently showing every
+    // business's leads a "Vantagecaretech" sender regardless of who
+    // actually sent it.
+    const { data: senderBiz } = await supabase
+      .from('businesses')
+      .select('business_name')
+      .eq('id', business_id)
+      .maybeSingle()
+    const fromAddress = `${senderBiz?.business_name ?? 'Marjoru'} <vantagecaretech@gmail.com>`
 
     // Fetch leads
     const { data: leads, error: leadsError } = await supabase

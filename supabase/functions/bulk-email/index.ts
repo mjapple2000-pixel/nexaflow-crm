@@ -63,7 +63,15 @@ Deno.serve(async (req) => {
 
     const mailgunApiKey = Deno.env.get('MAILGUN_API_KEY')!
     const mailgunDomain = Deno.env.get('MAILGUN_DOMAIN')!
-    const fromAddress   = `Vantagecaretech <vantagecaretech@gmail.com>`
+    // Same fix as send-email — sender must be the actual business's own
+    // name, not a fixed company name. This was silently showing every
+    // business's campaign recipients a "Vantagecaretech" sender.
+    const { data: senderBiz } = await supabase
+      .from('businesses')
+      .select('business_name')
+      .eq('id', business_id)
+      .maybeSingle()
+    const fromAddress = `${senderBiz?.business_name ?? 'Marjoru'} <vantagecaretech@gmail.com>`
 
     // Fetch targets — leads or business contacts, normalized to a common shape
     let targets: { id: number; name: string; email: string | null }[] = []

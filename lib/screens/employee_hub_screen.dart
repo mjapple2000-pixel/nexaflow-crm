@@ -629,14 +629,6 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
   Future<void> _clockAction(String action) async {
     setState(() => _submitting = true);
 
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('DEBUG: clockAction started, requesting location...'),
-        backgroundColor: Colors.blue,
-        duration: Duration(seconds: 6),
-      ));
-    }
-
     Position? pos;
     if (_requireLocation || action == 'clock_in' || action == 'clock_out') {
       pos = await _getLocation();
@@ -1338,7 +1330,18 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
                     else
                       ..._filteredPastJobForms.map((f) => _PastJobFormCard(token: widget.token, form: f)),
                   ],
-                  const SizedBox(height: 40),
+                  const SizedBox(height: 32),
+                  Center(
+                    child: Text(
+                      'Powered by Marjoru',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: AppTheme.textSecondary.withValues(alpha: 0.6),
+                        letterSpacing: 0.3,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 24),
                 ],
               ),
             ),

@@ -11,8 +11,19 @@ const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
 const SERVICE_ROLE_KEY = JSON.parse(Deno.env.get('SUPABASE_SECRET_KEYS') ?? '{}').nexaflow_service_role_2026_08
 const GOOGLE_CLIENT_ID = Deno.env.get('GOOGLE_CLIENT_ID') ?? ''
 const GOOGLE_CLIENT_SECRET = Deno.env.get('GOOGLE_CLIENT_SECRET') ?? ''
+const MICROSOFT_CLIENT_ID = Deno.env.get('MICROSOFT_CLIENT_ID') ?? ''
+const MICROSOFT_CLIENT_SECRET = Deno.env.get('MICROSOFT_CLIENT_SECRET') ?? ''
 
 const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY)
+
+// Must match microsoft-oauth-callback's scopes exactly — used only for the
+// refresh_token grant below, same as microsoft-graph-webhook/renew-graph-subscriptions.
+const MICROSOFT_SCOPES = [
+  'offline_access',
+  'https://graph.microsoft.com/Mail.ReadWrite',
+  'https://graph.microsoft.com/Mail.Send',
+  'https://graph.microsoft.com/User.Read',
+].join(' ')
 
 // ── Base64url helper (same as gmail-inbound-webhook) ──────────────────────
 function encodeBase64Url(str: string): string {
@@ -63,6 +74,54 @@ async function getFreshAccessToken(connection: {
   return tokens.access_token
 }
 
+// ── Microsoft's own refresh pattern — separate from Gmail's above because
+// the token endpoint differs and, unlike Google, Microsoft can rotate the
+// refresh token on any refresh call. Same logic already used in
+// microsoft-graph-webhook and renew-graph-subscriptions.
+async function getFreshMicrosoftAccessToken(connection: {
+  id: number;
+  access_token_secret_id: string;
+  refresh_token_secret_id: string;
+  token_expires_at: string;
+}): Promise<string | null> {
+  const expiresAt = new Date(connection.token_expires_at).getTime()
+  if (expiresAt > Date.now() + 2 * 60 * 1000) {
+    const { data: accessToken } = await supabase.rpc('qb_vault_read_secret', {
+      p_id: connection.access_token_secret_id,
+    })
+    return accessToken ?? null
+  }
+  const { data: refreshToken } = await supabase.rpc('qb_vault_read_secret', {
+    p_id: connection.refresh_token_secret_id,
+  })
+  if (!refreshToken) return null
+  const tokenResp = await fetch('https://login.microsoftonline.com/common/oauth2/v2.0/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'refresh_token',
+      refresh_token: refreshToken,
+      client_id: MICROSOFT_CLIENT_ID,
+      client_secret: MICROSOFT_CLIENT_SECRET,
+      scope: MICROSOFT_SCOPES,
+    }),
+  })
+  if (!tokenResp.ok) {
+    console.error('outbound-email-send: Microsoft token refresh failed:', await tokenResp.text())
+    return null
+  }
+  const tokens = await tokenResp.json()
+  await supabase.rpc('qb_vault_update_secret', { p_id: connection.access_token_secret_id, p_secret: tokens.access_token })
+  if (tokens.refresh_token) {
+    await supabase.rpc('qb_vault_update_secret', { p_id: connection.refresh_token_secret_id, p_secret: tokens.refresh_token })
+  }
+  await supabase
+    .from('oauth_connections')
+    .update({ token_expires_at: new Date(Date.now() + tokens.expires_in * 1000).toISOString(), updated_at: new Date().toISOString() })
+    .eq('id', connection.id)
+  return tokens.access_token
+}
+
 // ── Send via Gmail API, threaded into the existing conversation ───────────
 async function sendViaGmail(opts: {
   accessToken: string;
@@ -98,13 +157,44 @@ async function sendViaGmail(opts: {
   return true
 }
 
+// ── Send via Graph, threaded into the existing conversation. createReply +
+// send (two calls) rather than the one-shot /reply endpoint, because /reply
+// returns no body — without this we'd have no external_message_id to store,
+// the exact gap already closed for Gmail's send path this session. Same
+// pattern as microsoft-graph-webhook's sendGraphReply.
+async function sendViaOutlook(opts: {
+  accessToken: string;
+  messageId: string;
+  commentHtml: string;
+}): Promise<{ id: string } | null> {
+  const createResp = await fetch(`https://graph.microsoft.com/v1.0/me/messages/${opts.messageId}/createReply`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${opts.accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ comment: opts.commentHtml }),
+  })
+  if (!createResp.ok) {
+    console.error('outbound-email-send: Outlook createReply failed:', await createResp.text())
+    return null
+  }
+  const draft = await createResp.json()
+  const sendResp = await fetch(`https://graph.microsoft.com/v1.0/me/messages/${draft.id}/send`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${opts.accessToken}` },
+  })
+  if (!sendResp.ok) {
+    console.error('outbound-email-send: Outlook reply send failed:', await sendResp.text())
+    return null
+  }
+  return { id: draft.id as string }
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
   }
 
   try {
-    const { to, subject, body, conversation_id } = await req.json()
+    const { to, subject, body, conversation_id, message_id } = await req.json()
 
     if (!to || !body) {
       return new Response(
@@ -114,9 +204,9 @@ Deno.serve(async (req) => {
     }
 
     let replyTo = ''
-    let fromName = 'NexaFlow'
+    let fromName = 'Marjoru'
     let businessId: number | null = null
-    let resolvedSubject = subject ?? 'Message from NexaFlow'
+    let resolvedSubject = subject ?? 'Message from Marjoru'
 
     if (conversation_id) {
       try {
@@ -218,6 +308,13 @@ Deno.serve(async (req) => {
               })
 
               if (sent) {
+                // Record the actual provider used, not what was guessed at
+                // insert time — Gmail can fail here and silently fall
+                // through to the Mailgun path below, so this write is the
+                // only reliable source of truth for what actually shipped.
+                if (message_id) {
+                  await supabase.from('messages').update({ email_source: 'gmail' }).eq('id', message_id)
+                }
                 return new Response(
                   JSON.stringify({ success: true, via: 'gmail' }),
                   { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -229,6 +326,59 @@ Deno.serve(async (req) => {
         }
       } catch (gmailErr) {
         console.error('outbound-email-send: Gmail routing check failed:', gmailErr)
+      }
+
+      // ── Outlook-sourced conversation? Route through Graph so the reply
+      // comes from the connected Outlook mailbox, threaded correctly via
+      // createReply. Same "check last inbound message's email_source, route
+      // accordingly" pattern as the Gmail block above. ──
+      try {
+        const { data: lastInboundOutlook } = await supabase
+          .from('messages')
+          .select('email_source, external_message_id')
+          .eq('conversation_id', conversation_id)
+          .eq('direction', 'inbound')
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle()
+
+        if (lastInboundOutlook?.email_source === 'outlook' && businessId && lastInboundOutlook.external_message_id) {
+          const { data: connection } = await supabase
+            .from('oauth_connections')
+            .select('id, connected_account_email, access_token_secret_id, refresh_token_secret_id, token_expires_at')
+            .eq('business_id', businessId)
+            .eq('provider', 'microsoft')
+            .eq('connection_status', 'active')
+            .is('deleted_at', null)
+            .maybeSingle()
+
+          if (connection) {
+            const accessToken = await getFreshMicrosoftAccessToken(connection)
+            if (accessToken) {
+              const sent = await sendViaOutlook({
+                accessToken,
+                messageId: lastInboundOutlook.external_message_id,
+                commentHtml: body,
+              })
+
+              if (sent) {
+                if (message_id) {
+                  await supabase.from('messages').update({
+                    email_source: 'outlook',
+                    external_message_id: sent.id,
+                  }).eq('id', message_id)
+                }
+                return new Response(
+                  JSON.stringify({ success: true, via: 'outlook' }),
+                  { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+                )
+              }
+              console.error('outbound-email-send: Outlook send failed, falling back to Mailgun')
+            }
+          }
+        }
+      } catch (outlookErr) {
+        console.error('outbound-email-send: Outlook routing check failed:', outlookErr)
       }
     }
 
@@ -266,6 +416,9 @@ Deno.serve(async (req) => {
       )
     }
 
+    if (message_id) {
+      await supabase.from('messages').update({ email_source: 'dedicated_address' }).eq('id', message_id)
+    }
     return new Response(
       JSON.stringify({ success: true, via: 'mailgun' }),
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }

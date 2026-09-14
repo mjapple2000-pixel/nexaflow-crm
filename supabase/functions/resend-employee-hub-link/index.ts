@@ -178,7 +178,7 @@ Deno.serve(async (req) => {
         .select("business_name")
         .eq("id", targetProfile.business_id)
         .maybeSingle();
-      const businessName = businessRow?.business_name ?? "NexaFlow";
+      const businessName = businessRow?.business_name ?? "Marjoru";
 
       const mgForm = new URLSearchParams();
       mgForm.append("from", `${businessName} <no-reply@${mailgunDomain}>`);

@@ -88,10 +88,10 @@ Deno.serve(async (req) => {
 
     const { data: businessRow } = await supabase
       .from("businesses")
-      .select("name")
+      .select("business_name")
       .eq("id", businessId)
       .maybeSingle();
-    const businessName = businessRow?.name ?? "your service provider";
+    const businessName = businessRow?.business_name ?? "your service provider";
 
     // ── 1. Load submissions + resolve each one's lead via its appointment ──
     const { data: submissions, error: subError } = await supabase

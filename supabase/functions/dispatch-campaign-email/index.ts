@@ -83,6 +83,20 @@ Deno.serve(async (req) => {
       if (l.lead_email) leadMap[l.id] = { lead_name: l.lead_name ?? 'there', lead_email: l.lead_email };
     }
 
+    // Sender must be the actual business's own name, not a fixed company
+    // name — this was the highest-traffic instance of the same bug also
+    // found in send-email/bulk-email: every business's campaign recipients
+    // were shown a "Vantagecaretech" sender regardless of who actually sent it.
+    const businessIds = [...new Set(queuedRows.map((r: { business_id: number }) => r.business_id))];
+    const { data: businessRows } = await supabase
+      .from('businesses')
+      .select('id, business_name')
+      .in('id', businessIds);
+    const businessNameMap: Record<number, string> = {};
+    for (const b of businessRows ?? []) {
+      businessNameMap[b.id] = b.business_name ?? 'Marjoru';
+    }
+
     let sentCount = 0;
     const affectedCampaignIds = new Set<number>();
 
@@ -108,7 +122,7 @@ Deno.serve(async (req) => {
         const personalizedSubject = (campaign.subject || 'A message for you').replace(/\{\{name\}\}/gi, lead.lead_name);
 
         const formData = new FormData();
-        formData.append('from', 'Vantagecaretech <vantagecaretech@gmail.com>');
+        formData.append('from', `${businessNameMap[row.business_id] ?? 'Marjoru'} <vantagecaretech@gmail.com>`);
         formData.append('to', `${lead.lead_name} <${lead.lead_email}>`);
         formData.append('subject', personalizedSubject);
         formData.append('text', personalizedBody);

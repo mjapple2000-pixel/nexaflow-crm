@@ -35,7 +35,7 @@ async function sendSms(to: string, from: string, body: string): Promise<boolean>
 
 async function sendEmail(to: string, businessName: string, body: string): Promise<boolean> {
   const mgForm = new URLSearchParams();
-  mgForm.append("from", `NexaFlow <no-reply@${MAILGUN_DOMAIN}>`);
+  mgForm.append("from", `${businessName} <no-reply@${MAILGUN_DOMAIN}>`);
   mgForm.append("to", to);
   mgForm.append("subject", `${businessName}: AI email drafts waiting for review`);
   mgForm.append("html", `<p>${body}</p>`);
@@ -104,7 +104,7 @@ Deno.serve(async (req) => {
 
       const count = messageIds.length;
       const plural = count === 1 ? "draft is" : "drafts are";
-      const text = `You have ${count} AI email ${plural} waiting for review in NexaFlow. Log in to approve, edit, or discard.`;
+      const text = `You have ${count} AI email ${plural} waiting for review in Marjoru. Log in to approve, edit, or discard.`;
 
       // Both channels fire independently by default — this is a one-way
       // notice with nothing to reply to, so redundancy across channels is
@@ -123,7 +123,7 @@ Deno.serve(async (req) => {
         smsSent = await sendSms(alertPhone, biz.ai_phone_number, text);
       }
       if (emailEnabled && alertEmail) {
-        emailSent = await sendEmail(alertEmail, biz.business_name ?? "NexaFlow", text);
+        emailSent = await sendEmail(alertEmail, biz.business_name ?? "Marjoru", text);
       }
 
       if (smsSent || emailSent) {

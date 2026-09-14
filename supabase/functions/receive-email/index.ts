@@ -712,7 +712,7 @@ Deno.serve(async (req) => {
       conversation_id: conversationId, business_id: businessId,
       body: bodyForStorage, direction: "inbound", channel: "email", subject: subject,
       status: "delivered", sender_name: verifiedName ?? senderEmail, twilio_sid: messageId || null,
-      trust_status: trustStatus, trust_reason: trustReason,
+      trust_status: trustStatus, trust_reason: trustReason, email_source: "dedicated_address",
     });
 
     // ── EM-03: low-relevance short-circuit ──────────────────────────
@@ -1076,6 +1076,7 @@ Deno.serve(async (req) => {
         conversation_id: conversationId, business_id: businessId, body: aiReply,
         direction: "outbound", channel: "email", status: "pending_review",
         sender_name: "AI Assistant", sent_via_twiml: true, original_ai_body: aiReply,
+        email_source: "dedicated_address",
       });
       // last_message / last_message_at intentionally NOT updated here —
       // nothing has actually gone out to the customer yet, so the inbox
@@ -1086,6 +1087,7 @@ Deno.serve(async (req) => {
       await supabase.from("messages").insert({
         conversation_id: conversationId, business_id: businessId, body: aiReply,
         direction: "outbound", channel: "email", status: "delivered", sender_name: "AI Assistant", sent_via_twiml: true,
+        email_source: "dedicated_address",
       });
       await supabase.from("conversations").update({ last_message: aiReply.slice(0, 200), last_message_at: new Date().toISOString() }).eq("id", conversationId);
 

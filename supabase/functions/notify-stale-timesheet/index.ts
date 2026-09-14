@@ -103,7 +103,7 @@ Deno.serve(async (req) => {
     const results = [];
     for (const recipient of recipients) {
       const formData = new URLSearchParams();
-      formData.append("from", `NexaFlow <noreply@${mailgunDomain}>`);
+      formData.append("from", `${businessName} <noreply@${mailgunDomain}>`);
       formData.append("to", recipient);
       formData.append("subject", subject);
       formData.append("text", bodyText);

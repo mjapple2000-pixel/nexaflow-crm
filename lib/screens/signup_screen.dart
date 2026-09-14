@@ -115,7 +115,7 @@ class _SignupScreenState extends State<SignupScreen> {
       description: 'Perfect for small businesses getting started with marketing automation.',
       stripeUrl: 'https://buy.stripe.com/dRm7sLcnqdsrfTZ3eM8og08',
       isPopular: false,
-      features: ['Up to 500 contacts', 'SMS & Email campaigns', 'Pipeline management', 'AI chat widget'],
+      features: ['300 AI messages/mo', '3 team seats included', 'SMS & Email conversations', 'Contacts & Pipeline CRM', 'Basic Reporting', 'Email support'],
     ),
     _Plan(
       name: 'Growth',
@@ -124,7 +124,7 @@ class _SignupScreenState extends State<SignupScreen> {
       description: 'For growing teams ready to scale their marketing and automation.',
       stripeUrl: 'https://buy.stripe.com/5kQ5kDdru4VVgY37v28og09',
       isPopular: true,
-      features: ['Up to 5,000 contacts', 'Everything in Starter', 'Advanced automations', 'Priority support'],
+      features: ['1,000 AI messages/mo', '8 team seats included', 'Everything in Starter', 'Campaign automation', 'Advanced Reporting', 'Priority support'],
     ),
     _Plan(
       name: 'Pro',
@@ -133,7 +133,7 @@ class _SignupScreenState extends State<SignupScreen> {
       description: 'Full power for agencies and high-volume businesses.',
       stripeUrl: 'https://buy.stripe.com/8x214n4UY0FF6jp9Da8og0a',
       isPopular: false,
-      features: ['Unlimited contacts', 'Everything in Growth', 'White-label options', 'Dedicated onboarding'],
+      features: ['2,500 AI messages/mo', '15 team seats included', 'Everything in Growth', 'White-label options', 'Custom integrations', 'Dedicated support'],
     ),
   ];
 
@@ -163,7 +163,7 @@ class _SignupScreenState extends State<SignupScreen> {
                           borderRadius: BorderRadius.circular(12),
                         ),
                         alignment: Alignment.center,
-                        child: const Text('N',
+                        child: const Text('M',
                             style: TextStyle(
                                 color: Colors.white,
                                 fontSize: 26,
@@ -173,7 +173,7 @@ class _SignupScreenState extends State<SignupScreen> {
                       const Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text('NexaFlow',
+                          Text('Marjoru',
                               style: TextStyle(
                                   color: Colors.white,
                                   fontSize: 22,
