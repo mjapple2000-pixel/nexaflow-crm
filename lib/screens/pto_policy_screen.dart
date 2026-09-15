@@ -279,7 +279,7 @@ class _PtoPolicyScreenState extends State<PtoPolicyScreen> {
                     final adjustedBy = h['adjusted_by_profile_id'] as int?;
                     final adjustedByName = adjustedBy != null
                         ? (nameByProfileId[adjustedBy] ?? 'Unknown')
-                        : (source == 'accrual' ? 'NexaFlow (automatic)' : 'NexaFlow Support');
+                        : (source == 'accrual' ? 'Marjoru (automatic)' : 'Marjoru Support');
                     final note = h['note'] as String?;
                     final at = _formatAuditDate(h['created_at'] as String?);
 

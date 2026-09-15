@@ -1227,7 +1227,7 @@ class _AiRecreationLockedDialog extends StatelessWidget {
           ]),
           const SizedBox(height: 16),
           const Text(
-            'Upload a form you already use — a PDF, photo, or scan — and let AI rebuild it as a fully working job form in NexaFlow, ready to fill out in the field.',
+            'Upload a form you already use — a PDF, photo, or scan — and let AI rebuild it as a fully working job form in Marjoru, ready to fill out in the field.',
             style: TextStyle(fontSize: 13, color: AppTheme.textSecondary, height: 1.5),
           ),
           const SizedBox(height: 16),

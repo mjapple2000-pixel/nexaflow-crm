@@ -185,14 +185,14 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
                       borderRadius: BorderRadius.circular(16),
                     ),
                     alignment: Alignment.center,
-                    child: const Text('N',
+                    child: const Text('M',
                         style: TextStyle(
                             color: Colors.white,
                             fontSize: 32,
                             fontWeight: FontWeight.bold)),
                   ),
                   const SizedBox(height: 20),
-                  const Text('NexaFlow',
+                  const Text('Marjoru',
                       style: TextStyle(
                           color: Colors.white,
                           fontSize: 28,

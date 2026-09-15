@@ -309,7 +309,7 @@ class _AiChatScreenState extends State<AiChatScreen> {
       <input id="nf-chat-input" type="text" placeholder="Type a message..." />
       <button id="nf-send-btn">Send</button>
     </div>
-    <div id="nf-powered">Powered by NexaFlow</div>
+    <div id="nf-powered">Powered by Marjoru</div>
   \`;
   document.body.appendChild(win);
 

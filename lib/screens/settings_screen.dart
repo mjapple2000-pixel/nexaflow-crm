@@ -5011,7 +5011,7 @@ class _EmailConfigSectionState
                 color: AppTheme.textSecondary)),
         const SizedBox(height: 4),
         const Text(
-            'If an AI-drafted reply sits unreviewed for over an hour, NexaFlow can notify you so nothing gets missed.',
+            'If an AI-drafted reply sits unreviewed for over an hour, Marjoru can notify you so nothing gets missed.',
             style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
         const SizedBox(height: 12),
         _DraftAlertPreferences(
@@ -6141,7 +6141,7 @@ class _SocialMediaSectionState extends State<_SocialMediaSection> {
   Widget build(BuildContext context) {
     return _SectionShell(
       title: 'Social Media',
-      subtitle: 'Connect your social media accounts to communicate with leads and customers directly from NexaFlow.',
+      subtitle: 'Connect your social media accounts to communicate with leads and customers directly from Marjoru.',
       onSave: _save,
       saving: _saving,
       successMsg: _successMsg,
@@ -6161,7 +6161,7 @@ class _SocialMediaSectionState extends State<_SocialMediaSection> {
               SizedBox(width: 10),
               Expanded(
                 child: Text(
-                  'Connecting your social media accounts lets you receive messages, sync leads, and reply to customers — all without leaving NexaFlow. Toggle each platform to mark it as connected once you\'ve set it up.',
+                  'Connecting your social media accounts lets you receive messages, sync leads, and reply to customers — all without leaving Marjoru. Toggle each platform to mark it as connected once you\'ve set it up.',
                   style: TextStyle(fontSize: 12, color: Color(0xFF1877F2), height: 1.5),
                 ),
               ),
@@ -6172,7 +6172,7 @@ class _SocialMediaSectionState extends State<_SocialMediaSection> {
           // Facebook
           _SocialCard(
             name: 'Facebook & Messenger',
-            description: 'Connect your Facebook Business Page to sync incoming leads from Facebook Lead Ads directly into your Contacts, and reply to Messenger conversations from your NexaFlow inbox.',
+            description: 'Connect your Facebook Business Page to sync incoming leads from Facebook Lead Ads directly into your Contacts, and reply to Messenger conversations from your Marjoru inbox.',
             note: 'Requires a Facebook Business Page with admin access. Lead sync works automatically once connected.',
             color: const Color(0xFF1877F2),
             icon: const Icon(Icons.facebook, color: Color(0xFF1877F2), size: 28),
@@ -6190,7 +6190,7 @@ class _SocialMediaSectionState extends State<_SocialMediaSection> {
           // WhatsApp
           _SocialCard(
             name: 'WhatsApp Business',
-            description: 'Link your WhatsApp Business account to send and receive messages with customers on the world\'s most popular messaging platform. All conversations appear in your NexaFlow inbox.',
+            description: 'Link your WhatsApp Business account to send and receive messages with customers on the world\'s most popular messaging platform. All conversations appear in your Marjoru inbox.',
             note: 'Requires a WhatsApp Business account and a dedicated phone number. Messages are end-to-end encrypted.',
             color: const Color(0xFF25D366),
             icon: const Icon(Icons.message_rounded, color: Color(0xFF25D366), size: 28),
@@ -6647,7 +6647,7 @@ class _PaymentOptionsSectionState
               SizedBox(width: 10),
               Expanded(
                 child: Text(
-                  'Connect a payment processor so your customers can pay invoices directly through NexaFlow.',
+                  'Connect a payment processor so your customers can pay invoices directly through Marjoru.',
                   style: TextStyle(fontSize: 12, color: AppTheme.brand, height: 1.5),
                 ),
               ),
@@ -13384,7 +13384,7 @@ class _PayrollSettingsSectionState extends State<_PayrollSettingsSection> {
             ),
           ] else ...[
             const Text(
-              'Sets the thresholds used to flag overtime on the Timesheets Week view. These are the numbers NexaFlow uses to split regular vs. overtime hours — always double check your state\'s actual labor law.',
+              'Sets the thresholds used to flag overtime on the Timesheets Week view. These are the numbers Marjoru uses to split regular vs. overtime hours — always double check your state\'s actual labor law.',
               style: TextStyle(fontSize: 11, color: AppTheme.textSecondary, height: 1.4),
             ),
             const SizedBox(height: 14),

@@ -1,11 +1,11 @@
 {
-    "name": "nexaflow",
-    "short_name": "nexaflow",
+    "name": "Marjoru",
+    "short_name": "Marjoru",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",
     "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "description": "Marjoru — AI-powered CRM for home service businesses.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

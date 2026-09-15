@@ -591,28 +591,13 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
   }
 
   Future<Position?> _getLocation() async {
-    void debugMsg(String msg) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(msg),
-          backgroundColor: Colors.orange,
-          duration: const Duration(seconds: 8),
-        ));
-      }
-    }
-
     try {
       LocationPermission permission = await Geolocator.checkPermission();
-      debugMsg('checkPermission: $permission');
       if (permission == LocationPermission.denied) {
         permission = await Geolocator.requestPermission();
-        debugMsg('requestPermission: $permission');
         if (permission == LocationPermission.denied) return null;
       }
-      if (permission == LocationPermission.deniedForever) {
-        debugMsg('deniedForever — blocked at browser/OS level');
-        return null;
-      }
+      if (permission == LocationPermission.deniedForever) return null;
 
       return await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
@@ -621,7 +606,7 @@ class _EmployeeHubScreenState extends State<EmployeeHubScreen> {
         onTimeout: () => throw TimeoutException('Location request timed out'),
       );
     } catch (e) {
-      debugMsg('Location exception: $e');
+      debugPrint('Location error: $e');
       return null;
     }
   }

@@ -20,7 +20,7 @@ class InviteMemberDialog extends StatefulWidget {
   const InviteMemberDialog({
     super.key,
     required this.businessId,
-    this.businessName = 'NexaFlow',
+    this.businessName = 'Marjoru',
   });
 
   @override

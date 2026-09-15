@@ -146,7 +146,7 @@ Deno.serve(async (req) => {
       .select("business_name, week_start_day")
       .eq("id", businessId)
       .maybeSingle();
-    const businessName = business?.business_name ?? "NexaFlow";
+    const businessName = business?.business_name ?? "Marjoru";
 
     // ── TS-06: overtime split, gated on the overtime_tracking plan
     // feature (Pro only). Mirrors get-timesheets' logic exactly so the

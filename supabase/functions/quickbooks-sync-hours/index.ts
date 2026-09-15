@@ -414,7 +414,7 @@ Deno.serve(async (req) => {
         TxnDate: payPeriod.week_end,
         Hours: hours,
         Minutes: minutes,
-        Description: `NexaFlow pay period ${payPeriod.week_start} to ${payPeriod.week_end}`,
+        Description: `Marjoru pay period ${payPeriod.week_start} to ${payPeriod.week_end}`,
       };
 
       let qbTimeActivityId: string | null = null;

@@ -486,7 +486,7 @@ class _NexaFlowSupportBubbleState extends State<NexaFlowSupportBubble>
           _MenuOption(
             icon:     Icons.smart_toy_outlined,
             title:    'Ask AI',
-            subtitle: 'Get instant answers about NexaFlow',
+            subtitle: 'Get instant answers about Marjoru',
             onTap:    () => setState(() => _view = _SupportView.chat),
           ),
           const SizedBox(height: 8),

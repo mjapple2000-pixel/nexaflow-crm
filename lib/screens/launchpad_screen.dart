@@ -13,7 +13,7 @@ class LaunchpadScreen extends StatefulWidget {
 class _LaunchpadScreenState extends State<LaunchpadScreen> {
   final _supabase = Supabase.instance.client;
   int? _businessId;
-  String _businessName = 'NexaFlow';
+  String _businessName = 'Marjoru';
 
   // Connected state for each integration
   bool _googleConnected   = false;
@@ -110,7 +110,7 @@ class _LaunchpadScreenState extends State<LaunchpadScreen> {
 
       setState(() {
         _businessId        = businessId;
-        _businessName      = bizName.isNotEmpty ? bizName : 'NexaFlow';
+        _businessName      = bizName.isNotEmpty ? bizName : 'Marjoru';
         _googleConnected   = bizRes['connected_google'] as bool? ?? false;
         _facebookConnected = fbConn;
         _whatsappConnected = waConn;
@@ -389,7 +389,7 @@ class _OnboardingChecklist extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text('Get Started with NexaFlow',
+                      const Text('Get Started with Marjoru',
                           style: TextStyle(
                               fontSize: 15,
                               fontWeight: FontWeight.w700,

@@ -91,7 +91,7 @@ class _NexaFlowAppState extends State<NexaFlowApp> {
   @override
   Widget build(BuildContext context) {
     return MaterialApp.router(
-      title: 'NexaFlow',
+      title: 'Marjoru',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.lightTheme,
       routerConfig: AppRouter.router,

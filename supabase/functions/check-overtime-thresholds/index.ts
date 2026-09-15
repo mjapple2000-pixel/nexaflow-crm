@@ -52,7 +52,7 @@ async function sendOvertimeEmail(params: {
     mgForm.append('from', `${params.businessName} <no-reply@${MAILGUN_DOMAIN}>`);
     mgForm.append('to', params.ownerEmail);
     mgForm.append('subject', subject);
-    mgForm.append('html', `<p>${bodyLine}</p><p>Check Timesheets in NexaFlow for the full breakdown.</p>`);
+    mgForm.append('html', `<p>${bodyLine}</p><p>Check Timesheets in Marjoru for the full breakdown.</p>`);
 
     await fetch(`https://api.mailgun.net/v3/${MAILGUN_DOMAIN}/messages`, {
       method: 'POST',
@@ -222,7 +222,7 @@ Deno.serve(async (req) => {
 
           await sendOvertimeEmail({
             ownerEmail: biz.owner_email,
-            businessName: biz.business_name ?? 'NexaFlow',
+            businessName: biz.business_name ?? 'Marjoru',
             employeeName,
             kind: ev.type as 'daily_approaching' | 'daily_crossed' | 'weekly_approaching' | 'weekly_crossed',
             minutesLogged: ev.minutes,

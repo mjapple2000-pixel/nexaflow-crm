@@ -109,14 +109,14 @@ class _SetupAccountScreenState extends State<SetupAccountScreen> {
                       borderRadius: BorderRadius.circular(16),
                     ),
                     alignment: Alignment.center,
-                    child: const Text('N',
+                    child: const Text('M',
                         style: TextStyle(
                             color: Colors.white,
                             fontSize: 32,
                             fontWeight: FontWeight.bold)),
                   ),
                   const SizedBox(height: 20),
-                  const Text('NexaFlow',
+                  const Text('Marjoru',
                       style: TextStyle(
                           color: Colors.white,
                           fontSize: 28,
@@ -131,7 +131,7 @@ class _SetupAccountScreenState extends State<SetupAccountScreen> {
                       text: 'Set a secure password for your account'),
                   const _InfoItem(
                       icon: Icons.people_alt_outlined,
-                      text: 'Access your team\'s NexaFlow workspace'),
+                      text: 'Access your team\'s Marjoru workspace'),
                   const _InfoItem(
                       icon: Icons.verified_outlined,
                       text: 'Your email is already verified'),

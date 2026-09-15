@@ -193,7 +193,7 @@ class _BetaSignupScreenState extends State<BetaSignupScreen> {
               color: AppTheme.textPrimary)),
       const SizedBox(height: 12),
       const Text(
-          'This beta invite link is invalid or has expired.\nPlease contact your NexaFlow representative for a new invite.',
+          'This beta invite link is invalid or has expired.\nPlease contact your Marjoru representative for a new invite.',
           textAlign: TextAlign.center,
           style: TextStyle(fontSize: 14, color: AppTheme.textSecondary, height: 1.5)),
       const SizedBox(height: 24),
@@ -218,12 +218,12 @@ class _BetaSignupScreenState extends State<BetaSignupScreen> {
         child: const Icon(Icons.check_circle_outline_rounded,
             color: Color(0xFF10B981), size: 28)),
       const SizedBox(height: 20),
-      const Text('Welcome to NexaFlow Beta!',
+      const Text('Welcome to Marjoru Beta!',
           style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700,
               color: AppTheme.textPrimary)),
       const SizedBox(height: 12),
       const Text(
-          'Your account has been created successfully.\nYou now have full access to all NexaFlow features.',
+          'Your account has been created successfully.\nYou now have full access to all Marjoru features.',
           textAlign: TextAlign.center,
           style: TextStyle(fontSize: 14, color: AppTheme.textSecondary, height: 1.5)),
       const SizedBox(height: 24),
@@ -251,12 +251,12 @@ class _BetaSignupScreenState extends State<BetaSignupScreen> {
           decoration: BoxDecoration(
               color: AppTheme.brand, borderRadius: BorderRadius.circular(10)),
           alignment: Alignment.center,
-          child: const Text('N',
+          child: const Text('M',
               style: TextStyle(color: Colors.white, fontSize: 20,
                   fontWeight: FontWeight.bold))),
         const SizedBox(width: 12),
         Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          const Text('NexaFlow',
+          const Text('Marjoru',
               style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700,
                   color: AppTheme.textPrimary)),
           Container(

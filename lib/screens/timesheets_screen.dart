@@ -1312,7 +1312,7 @@ class _TimesheetsScreenState extends State<TimesheetsScreen> {
                     final h = history[i];
                     final action = h['action'] as String? ?? 'unknown';
                     final actorId = h['actor_user_id'] as String?;
-                    final actorName = actorId != null ? (nameByUserId[actorId] ?? 'Unknown') : 'NexaFlow Support';
+                    final actorName = actorId != null ? (nameByUserId[actorId] ?? 'Unknown') : 'Marjoru Support';
                     final at = _formatDateTime(h['created_at'] as String?);
                     return Padding(
                       padding: const EdgeInsets.symmetric(vertical: 8),

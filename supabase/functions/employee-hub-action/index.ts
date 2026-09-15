@@ -918,7 +918,7 @@ Deno.serve(async (req) => {
             "",
             `Period: ${week_start} to ${week_end}`,
             "",
-            "Review it in NexaFlow under Timesheets & Payroll.",
+            "Review it in Marjoru under Timesheets & Payroll.",
             "",
             `— ${businessName}`,
           ];

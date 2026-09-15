@@ -3630,7 +3630,7 @@ Future<void> _updateTags(Conversation c, List<String> newTags) async {
           const Expanded(
             child: Text(
               'This landed in Noise — AI did not reply. '
-              'It will be removed from NexaFlow after 7 days of inactivity (the original stays in your email inbox).',
+              'It will be removed from Marjoru after 7 days of inactivity (the original stays in your email inbox).',
               style: TextStyle(fontSize: 12, color: Color(0xFF6366F1)),
             ),
           ),

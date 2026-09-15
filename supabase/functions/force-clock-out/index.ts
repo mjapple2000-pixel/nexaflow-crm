@@ -81,7 +81,7 @@ Deno.serve(async (req) => {
         });
       }
       effectiveBusinessId = bodyBusinessId;
-      actorName = "NexaFlow Support";
+      actorName = "Marjoru Support";
     } else {
       const { data: profile, error: profileError } = await supabase
         .from("profiles")
