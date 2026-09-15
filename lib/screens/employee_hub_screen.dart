@@ -2071,6 +2071,10 @@ class _EmployeeAppointmentDetailSheetState extends State<_EmployeeAppointmentDet
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Text sent.')),
         );
+      } else if (data['error'] == 'upgrade_required') {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("This feature isn't turned on for your business yet — ask the office."), backgroundColor: AppTheme.error),
+        );
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(data['message'] as String? ?? data['error'] as String? ?? 'Failed to send text.'), backgroundColor: AppTheme.error),

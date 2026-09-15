@@ -60,6 +60,19 @@ Deno.serve(async (req) => {
       businessId = profile.business_id;
     }
 
+    // Plan gate — Growth+ only, same source of truth as every other gated feature
+    const { data: allowed, error: gateErr } = await supabase
+      .rpc('check_plan_feature', { p_business_id: businessId, p_feature: 'campaigns' });
+    if (gateErr) {
+      return new Response(JSON.stringify({ error: 'Error checking plan: ' + gateErr.message }), { status: 500, headers: corsHeaders });
+    }
+    if (!allowed) {
+      return new Response(JSON.stringify({
+        error: 'upgrade_required',
+        message: 'Campaigns require the Growth plan or above.',
+      }), { status: 403, headers: corsHeaders });
+    }
+
     // Verify campaign belongs to this business
     const { data: campaign, error: campaignErr } = await supabase
       .from('campaigns')

@@ -538,7 +538,7 @@ Deno.serve(async (req) => {
       if (!allowed) {
         return new Response(JSON.stringify({
           error: "upgrade_required",
-          message: "On My Way texts require the Starter plan or above.",
+          message: "On My Way texts require the Growth plan or above.",
         }), { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } });
       }
 

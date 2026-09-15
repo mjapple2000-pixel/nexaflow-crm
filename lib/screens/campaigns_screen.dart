@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
@@ -25,8 +26,13 @@ class _CampaignsScreenState extends State<CampaignsScreen> {
   bool _loading = true;
   String? _error;
   int? _businessId;
+  String? _plan;
+  bool _isBeta = false;
 
   String _statusFilter = 'all'; // all | draft | scheduled | sent | active
+
+  bool get _hasCampaignsAccess =>
+      _isBeta || _plan == 'growth' || _plan == 'pro';
 
   @override
   void initState() {
@@ -46,6 +52,14 @@ class _CampaignsScreenState extends State<CampaignsScreen> {
 
       _businessId = await getActiveBusinessId();
       if (_businessId == null) throw Exception('No business found');
+
+      final bizRow = await _supabase
+          .from('businesses')
+          .select('plan, is_beta')
+          .eq('id', _businessId!)
+          .maybeSingle();
+      _plan = bizRow?['plan'] as String?;
+      _isBeta = bizRow?['is_beta'] as bool? ?? false;
 
       final res = await _supabase
           .from('campaigns')
@@ -74,6 +88,40 @@ class _CampaignsScreenState extends State<CampaignsScreen> {
   }
 
   void _openCreateModal() {
+    if (!_hasCampaignsAccess) {
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: AppTheme.cardBg,
+          title: const Text('Campaigns require Growth or above',
+              style: TextStyle(color: AppTheme.textPrimary)),
+          content: const Text(
+            'Broadcast SMS and email campaigns are available on the Growth plan and up. Upgrade to start reaching your whole contact list at once.',
+            style: TextStyle(color: AppTheme.textSecondary),
+          ),
+          actions: [
+            MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: TextButton(
+                onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(),
+                child: const Text('Not Now'),
+              ),
+            ),
+            MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: ElevatedButton(
+                onPressed: () {
+                  Navigator.of(ctx, rootNavigator: true).pop();
+                  context.go('/settings?section=billing');
+                },
+                child: const Text('Upgrade'),
+              ),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
     showDialog(
       context: context,
       barrierColor: Colors.black54,
@@ -656,7 +704,6 @@ class _CreateCampaignModalState extends State<_CreateCampaignModal> {
   final _nameCtrl = TextEditingController();
   final _subjectCtrl = TextEditingController();
   final _bodyCtrl = TextEditingController();
-  final _makeScenarioCtrl = TextEditingController();
 
   String _type = 'sms';
   String _status = 'draft';
@@ -670,7 +717,6 @@ class _CreateCampaignModalState extends State<_CreateCampaignModal> {
     _nameCtrl.dispose();
     _subjectCtrl.dispose();
     _bodyCtrl.dispose();
-    _makeScenarioCtrl.dispose();
     super.dispose();
   }
 
@@ -951,13 +997,11 @@ class _CampaignDetailModalState extends State<_CampaignDetailModal> {
   late final TextEditingController _nameCtrl;
   late final TextEditingController _subjectCtrl;
   late final TextEditingController _bodyCtrl;
-  late final TextEditingController _makeScenarioCtrl;
 
   late String _type;
   late String _status;
   DateTime? _scheduledAt;
   bool _saving = false;
-  bool _launching = false;
   bool _sending = false;
   Map<String, dynamic> _filterConfig = {};
   String? _error;
@@ -970,8 +1014,6 @@ class _CampaignDetailModalState extends State<_CampaignDetailModal> {
     _nameCtrl = TextEditingController(text: c['name'] ?? '');
     _subjectCtrl = TextEditingController(text: c['subject'] ?? '');
     _bodyCtrl = TextEditingController(text: c['message_body'] ?? '');
-    _makeScenarioCtrl =
-        TextEditingController(text: c['make_scenario_id'] ?? '');
     _type = c['type'] ?? 'sms';
     _status = c['status'] ?? 'draft';
     if (c['scheduled_at'] != null) {
@@ -986,7 +1028,6 @@ class _CampaignDetailModalState extends State<_CampaignDetailModal> {
     _nameCtrl.dispose();
     _subjectCtrl.dispose();
     _bodyCtrl.dispose();
-    _makeScenarioCtrl.dispose();
     super.dispose();
   }
 
@@ -1027,9 +1068,6 @@ class _CampaignDetailModalState extends State<_CampaignDetailModal> {
         'message_body': _bodyCtrl.text.trim(),
         'subject': _type == 'email' ? _subjectCtrl.text.trim() : null,
         'scheduled_at': _scheduledAt?.toUtc().toIso8601String(),
-        'make_scenario_id': _makeScenarioCtrl.text.trim().isEmpty
-            ? null
-            : _makeScenarioCtrl.text.trim(),
       }).eq('id', widget.campaign['id']);
 
       widget.onUpdated();
@@ -1041,74 +1079,6 @@ class _CampaignDetailModalState extends State<_CampaignDetailModal> {
       setState(() {
         _error = e.toString();
         _saving = false;
-      });
-    }
-  }
-
-  Future<void> _launchCampaign() async {
-    final scenarioId = _makeScenarioCtrl.text.trim();
-    if (scenarioId.isEmpty) {
-      setState(() => _error = 'Add a Make Scenario ID before launching.');
-      return;
-    }
-
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppTheme.cardBg,
-        title: const Text('Launch Campaign?',
-            style: TextStyle(color: AppTheme.textPrimary)),
-        content: const Text(
-          'This will trigger your Make scenario and send messages to contacts. This cannot be undone.',
-          style: TextStyle(color: AppTheme.textSecondary),
-        ),
-        actions: [
-          MouseRegion(
-            cursor: SystemMouseCursors.click,
-            child: TextButton(
-              onPressed: () =>
-                  Navigator.of(ctx, rootNavigator: true).pop(false),
-              child: const Text('Cancel'),
-            ),
-          ),
-          MouseRegion(
-            cursor: SystemMouseCursors.click,
-            child: ElevatedButton(
-              onPressed: () =>
-                  Navigator.of(ctx, rootNavigator: true).pop(true),
-              style:
-                  ElevatedButton.styleFrom(backgroundColor: Colors.green),
-              child: const Text('Yes, Launch'),
-            ),
-          ),
-        ],
-      ),
-    );
-
-    if (confirmed != true) return;
-
-    setState(() {
-      _launching = true;
-      _error = null;
-      _successMsg = null;
-    });
-
-    try {
-      await _supabase.from('campaigns').update({
-        'status': 'active',
-        'sent_at': DateTime.now().toUtc().toIso8601String(),
-      }).eq('id', widget.campaign['id']);
-
-      widget.onUpdated();
-      setState(() {
-        _status = 'active';
-        _successMsg = 'Campaign launched! Make scenario triggered.';
-        _launching = false;
-      });
-    } catch (e) {
-      setState(() {
-        _error = e.toString();
-        _launching = false;
       });
     }
   }
@@ -1445,25 +1415,6 @@ class _CampaignDetailModalState extends State<_CampaignDetailModal> {
                                 child: CircularProgressIndicator(
                                     strokeWidth: 2))
                             : const Text('Save'),
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    MouseRegion(
-                      cursor: SystemMouseCursors.click,
-                      child: ElevatedButton.icon(
-                        onPressed: _launching ? null : _launchCampaign,
-                        style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.green),
-                        icon: _launching
-                            ? const SizedBox(
-                                width: 14,
-                                height: 14,
-                                child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    color: Colors.white))
-                            : const Icon(Icons.rocket_launch_outlined,
-                                size: 16),
-                        label: const Text('Launch'),
                       ),
                     ),
                     const SizedBox(width: 10),
