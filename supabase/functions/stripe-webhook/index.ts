@@ -24,6 +24,10 @@ const PRICE_TO_PLAN: Record<string, string> = {
 // alongside the flat plan price whenever a new subscription checks out.
 const AI_OVERAGE_PRICE_ID = Deno.env.get('STRIPE_AI_OVERAGE_PRICE_ID') ?? ''
 
+// Metered Campaign Send Overage price (JB-SMS-B5) — same pattern as AI overage,
+// attached as an additional subscription item on new checkouts.
+const CAMPAIGN_OVERAGE_PRICE_ID = Deno.env.get('STRIPE_CAMPAIGN_OVERAGE_PRICE_ID') ?? ''
+
 // Maps Stripe subscription.status to our subscription_status values
 const STRIPE_STATUS_MAP: Record<string, string> = {
   'active':             'active',
@@ -169,6 +173,19 @@ Deno.serve(async (req: Request) => {
           }
         }
 
+        // Attach metered Campaign Send Overage price (JB-SMS-B5) as another
+        // subscription item, same pattern — never blocks checkout on failure.
+        if (CAMPAIGN_OVERAGE_PRICE_ID) {
+          try {
+            await stripe.subscriptionItems.create({
+              subscription: subscriptionId,
+              price: CAMPAIGN_OVERAGE_PRICE_ID,
+            })
+          } catch (overageErr) {
+            console.error('Failed to attach campaign overage price:', overageErr)
+          }
+        }
+
         // Welcome email via Edge Function (Mailgun)
         await fetch('https://rllriopqojaraceytdno.supabase.co/functions/v1/welcome-email', {
           method: 'POST',
@@ -201,6 +218,36 @@ Deno.serve(async (req: Request) => {
           is_paid: isActive,
         })
         .eq('client_id', customerId)
+
+      // Ensure both metered overage prices are attached whenever a subscription
+      // changes plan (e.g. Starter → Growth upgrade) — not just on first signup.
+      // checkout.session.completed only fires once, but plan upgrades/downgrades
+      // fire this event instead, so this is the only place that ever runs for them.
+      if (isActive && (AI_OVERAGE_PRICE_ID || CAMPAIGN_OVERAGE_PRICE_ID)) {
+        const existingPriceIds = subscription.items.data.map((item) => item.price?.id)
+
+        if (AI_OVERAGE_PRICE_ID && !existingPriceIds.includes(AI_OVERAGE_PRICE_ID)) {
+          try {
+            await stripe.subscriptionItems.create({
+              subscription: subscription.id,
+              price: AI_OVERAGE_PRICE_ID,
+            })
+          } catch (overageErr) {
+            console.error('Failed to attach AI overage price on plan update:', overageErr)
+          }
+        }
+
+        if (CAMPAIGN_OVERAGE_PRICE_ID && !existingPriceIds.includes(CAMPAIGN_OVERAGE_PRICE_ID)) {
+          try {
+            await stripe.subscriptionItems.create({
+              subscription: subscription.id,
+              price: CAMPAIGN_OVERAGE_PRICE_ID,
+            })
+          } catch (overageErr) {
+            console.error('Failed to attach campaign overage price on plan update:', overageErr)
+          }
+        }
+      }
     }
 
     // ── customer.subscription.deleted ──────────────────────────
