@@ -134,7 +134,6 @@ const _kSettingsPermissions = [
   ('settings_voice_ai',          'Voice AI Agents',         Icons.mic_outlined),
   ('settings_email_services',    'Email Services',          Icons.mail_outline),
   ('settings_phone_numbers',     'Phone Numbers',           Icons.dialpad_outlined),
-  ('settings_whatsapp',          'WhatsApp',                Icons.chat_outlined),
   ('settings_objects',           'Objects',                 Icons.hub_outlined),
   ('settings_custom_fields',     'Custom Fields',            Icons.tune_outlined),
   ('settings_custom_values',     'Custom Values',            Icons.data_object_outlined),
@@ -375,7 +374,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     15: 'settings_voice_ai',
     16: 'settings_email_services',
     17: 'settings_phone_numbers',
-    18: 'settings_whatsapp',
     19: 'settings_objects',
     20: 'settings_custom_fields',
     21: 'settings_custom_values',
@@ -459,7 +457,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       2: 'ai', 3: 'knowledge', 4: 'phone', 5: 'email', 6: 'team',
       7: 'notifications', 8: 'payments', 9: 'social', 10: 'billing',
       11: 'pipelines', 12: 'automation', 13: 'calendars', 14: 'conversation_ai',
-      15: 'voice_ai', 16: 'email_services', 17: 'phone_numbers', 18: 'whatsapp',
+      15: 'voice_ai', 16: 'email_services', 17: 'phone_numbers',
       19: 'objects', 20: 'custom_fields', 21: 'custom_values', 22: 'scoring',
       23: 'domains', 24: 'url_redirects', 25: 'service_library', 26: 'job_types',
       27: 'documents', 28: 'expense_categories', 29: 'payroll',
@@ -488,7 +486,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       case 'voice_ai':        return 15;
       case 'email_services':  return 16;
       case 'phone_numbers':   return 17;
-      case 'whatsapp':        return 18;
       // Other Settings
       case 'objects':         return 19;
       case 'custom_fields':   return 20;
@@ -724,7 +721,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
             (15, Icons.mic_outlined,              'Voice AI'),
             (16, Icons.alternate_email_rounded,   'Email Services'),
             (17, Icons.phone_in_talk_outlined,    'Phone Numbers'),
-            (18, Icons.message_outlined,          'WhatsApp'),
           ]),
           const SizedBox(height: 8),
           const Divider(height: 1, color: AppTheme.borderColor),
@@ -861,8 +857,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
         return _ComingSoonSection(title: 'Email Services', icon: Icons.alternate_email_rounded);
       case 17:
         return _PhoneNumbersSection(businessId: _businessId!);
-      case 18:
-        return _ComingSoonSection(title: 'WhatsApp', icon: Icons.message_outlined);
       case 19:
         return _ComingSoonSection(title: 'Objects', icon: Icons.category_outlined);
       case 20:
@@ -5091,6 +5085,7 @@ class _NotificationsSectionState
     extends State<_NotificationsSection> {
   late bool _emailNotifications;
   late bool _smsAlerts;
+  late bool _autoAppointmentReminders;
   bool _saving = false;
   String? _successMsg, _error;
 
@@ -5100,6 +5095,8 @@ class _NotificationsSectionState
     _emailNotifications =
         widget.business['email_notifications'] as bool? ?? true;
     _smsAlerts = widget.business['sms_alerts'] as bool? ?? false;
+    _autoAppointmentReminders =
+        widget.business['auto_appointment_reminders_enabled'] as bool? ?? false;
   }
 
   Future<void> _save() async {
@@ -5109,6 +5106,7 @@ class _NotificationsSectionState
       await widget.onSave({
         'email_notifications': _emailNotifications,
         'sms_alerts': _smsAlerts,
+        'auto_appointment_reminders_enabled': _autoAppointmentReminders,
       });
       setState(() {
         _successMsg = 'Notification settings saved.';
@@ -5146,6 +5144,13 @@ class _NotificationsSectionState
                 value: _smsAlerts,
                 onChanged: (v) =>
                     setState(() => _smsAlerts = v)),
+            _ToggleRow(
+                label: 'Automatic Appointment Reminders',
+                subtitle:
+                    'Automatically text customers a reminder before their appointment — this uses your SMS quota, just like other automated texts.',
+                value: _autoAppointmentReminders,
+                onChanged: (v) =>
+                    setState(() => _autoAppointmentReminders = v)),
           ]),
     );
   }
