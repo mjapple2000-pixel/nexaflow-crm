@@ -5086,6 +5086,8 @@ class _NotificationsSectionState
   late bool _emailNotifications;
   late bool _smsAlerts;
   late bool _autoAppointmentReminders;
+  late bool _autoQuoteFollowup;
+  late int _quoteFollowupDays;
   bool _saving = false;
   String? _successMsg, _error;
 
@@ -5097,6 +5099,10 @@ class _NotificationsSectionState
     _smsAlerts = widget.business['sms_alerts'] as bool? ?? false;
     _autoAppointmentReminders =
         widget.business['auto_appointment_reminders_enabled'] as bool? ?? false;
+    _autoQuoteFollowup =
+        widget.business['auto_quote_followup_enabled'] as bool? ?? false;
+    _quoteFollowupDays =
+        widget.business['quote_followup_days'] as int? ?? 3;
   }
 
   Future<void> _save() async {
@@ -5107,6 +5113,8 @@ class _NotificationsSectionState
         'email_notifications': _emailNotifications,
         'sms_alerts': _smsAlerts,
         'auto_appointment_reminders_enabled': _autoAppointmentReminders,
+        'auto_quote_followup_enabled': _autoQuoteFollowup,
+        'quote_followup_days': _quoteFollowupDays,
       });
       setState(() {
         _successMsg = 'Notification settings saved.';
@@ -5140,7 +5148,7 @@ class _NotificationsSectionState
             _ToggleRow(
                 label: 'SMS Alerts',
                 subtitle:
-                    'Receive text alerts for urgent activity.',
+                    'Receive text alerts for urgent activity — this uses your SMS quota, just like other automated texts.',
                 value: _smsAlerts,
                 onChanged: (v) =>
                     setState(() => _smsAlerts = v)),
@@ -5151,6 +5159,67 @@ class _NotificationsSectionState
                 value: _autoAppointmentReminders,
                 onChanged: (v) =>
                     setState(() => _autoAppointmentReminders = v)),
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                      child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                        Text('Automatic Quote Follow-Ups',
+                            style: const TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                                color: AppTheme.textPrimary)),
+                        Text(
+                            'Automatically text customers who haven\'t responded to a quote — this uses your SMS quota, just like other automated texts.',
+                            style: const TextStyle(
+                                fontSize: 12,
+                                color: AppTheme.textSecondary)),
+                      ])),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Switch(
+                          value: _autoQuoteFollowup,
+                          onChanged: (v) =>
+                              setState(() => _autoQuoteFollowup = v),
+                          activeThumbColor: AppTheme.brand),
+                      const SizedBox(height: 4),
+                      Container(
+                        width: 72,
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        decoration: BoxDecoration(
+                          color: AppTheme.pageBg,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: AppTheme.borderColor),
+                        ),
+                        child: DropdownButtonHideUnderline(
+                          child: DropdownButton<String>(
+                            value: _quoteFollowupDays.toString(),
+                            isDense: true,
+                            isExpanded: true,
+                            icon: const Icon(Icons.arrow_drop_down,
+                                size: 18, color: AppTheme.textSecondary),
+                            dropdownColor: AppTheme.cardBg,
+                            style: const TextStyle(
+                                fontSize: 12, color: AppTheme.textPrimary),
+                            items: const ['1', '2', '3', '5', '7']
+                                .map((d) => DropdownMenuItem(
+                                    value: d, child: Text(d)))
+                                .toList(),
+                            onChanged: (v) => setState(() =>
+                                _quoteFollowupDays = int.parse(v ?? '3')),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
           ]),
     );
   }

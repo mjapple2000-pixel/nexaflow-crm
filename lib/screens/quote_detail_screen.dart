@@ -216,6 +216,8 @@ class _QuoteDetailScreenState extends State<QuoteDetailScreen> {
                   _metaRow('Expires', _fmtDate(_quote?['expires_at'])),
                 if (_quote?['sent_at'] != null)
                   _metaRow('Sent', _fmtDate(_quote?['sent_at'])),
+                if (_quote?['quote_followup_sent_at'] != null)
+                  _metaRow('Follow-Up Sent', _fmtDate(_quote?['quote_followup_sent_at'])),
                 if (_quote?['approved_at'] != null)
                   _metaRow('Approved', _fmtDate(_quote?['approved_at'])),
                 const Divider(height: 28, color: AppTheme.borderColor),

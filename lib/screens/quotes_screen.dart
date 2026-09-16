@@ -433,6 +433,20 @@ class _QuotesScreenState extends State<QuotesScreen> {
                             fontSize: 11, fontWeight: FontWeight.w600,
                             color: statusColor)),
                   ),
+                  if (q['quote_followup_sent_at'] != null) ...[
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: AppTheme.textSecondary.withValues(alpha: 0.08),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: const Text('Follow-Up Sent',
+                          style: TextStyle(
+                              fontSize: 11, fontWeight: FontWeight.w600,
+                              color: AppTheme.textSecondary)),
+                    ),
+                  ],
                   const Spacer(),
                   ..._cardActions(context, q, status),
                 ],
