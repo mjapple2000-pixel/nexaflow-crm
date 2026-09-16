@@ -61,6 +61,18 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
             inv['_isOverdue'] = true;
           }
         }
+        // JB-SMS-03: send-invoice-overdue-reminders now literally flips
+        // status to 'overdue' once due_date passes, and this catches
+        // 'sent' invoices in the gap before that cron run reaches them.
+        if (inv['status'] == 'overdue') {
+          inv['_isOverdue'] = true;
+        }
+        if (inv['status'] == 'sent' && inv['due_date'] != null) {
+          final due = DateTime.tryParse(inv['due_date'] as String);
+          if (due != null && due.isBefore(now)) {
+            inv['_isOverdue'] = true;
+          }
+        }
       }
 
       double outstanding = 0;
@@ -73,7 +85,7 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
         final amountDue = (inv['amount_due'] as num?)?.toDouble() ?? 0;
         final isOverdue = inv['_isOverdue'] == true;
 
-        if (status == 'draft' || status == 'sent' || status == 'approved') outstanding += amountDue;
+        if (status == 'draft' || status == 'sent' || status == 'approved' || status == 'overdue') outstanding += amountDue;
         if (isOverdue) overdueCount++;
         if (status == 'paid') {
           final paidAt = DateTime.tryParse(inv['paid_at'] as String? ?? '');
@@ -317,6 +329,10 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
           statusColor = AppTheme.textSecondary;
           statusLabel = 'Void';
           break;
+        case 'overdue':
+          statusColor = AppTheme.error;
+          statusLabel = 'Overdue';
+          break;
         default:
           statusColor = AppTheme.textSecondary;
           statusLabel = status;
@@ -386,6 +402,19 @@ class _InvoicesScreenState extends State<InvoicesScreen> {
                       style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600,
                           color: statusColor)),
                 ),
+                if (inv['overdue_reminder_sent_at'] != null) ...[
+                  const SizedBox(width: 6),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: AppTheme.textSecondary.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: const Text('Reminder Sent',
+                        style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600,
+                            color: AppTheme.textSecondary)),
+                  ),
+                ],
                 const Spacer(),
                 ..._cardActions(context, inv, status, isOverdue),
               ],

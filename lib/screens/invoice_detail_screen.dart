@@ -220,6 +220,8 @@ class _InvoiceDetailScreenState extends State<InvoiceDetailScreen> {
                   _metaRow('Due', _fmtDate(_invoice?['due_date'])),
                 if (_invoice?['paid_at'] != null)
                   _metaRow('Paid', _fmtDate(_invoice?['paid_at'])),
+                if (_invoice?['overdue_reminder_sent_at'] != null)
+                  _metaRow('Reminder Sent', _fmtDate(_invoice?['overdue_reminder_sent_at'])),
                 if (_invoice?['quote_id'] != null)
                   _sourceQuoteRow(),
                 if (_paymentLink != null)
