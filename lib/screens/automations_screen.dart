@@ -498,11 +498,13 @@ class _AutomationBuilderViewState extends State<_AutomationBuilderView> {
   List<Map<String, dynamic>> _actions = [];
   List<Map<String, dynamic>> _pipelineStages = [];
   bool _saving = false;
+  bool _jobFollowupAllowed = true;
 
   @override
   void initState() {
     super.initState();
     _loadPipelineStages();
+    _checkJobFollowupPlan();
     if (widget.existingAutomation != null) {
       final a = widget.existingAutomation!;
       _nameController.text = a['name'] ?? '';
@@ -534,6 +536,39 @@ class _AutomationBuilderViewState extends State<_AutomationBuilderView> {
     } catch (e) {
       debugPrint('Pipeline stages error: $e');
     }
+  }
+
+  Future<void> _checkJobFollowupPlan() async {
+    try {
+      final allowed = await _db.rpc('check_plan_feature', params: {
+        'p_business_id': widget.businessId,
+        'p_feature': 'job_followup',
+      });
+      if (!mounted) return;
+      setState(() {
+        _jobFollowupAllowed = allowed == true;
+      });
+    } catch (e) {
+      debugPrint('Job follow-up plan check error: $e');
+    }
+  }
+
+  void _showJobFollowupUpgradeDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Upgrade to Growth'),
+        content: const Text(
+            'Send Job Follow-Up is available on the Growth and Pro plans. Upgrade your plan to use this action.'),
+        actions: [
+          TextButton(
+            onPressed: () =>
+                Navigator.of(ctx, rootNavigator: true).pop(),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
   }
 
   void _addAction(String type) {
@@ -575,6 +610,11 @@ class _AutomationBuilderViewState extends State<_AutomationBuilderView> {
           'type': 'send_review_request',
           'platform': 'google',
           'message': 'Hi {{name}}, thank you for choosing {{business}}! We\'d love it if you left us a quick review — it means the world to us. {{review_link}}',
+        };
+      case 'send_job_followup':
+        return {
+          'type': 'send_job_followup',
+          'message': 'Hi {{name}}, just wanted to check in now that the job is wrapped up! Thank you for choosing {{business}} — we really appreciate you.',
         };
       case 'wait_until':
         return {
@@ -760,6 +800,8 @@ class _AutomationBuilderViewState extends State<_AutomationBuilderView> {
                         ('notify_owner', Icons.notifications_outlined,
                             'Notify Owner'),
                         ('send_email', Icons.email_outlined, 'Send Email'),
+                        ('send_job_followup', Icons.celebration_outlined,
+                            'Send Job Follow-Up'),
                         ('send_review_request', Icons.star_outline,
                             'Send Review Request'),
                         ('send_sms', Icons.sms_outlined, 'Send SMS'),
@@ -768,7 +810,12 @@ class _AutomationBuilderViewState extends State<_AutomationBuilderView> {
                       ].map((a) => _ActionPaletteItem(
                             icon: a.$2,
                             label: a.$3,
-                            onTap: () => _addAction(a.$1),
+                            locked: a.$1 == 'send_job_followup' &&
+                                !_jobFollowupAllowed,
+                            onTap: () => a.$1 == 'send_job_followup' &&
+                                    !_jobFollowupAllowed
+                                ? _showJobFollowupUpgradeDialog()
+                                : _addAction(a.$1),
                           )),
                     ],
                   ),
@@ -921,9 +968,13 @@ class _ActionPaletteItem extends StatelessWidget {
   final IconData icon;
   final String label;
   final VoidCallback onTap;
+  final bool locked;
 
   const _ActionPaletteItem(
-      {required this.icon, required this.label, required this.onTap});
+      {required this.icon,
+      required this.label,
+      required this.onTap,
+      this.locked = false});
 
   @override
   Widget build(BuildContext context) {
@@ -940,12 +991,18 @@ class _ActionPaletteItem extends StatelessWidget {
         ),
         child: Row(
           children: [
-            Icon(icon, size: 16, color: const Color(0xFF6C63FF)),
+            Icon(icon,
+                size: 16,
+                color: locked ? Colors.grey[400] : const Color(0xFF6C63FF)),
             const SizedBox(width: 10),
             Expanded(
-                child:
-                    Text(label, style: const TextStyle(fontSize: 13))),
-            Icon(Icons.add, size: 14, color: Colors.grey[400]),
+                child: Text(label,
+                    style: TextStyle(
+                        fontSize: 13,
+                        color: locked ? Colors.grey[500] : null))),
+            locked
+                ? Icon(Icons.lock_outline, size: 14, color: Colors.grey[400])
+                : Icon(Icons.add, size: 14, color: Colors.grey[400]),
           ],
         ),
       ),
@@ -1222,6 +1279,7 @@ class _ActionNodeState extends State<_ActionNode> {
       case 'move_pipeline_stage': return 'Move Pipeline Stage';
       case 'notify_owner': return 'Notify Owner';
       case 'send_review_request': return 'Send Review Request';
+      case 'send_job_followup': return 'Send Job Follow-Up';
       case 'wait_until': return 'Wait / Delay';
       case 'delay_relative_to_appointment': return 'Wait Until — Relative to Appointment';
       default: return type;
@@ -1236,6 +1294,7 @@ class _ActionNodeState extends State<_ActionNode> {
       case 'move_pipeline_stage': return Icons.move_down_outlined;
       case 'notify_owner': return Icons.notifications_outlined;
       case 'send_review_request': return Icons.star_outline;
+      case 'send_job_followup': return Icons.celebration_outlined;
       case 'wait_until': return Icons.hourglass_empty_outlined;
       case 'delay_relative_to_appointment': return Icons.alarm_outlined;
       default: return Icons.bolt_outlined;
@@ -1501,6 +1560,21 @@ class _ActionNodeState extends State<_ActionNode> {
             ),
           ),
         ],
+      );
+    }
+
+    if (type == 'send_job_followup') {
+      return TextField(
+        controller: _messageCtrl,
+        maxLines: 3,
+        onChanged: (v) => _update({'message': v}),
+        decoration: InputDecoration(
+          labelText: 'Message',
+          border: const OutlineInputBorder(),
+          helperText: 'Variables: {{name}}, {{business}}',
+          helperStyle:
+              TextStyle(color: Colors.grey[500], fontSize: 11),
+        ),
       );
     }
 

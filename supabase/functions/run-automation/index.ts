@@ -30,6 +30,14 @@ async function dbFetch(path: string, options: RequestInit = {}) {
   return text ? JSON.parse(text) : null;
 }
 
+async function checkPlanFeature(businessId: number, feature: string): Promise<boolean> {
+  const result = await dbFetch("rpc/check_plan_feature", {
+    method: "POST",
+    body: JSON.stringify({ p_business_id: businessId, p_feature: feature }),
+  });
+  return result === true;
+}
+
 // ── Build a human-readable subject + message per trigger type ─────────────
 function buildOwnerNotification(triggerType: string, payload: any, business: any): { subject: string; message: string } {
   const name = payload.lead_name || "Someone";
@@ -238,6 +246,42 @@ async function runAction(
         }),
       }).catch(() => {}); // non-blocking
 
+      return { action: type, status: "success" };
+    }
+
+    // ── send_job_followup — thank-you text sent after job completion ──
+    if (type === "send_job_followup") {
+      const to = payload.phone || payload.lead_phone;
+      if (!to) return { action: type, status: "skipped", error: "No phone number in payload" };
+
+      const from = business.ai_phone_number;
+      if (!from) return { action: type, status: "skipped", error: "No Twilio number configured" };
+
+      const allowed = await checkPlanFeature(business.id, "job_followup");
+      if (!allowed) {
+        return { action: type, status: "skipped", error: "Not allowed on this business's plan" };
+      }
+
+      const body = (action.message || "Hi {{name}}, the job is complete! Thank you for choosing {{business}}. Let us know if you need anything.")
+        .replace("{{name}}", payload.lead_name || "there")
+        .replace("{{business}}", business.business_name || "us");
+
+      const twilioRes = await fetch(
+        `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`,
+        {
+          method: "POST",
+          headers: {
+            "Authorization": `Basic ${btoa(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`)}`,
+            "Content-Type": "application/x-www-form-urlencoded",
+          },
+          body: new URLSearchParams({ To: to, From: from, Body: body }).toString(),
+        }
+      );
+
+      if (!twilioRes.ok) {
+        const err = await twilioRes.text();
+        return { action: type, status: "failed", error: err };
+      }
       return { action: type, status: "success" };
     }
 

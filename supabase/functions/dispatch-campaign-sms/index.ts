@@ -127,6 +127,7 @@ Deno.serve(async (req) => {
             })
             .eq('id', row.id);
           sentCount++;
+          await supabase.rpc('increment_campaign_send_usage', { p_business_id: row.business_id });
         } else {
           await supabase
             .from('campaign_contacts')

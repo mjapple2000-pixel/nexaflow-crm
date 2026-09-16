@@ -1089,15 +1089,79 @@ class _CampaignDetailModalState extends State<_CampaignDetailModal> {
       return;
     }
 
+    // Pre-send estimate — best-effort only. Any failure here falls back to
+    // the plain confirmation text below; it must never block a real send.
+    int? audienceCount;
+    int? usageUsed;
+    int? usageIncluded;
+    try {
+      final estimateSession = _supabase.auth.currentSession;
+      if (estimateSession != null && estimateSession.accessToken.isNotEmpty) {
+        final previewRes = await http.post(
+          Uri.parse('https://rllriopqojaraceytdno.supabase.co/functions/v1/preview-campaign-audience'),
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ${estimateSession.accessToken}',
+          },
+          body: jsonEncode({
+            'business_id': widget.businessId,
+            'channel': _type,
+            'filter_config': _filterConfig,
+          }),
+        );
+        if (previewRes.statusCode == 200) {
+          final previewData = jsonDecode(previewRes.body);
+          audienceCount = (previewData['count'] as num?)?.toInt();
+        }
+
+        final bizRow = await _supabase
+            .from('businesses')
+            .select('plan, is_beta')
+            .eq('id', widget.businessId)
+            .maybeSingle();
+        final planForAllowance = (bizRow?['is_beta'] == true)
+            ? 'pro'
+            : (bizRow?['plan'] as String? ?? '');
+        final allowanceRes = await _supabase.rpc('get_campaign_send_allowance',
+            params: {'p_plan': planForAllowance});
+        usageIncluded = (allowanceRes as num?)?.toInt();
+
+        final periodStart =
+            DateTime(DateTime.now().year, DateTime.now().month, 1)
+                .toIso8601String()
+                .substring(0, 10);
+        final usageRow = await _supabase
+            .from('business_usage')
+            .select('campaign_sends_used')
+            .eq('business_id', widget.businessId)
+            .eq('period_start', periodStart)
+            .maybeSingle();
+        usageUsed = ((usageRow?['campaign_sends_used'] as num?) ?? 0).toInt();
+      }
+    } catch (e) {
+      debugPrint('Send estimate error: $e');
+    }
+
+    final hasEstimate =
+        audienceCount != null && usageUsed != null && usageIncluded != null;
+    final projectedOverage =
+        hasEstimate ? (usageUsed! + audienceCount! - usageIncluded!) : 0;
+    final displayOverage = projectedOverage > 0 ? projectedOverage : 0;
+
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: AppTheme.cardBg,
         title: const Text('Send Campaign Now?',
             style: TextStyle(color: AppTheme.textPrimary)),
-        content: const Text(
-          'This will queue SMS messages to all matched contacts. This cannot be undone.',
-          style: TextStyle(color: AppTheme.textSecondary),
+        content: Text(
+          hasEstimate
+              ? 'This will send to approximately $audienceCount contact${audienceCount == 1 ? '' : 's'}.\n\n'
+                  'You\'ve used $usageUsed of your $usageIncluded included sends this month.'
+                  '${displayOverage > 0 ? '\n\nThis send will push about $displayOverage message${displayOverage == 1 ? '' : 's'} into overage, billed at \$0.05 each.' : '\n\nThis send is within your plan\'s included allowance.'}'
+                  '\n\nThis cannot be undone.'
+              : 'This will queue SMS messages to all matched contacts. This cannot be undone.',
+          style: const TextStyle(color: AppTheme.textSecondary),
         ),
         actions: [
           MouseRegion(

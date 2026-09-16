@@ -8,6 +8,10 @@ const supabase = createClient(
 )
 
 Deno.serve(async (req) => {
+  // Cron-secret check — report-ai-overage (this function's sibling) predates
+  // this pattern and has none; adding it here since this endpoint reports
+  // real billing events to Stripe and every other cron-triggered function
+  // in this codebase checks it.
   const providedSecret = req.headers.get('x-cron-secret') ?? ''
   if (!CRON_SECRET || providedSecret !== CRON_SECRET) {
     return new Response(JSON.stringify({ error: 'Unauthorized' }), {
@@ -23,10 +27,10 @@ Deno.serve(async (req) => {
 
     const { data: rows, error } = await supabase
       .from('business_usage_live')
-      .select('id, business_id, ai_messages_used, ai_messages_included, overage_units_reported, client_id, is_beta, beta_card_added')
+      .select('id, business_id, campaign_sends_used, campaign_sends_included, campaign_overage_units_reported, client_id, is_beta, beta_card_added')
       .eq('period_start', periodStart)
       .or('is_beta.eq.false,beta_card_added.eq.true')
-      .gt('ai_messages_used', 0)
+      .gt('campaign_sends_used', 0)
 
     if (error) throw error
 
@@ -34,8 +38,8 @@ Deno.serve(async (req) => {
     const errors: string[] = []
 
     for (const row of rows ?? []) {
-      const overageTotal = Math.max(0, row.ai_messages_used - row.ai_messages_included)
-      const delta = overageTotal - row.overage_units_reported
+      const overageTotal = Math.max(0, row.campaign_sends_used - row.campaign_sends_included)
+      const delta = overageTotal - row.campaign_overage_units_reported
       if (delta <= 0) continue
 
       const stripeCustomerId = row.client_id
@@ -51,10 +55,10 @@ Deno.serve(async (req) => {
           'Content-Type': 'application/x-www-form-urlencoded',
         },
         body: new URLSearchParams({
-          event_name: 'ai_message_overage',
+          event_name: 'sms_campaign_send_overage',
           'payload[stripe_customer_id]': stripeCustomerId,
           'payload[value]': String(delta),
-          identifier: `overage-${row.business_id}-${periodStart}-${overageTotal}`,
+          identifier: `campaign-overage-${row.business_id}-${periodStart}-${overageTotal}`,
         }),
       })
 
@@ -65,14 +69,14 @@ Deno.serve(async (req) => {
 
       await supabase
         .from('business_usage')
-        .update({ overage_units_reported: overageTotal })
+        .update({ campaign_overage_units_reported: overageTotal })
         .eq('id', row.id)
 
       reported++
     }
 
     await supabase.from('cron_run_log').insert({
-      function_name: 'report-ai-overage',
+      function_name: 'report-campaign-overage',
       success: errors.length === 0,
       detail: { reported, errors },
     })
@@ -81,7 +85,7 @@ Deno.serve(async (req) => {
       headers: { 'Content-Type': 'application/json' },
     })
   } catch (err: any) {
-    console.error('report-ai-overage fatal:', err)
+    console.error('report-campaign-overage fatal:', err)
     return new Response(JSON.stringify({ error: err.message }), { status: 500 })
   }
 })

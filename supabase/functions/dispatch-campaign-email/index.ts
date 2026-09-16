@@ -143,6 +143,7 @@ Deno.serve(async (req) => {
             .update({ status: 'sent', sent_at: new Date().toISOString() })
             .eq('id', row.id);
           sentCount++;
+          await supabase.rpc('increment_campaign_send_usage', { p_business_id: row.business_id });
         } else {
           const mgErr = await mgRes.text();
           await supabase
