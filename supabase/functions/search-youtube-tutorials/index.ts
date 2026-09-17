@@ -23,13 +23,15 @@
 //      (No business_id — this is a single global channel shared by every
 //      business, not per-tenant data, so normal RLS/business_id rules don't apply here.)
 //
-// The channel is resolved once by handle and cached in-memory for the life of
-// the function instance — YOUTUBE_CHANNEL_HANDLE below is the only thing you
-// should need to touch if the channel ever changes.
+// The channel is hardcoded by its real Channel ID (not resolved by handle —
+// the `forHandle` API lookup can be unreliable for newly-registered handles).
+// YOUTUBE_CHANNEL_ID below is the only thing you should need to touch if the
+// channel ever changes: get it from YouTube Studio → Settings → Channel →
+// Advanced settings.
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 
-const YOUTUBE_CHANNEL_HANDLE = "Marjoru-1"; // no leading @
+const YOUTUBE_CHANNEL_ID = "UC-PIGhOLUEuuNPcWP0AXhrA"; // Marjoru channel
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours — tutorials don't change minute to minute
 
 const corsHeaders = {
@@ -43,27 +45,6 @@ const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
   secretKeys.nexaflow_service_role_2026_08 ?? ""
 );
-
-let cachedChannelId: string | null = null;
-
-async function resolveChannelId(apiKey: string): Promise<string> {
-  if (cachedChannelId) return cachedChannelId;
-
-  const url =
-    `https://www.googleapis.com/youtube/v3/channels` +
-    `?part=id&forHandle=${encodeURIComponent(YOUTUBE_CHANNEL_HANDLE)}&key=${apiKey}`;
-  const res = await fetch(url);
-  const data = await res.json();
-
-  const id = data?.items?.[0]?.id;
-  if (!id) {
-    throw new Error(
-      `Could not resolve channel handle "${YOUTUBE_CHANNEL_HANDLE}" — check the handle is correct and public.`
-    );
-  }
-  cachedChannelId = id;
-  return id;
-}
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -99,11 +80,9 @@ Deno.serve(async (req) => {
     }
 
     // ── Live fetch from YouTube ──────────────────────────────────────────
-    const channelId = await resolveChannelId(apiKey);
-
     const searchUrl =
       `https://www.googleapis.com/youtube/v3/search` +
-      `?part=snippet&channelId=${channelId}&type=video&order=${q.length ? "relevance" : "date"}` +
+      `?part=snippet&channelId=${YOUTUBE_CHANNEL_ID}&type=video&order=${q.length ? "relevance" : "date"}` +
       `&maxResults=15&key=${apiKey}` +
       (q.length ? `&q=${encodeURIComponent(q)}` : "");
 
