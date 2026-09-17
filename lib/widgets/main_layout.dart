@@ -138,7 +138,6 @@ class _AppNavBarState extends State<AppNavBar> {
     ('/settings?section=profile',          Icons.person_outline,             'My Profile'),
     ('/settings?section=ai',               Icons.smart_toy_outlined,         'AI Settings'),
     ('/settings?section=knowledge',        Icons.menu_book_outlined,         'Knowledge Base'),
-    ('/settings?section=phone',            Icons.phone_outlined,             'AI Phone Number'),
     ('/settings?section=email',            Icons.email_outlined,             'Email Config'),
     ('/settings?section=team',             Icons.people_outline,             'My Staff'),
     ('/settings?section=notifications',    Icons.notifications_outlined,     'Notifications'),
@@ -153,7 +152,6 @@ class _AppNavBarState extends State<AppNavBar> {
     ('/settings?section=voice_ai',         Icons.mic_outlined,               'Voice AI Agents'),
     ('/settings?section=email_services',   Icons.alternate_email_rounded,    'Email Services'),
     ('/settings?section=phone_numbers',    Icons.phone_in_talk_outlined,     'Phone Numbers'),
-    ('/settings?section=whatsapp',         Icons.message_outlined,           'WhatsApp'),
     // OTHER SETTINGS (indices 19+, .skip(19))
     ('/settings?section=objects',          Icons.category_outlined,          'Objects'),
     ('/settings?section=custom_fields',    Icons.tune_rounded,               'Custom Fields'),
@@ -302,7 +300,6 @@ class _AppNavBarState extends State<AppNavBar> {
     null, // My Profile
     'settings_ai',
     'settings_knowledge',
-    'settings_phone',
     'settings_email',
     'settings_team',
     'settings_notifications',
@@ -316,7 +313,6 @@ class _AppNavBarState extends State<AppNavBar> {
     'settings_voice_ai',
     'settings_email_services',
     'settings_phone_numbers',
-    'settings_whatsapp',
     'settings_objects',
     'settings_custom_fields',
     'settings_custom_values',
@@ -468,7 +464,7 @@ class _AppNavBarState extends State<AppNavBar> {
           ),
         ),
         _SectionLabel('My Business'),
-        ..._visibleSettingsSlice(0, 11).map((s) {
+        ..._visibleSettingsSlice(0, 10).map((s) {
           final isActive = location == s.$1 ||
               (s.$1 == '/settings' && location == '/settings');
           return Clickable(
@@ -503,7 +499,7 @@ class _AppNavBarState extends State<AppNavBar> {
           );
         }),
         _SectionLabel('Business Services'),
-        ..._visibleSettingsSlice(11, 8).map((s) {
+        ..._visibleSettingsSlice(10, 7).map((s) {
           final isActive = location == s.$1;
           return Clickable(
             onTap: () => context.go(s.$1),
@@ -537,7 +533,7 @@ class _AppNavBarState extends State<AppNavBar> {
           );
         }),
                 _SectionLabel('Other Settings'),
-        ..._visibleSettingsSlice(19, 6).map((s) {
+        ..._visibleSettingsSlice(17, 6).map((s) {
           final isActive = location == s.$1 ||
               (s.$1 == '/settings' && location == '/settings');
           return Clickable(
@@ -574,7 +570,7 @@ class _AppNavBarState extends State<AppNavBar> {
 
         // JOBS SECTION
         _SectionLabel('JOBS'),
-        ..._visibleSettingsSlice(25, 4).map((s) {
+        ..._visibleSettingsSlice(23, 4).map((s) {
           final isActive = location == s.$1;
           return Clickable(
             onTap: () => context.go(s.$1),
@@ -610,7 +606,7 @@ class _AppNavBarState extends State<AppNavBar> {
 
         // DOCUMENTS SECTION
         _SectionLabel('DOCUMENTS'),
-        ..._visibleSettingsSlice(29, 1).map((s) {
+        ..._visibleSettingsSlice(27, 1).map((s) {
           final isActive = location == s.$1;
           return Clickable(
             onTap: () => context.go(s.$1),
@@ -887,6 +883,12 @@ class _AppNavBarState extends State<AppNavBar> {
                       label: 'Platform Settings',
                       route: '/platform-settings',
                       active: location.startsWith('/platform-settings'),
+                    ),
+                    _NavItem(
+                      icon: Icons.assignment_turned_in_outlined,
+                      label: 'A2P Status',
+                      route: '/a2p-status',
+                      active: location.startsWith('/a2p-status'),
                     ),
                   ],
                 ],

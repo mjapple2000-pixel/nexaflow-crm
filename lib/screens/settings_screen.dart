@@ -120,7 +120,6 @@ const _kSettingsPermissions = [
   ('settings_business_profile',  'Business Profile',      Icons.business_outlined),
   ('settings_ai',                'AI Settings',            Icons.smart_toy_outlined),
   ('settings_knowledge',         'Knowledge Base',         Icons.menu_book_outlined),
-  ('settings_phone',             'AI Phone Number',        Icons.phone_in_talk_outlined),
   ('settings_email',             'Email Config',           Icons.alternate_email),
   ('settings_team',              'My Staff',               Icons.groups_2_outlined),
   ('settings_notifications',     'Notifications',          Icons.notifications_outlined),
@@ -360,7 +359,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     1: null, // My Profile
     2: 'settings_ai',
     3: 'settings_knowledge',
-    4: 'settings_phone',
     5: 'settings_email',
     6: 'settings_team',
     7: 'settings_notifications',
@@ -454,7 +452,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   // Inverse of _sectionIndexFromName, needed to build a redirect URL.
   String _sectionNameFromIndex(int idx) {
     const names = {
-      2: 'ai', 3: 'knowledge', 4: 'phone', 5: 'email', 6: 'team',
+      2: 'ai', 3: 'knowledge', 5: 'email', 6: 'team',
       7: 'notifications', 8: 'payments', 9: 'social', 10: 'billing',
       11: 'pipelines', 12: 'automation', 13: 'calendars', 14: 'conversation_ai',
       15: 'voice_ai', 16: 'email_services', 17: 'phone_numbers',
@@ -470,7 +468,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       case 'profile':         return 1;
       case 'ai':              return 2;
       case 'knowledge':       return 3;
-      case 'phone':           return 4;
       case 'email':           return 5;
       case 'team':            return 6;
       case 'notifications':   return 7;
@@ -819,9 +816,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
             business: _business, onSave: _updateBusiness);
       case 3:
         return _KnowledgeBaseSection(businessId: _businessId!);
-      case 4:
-        return _AIPhoneSection(
-            business: _business, onSave: _updateBusiness);
       case 5:
         return _EmailConfigSection(
             business: _business, onSave: _updateBusiness);
@@ -856,7 +850,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
       case 16:
         return _ComingSoonSection(title: 'Email Services', icon: Icons.alternate_email_rounded);
       case 17:
-        return _PhoneNumbersSection(businessId: _businessId!);
+        return _PhoneNumbersSection(
+            businessId: _businessId!,
+            business: _business,
+            onSave: _updateBusiness);
       case 19:
         return _ComingSoonSection(title: 'Objects', icon: Icons.category_outlined);
       case 20:
@@ -4244,135 +4241,6 @@ class _KBEntryDialogState extends State<_KBEntryDialog> {
             ),
           ),
         ]);
-  }
-}
-
-// ─────────────────────────────────────────────
-//  AI PHONE SECTION
-// ─────────────────────────────────────────────
-
-class _AIPhoneSection extends StatefulWidget {
-  final Map<String, dynamic> business;
-  final Future<void> Function(Map<String, dynamic>) onSave;
-  const _AIPhoneSection(
-      {required this.business, required this.onSave});
-
-  @override
-  State<_AIPhoneSection> createState() => _AIPhoneSectionState();
-}
-
-class _AIPhoneSectionState extends State<_AIPhoneSection> {
-  late final TextEditingController _phoneCtrl;
-  bool _saving = false;
-  String? _successMsg, _error;
-
-  @override
-  void initState() {
-    super.initState();
-    _phoneCtrl = TextEditingController(
-        text: widget.business['ai_phone_number'] ?? '');
-  }
-
-  @override
-  void dispose() {
-    _phoneCtrl.dispose();
-    super.dispose();
-  }
-
-  Future<void> _save() async {
-    setState(
-        () { _saving = true; _error = null; _successMsg = null; });
-    try {
-      await widget
-          .onSave({'ai_phone_number': _phoneCtrl.text.trim()});
-      setState(() {
-        _successMsg = 'AI Phone Number saved.';
-        _saving = false;
-      });
-    } catch (e) {
-      setState(() { _error = e.toString(); _saving = false; });
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return _SectionShell(
-      title: 'AI Phone Number',
-      subtitle:
-          'A dedicated number used by Marjoru to send and receive SMS.',
-      onSave: _save,
-      saving: _saving,
-      successMsg: _successMsg,
-      error: _error,
-      child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _SettingsGroup(title: 'Your AI Number', children: [
-              _SettingsField(
-                  label: 'AI Phone Number',
-                  controller: _phoneCtrl,
-                  hint: '+12345678900'),
-            ]),
-            const SizedBox(height: 16),
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: AppTheme.brand.withValues(alpha: 0.06),
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(
-                    color: AppTheme.brand.withValues(alpha: 0.2)),
-              ),
-              child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(children: [
-                      Icon(Icons.phone_in_talk_outlined,
-                          size: 18, color: AppTheme.brand),
-                      const SizedBox(width: 8),
-                      Text('Need an AI Phone Number?',
-                          style: TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w700,
-                              color: AppTheme.brand)),
-                    ]),
-                    const SizedBox(height: 8),
-                    const Text(
-                        "Don't have a number yet? We'll take care of everything.",
-                        style: TextStyle(
-                            fontSize: 12,
-                            color: AppTheme.textSecondary,
-                            height: 1.5)),
-                    const SizedBox(height: 12),
-                    MouseRegion(
-                      cursor: SystemMouseCursors.click,
-                      child: OutlinedButton.icon(
-                        onPressed: () async {
-                          await _sendNotificationEmail(
-                              'AI Phone Number Request',
-                              'Business: ${widget.business['business_name'] ?? 'Unknown'}\nOwner: ${widget.business['owner_name'] ?? 'Unknown'}\nEmail: ${widget.business['owner_email'] ?? 'Unknown'}');
-                          if (context.mounted) {
-                            ScaffoldMessenger.of(context)
-                                .showSnackBar(const SnackBar(
-                                    content: Text("Request sent!"),
-                                    backgroundColor:
-                                        Color(0xFF10B981)));
-                          }
-                        },
-                        icon: const Icon(Icons.mail_outline,
-                            size: 14),
-                        label: const Text(
-                            'Contact Us to Get a Number',
-                            style: TextStyle(fontSize: 12)),
-                        style: OutlinedButton.styleFrom(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 14, vertical: 8),
-                            minimumSize: Size.zero),
-                      ),
-                    ),
-                  ]),
-            ),
-          ]),
-    );
   }
 }
 
@@ -14079,7 +13947,12 @@ class _ReviewsSectionState extends State<_ReviewsSection> {
 
 class _PhoneNumbersSection extends StatefulWidget {
   final int businessId;
-  const _PhoneNumbersSection({required this.businessId});
+  final Map<String, dynamic> business;
+  final Future<void> Function(Map<String, dynamic>) onSave;
+  const _PhoneNumbersSection(
+      {required this.businessId,
+      required this.business,
+      required this.onSave});
 
   @override
   State<_PhoneNumbersSection> createState() => _PhoneNumbersSectionState();
@@ -14090,10 +13963,126 @@ class _PhoneNumbersSectionState extends State<_PhoneNumbersSection> {
   List<Map<String, dynamic>> _numbers = [];
   bool _loading = true;
 
+  // A2P registration status gate (SMS-01) — search/purchase are also
+  // enforced server-side in provision-phone-number; this mirrors that
+  // here so the button reflects it immediately rather than only after a
+  // failed request.
+  String? _a2pStatus;
+  bool _a2pLoading = true;
+
+  // Manual override (advanced) — the one capability the old AI Phone
+  // Number screen had that this screen otherwise wouldn't: setting
+  // ai_phone_number directly without a Twilio search/purchase. Kept as a
+  // collapsed, secondary option since normal flow now auto-syncs this
+  // field on purchase/release.
+  bool _showManualOverride = false;
+  late final TextEditingController _manualPhoneCtrl;
+  bool _manualSaving = false;
+  String? _manualError;
+
+  // Tracks which number is currently wired as the AI number (send-sms /
+  // receive-sms both key off businesses.ai_phone_number). Kept as local
+  // state and refreshed after purchase/release/promote so the "AI
+  // Number" badge and "Set as AI Number" buttons update immediately.
+  String? _currentAiNumber;
+
   @override
   void initState() {
     super.initState();
+    _currentAiNumber = widget.business['ai_phone_number'] as String?;
+    _manualPhoneCtrl = TextEditingController(
+        text: widget.business['ai_phone_number'] ?? '');
     _loadNumbers();
+    _loadA2pStatus();
+  }
+
+  @override
+  void dispose() {
+    _manualPhoneCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadA2pStatus() async {
+    try {
+      final row = await _supabase
+          .from('business_a2p_profiles')
+          .select('status')
+          .eq('business_id', widget.businessId)
+          .filter('deleted_at', 'is', null)
+          .maybeSingle();
+      if (!mounted) return;
+      setState(() {
+        _a2pStatus = row?['status'] as String?;
+        _a2pLoading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _a2pLoading = false);
+    }
+  }
+
+  Future<void> _loadCurrentAiNumber() async {
+    try {
+      final row = await _supabase
+          .from('businesses')
+          .select('ai_phone_number')
+          .eq('id', widget.businessId)
+          .maybeSingle();
+      if (!mounted) return;
+      setState(() {
+        _currentAiNumber = row?['ai_phone_number'] as String?;
+        _manualPhoneCtrl.text = _currentAiNumber ?? '';
+      });
+    } catch (e) {
+      debugPrint('AI number refresh error: $e');
+    }
+  }
+
+  Future<void> _setPrimary(Map<String, dynamic> number) async {
+    try {
+      final session = _supabase.auth.currentSession;
+      final res = await http.post(
+        Uri.parse(_provisionPhoneFnUrl),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ${session?.accessToken ?? ''}',
+        },
+        body: jsonEncode({
+          'action': 'set_primary',
+          'phoneNumberId': number['id'],
+          'business_id': widget.businessId,
+        }),
+      );
+      if (!mounted) return;
+      final body = jsonDecode(res.body) as Map<String, dynamic>;
+      if (res.statusCode == 200 && body['success'] == true) {
+        await _loadCurrentAiNumber();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+                content:
+                    Text('${number['phone_number']} is now the AI number.'),
+                behavior: SnackBarBehavior.floating),
+          );
+        }
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+                content: Text('Failed: ${body['error'] ?? 'Unknown error'}'),
+                behavior: SnackBarBehavior.floating),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              content: Text('Error: $e'),
+              behavior: SnackBarBehavior.floating),
+        );
+      }
+    }
   }
 
   Future<void> _loadNumbers() async {
@@ -14116,6 +14105,7 @@ class _PhoneNumbersSectionState extends State<_PhoneNumbersSection> {
   }
 
   void _showSearchDialog() {
+    if (_a2pStatus != 'approved') return;
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -14124,6 +14114,7 @@ class _PhoneNumbersSectionState extends State<_PhoneNumbersSection> {
         onPurchased: () {
           Navigator.of(context, rootNavigator: true).pop();
           _loadNumbers();
+          _loadCurrentAiNumber();
         },
       ),
     );
@@ -14171,12 +14162,14 @@ class _PhoneNumbersSectionState extends State<_PhoneNumbersSection> {
         body: jsonEncode({
           'action': 'release',
           'phoneNumberId': number['id'],
+          'business_id': widget.businessId,
         }),
       );
       if (!mounted) return;
       final body = jsonDecode(res.body) as Map<String, dynamic>;
       if (res.statusCode == 200 && body['success'] == true) {
         await _loadNumbers();
+        await _loadCurrentAiNumber();
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
@@ -14204,8 +14197,32 @@ class _PhoneNumbersSectionState extends State<_PhoneNumbersSection> {
     }
   }
 
+  Future<void> _saveManualOverride() async {
+    setState(() { _manualSaving = true; _manualError = null; });
+    try {
+      final newNumber = _manualPhoneCtrl.text.trim();
+      await widget.onSave({'ai_phone_number': newNumber});
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text('AI phone number updated.'),
+              behavior: SnackBarBehavior.floating),
+        );
+        setState(() {
+          _manualSaving = false;
+          _currentAiNumber = newNumber.isEmpty ? null : newNumber;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() { _manualError = e.toString(); _manualSaving = false; });
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    final isApproved = _a2pStatus == 'approved';
     return _SectionShell(
       title: 'Phone Numbers',
       subtitle:
@@ -14215,23 +14232,41 @@ class _PhoneNumbersSectionState extends State<_PhoneNumbersSection> {
         children: [
           Row(children: [
             const Spacer(),
-            MouseRegion(
-              cursor: SystemMouseCursors.click,
-              child: ElevatedButton.icon(
-                onPressed: _showSearchDialog,
-                icon: const Icon(Icons.add, size: 16),
-                label: const Text('Get a Number'),
-                style: ElevatedButton.styleFrom(
-                    backgroundColor: AppTheme.brand,
-                    foregroundColor: Colors.white,
-                    elevation: 0,
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(8)),
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 16, vertical: 10)),
+            if (_a2pLoading)
+              const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2))
+            else
+              MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: ElevatedButton.icon(
+                  onPressed: isApproved ? _showSearchDialog : null,
+                  icon: const Icon(Icons.add, size: 16),
+                  label: const Text('Get a Number'),
+                  style: ElevatedButton.styleFrom(
+                      backgroundColor: AppTheme.brand,
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8)),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 10)),
+                ),
               ),
-            ),
           ]),
+          if (!_a2pLoading && !isApproved) ...[
+            const SizedBox(height: 8),
+            const Align(
+              alignment: Alignment.centerRight,
+              child: Text(
+                  'Available once texting setup is approved.',
+                  style: TextStyle(
+                      fontSize: 11,
+                      color: AppTheme.textSecondary,
+                      fontStyle: FontStyle.italic)),
+            ),
+          ],
           const SizedBox(height: 20),
           if (_loading)
             const Center(child: CircularProgressIndicator())
@@ -14262,7 +14297,7 @@ class _PhoneNumbersSectionState extends State<_PhoneNumbersSection> {
                 MouseRegion(
                   cursor: SystemMouseCursors.click,
                   child: ElevatedButton.icon(
-                    onPressed: _showSearchDialog,
+                    onPressed: isApproved ? _showSearchDialog : null,
                     icon: const Icon(Icons.add, size: 16),
                     label: const Text('Get your first number'),
                     style: ElevatedButton.styleFrom(
@@ -14280,10 +14315,84 @@ class _PhoneNumbersSectionState extends State<_PhoneNumbersSection> {
               children: _numbers
                   .map((n) => _PhoneNumberCard(
                         number: n,
+                        isPrimary: n['phone_number'] == _currentAiNumber,
                         onRelease: () => _releaseNumber(n),
+                        onSetPrimary: () => _setPrimary(n),
                       ))
                   .toList(),
             ),
+          if (AppRouter.cachedIsSuperuser == true) ...[
+            const SizedBox(height: 24),
+            MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: GestureDetector(
+                onTap: () =>
+                    setState(() => _showManualOverride = !_showManualOverride),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                        _showManualOverride
+                            ? Icons.expand_less
+                            : Icons.expand_more,
+                        size: 16,
+                        color: AppTheme.textSecondary),
+                    const SizedBox(width: 4),
+                    const Text('Advanced: manually set AI phone number',
+                        style: TextStyle(
+                            fontSize: 12, color: AppTheme.textSecondary)),
+                  ],
+                ),
+              ),
+            ),
+            if (_showManualOverride) ...[
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: AppTheme.cardBg,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: AppTheme.borderColor),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                        'Superuser only — overrides the number used to send and receive AI SMS without going through Twilio search/purchase above, and without the A2P approval check. Does not release or provision anything in Twilio.',
+                        style: TextStyle(
+                            fontSize: 11,
+                            color: AppTheme.textSecondary,
+                            height: 1.4)),
+                    const SizedBox(height: 12),
+                    _SettingsField(
+                        label: 'AI Phone Number',
+                        controller: _manualPhoneCtrl,
+                        hint: '+12345678900'),
+                    const SizedBox(height: 12),
+                    if (_manualError != null) ...[
+                      Text(_manualError!,
+                          style: const TextStyle(
+                              color: Colors.red, fontSize: 12)),
+                      const SizedBox(height: 8),
+                    ],
+                    MouseRegion(
+                      cursor: SystemMouseCursors.click,
+                      child: OutlinedButton(
+                        onPressed: _manualSaving ? null : _saveManualOverride,
+                        child: _manualSaving
+                            ? const SizedBox(
+                                width: 14,
+                                height: 14,
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 2))
+                            : const Text('Save'),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ],
         ],
       ),
     );
@@ -14292,8 +14401,14 @@ class _PhoneNumbersSectionState extends State<_PhoneNumbersSection> {
 
 class _PhoneNumberCard extends StatelessWidget {
   final Map<String, dynamic> number;
+  final bool isPrimary;
   final VoidCallback onRelease;
-  const _PhoneNumberCard({required this.number, required this.onRelease});
+  final VoidCallback onSetPrimary;
+  const _PhoneNumberCard(
+      {required this.number,
+      required this.isPrimary,
+      required this.onRelease,
+      required this.onSetPrimary});
 
   @override
   Widget build(BuildContext context) {
@@ -14304,7 +14419,11 @@ class _PhoneNumberCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: AppTheme.cardBg,
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: AppTheme.borderColor),
+        border: Border.all(
+            color: isPrimary
+                ? AppTheme.brand.withValues(alpha: 0.4)
+                : AppTheme.borderColor,
+            width: isPrimary ? 1.5 : 1),
       ),
       child: Row(children: [
         Container(
@@ -14323,11 +14442,29 @@ class _PhoneNumberCard extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(number['phone_number'] as String? ?? '',
-                  style: const TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w700,
-                      color: AppTheme.textPrimary)),
+              Row(children: [
+                Text(number['phone_number'] as String? ?? '',
+                    style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                        color: AppTheme.textPrimary)),
+                if (isPrimary) ...[
+                  const SizedBox(width: 8),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 8, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: AppTheme.brand.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(99),
+                    ),
+                    child: const Text('AI Number',
+                        style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700,
+                            color: AppTheme.brand)),
+                  ),
+                ],
+              ]),
               if ((number['friendly_name'] as String?)?.isNotEmpty == true)
                 Text(number['friendly_name'] as String,
                     style: const TextStyle(
@@ -14351,6 +14488,21 @@ class _PhoneNumberCard extends StatelessWidget {
                       ? const Color(0xFF10B981)
                       : AppTheme.textSecondary)),
         ),
+        if (isActive && !isPrimary) ...[
+          const SizedBox(width: 10),
+          MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: OutlinedButton(
+              onPressed: onSetPrimary,
+              style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 10, vertical: 6),
+                  minimumSize: Size.zero),
+              child: const Text('Set as AI Number',
+                  style: TextStyle(fontSize: 11)),
+            ),
+          ),
+        ],
         if (isActive) ...[
           const SizedBox(width: 10),
           Clickable(

@@ -33,6 +33,7 @@ import '../screens/reset_password_screen.dart';
 import '../screens/beta_testers_screen.dart';
 import '../screens/unmatched_emails_screen.dart';
 import '../screens/platform_settings_screen.dart';
+import '../screens/a2p_status_screen.dart';
 import '../screens/beta_signup_screen.dart';
 import '../screens/snippets_screen.dart';
 import '../screens/reviews_screen.dart';
@@ -692,6 +693,11 @@ class AppRouter {
             path: '/platform-settings',
             name: 'platform-settings',
             builder: (context, state) => const PlatformSettingsScreen(),
+          ),
+          GoRoute(
+            path: '/a2p-status',
+            name: 'a2p-status',
+            builder: (context, state) => const A2pStatusScreen(),
           ),
           GoRoute(
             path: '/snippets',

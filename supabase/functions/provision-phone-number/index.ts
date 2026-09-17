@@ -74,6 +74,24 @@ Deno.serve(async (req) => {
       businessId = profile.business_id
     }
 
+    // ── A2P compliance gate (SMS-01) ── search and purchase are blocked
+    // until this business's Twilio A2P brand shows approved. Promoting an
+    // already-purchased number to primary, and releasing a number, are
+    // never gated — a business that's already approved enough to have
+    // bought numbers shouldn't be re-blocked from managing them.
+    if (action === 'search' || action === 'purchase') {
+      const { data: a2pProfile } = await supabase
+        .from('business_a2p_profiles')
+        .select('status')
+        .eq('business_id', businessId)
+        .is('deleted_at', null)
+        .maybeSingle()
+
+      if (a2pProfile?.status !== 'approved') {
+        return jsonResponse({ error: 'Number requests are disabled until this business\'s A2P brand shows Approved.' }, 403)
+      }
+    }
+
     if (action === 'search') {
       if (!areaCode || areaCode.length !== 3) {
         return jsonResponse({ error: 'Valid 3-digit area code required' }, 400)
@@ -163,7 +181,59 @@ Deno.serve(async (req) => {
         return jsonResponse({ error: 'Purchased but failed to save', detail: insertError.message }, 500)
       }
 
-      return jsonResponse({ success: true, phoneNumber: inserted })
+      // Only the FIRST number a business ever gets auto-activates as the
+      // single source of truth send-sms/receive-sms key off. Any number
+      // purchased after that stays a spare — the business can hold a
+      // backup/second line without it silently hijacking which number is
+      // actually live — until explicitly promoted via 'set_primary'.
+      const { data: currentBiz } = await supabase
+        .from('businesses')
+        .select('ai_phone_number')
+        .eq('id', businessId)
+        .single()
+
+      let becamePrimary = false
+      if (!currentBiz?.ai_phone_number) {
+        const { error: syncError } = await supabase
+          .from('businesses')
+          .update({ ai_phone_number: purchased.phone_number })
+          .eq('id', businessId)
+        if (!syncError) becamePrimary = true
+      }
+
+      return jsonResponse({ success: true, phoneNumber: inserted, becamePrimary })
+    }
+
+    if (action === 'set_primary') {
+      if (!phoneNumberId) {
+        return jsonResponse({ error: 'phoneNumberId required' }, 400)
+      }
+
+      const { data: record } = await supabase
+        .from('phone_numbers')
+        .select('id, phone_number, status')
+        .eq('id', phoneNumberId)
+        .eq('business_id', businessId)
+        .is('deleted_at', null)
+        .single()
+
+      if (!record) {
+        return jsonResponse({ error: 'Number not found for this business' }, 404)
+      }
+      if (record.status !== 'active') {
+        return jsonResponse({ error: 'Cannot set a released number as the AI number' }, 400)
+      }
+
+      const { error: updateError } = await supabase
+        .from('businesses')
+        .update({ ai_phone_number: record.phone_number })
+        .eq('id', businessId)
+
+      if (updateError) {
+        return jsonResponse({ error: 'Failed to update AI phone number', detail: updateError.message }, 500)
+      }
+
+      return jsonResponse({ success: true, phoneNumber: record.phone_number })
     }
 
     if (action === 'release') {
@@ -173,7 +243,7 @@ Deno.serve(async (req) => {
 
       const { data: record } = await supabase
         .from('phone_numbers')
-        .select('id, twilio_sid, business_id')
+        .select('id, twilio_sid, business_id, phone_number')
         .eq('id', phoneNumberId)
         .eq('business_id', businessId)
         .single()
@@ -198,6 +268,24 @@ Deno.serve(async (req) => {
         .from('phone_numbers')
         .update({ status: 'released', deleted_at: new Date().toISOString() })
         .eq('id', phoneNumberId)
+
+      // Clear the single-source-of-truth field if this was the number
+      // it pointed to — otherwise send-sms would keep trying to send from
+      // a number that no longer exists in Twilio. Does NOT auto-promote
+      // another remaining number — the business picks explicitly via
+      // 'set_primary' if they want a spare to take over.
+      const { data: biz } = await supabase
+        .from('businesses')
+        .select('ai_phone_number')
+        .eq('id', businessId)
+        .single()
+
+      if (biz?.ai_phone_number === record.phone_number) {
+        await supabase
+          .from('businesses')
+          .update({ ai_phone_number: null })
+          .eq('id', businessId)
+      }
 
       return jsonResponse({ success: true })
     }
