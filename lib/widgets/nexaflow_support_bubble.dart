@@ -2,13 +2,15 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart';
 import 'dart:convert';
+import 'dart:async';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../theme/app_theme.dart';
 import '../utils/business_utils.dart';
 
 // ── Which panel is shown inside the support window ───────────────────────────
-enum _SupportView { menu, chat, knowledge, ticket }
+enum _SupportView { menu, chat, videos, ticket }
 
 class NexaFlowSupportBubble extends StatefulWidget {
   const NexaFlowSupportBubble({super.key});
@@ -39,11 +41,12 @@ class _NexaFlowSupportBubbleState extends State<NexaFlowSupportBubble>
   final _inputCtrl  = TextEditingController();
   final _scrollCtrl = ScrollController();
 
-  // Knowledge base
-  List<Map<String, dynamic>> _kbItems    = [];
-  List<Map<String, dynamic>> _kbFiltered = [];
-  bool _kbLoading = false;
-  final _kbSearchCtrl = TextEditingController();
+  // Video tutorials (Watch & Learn)
+  List<Map<String, dynamic>> _videos = [];
+  bool _videosLoading = false;
+  String? _videosError;
+  final _videoSearchCtrl = TextEditingController();
+  Timer? _videoDebounce;
 
   late AnimationController _animCtrl;
   late Animation<double> _scaleAnim;
@@ -52,6 +55,7 @@ class _NexaFlowSupportBubbleState extends State<NexaFlowSupportBubble>
   static const _supabaseUrl = 'https://rllriopqojaraceytdno.supabase.co';
   static const _functionUrl = '$_supabaseUrl/functions/v1/nexaflow-support';
   static const _ticketUrl   = '$_supabaseUrl/functions/v1/submit-ticket';
+  static const _videoSearchUrl = '$_supabaseUrl/functions/v1/search-youtube-tutorials';
 
   static const _suggestions = [
     'How do I add a contact?',
@@ -73,7 +77,9 @@ class _NexaFlowSupportBubbleState extends State<NexaFlowSupportBubble>
     _scaleAnim = CurvedAnimation(parent: _animCtrl, curve: Curves.easeOutBack);
     _fadeAnim  = CurvedAnimation(parent: _animCtrl, curve: Curves.easeOut);
     _loadUser();
-    _kbSearchCtrl.addListener(_filterKb);
+    // Search-as-you-type is debounced (_onVideoSearchChanged, wired via
+    // the TextField's onChanged) rather than an addListener here, since
+    // each keystroke would otherwise fire a network call to the edge function.
   }
 
   @override
@@ -81,7 +87,8 @@ class _NexaFlowSupportBubbleState extends State<NexaFlowSupportBubble>
     _animCtrl.dispose();
     _inputCtrl.dispose();
     _scrollCtrl.dispose();
-    _kbSearchCtrl.dispose();
+    _videoSearchCtrl.dispose();
+    _videoDebounce?.cancel();
     super.dispose();
   }
 
@@ -193,38 +200,51 @@ class _NexaFlowSupportBubbleState extends State<NexaFlowSupportBubble>
 
   void _clearChat() => setState(() { _messages.clear(); _chatId = null; });
 
-  // ── Knowledge base ────────────────────────────────────────────────────────
-  Future<void> _loadKb() async {
-    setState(() => _kbLoading = true);
+  // ── Video tutorials (Watch & Learn) ─────────────────────────────────────
+  Future<void> _loadVideos({String query = ''}) async {
+    setState(() {
+      _videosLoading = true;
+      _videosError   = null;
+    });
     try {
-      final res = await _db
-          .from('nexaflow_kb')
-          .select('title, content, category')
-          .eq('is_active', true)
-          .order('sort_order');
+      final res = await http.post(
+        Uri.parse(_videoSearchUrl),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'query': query}),
+      );
+      if (!mounted) return;
+      if (res.statusCode != 200) {
+        setState(() {
+          _videosLoading = false;
+          _videosError   = 'Could not load videos right now.';
+        });
+        return;
+      }
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      setState(() {
+        _videos        = List<Map<String, dynamic>>.from(data['videos'] ?? []);
+        _videosLoading = false;
+      });
+    } catch (e) {
       if (mounted) {
         setState(() {
-          _kbItems    = List<Map<String, dynamic>>.from(res as List);
-          _kbFiltered = List.from(_kbItems);
-          _kbLoading  = false;
+          _videosLoading = false;
+          _videosError   = 'Could not load videos right now.';
         });
       }
-    } catch (e) {
-      if (mounted) setState(() => _kbLoading = false);
     }
   }
 
-  void _filterKb() {
-    final q = _kbSearchCtrl.text.trim().toLowerCase();
-    setState(() {
-      _kbFiltered = q.isEmpty
-          ? List.from(_kbItems)
-          : _kbItems.where((item) {
-              final title   = (item['title']        as String? ?? '').toLowerCase();
-              final content = (item['content'] as String? ?? '').toLowerCase();
-              return title.contains(q) || content.contains(q);
-            }).toList();
+  void _onVideoSearchChanged() {
+    _videoDebounce?.cancel();
+    _videoDebounce = Timer(const Duration(milliseconds: 450), () {
+      _loadVideos(query: _videoSearchCtrl.text.trim());
     });
+  }
+
+  Future<void> _openVideo(String videoId) async {
+    final uri = Uri.parse('https://www.youtube.com/watch?v=$videoId');
+    await launchUrl(uri, mode: LaunchMode.externalApplication);
   }
 
   // ── Window position ───────────────────────────────────────────────────────
@@ -342,9 +362,9 @@ class _NexaFlowSupportBubbleState extends State<NexaFlowSupportBubble>
   Widget _buildHeader() {
     final showBack = _view != _SupportView.menu;
     String subtitle = 'How can we help you today?';
-    if (_view == _SupportView.chat)      subtitle = 'Ask me anything about Marjoru';
-    if (_view == _SupportView.knowledge) subtitle = 'Browse help articles';
-    if (_view == _SupportView.ticket)    subtitle = 'Report a problem';
+    if (_view == _SupportView.chat)   subtitle = 'Ask me anything about Marjoru';
+    if (_view == _SupportView.videos) subtitle = 'Watch how-to videos';
+    if (_view == _SupportView.ticket) subtitle = 'Report a problem';
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
@@ -436,10 +456,10 @@ class _NexaFlowSupportBubbleState extends State<NexaFlowSupportBubble>
   // ── Body router ───────────────────────────────────────────────────────────
   Widget _buildBody() {
     switch (_view) {
-      case _SupportView.menu:      return _buildMenu();
-      case _SupportView.chat:      return _buildChat();
-      case _SupportView.knowledge: return _buildKnowledge();
-      case _SupportView.ticket:    return _buildTicketForm();
+      case _SupportView.menu:   return _buildMenu();
+      case _SupportView.chat:   return _buildChat();
+      case _SupportView.videos: return _buildVideos();
+      case _SupportView.ticket: return _buildTicketForm();
     }
   }
 
@@ -491,12 +511,12 @@ class _NexaFlowSupportBubbleState extends State<NexaFlowSupportBubble>
           ),
           const SizedBox(height: 8),
           _MenuOption(
-            icon:     Icons.menu_book_outlined,
-            title:    'Knowledge Base',
-            subtitle: 'Browse help articles and guides',
+            icon:     Icons.play_circle_outline_rounded,
+            title:    'Watch & Learn',
+            subtitle: 'Video tutorials for the CRM',
             onTap: () {
-              setState(() => _view = _SupportView.knowledge);
-              _loadKb();
+              setState(() => _view = _SupportView.videos);
+              _loadVideos();
             },
           ),
           const SizedBox(height: 8),
@@ -696,26 +716,30 @@ class _NexaFlowSupportBubbleState extends State<NexaFlowSupportBubble>
   }
 
   // ── KNOWLEDGE BASE ────────────────────────────────────────────────────────
-  Widget _buildKnowledge() {
+  Widget _buildVideos() {
     return Column(
       children: [
         Padding(
           padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
           child: TextField(
-            controller: _kbSearchCtrl,
+            controller: _videoSearchCtrl,
             autofocus:  true,
+            onChanged:  (_) => _onVideoSearchChanged(),
             style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
             decoration: InputDecoration(
-              hintText:  'Search articles…',
+              hintText:  'Search tutorial videos…',
               hintStyle: const TextStyle(
                   fontSize: 13, color: AppTheme.textMuted),
               prefixIcon: const Icon(Icons.search_rounded,
                   size: 18, color: AppTheme.textMuted),
-              suffixIcon: _kbSearchCtrl.text.isNotEmpty
+              suffixIcon: _videoSearchCtrl.text.isNotEmpty
                   ? MouseRegion(
                       cursor: SystemMouseCursors.click,
                       child: GestureDetector(
-                        onTap: _kbSearchCtrl.clear,
+                        onTap: () {
+                          _videoSearchCtrl.clear();
+                          _onVideoSearchChanged();
+                        },
                         child: const Icon(Icons.close_rounded,
                             size: 16, color: AppTheme.textMuted),
                       ),
@@ -741,27 +765,32 @@ class _NexaFlowSupportBubbleState extends State<NexaFlowSupportBubble>
           ),
         ),
         Expanded(
-          child: _kbLoading
+          child: _videosLoading
               ? const Center(child: CircularProgressIndicator())
-              : _kbFiltered.isEmpty
+              : _videosError != null
                   ? Center(
-                      child: Text(
-                        _kbItems.isEmpty
-                            ? 'No articles available.'
-                            : 'No results found.',
-                        style: const TextStyle(
-                            fontSize: 13,
-                            color:    AppTheme.textSecondary),
-                      ),
+                      child: Text(_videosError!,
+                          style: const TextStyle(
+                              fontSize: 13, color: AppTheme.textSecondary)),
                     )
-                  : ListView.separated(
-                      padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
-                      itemCount: _kbFiltered.length,
-                      separatorBuilder: (_, __) => const Divider(
-                          color: AppTheme.borderColor, height: 1),
-                      itemBuilder: (context, i) =>
-                          _KbArticleTile(item: _kbFiltered[i]),
-                    ),
+                  : _videos.isEmpty
+                      ? const Center(
+                          child: Text('No videos found.',
+                              style: TextStyle(
+                                  fontSize: 13,
+                                  color:    AppTheme.textSecondary)),
+                        )
+                      : ListView.separated(
+                          padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
+                          itemCount: _videos.length,
+                          separatorBuilder: (_, __) => const Divider(
+                              color: AppTheme.borderColor, height: 1),
+                          itemBuilder: (context, i) =>
+                              _VideoTile(
+                                item:   _videos[i],
+                                onTap:  () => _openVideo(_videos[i]['video_id'] as String),
+                              ),
+                        ),
         ),
       ],
     );
@@ -935,63 +964,62 @@ class _MenuOption extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────
-//  KNOWLEDGE BASE ARTICLE TILE
+//  VIDEO TUTORIAL TILE (Watch & Learn)
 // ─────────────────────────────────────────────
-class _KbArticleTile extends StatefulWidget {
+class _VideoTile extends StatelessWidget {
   final Map<String, dynamic> item;
-  const _KbArticleTile({required this.item});
-
-  @override
-  State<_KbArticleTile> createState() => _KbArticleTileState();
-}
-
-class _KbArticleTileState extends State<_KbArticleTile> {
-  bool _expanded = false;
+  final VoidCallback onTap;
+  const _VideoTile({required this.item, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
-    final title   = widget.item['title']        as String? ?? '';
-    final content = widget.item['content'] as String? ?? '';
-    final body    = content;
+    final title        = item['title'] as String? ?? '';
+    final thumbnailUrl = item['thumbnail_url'] as String?;
 
     return MouseRegion(
       cursor: SystemMouseCursors.click,
       child: GestureDetector(
-        onTap: () => setState(() => _expanded = !_expanded),
+        onTap: onTap,
         child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 10),
-          child: Column(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(
-                children: [
-                  const Icon(Icons.article_outlined,
-                      size: 14, color: Color(0xFF6C63FF)),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(title,
-                        style: const TextStyle(
-                            fontSize:   13,
-                            fontWeight: FontWeight.w600,
-                            color:      AppTheme.textPrimary)),
-                  ),
-                  Icon(
-                    _expanded
-                        ? Icons.keyboard_arrow_up_rounded
-                        : Icons.keyboard_arrow_down_rounded,
-                    size:  16,
-                    color: AppTheme.textMuted,
-                  ),
-                ],
+              ClipRRect(
+                borderRadius: BorderRadius.circular(6),
+                child: SizedBox(
+                  width:  72,
+                  height: 40,
+                  child: thumbnailUrl != null
+                      ? Image.network(
+                          thumbnailUrl,
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, __, ___) => Container(
+                            color: AppTheme.pageBg,
+                            child: const Icon(Icons.play_circle_outline_rounded,
+                                size: 18, color: AppTheme.textMuted),
+                          ),
+                        )
+                      : Container(
+                          color: AppTheme.pageBg,
+                          child: const Icon(Icons.play_circle_outline_rounded,
+                              size: 18, color: AppTheme.textMuted),
+                        ),
+                ),
               ),
-              if (_expanded && body.isNotEmpty) ...[
-                const SizedBox(height: 8),
-                Text(body,
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(title,
+                    maxLines:   2,
+                    overflow:   TextOverflow.ellipsis,
                     style: const TextStyle(
-                        fontSize: 12,
-                        color:    AppTheme.textSecondary,
-                        height:   1.5)),
-              ],
+                        fontSize:   13,
+                        fontWeight: FontWeight.w600,
+                        color:      AppTheme.textPrimary)),
+              ),
+              const SizedBox(width: 6),
+              const Icon(Icons.open_in_new_rounded,
+                  size: 14, color: AppTheme.textMuted),
             ],
           ),
         ),
