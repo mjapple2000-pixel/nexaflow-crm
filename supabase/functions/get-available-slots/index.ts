@@ -38,7 +38,7 @@ Deno.serve(async (req) => {
     // Fetch calendar — must be public and active
     const { data: calendar, error: calendarError } = await supabase
       .from('calendars')
-      .select('id, business_id, name, duration_minutes, availability_hours, is_public, is_active, booking_page_title, booking_page_description, appointment_type_options')
+      .select('id, business_id, name, duration_minutes, availability_hours, is_public, is_active, booking_page_title, booking_page_description')
       .eq('id', calendar_id)
       .eq('is_public', true)
       .eq('is_active', true)
@@ -60,7 +60,29 @@ Deno.serve(async (req) => {
 
     const timezone = business?.timezone || 'America/New_York'
     const businessName = business?.business_name || ''
-    const appointmentTypeOptions = calendar.appointment_type_options ?? []
+    // Appointment types are business-wide (appointment_types table), shared by
+    // every public calendar of the business. Same { label, requires_address }
+    // shape the booking screen already expects.
+    const { data: typeRows, error: typesError } = await supabase
+      .from('appointment_types')
+      .select('label, requires_address')
+      .eq('business_id', calendar.business_id)
+      .is('deleted_at', null)
+      .order('sort_order', { ascending: true })
+      .order('id', { ascending: true })
+
+    if (typesError) {
+      console.error('Error fetching appointment types:', typesError)
+      return new Response(
+        JSON.stringify({ error: 'Failed to load booking options' }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      )
+    }
+
+    const appointmentTypeOptions = (typeRows ?? []).map((t: any) => ({
+      label: t.label,
+      requires_address: t.requires_address,
+    }))
 
     // Get the day of week for the requested date in the business's timezone
     const dateInTz = new Date(`${date}T12:00:00.000Z`)

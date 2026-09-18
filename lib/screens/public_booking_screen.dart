@@ -1,7 +1,32 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
+
+class _PhoneNumberInputFormatter extends TextInputFormatter {
+  @override
+  TextEditingValue formatEditUpdate(
+      TextEditingValue oldValue, TextEditingValue newValue) {
+    final digits = newValue.text.replaceAll(RegExp(r'[^0-9]'), '');
+    final limited = digits.length > 10 ? digits.substring(0, 10) : digits;
+    String formatted;
+    if (limited.isEmpty) {
+      formatted = '';
+    } else if (limited.length <= 3) {
+      formatted = '($limited';
+    } else if (limited.length <= 6) {
+      formatted = '(${limited.substring(0, 3)}) ${limited.substring(3)}';
+    } else {
+      formatted =
+          '(${limited.substring(0, 3)}) ${limited.substring(3, 6)}-${limited.substring(6)}';
+    }
+    return TextEditingValue(
+      text: formatted,
+      selection: TextSelection.collapsed(offset: formatted.length),
+    );
+  }
+}
 
 class PublicBookingScreen extends StatefulWidget {
   final String calendarId;
@@ -39,10 +64,12 @@ class _PublicBookingScreenState extends State<PublicBookingScreen> {
   final _nameController = TextEditingController();
   final _emailController = TextEditingController();
   final _phoneController = TextEditingController();
-  List<String> _appointmentTypeOptions = [];
+  final _addressController = TextEditingController();
+  List<Map<String, dynamic>> _appointmentTypeOptions = [];
   String? _selectedAppointmentType;
   bool _submitting = false;
   String? _submitError;
+  bool _smsConsent = false;
 
   // Step 2
   String _confirmationMessage = '';
@@ -50,14 +77,29 @@ class _PublicBookingScreenState extends State<PublicBookingScreen> {
   @override
   void initState() {
     super.initState();
+    // The Confirm Booking button's enabled state depends on these fields'
+    // text — without a listener, typing updates the controller but never
+    // triggers a rebuild, so the button would look enabled/disabled based
+    // on stale text.
+    for (final c in [_nameController, _emailController, _phoneController, _addressController]) {
+      c.addListener(_onFieldChanged);
+    }
     _fetchSlots(_selectedDate);
+  }
+
+  void _onFieldChanged() {
+    if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
+    for (final c in [_nameController, _emailController, _phoneController, _addressController]) {
+      c.removeListener(_onFieldChanged);
+    }
     _nameController.dispose();
     _emailController.dispose();
     _phoneController.dispose();
+    _addressController.dispose();
     super.dispose();
   }
 
@@ -92,10 +134,17 @@ class _PublicBookingScreenState extends State<PublicBookingScreen> {
           _bookingPageTitle = calendar['booking_page_title'] ?? '';
           _bookingPageDescription = calendar['booking_page_description'] ?? '';
           _durationMinutes = calendar['duration_minutes'] ?? 60;
-          final options = calendar['appointment_type_options'];
-          if (options != null) {
-            _appointmentTypeOptions = List<String>.from(options);
-          }
+          final options = calendar['appointment_type_options'] as List? ?? [];
+          _appointmentTypeOptions = options.map<Map<String, dynamic>>((t) {
+            if (t is Map) {
+              return {
+                'label': (t['label'] ?? '').toString(),
+                'requires_address': t['requires_address'] as bool? ?? true,
+              };
+            }
+            // Backward compatibility with the old plain-string format.
+            return {'label': t.toString(), 'requires_address': true};
+          }).toList();
           final days = calendar['availability_days'];
           if (days != null) {
             _availabilityDays = List<String>.from(days);
@@ -111,6 +160,13 @@ class _PublicBookingScreenState extends State<PublicBookingScreen> {
             }
             if (candidate != _selectedDate) {
               _selectedDate = candidate;
+              // The slots just fetched belong to the OLD date. Re-fetch for the
+              // newly selected date so the times shown match the highlighted day.
+              if (_availabilityDays.contains(_dayName(candidate))) {
+                Future.microtask(() {
+                  if (mounted) _fetchSlots(candidate);
+                });
+              }
             }
           }
           _loadingSlots = false;
@@ -131,11 +187,34 @@ class _PublicBookingScreenState extends State<PublicBookingScreen> {
     }
   }
 
+  bool get _selectedTypeRequiresAddress {
+    if (_selectedAppointmentType == null) return false;
+    final match = _appointmentTypeOptions.firstWhere(
+      (t) => t['label'] == _selectedAppointmentType,
+      orElse: () => <String, dynamic>{'requires_address': false},
+    );
+    return match['requires_address'] as bool? ?? false;
+  }
+
+  bool get _canSubmit {
+    if (_submitting || !_smsConsent) return false;
+    if (_nameController.text.trim().isEmpty) return false;
+    if (_emailController.text.trim().isEmpty) return false;
+    if (_phoneController.text.trim().isEmpty) return false;
+    if (_selectedTypeRequiresAddress && _addressController.text.trim().isEmpty) return false;
+    if (_appointmentTypeOptions.isNotEmpty && _selectedAppointmentType == null) return false;
+    return true;
+  }
+
   Future<void> _submitBooking() async {
     if (!_formKey.currentState!.validate()) return;
     if (_selectedSlot == null) return;
     if (_appointmentTypeOptions.isNotEmpty && _selectedAppointmentType == null) {
       setState(() => _submitError = 'Please select what this appointment is for.');
+      return;
+    }
+    if (!_smsConsent) {
+      setState(() => _submitError = 'Please agree to receive text messages to continue.');
       return;
     }
 
@@ -156,6 +235,8 @@ class _PublicBookingScreenState extends State<PublicBookingScreen> {
           'email': _emailController.text.trim(),
           'phone': _phoneController.text.trim(),
           'appointment_type': _selectedAppointmentType,
+          'address': _addressController.text.trim().isEmpty ? null : _addressController.text.trim(),
+          'sms_consent': _smsConsent,
         }),
       );
 
@@ -745,33 +826,35 @@ class _PublicBookingScreenState extends State<PublicBookingScreen> {
                 ),
               ),
               const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: _appointmentTypeOptions.map((option) {
-                  final isSelected = _selectedAppointmentType == option;
-                  return GestureDetector(
-                    onTap: () => setState(() => _selectedAppointmentType = option),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-                      decoration: BoxDecoration(
-                        color: isSelected ? const Color(0xFF6366F1) : const Color(0xFFF9FAFB),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(
-                          color: isSelected ? const Color(0xFF6366F1) : const Color(0xFFE5E7EB),
-                        ),
-                      ),
-                      child: Text(
-                        option,
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w500,
-                          color: isSelected ? Colors.white : const Color(0xFF374151),
-                        ),
-                      ),
-                    ),
+              DropdownButtonFormField<String>(
+                value: _selectedAppointmentType,
+                isExpanded: true,
+                hint: const Text('Select a reason', style: TextStyle(color: Color(0xFF9CA3AF))),
+                items: _appointmentTypeOptions.map((option) {
+                  final label = option['label'] as String;
+                  return DropdownMenuItem<String>(
+                    value: label,
+                    child: Text(label, style: const TextStyle(fontSize: 14, color: Color(0xFF111827))),
                   );
                 }).toList(),
+                onChanged: (v) => setState(() => _selectedAppointmentType = v),
+                decoration: InputDecoration(
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                  filled: true,
+                  fillColor: const Color(0xFFFAFAFA),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(8),
+                    borderSide: const BorderSide(color: Color(0xFFE5E7EB)),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(8),
+                    borderSide: const BorderSide(color: Color(0xFFE5E7EB)),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(8),
+                    borderSide: const BorderSide(color: Color(0xFF6366F1), width: 1.5),
+                  ),
+                ),
               ),
               const SizedBox(height: 20),
             ],
@@ -802,6 +885,7 @@ class _PublicBookingScreenState extends State<PublicBookingScreen> {
               label: 'Phone Number',
               hint: '(813) 555-0001',
               keyboardType: TextInputType.phone,
+              inputFormatters: [_PhoneNumberInputFormatter()],
               validator: (v) {
                 if (v == null || v.trim().isEmpty) return 'Phone is required';
                 if (v.trim().replaceAll(RegExp(r'\D'), '').length < 7) {
@@ -809,6 +893,54 @@ class _PublicBookingScreenState extends State<PublicBookingScreen> {
                 }
                 return null;
               },
+            ),
+            const SizedBox(height: 14),
+            _buildField(
+              controller: _addressController,
+              label: _selectedTypeRequiresAddress ? 'Address' : 'Address (optional)',
+              hint: '123 Main St, City, State',
+              validator: (v) {
+                if (_selectedTypeRequiresAddress && (v == null || v.trim().isEmpty)) {
+                  return 'Address is required for this appointment type';
+                }
+                return null;
+              },
+            ),
+            const SizedBox(height: 14),
+            InkWell(
+              onTap: () => setState(() => _smsConsent = !_smsConsent),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: Checkbox(
+                      value: _smsConsent,
+                      onChanged: (v) => setState(() => _smsConsent = v ?? false),
+                      activeColor: const Color(0xFF6366F1),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text.rich(
+                      TextSpan(
+                        style: const TextStyle(
+                            fontSize: 12, color: Color(0xFF6B7280), height: 1.5),
+                        children: [
+                          const TextSpan(
+                              text: 'I agree to receive text messages about my appointment (confirmations, reminders, and updates) from '),
+                          TextSpan(
+                            text: _businessName.isNotEmpty ? _businessName : 'this business',
+                          ),
+                          const TextSpan(
+                              text: '. My phone number will never be sold or shared with third parties. Message and data rates may apply. Reply STOP to opt out.'),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
             ),
             if (_submitError != null) ...[
               const SizedBox(height: 12),
@@ -841,7 +973,7 @@ class _PublicBookingScreenState extends State<PublicBookingScreen> {
                 const SizedBox(width: 12),
                 Expanded(
                   child: ElevatedButton(
-                    onPressed: _submitting ? null : _submitBooking,
+                    onPressed: _canSubmit ? _submitBooking : null,
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFF6366F1),
                       foregroundColor: Colors.white,
@@ -881,6 +1013,7 @@ class _PublicBookingScreenState extends State<PublicBookingScreen> {
     required String hint,
     TextInputType keyboardType = TextInputType.text,
     String? Function(String?)? validator,
+    List<TextInputFormatter>? inputFormatters,
   }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -898,6 +1031,7 @@ class _PublicBookingScreenState extends State<PublicBookingScreen> {
           controller: controller,
           keyboardType: keyboardType,
           validator: validator,
+          inputFormatters: inputFormatters,
           style: const TextStyle(fontSize: 14, color: Color(0xFF111827)),
           decoration: InputDecoration(
             hintText: hint,
@@ -978,7 +1112,9 @@ class _PublicBookingScreenState extends State<PublicBookingScreen> {
                 _nameController.clear();
                 _emailController.clear();
                 _phoneController.clear();
+                _addressController.clear();
                 _confirmationMessage = '';
+                _smsConsent = false;
               });
               _fetchSlots(_selectedDate);
             },

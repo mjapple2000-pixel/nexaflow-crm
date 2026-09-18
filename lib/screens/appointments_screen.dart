@@ -154,7 +154,7 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
       _businessId = await getActiveBusinessId();
       if (_businessId == null) return;
       final results = await Future.wait([
-        _db.from('appointments').select().eq('business_id', _businessId!).order('start_date_time', ascending: true),
+        _db.from('appointments').select().eq('business_id', _businessId!).filter('deleted_at', 'is', null).order('start_date_time', ascending: true),
         _db.from('businesses').select('availability_hours, slot_duration_minutes, plan, is_paid, subscription_status, is_beta').eq('id', _businessId!).maybeSingle(),
         _db.from('profiles').select('id, full_name, role').eq('business_id', _businessId!),
         _db.from('leads').select('id, lead_name, lead_email, lead_phone, lead_address').eq('business_id', _businessId!).order('lead_name', ascending: true),
@@ -1153,6 +1153,18 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
               const SizedBox(height: 4),
               const Spacer(),
               OutlinedButton.icon(
+                onPressed: () => _showAppointmentTypesDialog(),
+                icon: const Icon(Icons.event_note_outlined, size: 16),
+                label: const Text('Appointment Types'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppTheme.textPrimary,
+                  side: const BorderSide(color: AppTheme.borderColor),
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+              ),
+              const SizedBox(width: 10),
+              OutlinedButton.icon(
                 onPressed: () => _showEquipmentDialog(),
                 icon: const Icon(Icons.build_outlined, size: 16),
                 label: const Text('Add Equipment'),
@@ -1746,6 +1758,14 @@ class _AppointmentsScreenState extends State<AppointmentsScreen>
                 ),
         ),
       ]),
+    );
+  }
+
+  void _showAppointmentTypesDialog() {
+    showDialog(
+      context: context,
+      barrierColor: Colors.black54,
+      builder: (ctx) => _AppointmentTypesDialog(businessId: _businessId),
     );
   }
 
@@ -2423,6 +2443,282 @@ class _EquipmentFormDialogState extends State<_EquipmentFormDialog> {
     );
   }
 }
+class _AppointmentTypesDialog extends StatefulWidget {
+  final int? businessId;
+
+  const _AppointmentTypesDialog({required this.businessId});
+
+  @override
+  State<_AppointmentTypesDialog> createState() => _AppointmentTypesDialogState();
+}
+
+class _AppointmentTypesDialogState extends State<_AppointmentTypesDialog> {
+  final _db      = Supabase.instance.client;
+  final _newCtrl = TextEditingController();
+
+  List<Map<String, dynamic>> _types = [];
+  bool    _loading = true;
+  bool    _busy    = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void dispose() {
+    _newCtrl.dispose();
+    super.dispose();
+  }
+
+  // Auto-guess for new types: phone/virtual-style names default to no address.
+  bool _guessRequiresAddress(String label) {
+    final l = label.toLowerCase();
+    const remoteWords = ['call', 'virtual', 'phone', 'video', 'zoom', 'remote', 'demo', 'webinar', 'online'];
+    for (final w in remoteWords) {
+      if (l.contains(w)) return false;
+    }
+    return true;
+  }
+
+  Future<void> _load() async {
+    if (widget.businessId == null) {
+      _loading = false;
+      _error = 'No business selected.';
+      return;
+    }
+    try {
+      final rows = await _db
+          .from('appointment_types')
+          .select()
+          .eq('business_id', widget.businessId!)
+          .filter('deleted_at', 'is', null)
+          .order('sort_order', ascending: true);
+      if (!mounted) return;
+      setState(() {
+        _types = List<Map<String, dynamic>>.from(rows);
+        _loading = false;
+        _error = null;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _error = 'Failed to load appointment types: $e';
+      });
+    }
+  }
+
+  Future<void> _add() async {
+    final label = _newCtrl.text.trim();
+    if (label.isEmpty || _busy) return;
+    if (_types.any((t) => (t['label'] as String).toLowerCase() == label.toLowerCase())) {
+      setState(() => _error = '"$label" already exists.');
+      return;
+    }
+    setState(() { _busy = true; _error = null; });
+    try {
+      int nextSort = 0;
+      for (final t in _types) {
+        final s = t['sort_order'] as int? ?? 0;
+        if (s >= nextSort) nextSort = s + 1;
+      }
+      await _db.from('appointment_types').insert({
+        'business_id':      widget.businessId,
+        'label':            label,
+        'requires_address': _guessRequiresAddress(label),
+        'sort_order':       nextSort,
+      });
+      if (!mounted) return;
+      _newCtrl.clear();
+      await _load();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _error = 'Failed to add: $e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _toggleRequiresAddress(Map<String, dynamic> t, bool value) async {
+    if (_busy) return;
+    final previous = t['requires_address'] as bool? ?? true;
+    setState(() {
+      t['requires_address'] = value;
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await _db.from('appointment_types').update({
+        'requires_address': value,
+        'updated_at':       DateTime.now().toUtc().toIso8601String(),
+      }).eq('id', t['id']);
+      if (!mounted) return;
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        t['requires_address'] = previous;
+        _error = 'Failed to save: $e';
+      });
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _remove(Map<String, dynamic> t) async {
+    if (_busy) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Remove Appointment Type'),
+        content: Text('Remove "${t['label']}"? It will no longer appear on booking pages. Existing appointments keep their type.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(true),
+            child: const Text('Remove', style: TextStyle(color: AppTheme.error)),
+          ),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    if (confirmed != true) return;
+    setState(() { _busy = true; _error = null; });
+    try {
+      final now = DateTime.now().toUtc().toIso8601String();
+      await _db.from('appointment_types').update({
+        'deleted_at': now,
+        'updated_at': now,
+      }).eq('id', t['id']);
+      if (!mounted) return;
+      await _load();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _error = 'Failed to remove: $e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: AppTheme.cardBg,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      insetPadding: const EdgeInsets.symmetric(horizontal: 40, vertical: 40),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 560, maxHeight: 700),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Container(
+            padding: const EdgeInsets.fromLTRB(24, 20, 16, 16),
+            decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: AppTheme.borderColor))),
+            child: Row(children: [
+              const Icon(Icons.event_note_outlined, size: 20, color: AppTheme.brand),
+              const SizedBox(width: 10),
+              const Expanded(child: Text(
+                'Appointment Types',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: AppTheme.textPrimary),
+              )),
+              IconButton(
+                onPressed: () => Navigator.of(context, rootNavigator: true).pop(),
+                icon: const Icon(Icons.close, size: 20, color: AppTheme.textSecondary),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+              ),
+            ]),
+          ),
+          Flexible(child: SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Text(
+                'These appear as "What is this appointment for?" on every public booking page for your business. Turn off "Requires address" for phone or virtual types.',
+                style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+              ),
+              const SizedBox(height: 16),
+              if (_loading)
+                const Center(child: Padding(
+                  padding: EdgeInsets.all(24),
+                  child: CircularProgressIndicator(),
+                ))
+              else if (_types.isEmpty)
+                const Text(
+                  'No appointment types yet. Without any, the booking page skips that question.',
+                  style: TextStyle(fontSize: 13, color: AppTheme.textSecondary),
+                )
+              else
+                ..._types.map((t) {
+                  return Container(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    padding: const EdgeInsets.only(left: 14, right: 4, top: 2, bottom: 2),
+                    decoration: BoxDecoration(
+                      color: AppTheme.pageBg,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: AppTheme.borderColor),
+                    ),
+                    child: Row(children: [
+                      Expanded(child: Text(
+                        t['label'] as String,
+                        style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                      )),
+                      Checkbox(
+                        value: t['requires_address'] as bool? ?? true,
+                        onChanged: _busy ? null : (v) => _toggleRequiresAddress(t, v ?? true),
+                        activeColor: AppTheme.brand,
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      const Text('Requires address', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+                      IconButton(
+                        icon: const Icon(Icons.delete_outline, size: 18, color: AppTheme.textSecondary),
+                        tooltip: 'Remove',
+                        onPressed: _busy ? null : () => _remove(t),
+                      ),
+                    ]),
+                  );
+                }),
+              const SizedBox(height: 16),
+              Row(children: [
+                Expanded(child: TextField(
+                  controller: _newCtrl,
+                  onSubmitted: (_) => _add(),
+                  style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                  decoration: InputDecoration(
+                    hintText: 'e.g. Roof Inspection',
+                    hintStyle: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+                    filled: true, fillColor: AppTheme.pageBg,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    border:        OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
+                    enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.borderColor)),
+                    focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.brand, width: 2)),
+                  ),
+                )),
+                const SizedBox(width: 8),
+                ElevatedButton(
+                  onPressed: _busy ? null : _add,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppTheme.brand, foregroundColor: Colors.white, elevation: 0,
+                    padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  child: const Text('Add', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                ),
+              ]),
+              if (_error != null) ...[
+                const SizedBox(height: 12),
+                Text(_error!, style: const TextStyle(fontSize: 13, color: AppTheme.error)),
+              ],
+            ]),
+          )),
+        ]),
+      ),
+    );
+  }
+}
+
 class _RoomFormDialog extends StatefulWidget {
   final int? businessId;
   final List<Map<String, dynamic>> calendars;
@@ -3634,6 +3930,12 @@ class _CalendarFormDialogState extends State<_CalendarFormDialog> {
   Set<String> _selectedMemberIds = {};
   late final TextEditingController _bookingTitleCtrl;
   late final TextEditingController _bookingDescCtrl;
+  // Legacy per-calendar appointment types editor. Types are now business-wide
+  // (Calendar Settings > Appointment Types), so this stays hidden. Change to
+  // true to show it again.
+  final bool _showLegacyApptTypes = false;
+  List<Map<String, dynamic>> _apptTypeOptions = [];
+  final _newApptTypeCtrl = TextEditingController();
 
   Map<String, Map<String, dynamic>> _availability = {
     'monday':    {'enabled': true,  'start': '09:00', 'end': '17:00'},
@@ -3664,6 +3966,36 @@ class _CalendarFormDialogState extends State<_CalendarFormDialog> {
     final hour = h == 0 ? 12 : h > 12 ? h - 12 : h;
     return '${hour.toString().padLeft(2, '0')}:$m ${h < 12 ? 'AM' : 'PM'}';
   });
+
+  // Best-effort default for a newly added appointment type — types that
+  // sound remote/phone-based default to not requiring an address; anything
+  // else (the common case for home-service businesses) defaults to true.
+  // Always editable afterward via the checkbox next to each type.
+  bool _guessRequiresAddress(String label) {
+    final l = label.toLowerCase();
+    const remoteHints = ['call', 'virtual', 'phone', 'video', 'zoom', 'remote', 'demo', 'webinar', 'online'];
+    for (final hint in remoteHints) {
+      if (l.contains(hint)) return false;
+    }
+    return true;
+  }
+
+  void _addApptType() {
+    final label = _newApptTypeCtrl.text.trim();
+    if (label.isEmpty) return;
+    if (_apptTypeOptions.any((t) => (t['label'] as String).toLowerCase() == label.toLowerCase())) {
+      _newApptTypeCtrl.clear();
+      return;
+    }
+    setState(() {
+      _apptTypeOptions.add({'label': label, 'requires_address': _guessRequiresAddress(label)});
+      _newApptTypeCtrl.clear();
+    });
+  }
+
+  void _removeApptType(int index) {
+    setState(() => _apptTypeOptions.removeAt(index));
+  }
 
   @override
   void initState() {
@@ -3701,6 +4033,18 @@ class _CalendarFormDialogState extends State<_CalendarFormDialog> {
       _isPublic              = e['is_public']        as bool? ?? false;
       _selectedMemberIds = (e['team_member_ids'] as List?)
           ?.map((v) => v.toString()).toSet() ?? {};
+      final rawTypes = e['appointment_type_options'] as List? ?? [];
+      _apptTypeOptions = rawTypes.map((t) {
+        if (t is Map) {
+          return {
+            'label': t['label'] ?? '',
+            'requires_address': t['requires_address'] as bool? ?? true,
+          };
+        }
+        // Backward compatibility with the old plain-string format.
+        final label = t.toString();
+        return {'label': label, 'requires_address': _guessRequiresAddress(label)};
+      }).toList();
       final ah = e['availability_hours'];
       if (ah != null) {
         final map = ah is String ? jsonDecode(ah) : ah;
@@ -3723,6 +4067,7 @@ class _CalendarFormDialogState extends State<_CalendarFormDialog> {
     _descCtrl.dispose();
     _bookingTitleCtrl.dispose();
     _bookingDescCtrl.dispose();
+    _newApptTypeCtrl.dispose();
     super.dispose();
   }
 
@@ -3746,6 +4091,7 @@ class _CalendarFormDialogState extends State<_CalendarFormDialog> {
         'is_public':                _isPublic,
         'booking_page_title':       _bookingTitleCtrl.text.trim(),
         'booking_page_description': _bookingDescCtrl.text.trim(),
+        'appointment_type_options': _apptTypeOptions,
         'updated_at':               DateTime.now().toIso8601String(),
       };
       if (widget.existing != null) {
@@ -4018,6 +4364,49 @@ class _CalendarFormDialogState extends State<_CalendarFormDialog> {
                 _label('Booking Page Description (optional)'),
                 const SizedBox(height: 4),
                 _textField(_bookingDescCtrl, hint: 'e.g. Schedule your free inspection in under 2 minutes.', maxLines: 3),
+                if (_showLegacyApptTypes) ...[
+                const SizedBox(height: 16),
+                _label('Appointment Types (optional)'),
+                const SizedBox(height: 4),
+                const Text(
+                  "Let people choose what the appointment is for. \"Requires address\" is guessed automatically when you add a type — uncheck it for phone or virtual types.",
+                  style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+                ),
+                const SizedBox(height: 8),
+                ..._apptTypeOptions.asMap().entries.map((entry) {
+                  final i = entry.key;
+                  final t = entry.value;
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: Row(children: [
+                      Expanded(
+                        child: Text(t['label'] as String,
+                            style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary)),
+                      ),
+                      Checkbox(
+                        value: t['requires_address'] as bool,
+                        onChanged: (v) => setState(() => t['requires_address'] = v ?? true),
+                        activeColor: AppTheme.brand,
+                      ),
+                      const Text('Requires address', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+                      IconButton(
+                        icon: const Icon(Icons.close, size: 16, color: AppTheme.textSecondary),
+                        onPressed: () => _removeApptType(i),
+                        tooltip: 'Remove',
+                      ),
+                    ]),
+                  );
+                }),
+                Row(children: [
+                  Expanded(child: _textField(_newApptTypeCtrl, hint: 'e.g. Roof Inspection')),
+                  const SizedBox(width: 8),
+                  OutlinedButton(
+                    onPressed: _addApptType,
+                    style: OutlinedButton.styleFrom(foregroundColor: AppTheme.brand, side: BorderSide(color: AppTheme.brand)),
+                    child: const Text('Add'),
+                  ),
+                ]),
+                ],
               ],
               const SizedBox(height: 16),
 
@@ -4285,6 +4674,7 @@ class _AppointmentFormTabState extends State<_AppointmentFormTab> {
     if (widget.calendars.isNotEmpty) {
       _calendarId = widget.calendars.first['id'].toString();
     }
+    _loadBusinessTypes();
   }
 
   @override
@@ -4298,6 +4688,39 @@ class _AppointmentFormTabState extends State<_AppointmentFormTab> {
     _sourceCtrl.dispose();
     _adminEmailCtrl.dispose();
     super.dispose();
+  }
+
+  // Business-wide appointment types (Calendar Settings > Appointment Types),
+  // added to the standard list so staff can pick the same types customers see.
+  List<String> _businessTypeLabels = [];
+
+  List<String> get _typeItems {
+    final items = List<String>.from(widget.appointmentTypes);
+    for (final l in _businessTypeLabels) {
+      if (!items.contains(l)) items.add(l);
+    }
+    return items;
+  }
+
+  Future<void> _loadBusinessTypes() async {
+    if (widget.businessId == null) return;
+    try {
+      final rows = await _db
+          .from('appointment_types')
+          .select('label')
+          .eq('business_id', widget.businessId!)
+          .filter('deleted_at', 'is', null)
+          .order('sort_order', ascending: true);
+      if (!mounted) return;
+      setState(() {
+        _businessTypeLabels = rows
+            .map<String>((r) => (r['label'] ?? '').toString())
+            .where((l) => l.isNotEmpty)
+            .toList();
+      });
+    } catch (e) {
+      debugPrint('Load business appointment types error: $e');
+    }
   }
 
   void _filterContacts(String q) {
@@ -4665,7 +5088,7 @@ class _AppointmentFormTabState extends State<_AppointmentFormTab> {
             _label('Type'),
             const SizedBox(height: 4),
             _dropdownWidget(
-              items: widget.appointmentTypes,
+              items: _typeItems,
               value: _type,
               onChanged: (v) => setState(() => _type = v!),
             ),
@@ -5583,7 +6006,9 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
       _status = widget.appointmentStatuses.first;
     }
     _type = a['appointment_type'] ?? 'Consultation';
-    if (!_appointmentTypes.contains(_type)) _type = 'Consultation';
+    // Keep custom types (e.g. from public booking) as-is instead of rewriting
+    // them to 'Consultation'; only the generic fallback value is normalised.
+    if (_type.trim().isEmpty || _type.toLowerCase() == 'appointment') _type = 'Consultation';
 
     final startRaw = DateTime.tryParse(a['start_date_time'] ?? '') ?? DateTime.now();
     final endRaw   = DateTime.tryParse(a['end_date_time']   ?? '') ?? DateTime.now();
@@ -5600,6 +6025,7 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
       _loadActiveTimeEntry();
       _loadAttachedForms();
       _loadAvailableJobForms();
+      _loadBusinessTypes();
       _checkLaborCostViewCapability().then((_) => _loadLaborCost());
     });
   }
@@ -5616,6 +6042,42 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
     _adminEmailCtrl.dispose();
     _clockTimer?.cancel();
     super.dispose();
+  }
+
+  // Business-wide appointment types (Calendar Settings > Appointment Types).
+  List<String> _businessTypeLabels = [];
+
+  // Hardcoded list + the business's own types + whatever type this
+  // appointment already has, so opening/saving never rewrites a custom type.
+  List<String> get _typeItems {
+    final items = List<String>.from(_appointmentTypes);
+    for (final l in _businessTypeLabels) {
+      if (!items.contains(l)) items.add(l);
+    }
+    if (!items.contains(_type)) items.add(_type);
+    return items;
+  }
+
+  Future<void> _loadBusinessTypes() async {
+    final bizId = widget.appointment['business_id'];
+    if (bizId == null) return;
+    try {
+      final rows = await _db
+          .from('appointment_types')
+          .select('label')
+          .eq('business_id', bizId)
+          .filter('deleted_at', 'is', null)
+          .order('sort_order', ascending: true);
+      if (!mounted) return;
+      setState(() {
+        _businessTypeLabels = rows
+            .map<String>((r) => (r['label'] ?? '').toString())
+            .where((l) => l.isNotEmpty)
+            .toList();
+      });
+    } catch (e) {
+      debugPrint('Load business appointment types error: $e');
+    }
   }
 
   Future<void> _checkLaborCostViewCapability() async {
@@ -6651,7 +7113,7 @@ class _AppointmentDetailSheetState extends State<_AppointmentDetailSheet> {
             Expanded(child: _dropdownField(
               label: 'Type',
               value: _type,
-              items: _appointmentTypes,
+              items: _typeItems,
               onChanged: (v) => setState(() => _type = v!),
             )),
             const SizedBox(width: 12),
