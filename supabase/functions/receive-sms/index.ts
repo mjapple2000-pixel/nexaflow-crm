@@ -554,6 +554,10 @@ Deno.serve(async (req) => {
         if (lead) {
           await supabase.from("leads").update({ lead_name: capturedName }).eq("id", lead.id);
         } else {
+          // Inbound-initiated contact — no explicit opt-in checkbox exists (or
+          // is even possible) for a phone call/text, so this is stamped as
+          // implied consent per Twilio's own non-marketing/transactional
+          // allowance (see SMS-02 message_flow language).
           await supabase.from("leads").insert({
             business_id: businessId,
             lead_name:   capturedName,
@@ -562,6 +566,8 @@ Deno.serve(async (req) => {
             date_added:  new Date().toISOString(),
             last_message_at: new Date().toISOString(),
             source: "SMS",
+            sms_consent_given_at: new Date().toISOString(),
+            sms_consent_source: "inbound_implied",
         });
         }
 

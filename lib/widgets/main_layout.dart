@@ -152,6 +152,7 @@ class _AppNavBarState extends State<AppNavBar> {
     ('/settings?section=voice_ai',         Icons.mic_outlined,               'Voice AI Agents'),
     ('/settings?section=email_services',   Icons.alternate_email_rounded,    'Email Services'),
     ('/settings?section=phone_numbers',    Icons.phone_in_talk_outlined,     'Phone Numbers'),
+    ('/settings?section=business_verification', Icons.verified_outlined,     'Business Verification'),
     // OTHER SETTINGS (indices 19+, .skip(19))
     ('/settings?section=objects',          Icons.category_outlined,          'Objects'),
     ('/settings?section=custom_fields',    Icons.tune_rounded,               'Custom Fields'),
@@ -313,6 +314,7 @@ class _AppNavBarState extends State<AppNavBar> {
     'settings_voice_ai',
     'settings_email_services',
     'settings_phone_numbers',
+    'settings_business_verification',
     'settings_objects',
     'settings_custom_fields',
     'settings_custom_values',
@@ -321,9 +323,9 @@ class _AppNavBarState extends State<AppNavBar> {
     'settings_url_redirects',
     'settings_service_library',
     'settings_job_types',
-    'settings_expense_categories', // position 27 in _settingsSections
-    'settings_payroll',            // position 28 in _settingsSections
-    'settings_documents',          // position 29 in _settingsSections
+    'settings_expense_categories', // position 26 in _settingsSections
+    'settings_payroll',            // position 27 in _settingsSections
+    'settings_documents',          // position 28 in _settingsSections
   ];
 
   // A single granted page's worth of access. Honors a legacy blanket
@@ -499,7 +501,7 @@ class _AppNavBarState extends State<AppNavBar> {
           );
         }),
         _SectionLabel('Business Services'),
-        ..._visibleSettingsSlice(10, 7).map((s) {
+        ..._visibleSettingsSlice(10, 8).map((s) {
           final isActive = location == s.$1;
           return Clickable(
             onTap: () => context.go(s.$1),
@@ -533,7 +535,7 @@ class _AppNavBarState extends State<AppNavBar> {
           );
         }),
                 _SectionLabel('Other Settings'),
-        ..._visibleSettingsSlice(17, 6).map((s) {
+        ..._visibleSettingsSlice(18, 6).map((s) {
           final isActive = location == s.$1 ||
               (s.$1 == '/settings' && location == '/settings');
           return Clickable(
@@ -570,7 +572,7 @@ class _AppNavBarState extends State<AppNavBar> {
 
         // JOBS SECTION
         _SectionLabel('JOBS'),
-        ..._visibleSettingsSlice(23, 4).map((s) {
+        ..._visibleSettingsSlice(24, 4).map((s) {
           final isActive = location == s.$1;
           return Clickable(
             onTap: () => context.go(s.$1),
@@ -606,7 +608,7 @@ class _AppNavBarState extends State<AppNavBar> {
 
         // DOCUMENTS SECTION
         _SectionLabel('DOCUMENTS'),
-        ..._visibleSettingsSlice(27, 1).map((s) {
+        ..._visibleSettingsSlice(28, 1).map((s) {
           final isActive = location == s.$1;
           return Clickable(
             onTap: () => context.go(s.$1),

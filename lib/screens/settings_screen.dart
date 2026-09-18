@@ -133,6 +133,7 @@ const _kSettingsPermissions = [
   ('settings_voice_ai',          'Voice AI Agents',         Icons.mic_outlined),
   ('settings_email_services',    'Email Services',          Icons.mail_outline),
   ('settings_phone_numbers',     'Phone Numbers',           Icons.dialpad_outlined),
+  ('settings_business_verification', 'Business Verification', Icons.verified_outlined),
   ('settings_objects',           'Objects',                 Icons.hub_outlined),
   ('settings_custom_fields',     'Custom Fields',            Icons.tune_outlined),
   ('settings_custom_values',     'Custom Values',            Icons.data_object_outlined),
@@ -322,7 +323,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   ('My Profile',       Icons.person_outline),
   ('AI Settings',      Icons.smart_toy_outlined),
   ('Knowledge Base',   Icons.menu_book_outlined),
-  ('AI Phone Number',  Icons.phone_outlined),
   ('Email Config',     Icons.email_outlined),
   ('My Staff',         Icons.people_outline),
   ('Notifications',    Icons.notifications_outlined),
@@ -372,6 +372,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     15: 'settings_voice_ai',
     16: 'settings_email_services',
     17: 'settings_phone_numbers',
+    18: 'settings_business_verification',
     19: 'settings_objects',
     20: 'settings_custom_fields',
     21: 'settings_custom_values',
@@ -456,6 +457,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       7: 'notifications', 8: 'payments', 9: 'social', 10: 'billing',
       11: 'pipelines', 12: 'automation', 13: 'calendars', 14: 'conversation_ai',
       15: 'voice_ai', 16: 'email_services', 17: 'phone_numbers',
+      18: 'business_verification',
       19: 'objects', 20: 'custom_fields', 21: 'custom_values', 22: 'scoring',
       23: 'domains', 24: 'url_redirects', 25: 'service_library', 26: 'job_types',
       27: 'documents', 28: 'expense_categories', 29: 'payroll',
@@ -483,6 +485,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       case 'voice_ai':        return 15;
       case 'email_services':  return 16;
       case 'phone_numbers':   return 17;
+      case 'business_verification': return 18;
       // Other Settings
       case 'objects':         return 19;
       case 'custom_fields':   return 20;
@@ -718,6 +721,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             (15, Icons.mic_outlined,              'Voice AI'),
             (16, Icons.alternate_email_rounded,   'Email Services'),
             (17, Icons.phone_in_talk_outlined,    'Phone Numbers'),
+            (18, Icons.verified_outlined,         'Business Verification'),
           ]),
           const SizedBox(height: 8),
           const Divider(height: 1, color: AppTheme.borderColor),
@@ -854,6 +858,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
             businessId: _businessId!,
             business: _business,
             onSave: _updateBusiness);
+      case 18:
+        return _BusinessVerificationSection(
+            businessId: _businessId!, business: _business);
       case 19:
         return _ComingSoonSection(title: 'Objects', icon: Icons.category_outlined);
       case 20:
@@ -14522,6 +14529,776 @@ class _PhoneNumberCard extends StatelessWidget {
             ),
           ),
         ],
+      ]),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+//  EIN INPUT FORMATTER — digits only, capped at 9, auto-dash after 2
+// ─────────────────────────────────────────────
+
+class _EinInputFormatter extends TextInputFormatter {
+  @override
+  TextEditingValue formatEditUpdate(
+      TextEditingValue oldValue, TextEditingValue newValue) {
+    final digits = newValue.text.replaceAll(RegExp(r'[^0-9]'), '');
+    final limited = digits.length > 9 ? digits.substring(0, 9) : digits;
+    final formatted = limited.length <= 2
+        ? limited
+        : '${limited.substring(0, 2)}-${limited.substring(2)}';
+    return TextEditingValue(
+      text: formatted,
+      selection: TextSelection.collapsed(offset: formatted.length),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+//  PHONE INPUT FORMATTER — digits only, capped at 10, (XXX) XXX-XXXX
+// ─────────────────────────────────────────────
+
+class _PhoneInputFormatter extends TextInputFormatter {
+  @override
+  TextEditingValue formatEditUpdate(
+      TextEditingValue oldValue, TextEditingValue newValue) {
+    final digits = newValue.text.replaceAll(RegExp(r'[^0-9]'), '');
+    final limited = digits.length > 10 ? digits.substring(0, 10) : digits;
+    String formatted;
+    if (limited.isEmpty) {
+      formatted = '';
+    } else if (limited.length <= 3) {
+      formatted = '($limited';
+    } else if (limited.length <= 6) {
+      formatted = '(${limited.substring(0, 3)}) ${limited.substring(3)}';
+    } else {
+      formatted =
+          '(${limited.substring(0, 3)}) ${limited.substring(3, 6)}-${limited.substring(6)}';
+    }
+    return TextEditingValue(
+      text: formatted,
+      selection: TextSelection.collapsed(offset: formatted.length),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+//  BUSINESS VERIFICATION SECTION (SMS-02)
+// ─────────────────────────────────────────────
+
+class _BusinessVerificationSection extends StatefulWidget {
+  final int businessId;
+  final Map<String, dynamic> business;
+  const _BusinessVerificationSection(
+      {required this.businessId, required this.business});
+
+  @override
+  State<_BusinessVerificationSection> createState() =>
+      _BusinessVerificationSectionState();
+}
+
+class _BusinessVerificationSectionState
+    extends State<_BusinessVerificationSection> {
+  final _supabase = Supabase.instance.client;
+
+  static const _businessTypes = [
+    'Co-operative',
+    'Corporation',
+    'Limited Liability Corporation',
+    'Non-profit Corporation',
+    'Partnership',
+  ];
+  static const _jobPositions = [
+    'Director', 'GM', 'VP', 'CEO', 'CFO', 'General Counsel', 'Other',
+  ];
+  static const _freeEmailDomains = [
+    'gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com',
+    'aol.com', 'icloud.com', 'live.com', 'msn.com',
+  ];
+
+  bool _loading = true;
+  bool _saving = false;
+  bool _submitting = false;
+  String? _error;
+  String? _successMsg;
+
+  int? _profileId;
+  String _submissionStatus = 'incomplete';
+  String _status = 'not_started';
+
+  late final TextEditingController _legalNameCtrl;
+  late final TextEditingController _dbaCtrl;
+  late final TextEditingController _einCtrl;
+  late final TextEditingController _websiteCtrl;
+  late final TextEditingController _addr1Ctrl;
+  late final TextEditingController _addr2Ctrl;
+  late final TextEditingController _cityCtrl;
+  late final TextEditingController _stateCtrl;
+  late final TextEditingController _zipCtrl;
+  late final TextEditingController _useCaseCtrl;
+  late final TextEditingController _repFirstCtrl;
+  late final TextEditingController _repLastCtrl;
+  late final TextEditingController _repJobTitleCtrl;
+  late final TextEditingController _repEmailCtrl;
+  late final TextEditingController _repPhoneCtrl;
+
+  bool _hasDba = false;
+  String? _businessType;
+  String? _repJobPosition;
+
+  List<TextEditingController> get _allTextControllers => [
+        _legalNameCtrl, _dbaCtrl, _einCtrl, _websiteCtrl,
+        _addr1Ctrl, _addr2Ctrl, _cityCtrl, _stateCtrl, _zipCtrl,
+        _useCaseCtrl, _repFirstCtrl, _repLastCtrl, _repJobTitleCtrl,
+        _repEmailCtrl, _repPhoneCtrl,
+      ];
+
+  // Both inline warnings and the Submit-enabled check are computed live
+  // in build() from controller text — without this listener, typing
+  // updates the controller but never triggers a rebuild, so neither
+  // would ever reflect what's actually been typed.
+  void _onFieldChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _legalNameCtrl = TextEditingController();
+    _dbaCtrl = TextEditingController();
+    _einCtrl = TextEditingController();
+    _websiteCtrl = TextEditingController();
+    _addr1Ctrl = TextEditingController();
+    _addr2Ctrl = TextEditingController();
+    _cityCtrl = TextEditingController();
+    _stateCtrl = TextEditingController();
+    _zipCtrl = TextEditingController();
+    _useCaseCtrl = TextEditingController();
+    _repFirstCtrl = TextEditingController();
+    _repLastCtrl = TextEditingController();
+    _repJobTitleCtrl = TextEditingController();
+    _repEmailCtrl = TextEditingController();
+    _repPhoneCtrl = TextEditingController();
+    for (final c in _allTextControllers) {
+      c.addListener(_onFieldChanged);
+    }
+    _loadProfile();
+  }
+
+  @override
+  void dispose() {
+    for (final c in _allTextControllers) {
+      c.removeListener(_onFieldChanged);
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  Future<void> _loadProfile() async {
+    try {
+      final row = await _supabase
+          .from('business_a2p_profiles')
+          .select()
+          .eq('business_id', widget.businessId)
+          .filter('deleted_at', 'is', null)
+          .maybeSingle();
+      if (!mounted) return;
+      final b = widget.business;
+      setState(() {
+        if (row != null) {
+          _profileId = row['id'] as int?;
+          _submissionStatus =
+              row['submission_status'] as String? ?? 'incomplete';
+          _status = row['status'] as String? ?? 'not_started';
+          _legalNameCtrl.text = row['legal_business_name'] as String? ?? '';
+          _dbaCtrl.text = row['dba_brand_name'] as String? ?? '';
+          _hasDba = (row['dba_brand_name'] as String?)?.isNotEmpty == true;
+          _einCtrl.text = row['ein'] as String? ?? '';
+          _websiteCtrl.text = row['website_url'] as String? ?? '';
+          _businessType = row['business_type'] as String?;
+          _addr1Ctrl.text = (row['address_line1'] as String?)?.isNotEmpty == true
+              ? row['address_line1'] as String
+              : (b['address_line1'] as String? ?? '');
+          _addr2Ctrl.text = (row['address_line2'] as String?)?.isNotEmpty == true
+              ? row['address_line2'] as String
+              : (b['address_line2'] as String? ?? '');
+          _cityCtrl.text = (row['city'] as String?)?.isNotEmpty == true
+              ? row['city'] as String
+              : (b['city'] as String? ?? '');
+          _stateCtrl.text = (row['state'] as String?)?.isNotEmpty == true
+              ? row['state'] as String
+              : (b['state'] as String? ?? '');
+          _zipCtrl.text = (row['zip_code'] as String?)?.isNotEmpty == true
+              ? row['zip_code'] as String
+              : (b['zip_code'] as String? ?? '');
+          _useCaseCtrl.text = (row['use_case_description'] as String?)?.isNotEmpty == true
+              ? row['use_case_description'] as String
+              : 'Appointment reminders, quote and invoice notifications, and two-way customer conversations';
+          _repFirstCtrl.text = row['rep_first_name'] as String? ?? '';
+          _repLastCtrl.text = row['rep_last_name'] as String? ?? '';
+          _repJobTitleCtrl.text = row['rep_job_title'] as String? ?? '';
+          _repJobPosition = row['rep_job_position'] as String?;
+          _repPhoneCtrl.text = row['rep_phone'] as String? ?? '';
+          _repEmailCtrl.text = row['brand_contact_email'] as String? ?? '';
+        } else {
+          _addr1Ctrl.text = b['address_line1'] as String? ?? '';
+          _addr2Ctrl.text = b['address_line2'] as String? ?? '';
+          _cityCtrl.text = b['city'] as String? ?? '';
+          _stateCtrl.text = b['state'] as String? ?? '';
+          _zipCtrl.text = b['zip_code'] as String? ?? '';
+          _useCaseCtrl.text =
+              'Appointment reminders, quote and invoice notifications, and two-way customer conversations';
+        }
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = 'Failed to load: $e';
+        _loading = false;
+      });
+    }
+  }
+
+  bool get _isFreeEmailDomain {
+    final email = _repEmailCtrl.text.trim().toLowerCase();
+    final at = email.indexOf('@');
+    if (at == -1) return false;
+    return _freeEmailDomains.contains(email.substring(at + 1));
+  }
+
+  String? get _domainMismatchWarning {
+    final website = _websiteCtrl.text.trim().toLowerCase();
+    if (website.isEmpty) return null;
+    var domain =
+        website.replaceAll(RegExp(r'^https?://'), '').replaceAll('www.', '');
+    final slash = domain.indexOf('/');
+    if (slash != -1) domain = domain.substring(0, slash);
+    final dot = domain.indexOf('.');
+    final domainRoot = dot == -1 ? domain : domain.substring(0, dot);
+    final nameToCheck = (_hasDba && _dbaCtrl.text.trim().isNotEmpty
+            ? _dbaCtrl.text
+            : _legalNameCtrl.text)
+        .trim()
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9]'), '');
+    if (domainRoot.isEmpty || nameToCheck.isEmpty) return null;
+    if (nameToCheck.contains(domainRoot) || domainRoot.contains(nameToCheck)) {
+      return null;
+    }
+    return "Your website domain doesn't obviously match your business name — carriers flag this as a top rejection reason, so double check it's right.";
+  }
+
+  bool get _requiredFieldsComplete {
+    if (_legalNameCtrl.text.trim().isEmpty) return false;
+    if (_businessType == null) return false;
+    if (_einCtrl.text.trim().isEmpty) return false;
+    if (_addr1Ctrl.text.trim().isEmpty) return false;
+    if (_cityCtrl.text.trim().isEmpty) return false;
+    if (_stateCtrl.text.trim().isEmpty) return false;
+    if (_zipCtrl.text.trim().isEmpty) return false;
+    if (_websiteCtrl.text.trim().isEmpty) return false;
+    if (_repFirstCtrl.text.trim().isEmpty) return false;
+    if (_repLastCtrl.text.trim().isEmpty) return false;
+    if (_repJobTitleCtrl.text.trim().isEmpty) return false;
+    if (_repJobPosition == null) return false;
+    if (_repPhoneCtrl.text.trim().isEmpty) return false;
+    if (_repEmailCtrl.text.trim().isEmpty) return false;
+    if (_isFreeEmailDomain) return false;
+    if (_useCaseCtrl.text.trim().isEmpty) return false;
+    return true;
+  }
+
+  Map<String, dynamic> _buildPayload() {
+    return {
+      'legal_business_name': _legalNameCtrl.text.trim(),
+      'dba_brand_name': _hasDba ? _dbaCtrl.text.trim() : null,
+      'business_type': _businessType,
+      'ein': _einCtrl.text.trim(),
+      'website_url': _websiteCtrl.text.trim(),
+      'address_line1': _addr1Ctrl.text.trim(),
+      'address_line2': _addr2Ctrl.text.trim(),
+      'city': _cityCtrl.text.trim(),
+      'state': _stateCtrl.text.trim(),
+      'zip_code': _zipCtrl.text.trim(),
+      'rep_first_name': _repFirstCtrl.text.trim(),
+      'rep_last_name': _repLastCtrl.text.trim(),
+      'rep_job_title': _repJobTitleCtrl.text.trim(),
+      'rep_job_position': _repJobPosition,
+      'rep_phone': _repPhoneCtrl.text.trim(),
+      'brand_contact_email': _repEmailCtrl.text.trim(),
+      'use_case_description': _useCaseCtrl.text.trim(),
+      'updated_at': DateTime.now().toUtc().toIso8601String(),
+    };
+  }
+
+  Future<void> _save({bool submit = false}) async {
+    setState(() {
+      if (submit) {
+        _submitting = true;
+      } else {
+        _saving = true;
+      }
+      _error = null;
+      _successMsg = null;
+    });
+    try {
+      final payload = _buildPayload();
+      // Never touch submission_status once it's 'submitted' — the
+      // status/submission_status trigger + check constraint on
+      // business_a2p_profiles depends on it staying there.
+      if (submit) {
+        payload['submission_status'] = 'ready_for_review';
+      } else if (_submissionStatus != 'submitted') {
+        payload['submission_status'] = 'incomplete';
+      }
+
+      if (_profileId != null) {
+        await _supabase
+            .from('business_a2p_profiles')
+            .update(payload)
+            .eq('id', _profileId!);
+      } else {
+        payload['business_id'] = widget.businessId;
+        final inserted = await _supabase
+            .from('business_a2p_profiles')
+            .insert(payload)
+            .select('id')
+            .single();
+        _profileId = inserted['id'] as int?;
+      }
+
+      if (!mounted) return;
+      setState(() {
+        if (submit) {
+          _submissionStatus = 'ready_for_review';
+        } else if (_submissionStatus != 'submitted') {
+          _submissionStatus = 'incomplete';
+        }
+        _successMsg = submit ? 'Submitted for verification.' : 'Saved.';
+        _saving = false;
+        _submitting = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = 'Error: $e';
+        _saving = false;
+        _submitting = false;
+      });
+    }
+  }
+
+  Widget _buildStatusBanner() {
+    late Color color;
+    late String label;
+    late String desc;
+    switch (_status) {
+      case 'approved':
+        color = const Color(0xFF10B981);
+        label = 'Approved';
+        desc = 'Your business is verified and approved to send SMS.';
+        break;
+      case 'pending':
+        color = Colors.orange;
+        label = 'Pending Review';
+        desc =
+            'Your submission is being reviewed by carriers. This can take 1-2 weeks.';
+        break;
+      case 'rejected':
+        color = Colors.red;
+        label = 'Rejected';
+        desc =
+            'Your submission was rejected — review the fields below and resubmit.';
+        break;
+      default:
+        final ready = _submissionStatus == 'ready_for_review';
+        color = ready ? Colors.orange : AppTheme.textSecondary;
+        label = ready ? 'Ready for Review' : 'Not Started';
+        desc = ready
+            ? 'Submitted and waiting to be sent to carriers.'
+            : 'Fill out the form below and submit when ready.';
+    }
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withValues(alpha: 0.3)),
+      ),
+      child: Row(children: [
+        Icon(Icons.verified_outlined, size: 16, color: color),
+        const SizedBox(width: 10),
+        Expanded(
+            child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+              Text(label,
+                  style: TextStyle(
+                      fontSize: 13, fontWeight: FontWeight.w700, color: color)),
+              const SizedBox(height: 2),
+              Text(desc,
+                  style: const TextStyle(
+                      fontSize: 12, color: AppTheme.textSecondary)),
+            ])),
+      ]),
+    );
+  }
+
+  Widget _buildInlineWarning(String text) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16, top: 4),
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Colors.orange.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.orange.withValues(alpha: 0.3)),
+        ),
+        child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Icon(Icons.info_outline, size: 15, color: Colors.orange),
+          const SizedBox(width: 8),
+          Expanded(
+              child: Text(text,
+                  style: const TextStyle(
+                      fontSize: 12,
+                      color: AppTheme.textSecondary,
+                      height: 1.4))),
+        ]),
+      ),
+    );
+  }
+
+  Widget _buildActionRow(bool locked) {
+    if (locked) {
+      return Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+            color: AppTheme.pageBg,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: AppTheme.borderColor)),
+        child: Row(children: [
+          const Icon(Icons.lock_outline, size: 15, color: AppTheme.textSecondary),
+          const SizedBox(width: 8),
+          const Expanded(
+              child: Text(
+                  'This has been submitted and can no longer be edited here.',
+                  style: TextStyle(fontSize: 12, color: AppTheme.textSecondary))),
+        ]),
+      );
+    }
+    final canSubmit = _requiredFieldsComplete && !_saving && !_submitting;
+    return Row(children: [
+      MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: OutlinedButton(
+          onPressed: (_saving || _submitting) ? null : () => _save(),
+          style: OutlinedButton.styleFrom(
+              foregroundColor: AppTheme.brand,
+              side: BorderSide(color: AppTheme.brand),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12)),
+          child: _saving
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: AppTheme.brand))
+              : const Text('Save'),
+        ),
+      ),
+      const SizedBox(width: 12),
+      MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: ElevatedButton(
+          onPressed: canSubmit ? () => _save(submit: true) : null,
+          style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.brand,
+              foregroundColor: Colors.white,
+              elevation: 0,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12)),
+          child: _submitting
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: Colors.white))
+              : const Text('Submit for Verification'),
+        ),
+      ),
+      if (_successMsg != null) ...[
+        const SizedBox(width: 12),
+        const Icon(Icons.check_circle, color: Color(0xFF10B981), size: 16),
+        const SizedBox(width: 4),
+        Text(_successMsg!,
+            style: const TextStyle(color: Color(0xFF10B981), fontSize: 13)),
+      ],
+      if (_error != null) ...[
+        const SizedBox(width: 12),
+        Expanded(
+            child: Text(_error!,
+                style: const TextStyle(color: Colors.red, fontSize: 13))),
+      ],
+    ]);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loading) {
+      return const Center(
+          child: Padding(
+              padding: EdgeInsets.all(48),
+              child: CircularProgressIndicator()));
+    }
+
+    final locked =
+        _submissionStatus == 'ready_for_review' || _submissionStatus == 'submitted';
+
+    return _SectionShell(
+      title: 'Business Verification',
+      subtitle:
+          'Register your business for SMS messaging so your texts reach customers reliably. This information is submitted to carriers for approval, not shown to your customers.',
+      child: Column(children: [
+        _buildStatusBanner(),
+        const SizedBox(height: 24),
+        _SettingsGroup(title: 'Business Information', children: [
+          _SettingsField(
+              label: 'Legal Business Name *',
+              controller: _legalNameCtrl,
+              enabled: !locked,
+              hint: 'As registered with the IRS'),
+          _ToggleRow(
+            label: 'Operates under a different name?',
+            value: _hasDba,
+            onChanged: locked ? (_) {} : (v) => setState(() => _hasDba = v),
+          ),
+          if (_hasDba)
+            _SettingsField(
+                label: 'DBA / Brand Name',
+                controller: _dbaCtrl,
+                enabled: !locked,
+                hint: 'The name customers know you by'),
+          _TwoCol(
+            left: _SettingsField(
+              label: 'Business Type *',
+              controller: TextEditingController(),
+              customWidget: _DropdownField(
+                label: 'Business Type *',
+                value: _businessType,
+                items: _businessTypes,
+                hint: 'Select business type',
+                onChanged:
+                    locked ? (_) {} : (v) => setState(() => _businessType = v),
+              ),
+            ),
+            right: _SettingsField(
+              label: 'EIN *',
+              controller: _einCtrl,
+              customWidget: Padding(
+                padding: const EdgeInsets.only(bottom: 16),
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('EIN *',
+                          style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: AppTheme.textSecondary)),
+                      const SizedBox(height: 6),
+                      TextField(
+                        controller: _einCtrl,
+                        enabled: !locked,
+                        keyboardType: TextInputType.number,
+                        inputFormatters: [_EinInputFormatter()],
+                        style: const TextStyle(
+                            fontSize: 13, color: AppTheme.textPrimary),
+                        decoration: InputDecoration(
+                          hintText: '12-3456789',
+                          hintStyle: const TextStyle(
+                              color: AppTheme.textSecondary, fontSize: 13),
+                          filled: true,
+                          fillColor: AppTheme.pageBg,
+                          contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 14, vertical: 11),
+                          border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(8),
+                              borderSide: const BorderSide(
+                                  color: AppTheme.borderColor)),
+                          enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(8),
+                              borderSide: const BorderSide(
+                                  color: AppTheme.borderColor)),
+                          focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(8),
+                              borderSide: BorderSide(
+                                  color: AppTheme.brand, width: 1.5)),
+                        ),
+                      ),
+                    ]),
+              ),
+            ),
+          ),
+          _SettingsField(
+              label: 'Website URL *',
+              controller: _websiteCtrl,
+              enabled: !locked,
+              hint: 'https://yourbusiness.com'),
+          if (_domainMismatchWarning != null)
+            _buildInlineWarning(_domainMismatchWarning!),
+          _SettingsField(
+              label: 'Address Line 1 *', controller: _addr1Ctrl, enabled: !locked),
+          _SettingsField(
+              label: 'Address Line 2', controller: _addr2Ctrl, enabled: !locked),
+          _TwoCol(
+            left: _SettingsField(
+                label: 'City *', controller: _cityCtrl, enabled: !locked),
+            right: _SettingsField(
+                label: 'State *', controller: _stateCtrl, enabled: !locked),
+          ),
+          _SettingsField(
+            label: 'ZIP Code *',
+            controller: _zipCtrl,
+            customWidget: Padding(
+              padding: const EdgeInsets.only(bottom: 16),
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('ZIP Code *',
+                        style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: AppTheme.textSecondary)),
+                    const SizedBox(height: 6),
+                    TextField(
+                      controller: _zipCtrl,
+                      enabled: !locked,
+                      keyboardType: TextInputType.number,
+                      inputFormatters: [
+                        FilteringTextInputFormatter.digitsOnly,
+                        LengthLimitingTextInputFormatter(5),
+                      ],
+                      style: const TextStyle(
+                          fontSize: 13, color: AppTheme.textPrimary),
+                      decoration: InputDecoration(
+                        hintText: '33601',
+                        hintStyle: const TextStyle(
+                            color: AppTheme.textSecondary, fontSize: 13),
+                        filled: true,
+                        fillColor: AppTheme.pageBg,
+                        contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 14, vertical: 11),
+                        border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(8),
+                            borderSide: const BorderSide(
+                                color: AppTheme.borderColor)),
+                        enabledBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(8),
+                            borderSide: const BorderSide(
+                                color: AppTheme.borderColor)),
+                        focusedBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(8),
+                            borderSide: BorderSide(
+                                color: AppTheme.brand, width: 1.5)),
+                      ),
+                    ),
+                  ]),
+            ),
+          ),
+        ]),
+        const SizedBox(height: 24),
+        _SettingsGroup(title: 'Authorized Representative', children: [
+          _TwoCol(
+            left: _SettingsField(
+                label: 'First Name *', controller: _repFirstCtrl, enabled: !locked),
+            right: _SettingsField(
+                label: 'Last Name *', controller: _repLastCtrl, enabled: !locked),
+          ),
+          _TwoCol(
+            left: _SettingsField(
+                label: 'Job Title *',
+                controller: _repJobTitleCtrl,
+                enabled: !locked,
+                hint: 'e.g. Owner'),
+            right: _SettingsField(
+              label: 'Job Position *',
+              controller: TextEditingController(),
+              customWidget: _DropdownField(
+                label: 'Job Position *',
+                value: _repJobPosition,
+                items: _jobPositions,
+                hint: 'Select position',
+                onChanged: locked
+                    ? (_) {}
+                    : (v) => setState(() => _repJobPosition = v),
+              ),
+            ),
+          ),
+          _TwoCol(
+            left: _SettingsField(
+              label: 'Phone *',
+              controller: _repPhoneCtrl,
+              customWidget: Padding(
+                padding: const EdgeInsets.only(bottom: 16),
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('Phone *',
+                          style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: AppTheme.textSecondary)),
+                      const SizedBox(height: 6),
+                      TextField(
+                        controller: _repPhoneCtrl,
+                        enabled: !locked,
+                        keyboardType: TextInputType.phone,
+                        inputFormatters: [_PhoneInputFormatter()],
+                        style: const TextStyle(
+                            fontSize: 13, color: AppTheme.textPrimary),
+                        decoration: InputDecoration(
+                          hintText: '(555) 555-5555',
+                          hintStyle: const TextStyle(
+                              color: AppTheme.textSecondary, fontSize: 13),
+                          filled: true,
+                          fillColor: AppTheme.pageBg,
+                          contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 14, vertical: 11),
+                          border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(8),
+                              borderSide: const BorderSide(
+                                  color: AppTheme.borderColor)),
+                          enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(8),
+                              borderSide: const BorderSide(
+                                  color: AppTheme.borderColor)),
+                          focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(8),
+                              borderSide: BorderSide(
+                                  color: AppTheme.brand, width: 1.5)),
+                        ),
+                      ),
+                    ]),
+              ),
+            ),
+            right: _SettingsField(
+                label: 'Business Email *',
+                controller: _repEmailCtrl,
+                enabled: !locked,
+                hint: 'you@yourbusiness.com'),
+          ),
+          if (_isFreeEmailDomain)
+            _buildInlineWarning(
+                'Carriers reject brands that use a free email provider (Gmail, Yahoo, etc.) for this field — use an email at your own business domain.'),
+        ]),
+        const SizedBox(height: 24),
+        _SettingsGroup(title: 'Use Case', children: [
+          _SettingsFieldMultiline(
+              label: 'Describe how you use text messaging *',
+              controller: _useCaseCtrl,
+              maxLines: 3),
+        ]),
+        const SizedBox(height: 28),
+        _buildActionRow(locked),
       ]),
     );
   }
